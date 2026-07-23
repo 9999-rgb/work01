@@ -13,14 +13,10 @@
 ```bash
 cd /home/live/work01
 source /opt/ros/humble/setup.bash
-PATH=/usr/bin:/opt/ros/humble/bin:/bin \
-  colcon build \
-  --packages-select \
-  xczs_inspection_robot_description \
-  xczs_inspection_robot_control \
-  --symlink-install \
-  --cmake-args -DPython3_EXECUTABLE=/usr/bin/python3
+colcon build --symlink-install
 ```
+
+如果 `python3` 指向 Miniconda，请先执行 `conda deactivate`。
 
 ## 启动
 
