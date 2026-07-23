@@ -4,6 +4,18 @@
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
   name="xczs_inspection_robot">
+  <material name="industrial_navy">
+    <color rgba="0.035 0.145 0.255 1" />
+  </material>
+  <material name="safety_orange">
+    <color rgba="1.0 0.36 0.04 1" />
+  </material>
+  <material name="graphite_black">
+    <color rgba="0.12 0.14 0.17 1" />
+  </material>
+  <material name="rubber_black">
+    <color rgba="0.025 0.025 0.03 1" />
+  </material>
   <link
     name="body">
     <inertial>
@@ -28,11 +40,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/body.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.95686 0.19608 0.58824 1" />
-      </material>
+      <material name="industrial_navy" />
     </visual>
     <collision>
       <origin
@@ -68,11 +76,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/arm1.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="safety_orange" />
     </visual>
     <collision>
       <origin
@@ -134,11 +138,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/arm2.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="safety_orange" />
     </visual>
     <collision>
       <origin
@@ -200,11 +200,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/arm3.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="safety_orange" />
     </visual>
     <collision>
       <origin
@@ -266,11 +262,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/arm4.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="safety_orange" />
     </visual>
     <collision>
       <origin
@@ -332,11 +324,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/arm5.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="safety_orange" />
     </visual>
     <collision>
       <origin
@@ -398,11 +386,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/end.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.49412 0.21176 0.67451 1" />
-      </material>
+      <material name="graphite_black" />
     </visual>
     <collision>
       <origin
@@ -464,11 +448,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/worklink1.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.49412 0.21176 0.67451 1" />
-      </material>
+      <material name="graphite_black" />
     </visual>
     <collision>
       <origin
@@ -530,11 +510,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/worklink2.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.49412 0.21176 0.67451 1" />
-      </material>
+      <material name="graphite_black" />
     </visual>
     <collision>
       <origin
@@ -596,11 +572,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/front_right_wheel.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.6 0.6 0.6 1" />
-      </material>
+      <material name="rubber_black" />
     </visual>
     <collision>
       <origin
@@ -662,11 +634,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/front_left_wheel.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="0.6 0.6 0.6 1" />
-      </material>
+      <material name="rubber_black" />
     </visual>
     <collision>
       <origin
@@ -728,11 +696,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/back_right_wheel.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="rubber_black" />
     </visual>
     <collision>
       <origin
@@ -794,11 +758,7 @@
         <mesh
           filename="package://xczs_inspection_robot_description/meshes/back_left_wheel.STL" />
       </geometry>
-      <material
-        name="">
-        <color
-          rgba="1 1 1 1" />
-      </material>
+      <material name="rubber_black" />
     </visual>
     <collision>
       <origin
@@ -837,6 +797,7 @@
       k_velocity="1" />
   </joint>
   <gazebo reference="body">
+    <material>Gazebo/Blue</material>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
     <kp>1000000</kp>
@@ -845,6 +806,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="arm1">
+    <material>Gazebo/Orange</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -854,6 +816,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="arm2">
+    <material>Gazebo/Orange</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -863,6 +826,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="arm3">
+    <material>Gazebo/Orange</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -872,6 +836,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="arm4">
+    <material>Gazebo/Orange</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -881,6 +846,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="arm5">
+    <material>Gazebo/Orange</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -890,6 +856,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="end">
+    <material>Gazebo/DarkGrey</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -899,6 +866,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="worklink1">
+    <material>Gazebo/DarkGrey</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -908,6 +876,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="worklink2">
+    <material>Gazebo/DarkGrey</material>
     <gravity>false</gravity>
     <mu1>0.8</mu1>
     <mu2>0.8</mu2>
@@ -917,6 +886,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="front_right_wheel">
+    <material>Gazebo/Black</material>
     <mu1>1.2</mu1>
     <mu2>1.2</mu2>
     <kp>1000000</kp>
@@ -925,6 +895,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="front_left_wheel">
+    <material>Gazebo/Black</material>
     <mu1>1.2</mu1>
     <mu2>1.2</mu2>
     <kp>1000000</kp>
@@ -933,6 +904,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="back_right_wheel">
+    <material>Gazebo/Black</material>
     <mu1>1.2</mu1>
     <mu2>1.2</mu2>
     <kp>1000000</kp>
@@ -941,6 +913,7 @@
     <minDepth>0.001</minDepth>
   </gazebo>
   <gazebo reference="back_left_wheel">
+    <material>Gazebo/Black</material>
     <mu1>1.2</mu1>
     <mu2>1.2</mu2>
     <kp>1000000</kp>
