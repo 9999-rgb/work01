@@ -14,6 +14,13 @@
   <depend>sensor_msgs</depend>
   <depend>trajectory_msgs</depend>
 
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>xczs_inspection_robot_description</exec_depend>
+  <exec_depend>xfce4-terminal</exec_depend>
+
   <export>
     <build_type>ament_cmake</build_type>
   </export>

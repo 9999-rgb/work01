@@ -115,8 +115,10 @@ bool read_key(char & key, std::chrono::milliseconds timeout)
   FD_SET(STDIN_FILENO, &read_set);
 
   timeval timeout_value{};
-  timeout_value.tv_sec = static_cast<long>(timeout.count() / 1000);
-  timeout_value.tv_usec = static_cast<long>((timeout.count() % 1000) * 1000);
+  timeout_value.tv_sec = static_cast<decltype(timeout_value.tv_sec)>(
+    timeout.count() / 1000);
+  timeout_value.tv_usec = static_cast<decltype(timeout_value.tv_usec)>(
+    (timeout.count() % 1000) * 1000);
 
   const int result = select(
     STDIN_FILENO + 1,

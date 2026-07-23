@@ -1,1 +1,0 @@
-controller_joint_names: ['', 'body_arm1', 'arm1_arm2', 'arm2_arm3', 'arm3_arm4', 'arm4_arm5', 'arm5_end', 'end_worklink1', 'end_worklink2', 'body_frw', 'body_flw', 'body_brw', 'body_blw', ]
