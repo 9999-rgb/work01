@@ -359,12 +359,12 @@ private:
     std::string status;
     switch (motion) {
       case BaseMotion::kForward:
-        // The imported SolidWorks model faces body -Y.
-        base_command_.linear.y = -linear_speed_;
+        // The imported model's visual front points along body +Y.
+        base_command_.linear.y = linear_speed_;
         status = "底盘：前进";
         break;
       case BaseMotion::kBackward:
-        base_command_.linear.y = linear_speed_;
+        base_command_.linear.y = -linear_speed_;
         status = "底盘：后退";
         break;
       case BaseMotion::kTurnLeft:
