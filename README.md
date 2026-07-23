@@ -74,6 +74,8 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py paused:=tru
 - `X` 或空格：停止底盘。
 
 底盘连续 0.5 秒没有收到运动按键后会自动停止，防止键盘终端失去焦点时机器人继续运动。
+正常移动和转向采用平滑加减速，默认线加速度为 `0.5 m/s²`、角加速度为
+`1.2 rad/s²`；按 `X`、空格或退出节点时会立即停止。
 
 ### 六轴机械臂
 
@@ -106,5 +108,6 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py paused:=tru
 
 - 当前控制节点主要用于 Gazebo 功能测试。
 - 底盘使用平面运动插件，不等同于真实驱动轮的动力学控制。
+- 四个车轮使用无角度限位的连续关节，可以持续滚动。
 - 机械臂和夹爪使用 Gazebo 关节位置接口，不包含真实电机的力矩控制。
 - 修改 C++ 源码后需要重新执行编译命令，再运行统一启动文件。

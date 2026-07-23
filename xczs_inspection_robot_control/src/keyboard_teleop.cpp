@@ -161,6 +161,8 @@ public:
   {
     linear_speed_ = positive_parameter("linear_speed", 0.25);
     angular_speed_ = positive_parameter("angular_speed", 0.60);
+    linear_acceleration_ = positive_parameter("linear_acceleration", 0.50);
+    angular_acceleration_ = positive_parameter("angular_acceleration", 1.20);
     joint_step_ = positive_parameter("joint_step", 0.10);
     joint_limit_ = positive_parameter("joint_limit", 2.80);
     gripper_open_angle_ = positive_parameter("gripper_open_angle", 0.35);
@@ -195,6 +197,7 @@ public:
 
     joint_publish_period_ = 1.0 / joint_command_rate_;
     last_base_key_time_ = SteadyClock::now();
+    last_base_update_time_ = SteadyClock::now();
     last_joint_publish_time_ = SteadyClock::now();
 
     RCLCPP_INFO(
@@ -278,25 +281,40 @@ public:
       publish_joint_trajectory();
     }
 
-    if (!base_is_moving_) {
-      return;
+    if (base_motion_requested_) {
+      const double seconds_since_base_key =
+        std::chrono::duration<double>(
+        current_time - last_base_key_time_).count();
+      if (seconds_since_base_key >= command_timeout_) {
+        target_base_command_ = geometry_msgs::msg::Twist{};
+        base_motion_requested_ = false;
+        write_status("底盘：安全超时，正在减速停止");
+      }
     }
 
-    const double seconds_since_base_key =
+    const double update_period = std::clamp(
       std::chrono::duration<double>(
-      current_time - last_base_key_time_).count();
-    if (seconds_since_base_key >= command_timeout_) {
-      stop_base();
-      write_status("底盘：安全超时，已自动停止");
-    } else {
-      cmd_vel_publisher_->publish(base_command_);
-    }
+        current_time - last_base_update_time_).count(),
+      0.0,
+      0.1);
+    last_base_update_time_ = current_time;
+
+    base_command_.linear.y = approach(
+      base_command_.linear.y,
+      target_base_command_.linear.y,
+      linear_acceleration_ * update_period);
+    base_command_.angular.z = approach(
+      base_command_.angular.z,
+      target_base_command_.angular.z,
+      angular_acceleration_ * update_period);
+    cmd_vel_publisher_->publish(base_command_);
   }
 
   void stop_base()
   {
     base_command_ = geometry_msgs::msg::Twist{};
-    base_is_moving_ = false;
+    target_base_command_ = geometry_msgs::msg::Twist{};
+    base_motion_requested_ = false;
     cmd_vel_publisher_->publish(base_command_);
   }
 
@@ -354,32 +372,31 @@ private:
 
   void start_base_motion(BaseMotion motion)
   {
-    base_command_ = geometry_msgs::msg::Twist{};
+    target_base_command_ = geometry_msgs::msg::Twist{};
 
     std::string status;
     switch (motion) {
       case BaseMotion::kForward:
         // The imported model's visual front points along body +Y.
-        base_command_.linear.y = linear_speed_;
+        target_base_command_.linear.y = linear_speed_;
         status = "底盘：前进";
         break;
       case BaseMotion::kBackward:
-        base_command_.linear.y = -linear_speed_;
+        target_base_command_.linear.y = -linear_speed_;
         status = "底盘：后退";
         break;
       case BaseMotion::kTurnLeft:
-        base_command_.angular.z = angular_speed_;
+        target_base_command_.angular.z = angular_speed_;
         status = "底盘：左转";
         break;
       case BaseMotion::kTurnRight:
-        base_command_.angular.z = -angular_speed_;
+        target_base_command_.angular.z = -angular_speed_;
         status = "底盘：右转";
         break;
     }
 
     last_base_key_time_ = SteadyClock::now();
-    base_is_moving_ = true;
-    cmd_vel_publisher_->publish(base_command_);
+    base_motion_requested_ = true;
     write_status(status);
   }
 
@@ -496,6 +513,11 @@ private:
     return stream.str();
   }
 
+  static double approach(double current, double target, double max_change)
+  {
+    return current + std::clamp(target - current, -max_change, max_change);
+  }
+
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr
     cmd_vel_publisher_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr
@@ -509,11 +531,15 @@ private:
   std::size_t selected_joint_index_{0};
 
   geometry_msgs::msg::Twist base_command_;
+  geometry_msgs::msg::Twist target_base_command_;
   SteadyClock::time_point last_base_key_time_;
+  SteadyClock::time_point last_base_update_time_;
   SteadyClock::time_point last_joint_publish_time_;
 
   double linear_speed_{0.25};
   double angular_speed_{0.60};
+  double linear_acceleration_{0.50};
+  double angular_acceleration_{1.20};
   double joint_step_{0.10};
   double joint_limit_{2.80};
   double gripper_open_angle_{0.35};
@@ -523,7 +549,7 @@ private:
 
   int joint_command_repeats_{5};
   int pending_joint_publications_{0};
-  bool base_is_moving_{false};
+  bool base_motion_requested_{false};
   bool joint_targets_initialized_{false};
 };
 

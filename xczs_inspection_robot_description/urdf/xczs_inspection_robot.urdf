@@ -586,7 +586,7 @@
   </link>
   <joint
     name="body_frw"
-    type="revolute">
+    type="continuous">
     <origin
       xyz="0.165 -0.313 -0.454"
       rpy="0 1.5708 0" />
@@ -597,18 +597,11 @@
     <axis
       xyz="0 0 1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
       effort="100"
-      velocity="10" />
+      velocity="20" />
     <dynamics
-      damping="2.0"
-      friction="10.0" />
-    <safety_controller
-      soft_upper="3.14"
-      soft_lower="-3.14"
-      k_position="1"
-      k_velocity="1" />
+      damping="0.1"
+      friction="0.0" />
   </joint>
   <link
     name="front_left_wheel">
@@ -648,7 +641,7 @@
   </link>
   <joint
     name="body_flw"
-    type="revolute">
+    type="continuous">
     <origin
       xyz="-0.165 -0.313 -0.454"
       rpy="0 1.5708 0" />
@@ -659,18 +652,11 @@
     <axis
       xyz="0 0 1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
       effort="100"
-      velocity="10" />
+      velocity="20" />
     <dynamics
-      damping="2.0"
-      friction="10.0" />
-    <safety_controller
-      soft_upper="3.14"
-      soft_lower="-3.14"
-      k_position="1"
-      k_velocity="1" />
+      damping="0.1"
+      friction="0.0" />
   </joint>
   <link
     name="back_right_wheel">
@@ -710,7 +696,7 @@
   </link>
   <joint
     name="body_brw"
-    type="revolute">
+    type="continuous">
     <origin
       xyz="0.301 0.165 -0.414"
       rpy="0 1.5708 0" />
@@ -721,18 +707,11 @@
     <axis
       xyz="0 0 1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
       effort="100"
-      velocity="10" />
+      velocity="20" />
     <dynamics
-      damping="2.0"
-      friction="10.0" />
-    <safety_controller
-      soft_upper="3.14"
-      soft_lower="-3.14"
-      k_position="1"
-      k_velocity="1" />
+      damping="0.1"
+      friction="0.0" />
   </joint>
   <link
     name="back_left_wheel">
@@ -772,7 +751,7 @@
   </link>
   <joint
     name="body_blw"
-    type="revolute">
+    type="continuous">
     <origin
       xyz="-0.301 0.165 -0.414"
       rpy="0 1.5708 0" />
@@ -783,18 +762,11 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      lower="-3.14"
-      upper="3.14"
       effort="100"
-      velocity="10" />
+      velocity="20" />
     <dynamics
-      damping="2.0"
-      friction="10.0" />
-    <safety_controller
-      soft_upper="3.14"
-      soft_lower="-3.14"
-      k_position="1"
-      k_velocity="1" />
+      damping="0.1"
+      friction="0.0" />
   </joint>
   <gazebo reference="body">
     <material>Gazebo/Blue</material>
