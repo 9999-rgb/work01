@@ -41,6 +41,96 @@ enum class BaseMotion
   kTurnRight,
 };
 
+class JerkLimitedVelocityProfile
+{
+public:
+  void configure(double max_acceleration, double max_jerk)
+  {
+    max_acceleration_ = max_acceleration;
+    max_jerk_ = max_jerk;
+  }
+
+  void set_target(double target_velocity)
+  {
+    if (std::abs(target_velocity - target_velocity_) < kTolerance) {
+      return;
+    }
+
+    start_velocity_ = current_velocity_;
+    target_velocity_ = target_velocity;
+    elapsed_time_ = 0.0;
+
+    const double velocity_change =
+      std::abs(target_velocity_ - start_velocity_);
+    if (velocity_change < kTolerance) {
+      current_velocity_ = target_velocity_;
+      transition_duration_ = 0.0;
+      return;
+    }
+
+    // For the quintic smoothstep below, these are the exact maximum
+    // first- and second-derivative factors on the normalized interval.
+    constexpr double kAccelerationFactor = 1.875;
+    constexpr double kJerkFactor = 5.773502691896258;
+    const double acceleration_limited_duration =
+      kAccelerationFactor * velocity_change / max_acceleration_;
+    const double jerk_limited_duration =
+      std::sqrt(kJerkFactor * velocity_change / max_jerk_);
+    transition_duration_ = std::max(
+      acceleration_limited_duration,
+      jerk_limited_duration);
+  }
+
+  double update(double elapsed_seconds)
+  {
+    if (transition_duration_ <= 0.0) {
+      current_velocity_ = target_velocity_;
+      return current_velocity_;
+    }
+
+    elapsed_time_ = std::min(
+      elapsed_time_ + elapsed_seconds,
+      transition_duration_);
+    const double phase = elapsed_time_ / transition_duration_;
+    const double phase_squared = phase * phase;
+    const double phase_cubed = phase_squared * phase;
+    const double blend =
+      10.0 * phase_cubed -
+      15.0 * phase_cubed * phase +
+      6.0 * phase_cubed * phase_squared;
+
+    current_velocity_ =
+      start_velocity_ +
+      (target_velocity_ - start_velocity_) * blend;
+
+    if (elapsed_time_ >= transition_duration_) {
+      current_velocity_ = target_velocity_;
+      transition_duration_ = 0.0;
+    }
+    return current_velocity_;
+  }
+
+  void reset()
+  {
+    start_velocity_ = 0.0;
+    current_velocity_ = 0.0;
+    target_velocity_ = 0.0;
+    elapsed_time_ = 0.0;
+    transition_duration_ = 0.0;
+  }
+
+private:
+  static constexpr double kTolerance = 1.0e-9;
+
+  double max_acceleration_{1.0};
+  double max_jerk_{1.0};
+  double start_velocity_{0.0};
+  double current_velocity_{0.0};
+  double target_velocity_{0.0};
+  double elapsed_time_{0.0};
+  double transition_duration_{0.0};
+};
+
 const std::array<std::string, 6> kArmJoints = {
   "body_arm1",
   "arm1_arm2",
@@ -68,7 +158,8 @@ XCZS 巡操机器人键盘遥控
 底盘：
   W / S       前进 / 后退
   A / D       左转 / 右转
-  X 或空格    停止
+  X           平滑停止
+  空格        紧急停止
 
 六轴机械臂：
   1 ... 6     选择对应关节
@@ -163,11 +254,14 @@ public:
     angular_speed_ = positive_parameter("angular_speed", 0.60);
     linear_acceleration_ = positive_parameter("linear_acceleration", 0.50);
     angular_acceleration_ = positive_parameter("angular_acceleration", 1.20);
+    linear_jerk_ = positive_parameter("linear_jerk", 2.00);
+    angular_jerk_ = positive_parameter("angular_jerk", 4.80);
+    base_command_rate_ = positive_parameter("base_command_rate", 50.0);
     joint_step_ = positive_parameter("joint_step", 0.10);
     joint_limit_ = positive_parameter("joint_limit", 2.80);
     gripper_open_angle_ = positive_parameter("gripper_open_angle", 0.35);
     joint_command_rate_ = positive_parameter("joint_command_rate", 20.0);
-    command_timeout_ = positive_parameter("command_timeout", 0.50);
+    command_timeout_ = positive_parameter("command_timeout", 0.75);
 
     joint_command_repeats_ = declare_parameter<int>("joint_command_repeats", 5);
     if (joint_command_repeats_ <= 0) {
@@ -195,6 +289,13 @@ public:
         joint_state_callback(*message);
       });
 
+    linear_velocity_profile_.configure(
+      linear_acceleration_,
+      linear_jerk_);
+    angular_velocity_profile_.configure(
+      angular_acceleration_,
+      angular_jerk_);
+    base_publish_period_ = 1.0 / base_command_rate_;
     joint_publish_period_ = 1.0 / joint_command_rate_;
     last_base_key_time_ = SteadyClock::now();
     last_base_update_time_ = SteadyClock::now();
@@ -205,6 +306,10 @@ public:
     RCLCPP_INFO(
       get_logger(), "Publishing joint commands on %s",
       trajectory_topic.c_str());
+    RCLCPP_INFO(
+      get_logger(),
+      "Base velocity uses a %.1f Hz jerk-limited S-curve profile.",
+      base_command_rate_);
   }
 
   bool handle_key(char key)
@@ -235,9 +340,12 @@ public:
         start_base_motion(BaseMotion::kTurnRight);
         break;
       case 'x':
+        request_smooth_stop();
+        write_status("底盘：正在平滑停止");
+        break;
       case ' ':
         stop_base();
-        write_status("底盘：已停止");
+        write_status("底盘：已紧急停止");
         break;
       case '[':
       case '-':
@@ -292,21 +400,25 @@ public:
       }
     }
 
-    const double update_period = std::clamp(
+    const double seconds_since_base_update =
       std::chrono::duration<double>(
-        current_time - last_base_update_time_).count(),
+      current_time - last_base_update_time_).count();
+    if (seconds_since_base_update < base_publish_period_) {
+      return;
+    }
+
+    const double update_period = std::clamp(
+      seconds_since_base_update,
       0.0,
-      0.1);
+      2.0 * base_publish_period_);
     last_base_update_time_ = current_time;
 
-    base_command_.linear.y = approach(
-      base_command_.linear.y,
-      target_base_command_.linear.y,
-      linear_acceleration_ * update_period);
-    base_command_.angular.z = approach(
-      base_command_.angular.z,
-      target_base_command_.angular.z,
-      angular_acceleration_ * update_period);
+    linear_velocity_profile_.set_target(target_base_command_.linear.y);
+    angular_velocity_profile_.set_target(target_base_command_.angular.z);
+    base_command_.linear.y =
+      linear_velocity_profile_.update(update_period);
+    base_command_.angular.z =
+      angular_velocity_profile_.update(update_period);
     cmd_vel_publisher_->publish(base_command_);
   }
 
@@ -314,8 +426,16 @@ public:
   {
     base_command_ = geometry_msgs::msg::Twist{};
     target_base_command_ = geometry_msgs::msg::Twist{};
+    linear_velocity_profile_.reset();
+    angular_velocity_profile_.reset();
     base_motion_requested_ = false;
     cmd_vel_publisher_->publish(base_command_);
+  }
+
+  void request_smooth_stop()
+  {
+    target_base_command_ = geometry_msgs::msg::Twist{};
+    base_motion_requested_ = false;
   }
 
   void print_help() const
@@ -513,11 +633,6 @@ private:
     return stream.str();
   }
 
-  static double approach(double current, double target, double max_change)
-  {
-    return current + std::clamp(target - current, -max_change, max_change);
-  }
-
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr
     cmd_vel_publisher_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr
@@ -532,6 +647,8 @@ private:
 
   geometry_msgs::msg::Twist base_command_;
   geometry_msgs::msg::Twist target_base_command_;
+  JerkLimitedVelocityProfile linear_velocity_profile_;
+  JerkLimitedVelocityProfile angular_velocity_profile_;
   SteadyClock::time_point last_base_key_time_;
   SteadyClock::time_point last_base_update_time_;
   SteadyClock::time_point last_joint_publish_time_;
@@ -540,11 +657,15 @@ private:
   double angular_speed_{0.60};
   double linear_acceleration_{0.50};
   double angular_acceleration_{1.20};
+  double linear_jerk_{2.00};
+  double angular_jerk_{4.80};
+  double base_command_rate_{50.0};
   double joint_step_{0.10};
   double joint_limit_{2.80};
   double gripper_open_angle_{0.35};
   double joint_command_rate_{20.0};
-  double command_timeout_{0.50};
+  double command_timeout_{0.75};
+  double base_publish_period_{0.02};
   double joint_publish_period_{0.05};
 
   int joint_command_repeats_{5};
@@ -571,7 +692,7 @@ int main(int argc, char * argv[])
       rclcpp::spin_some(node);
 
       char key = '\0';
-      if (read_key(key, std::chrono::milliseconds(50))) {
+      if (read_key(key, std::chrono::milliseconds(10))) {
         keep_running = node->handle_key(key);
       }
       node->update();

@@ -26,7 +26,7 @@ ament_target_dependencies(
 install(TARGETS keyboard_teleop DESTINATION lib/${PROJECT_NAME})
 
 install(
-  DIRECTORY launch
+  DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
 )

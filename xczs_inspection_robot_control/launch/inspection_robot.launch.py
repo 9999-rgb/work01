@@ -26,9 +26,11 @@ XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 def generate_launch_description() -> LaunchDescription:
     """Create a unified Gazebo and keyboard-control launch description."""
     gazebo_ros_share = Path(get_package_share_directory("gazebo_ros"))
+    control_share = Path(get_package_share_directory(CONTROL_PACKAGE))
     description_share = Path(
         get_package_share_directory(DESCRIPTION_PACKAGE)
     )
+    teleop_config = control_share / "config" / "keyboard_teleop.yaml"
     xacro_file = description_share / "urdf" / XACRO_FILENAME
     robot_description = ParameterValue(
         Command(
@@ -117,6 +119,7 @@ def generate_launch_description() -> LaunchDescription:
         name="xczs_keyboard_teleop",
         output="screen",
         prefix="xfce4-terminal --disable-server --execute",
+        parameters=[str(teleop_config)],
         condition=IfCondition(LaunchConfiguration("teleop")),
     )
     start_teleop_after_spawn = RegisterEventHandler(
