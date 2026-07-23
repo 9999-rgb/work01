@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>xczs_inspection_robot_control</name>
+  <version>1.0.0</version>
+  <description>Keyboard teleoperation tools for the XCZS inspection robot.</description>
+
+  <maintainer email="live@example.com">live</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>rclcpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
