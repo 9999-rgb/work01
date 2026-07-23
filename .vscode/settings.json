@@ -1,0 +1,13 @@
+{
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+  "files.exclude": {
+    "**/build": true,
+    "**/install": true,
+    "**/log": true
+  },
+  "search.exclude": {
+    "**/build": true,
+    "**/install": true,
+    "**/log": true
+  }
+}
