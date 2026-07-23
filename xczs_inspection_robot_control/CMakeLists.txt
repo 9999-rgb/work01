@@ -9,21 +9,39 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
-target_compile_features(keyboard_teleop PUBLIC cxx_std_17)
-ament_target_dependencies(
-  keyboard_teleop
-  geometry_msgs
-  rclcpp
-  sensor_msgs
-  trajectory_msgs
+add_executable(inspection_robot_gui src/inspection_robot_gui.cpp)
+
+foreach(target keyboard_teleop inspection_robot_gui)
+  target_compile_features(${target} PUBLIC cxx_std_17)
+  target_include_directories(
+    ${target}
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+  ament_target_dependencies(
+    ${target}
+    geometry_msgs
+    rclcpp
+    sensor_msgs
+    trajectory_msgs
+  )
+endforeach()
+
+target_link_libraries(inspection_robot_gui Qt5::Widgets)
+
+install(
+  TARGETS keyboard_teleop inspection_robot_gui
+  DESTINATION lib/${PROJECT_NAME}
 )
 
-install(TARGETS keyboard_teleop DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY include/ DESTINATION include)
 
 install(
   DIRECTORY config launch
@@ -31,4 +49,5 @@ install(
   PATTERN "__pycache__" EXCLUDE
 )
 
+ament_export_include_directories(include)
 ament_package()

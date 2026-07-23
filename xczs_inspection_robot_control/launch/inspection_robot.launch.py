@@ -24,13 +24,13 @@ XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 
 
 def generate_launch_description() -> LaunchDescription:
-    """Create a unified Gazebo and keyboard-control launch description."""
+    """Create a unified Gazebo and robot-control launch description."""
     gazebo_ros_share = Path(get_package_share_directory("gazebo_ros"))
     control_share = Path(get_package_share_directory(CONTROL_PACKAGE))
     description_share = Path(
         get_package_share_directory(DESCRIPTION_PACKAGE)
     )
-    teleop_config = control_share / "config" / "keyboard_teleop.yaml"
+    control_config = control_share / "config" / "robot_control.yaml"
     xacro_file = description_share / "urdf" / XACRO_FILENAME
     robot_description = ParameterValue(
         Command(
@@ -55,8 +55,13 @@ def generate_launch_description() -> LaunchDescription:
     )
     teleop_argument = DeclareLaunchArgument(
         "teleop",
-        default_value="true",
+        default_value="false",
         description="Open the keyboard controller in a separate terminal.",
+    )
+    control_gui_argument = DeclareLaunchArgument(
+        "control_gui",
+        default_value="true",
+        description="Start the graphical robot controller.",
     )
     spawn_z_argument = DeclareLaunchArgument(
         "spawn_z",
@@ -119,13 +124,21 @@ def generate_launch_description() -> LaunchDescription:
         name="xczs_keyboard_teleop",
         output="screen",
         prefix="xfce4-terminal --disable-server --execute",
-        parameters=[str(teleop_config)],
+        parameters=[str(control_config)],
         condition=IfCondition(LaunchConfiguration("teleop")),
     )
-    start_teleop_after_spawn = RegisterEventHandler(
+    gui_controller = Node(
+        package=CONTROL_PACKAGE,
+        executable="inspection_robot_gui",
+        name="xczs_inspection_robot_gui",
+        output="screen",
+        parameters=[str(control_config)],
+        condition=IfCondition(LaunchConfiguration("control_gui")),
+    )
+    start_controllers_after_spawn = RegisterEventHandler(
         OnProcessExit(
             target_action=spawn_robot,
-            on_exit=[keyboard_teleop],
+            on_exit=[keyboard_teleop, gui_controller],
         )
     )
 
@@ -134,11 +147,12 @@ def generate_launch_description() -> LaunchDescription:
             gui_argument,
             paused_argument,
             teleop_argument,
+            control_gui_argument,
             spawn_z_argument,
             gazebo_server,
             gazebo_client,
             robot_state_publisher,
             spawn_robot,
-            start_teleop_after_spawn,
+            start_controllers_after_spawn,
         ]
     )

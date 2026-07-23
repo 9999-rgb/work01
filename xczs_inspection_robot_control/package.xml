@@ -2,12 +2,15 @@
 <package format="3">
   <name>xczs_inspection_robot_control</name>
   <version>1.0.0</version>
-  <description>Keyboard teleoperation tools for the XCZS inspection robot.</description>
+  <description>Keyboard and GUI control tools for the XCZS inspection robot.</description>
 
   <maintainer email="live@example.com">live</maintainer>
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <build_depend>qt5-qmake</build_depend>
+  <build_depend>qtbase5-dev</build_depend>
 
   <depend>geometry_msgs</depend>
   <depend>rclcpp</depend>
@@ -18,6 +21,8 @@
   <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
+  <exec_depend>libqt5-gui</exec_depend>
+  <exec_depend>libqt5-widgets</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>xczs_inspection_robot_description</exec_depend>

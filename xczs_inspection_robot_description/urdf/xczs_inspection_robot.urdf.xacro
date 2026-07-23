@@ -10,6 +10,10 @@
   <xacro:property name="wheel_joint_velocity" value="20" />
   <xacro:property name="wheel_joint_damping" value="0.1" />
   <xacro:property name="wheel_joint_friction" value="0.0" />
+  <xacro:property name="front_wheel_collision_radius" value="0.069" />
+  <xacro:property name="front_wheel_collision_length" value="0.110" />
+  <xacro:property name="back_wheel_collision_radius" value="0.090" />
+  <xacro:property name="back_wheel_collision_length" value="0.1933" />
   <xacro:property name="contact_kp" value="1000000" />
   <xacro:property name="contact_kd" value="100" />
   <xacro:property name="contact_max_velocity" value="0.2" />
@@ -586,11 +590,12 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="-0.018873 -0.0062155 -0.00011669"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://xczs_inspection_robot_description/meshes/collision/front_right_wheel.STL" />
+        <cylinder
+          radius="${front_wheel_collision_radius}"
+          length="${front_wheel_collision_length}" />
       </geometry>
     </collision>
   </link>
@@ -641,11 +646,12 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="-0.018873 -0.0062155 -0.00011669"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://xczs_inspection_robot_description/meshes/collision/front_left_wheel.STL" />
+        <cylinder
+          radius="${front_wheel_collision_radius}"
+          length="${front_wheel_collision_length}" />
       </geometry>
     </collision>
   </link>
@@ -696,11 +702,12 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="0 0 -0.07165"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://xczs_inspection_robot_description/meshes/collision/back_right_wheel.STL" />
+        <cylinder
+          radius="${back_wheel_collision_radius}"
+          length="${back_wheel_collision_length}" />
       </geometry>
     </collision>
   </link>
@@ -751,11 +758,12 @@
     </visual>
     <collision>
       <origin
-        xyz="0 0 0"
+        xyz="0 0 0.07165"
         rpy="0 0 0" />
       <geometry>
-        <mesh
-          filename="package://xczs_inspection_robot_description/meshes/collision/back_left_wheel.STL" />
+        <cylinder
+          radius="${back_wheel_collision_radius}"
+          length="${back_wheel_collision_length}" />
       </geometry>
     </collision>
   </link>
