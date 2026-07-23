@@ -1,0 +1,951 @@
+<?xml version="1.0"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="xczs_inspection_robot">
+  <link
+    name="body">
+    <inertial>
+      <origin
+        xyz="-0.0028688 -0.12904 -0.2447"
+        rpy="0 0 0" />
+      <mass
+        value="87.371" />
+      <inertia
+        ixx="2.5745"
+        ixy="0.00027436"
+        ixz="0.00010738"
+        iyy="1.225"
+        iyz="0.06048"
+        izz="3.0663" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/body.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.95686 0.19608 0.58824 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/body.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="arm1">
+    <inertial>
+      <origin
+        xyz="-0.0033217 -9.9561E-07 0.078337"
+        rpy="0 0 0" />
+      <mass
+        value="1.9281" />
+      <inertia
+        ixx="0.0054894"
+        ixy="6.3361E-09"
+        ixz="-1.9333E-06"
+        iyy="0.0056434"
+        iyz="2.7078E-09"
+        izz="0.0038887" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/arm1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/arm1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_arm1"
+    type="revolute">
+    <origin
+      xyz="0 0 0.1713"
+      rpy="0 0 0" />
+    <parent
+      link="body" />
+    <child
+      link="arm1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="10.0"
+      friction="80.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="arm2">
+    <inertial>
+      <origin
+        xyz="1.0479E-06 0.215 -0.078844"
+        rpy="0 0 0" />
+      <mass
+        value="5.8403" />
+      <inertia
+        ixx="0.030588"
+        ixy="1.376E-08"
+        ixz="-4.7704E-08"
+        iyy="0.013217"
+        iyz="3.2272E-08"
+        izz="0.02708" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/arm2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/arm2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="arm1_arm2"
+    type="revolute">
+    <origin
+      xyz="-0.0643 0 0.07985"
+      rpy="0 1.5708 0" />
+    <parent
+      link="arm1" />
+    <child
+      link="arm2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="20.0"
+      friction="100.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="arm3">
+    <inertial>
+      <origin
+        xyz="1.56749461355243E-06 0.189710014053946 0.0530473833928146"
+        rpy="0 0 0" />
+      <mass
+        value="2.31238613838775" />
+      <inertia
+        ixx="0.0216822998250983"
+        ixy="1.23615425716532E-07"
+        ixz="7.23499498048424E-09"
+        iyy="0.00256250351374084"
+        iyz="-0.00215384222856607"
+        izz="0.0212162219120044" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/arm3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/arm3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="arm2_arm3"
+    type="revolute">
+    <origin
+      xyz="0 0.43 0.0003"
+      rpy="0 0 0" />
+    <parent
+      link="arm2" />
+    <child
+      link="arm3" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="20.0"
+      friction="100.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="arm4">
+    <inertial>
+      <origin
+        xyz="1.7543E-07 0.0059508 -0.042821"
+        rpy="0 0 0" />
+      <mass
+        value="0.70551" />
+      <inertia
+        ixx="0.00090238"
+        ixy="5.5563E-10"
+        ixz="-1.0558E-08"
+        iyy="0.00065754"
+        iyz="5.0673E-05"
+        izz="0.00087174" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/arm4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/arm4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="arm3_arm4"
+    type="revolute">
+    <origin
+      xyz="0 0.3685 -0.0045"
+      rpy="0 0 0" />
+    <parent
+      link="arm3" />
+    <child
+      link="arm4" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="20.0"
+      friction="100.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="arm5">
+    <inertial>
+      <origin
+        xyz="-0.013315 4.4618E-06 0.043582"
+        rpy="0 0 0" />
+      <mass
+        value="0.98742" />
+      <inertia
+        ixx="0.00088853"
+        ixy="2.1986E-07"
+        ixz="-5.4707E-06"
+        iyy="0.0017379"
+        iyz="3.9411E-07"
+        izz="0.0016997" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/arm5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/arm5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="arm4_arm5"
+    type="revolute">
+    <origin
+      xyz="0 0.068 -0.0455"
+      rpy="1.5708 -1.5708 0" />
+    <parent
+      link="arm4" />
+    <child
+      link="arm5" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="20.0"
+      friction="100.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="end">
+    <inertial>
+      <origin
+        xyz="-0.074067 -0.00010354 -0.19235"
+        rpy="0 0 0" />
+      <mass
+        value="2.6368" />
+      <inertia
+        ixx="0.0040243"
+        ixy="-7.421E-06"
+        ixz="0.00031663"
+        iyy="0.0087932"
+        iyz="-1.9349E-06"
+        izz="0.010837" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/end.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.49412 0.21176 0.67451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/end.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="arm5_end"
+    type="revolute">
+    <origin
+      xyz="0.049 0 0.0455"
+      rpy="1.5708 0 1.5708" />
+    <parent
+      link="arm5" />
+    <child
+      link="end" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="20.0"
+      friction="100.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="worklink1">
+    <inertial>
+      <origin
+        xyz="-0.026954 -0.00060856 0.00020469"
+        rpy="0 0 0" />
+      <mass
+        value="0.15355" />
+      <inertia
+        ixx="6.267E-05"
+        ixy="-1.1937E-06"
+        ixz="3.0638E-09"
+        iyy="8.5862E-05"
+        iyz="-7.3249E-10"
+        izz="3.7389E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/worklink1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.49412 0.21176 0.67451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/worklink1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="end_worklink1"
+    type="revolute">
+    <origin
+      xyz="0 -0.021 -0.2695"
+      rpy="3.1416 -1.5708 0" />
+    <parent
+      link="end" />
+    <child
+      link="worklink1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="5.0"
+      friction="30.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="worklink2">
+    <inertial>
+      <origin
+        xyz="-0.026954 0.00060856 2.3242E-06"
+        rpy="0 0 0" />
+      <mass
+        value="0.15355" />
+      <inertia
+        ixx="6.267E-05"
+        ixy="1.1937E-06"
+        ixz="-3.2813E-09"
+        iyy="8.5862E-05"
+        iyz="5.5779E-10"
+        izz="3.7389E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/worklink2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.49412 0.21176 0.67451 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/worklink2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="end_worklink2"
+    type="revolute">
+    <origin
+      xyz="0 0.021 -0.2695"
+      rpy="3.1416 -1.5708 0" />
+    <parent
+      link="end" />
+    <child
+      link="worklink2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="5.0"
+      friction="30.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="front_right_wheel">
+    <inertial>
+      <origin
+        xyz="-0.018873 -0.0062155 -0.00011669"
+        rpy="0 0 0" />
+      <mass
+        value="0.37338" />
+      <inertia
+        ixx="0.0003725"
+        ixy="-0.00010324"
+        ixz="7.9185E-07"
+        iyy="0.00064633"
+        iyz="2.7521E-07"
+        izz="0.0007665" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/front_right_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.6 0.6 0.6 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/front_right_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_frw"
+    type="revolute">
+    <origin
+      xyz="0.165 -0.313 -0.454"
+      rpy="0 1.5708 0" />
+    <parent
+      link="body" />
+    <child
+      link="front_right_wheel" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="2.0"
+      friction="10.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="front_left_wheel">
+    <inertial>
+      <origin
+        xyz="-0.018873 -0.0062155 -0.00011669"
+        rpy="0 0 0" />
+      <mass
+        value="0.37338" />
+      <inertia
+        ixx="0.0003725"
+        ixy="-0.00010324"
+        ixz="7.9185E-07"
+        iyy="0.00064633"
+        iyz="2.7521E-07"
+        izz="0.0007665" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/front_left_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.6 0.6 0.6 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/front_left_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_flw"
+    type="revolute">
+    <origin
+      xyz="-0.165 -0.313 -0.454"
+      rpy="0 1.5708 0" />
+    <parent
+      link="body" />
+    <child
+      link="front_left_wheel" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="2.0"
+      friction="10.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="back_right_wheel">
+    <inertial>
+      <origin
+        xyz="-0.00032255 0.00013376 -0.033724"
+        rpy="0 0 0" />
+      <mass
+        value="1.6743" />
+      <inertia
+        ixx="0.0039013"
+        ixy="1.0843E-05"
+        ixz="-3.1413E-06"
+        iyy="0.0034767"
+        iyz="-1.9739E-06"
+        izz="0.0064797" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/back_right_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/back_right_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_brw"
+    type="revolute">
+    <origin
+      xyz="0.301 0.165 -0.414"
+      rpy="0 1.5708 0" />
+    <parent
+      link="body" />
+    <child
+      link="back_right_wheel" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="2.0"
+      friction="10.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="back_left_wheel">
+    <inertial>
+      <origin
+        xyz="-0.00032255 -0.00013376 0.033724"
+        rpy="0 0 0" />
+      <mass
+        value="1.6743" />
+      <inertia
+        ixx="0.0039013"
+        ixy="-1.0843E-05"
+        ixz="3.1413E-06"
+        iyy="0.0034767"
+        iyz="-1.9739E-06"
+        izz="0.0064797" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/back_left_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/collision/back_left_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="body_blw"
+    type="revolute">
+    <origin
+      xyz="-0.301 0.165 -0.414"
+      rpy="0 1.5708 0" />
+    <parent
+      link="body" />
+    <child
+      link="back_left_wheel" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="2.0"
+      friction="10.0" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <gazebo reference="body">
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="arm1">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="arm2">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="arm3">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="arm4">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="arm5">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="end">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="worklink1">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="worklink2">
+    <gravity>false</gravity>
+    <mu1>0.8</mu1>
+    <mu2>0.8</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="front_right_wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="front_left_wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="back_right_wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+  <gazebo reference="back_left_wheel">
+    <mu1>1.2</mu1>
+    <mu2>1.2</mu2>
+    <kp>1000000</kp>
+    <kd>100</kd>
+    <maxVel>0.2</maxVel>
+    <minDepth>0.001</minDepth>
+  </gazebo>
+</robot>
