@@ -5,7 +5,7 @@
 
 ## 项目结构
 
-- `xczs_inspection_robot_description`：机器人 URDF、外观网格、碰撞网格和 Gazebo 仿真环境。
+- `xczs_inspection_robot_description`：机器人 Xacro、外观网格、碰撞网格和 Gazebo 仿真环境。
 - `xczs_inspection_robot_control`：C++ 键盘遥控节点和统一启动文件。
 - `build/`：`colcon` 生成的构建文件。
 - `install/`：编译完成后的安装文件。
@@ -39,6 +39,7 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py
 该命令会自动完成以下操作：
 
 - 启动 Gazebo Classic；
+- 展开机器人 Xacro，并通过 `robot_state_publisher` 发布模型和 TF；
 - 加载巡操机器人模型；
 - 加载底盘、机械臂和夹爪控制接口；
 - 打开独立的键盘遥控终端。
@@ -98,6 +99,8 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py paused:=tru
 
 ## ROS 2 通信接口
 
+- `/robot_description`：由 Xacro 展开生成的机器人描述。
+- `/tf` 和 `/tf_static`：机器人各部件之间的坐标变换。
 - `/xczs/cmd_vel`：底盘速度指令，消息类型为 `geometry_msgs/msg/Twist`。
 - `/xczs/odom`：底盘里程计，消息类型为 `nav_msgs/msg/Odometry`。
 - `/xczs/joint_trajectory`：机械臂和夹爪关节指令，消息类型为
@@ -107,6 +110,8 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py paused:=tru
 ## 注意事项
 
 - 当前控制节点主要用于 Gazebo 功能测试。
+- 机器人描述源文件位于
+  `xczs_inspection_robot_description/urdf/xczs_inspection_robot.urdf.xacro`。
 - 底盘使用平面运动插件，不等同于真实驱动轮的动力学控制。
 - 四个车轮使用无角度限位的连续关节，可以持续滚动。
 - 机械臂和夹爪使用 Gazebo 关节位置接口，不包含真实电机的力矩控制。

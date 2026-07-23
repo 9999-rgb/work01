@@ -3,7 +3,17 @@
      Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
      For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
 <robot
+  xmlns:xacro="http://www.ros.org/wiki/xacro"
   name="xczs_inspection_robot">
+  <!-- Centralized wheel and contact parameters for Gazebo tuning. -->
+  <xacro:property name="wheel_joint_effort" value="100" />
+  <xacro:property name="wheel_joint_velocity" value="20" />
+  <xacro:property name="wheel_joint_damping" value="0.1" />
+  <xacro:property name="wheel_joint_friction" value="0.0" />
+  <xacro:property name="contact_kp" value="1000000" />
+  <xacro:property name="contact_kd" value="100" />
+  <xacro:property name="contact_max_velocity" value="0.2" />
+  <xacro:property name="contact_min_depth" value="0.001" />
   <material name="industrial_navy">
     <color rgba="0.035 0.145 0.255 1" />
   </material>
@@ -597,11 +607,11 @@
     <axis
       xyz="0 0 1" />
     <limit
-      effort="100"
-      velocity="20" />
+      effort="${wheel_joint_effort}"
+      velocity="${wheel_joint_velocity}" />
     <dynamics
-      damping="0.1"
-      friction="0.0" />
+      damping="${wheel_joint_damping}"
+      friction="${wheel_joint_friction}" />
   </joint>
   <link
     name="front_left_wheel">
@@ -652,11 +662,11 @@
     <axis
       xyz="0 0 1" />
     <limit
-      effort="100"
-      velocity="20" />
+      effort="${wheel_joint_effort}"
+      velocity="${wheel_joint_velocity}" />
     <dynamics
-      damping="0.1"
-      friction="0.0" />
+      damping="${wheel_joint_damping}"
+      friction="${wheel_joint_friction}" />
   </joint>
   <link
     name="back_right_wheel">
@@ -707,11 +717,11 @@
     <axis
       xyz="0 0 1" />
     <limit
-      effort="100"
-      velocity="20" />
+      effort="${wheel_joint_effort}"
+      velocity="${wheel_joint_velocity}" />
     <dynamics
-      damping="0.1"
-      friction="0.0" />
+      damping="${wheel_joint_damping}"
+      friction="${wheel_joint_friction}" />
   </joint>
   <link
     name="back_left_wheel">
@@ -762,137 +772,76 @@
     <axis
       xyz="0 0 -1" />
     <limit
-      effort="100"
-      velocity="20" />
+      effort="${wheel_joint_effort}"
+      velocity="${wheel_joint_velocity}" />
     <dynamics
-      damping="0.1"
-      friction="0.0" />
+      damping="${wheel_joint_damping}"
+      friction="${wheel_joint_friction}" />
   </joint>
-  <gazebo reference="body">
-    <material>Gazebo/Blue</material>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="arm1">
-    <material>Gazebo/Orange</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="arm2">
-    <material>Gazebo/Orange</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="arm3">
-    <material>Gazebo/Orange</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="arm4">
-    <material>Gazebo/Orange</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="arm5">
-    <material>Gazebo/Orange</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="end">
-    <material>Gazebo/DarkGrey</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="worklink1">
-    <material>Gazebo/DarkGrey</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="worklink2">
-    <material>Gazebo/DarkGrey</material>
-    <gravity>false</gravity>
-    <mu1>0.8</mu1>
-    <mu2>0.8</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="front_right_wheel">
-    <material>Gazebo/Black</material>
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="front_left_wheel">
-    <material>Gazebo/Black</material>
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="back_right_wheel">
-    <material>Gazebo/Black</material>
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
-  <gazebo reference="back_left_wheel">
-    <material>Gazebo/Black</material>
-    <mu1>1.2</mu1>
-    <mu2>1.2</mu2>
-    <kp>1000000</kp>
-    <kd>100</kd>
-    <maxVel>0.2</maxVel>
-    <minDepth>0.001</minDepth>
-  </gazebo>
+  <xacro:macro
+    name="gazebo_link_properties"
+    params="link_name material gravity friction">
+    <gazebo reference="${link_name}">
+      <material>${material}</material>
+      <xacro:if value="${gravity}">
+        <gravity>true</gravity>
+      </xacro:if>
+      <xacro:unless value="${gravity}">
+        <gravity>false</gravity>
+      </xacro:unless>
+      <mu1>${friction}</mu1>
+      <mu2>${friction}</mu2>
+      <kp>${contact_kp}</kp>
+      <kd>${contact_kd}</kd>
+      <maxVel>${contact_max_velocity}</maxVel>
+      <minDepth>${contact_min_depth}</minDepth>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:gazebo_link_properties
+    link_name="body" material="Gazebo/Blue" gravity="true" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="arm1" material="Gazebo/Orange" gravity="false" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="arm2" material="Gazebo/Orange" gravity="false" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="arm3" material="Gazebo/Orange" gravity="false" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="arm4" material="Gazebo/Orange" gravity="false" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="arm5" material="Gazebo/Orange" gravity="false" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="end" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="worklink1"
+    material="Gazebo/DarkGrey"
+    gravity="false"
+    friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="worklink2"
+    material="Gazebo/DarkGrey"
+    gravity="false"
+    friction="0.8" />
+  <xacro:gazebo_link_properties
+    link_name="front_right_wheel"
+    material="Gazebo/Black"
+    gravity="true"
+    friction="1.2" />
+  <xacro:gazebo_link_properties
+    link_name="front_left_wheel"
+    material="Gazebo/Black"
+    gravity="true"
+    friction="1.2" />
+  <xacro:gazebo_link_properties
+    link_name="back_right_wheel"
+    material="Gazebo/Black"
+    gravity="true"
+    friction="1.2" />
+  <xacro:gazebo_link_properties
+    link_name="back_left_wheel"
+    material="Gazebo/Black"
+    gravity="true"
+    friction="1.2" />
   <gazebo>
     <plugin
       name="xczs_planar_move"

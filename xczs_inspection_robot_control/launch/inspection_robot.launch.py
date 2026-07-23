@@ -10,14 +10,17 @@ from launch.actions import RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import Command
+from launch.substitutions import FindExecutable
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 CONTROL_PACKAGE = "xczs_inspection_robot_control"
 DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
 ROBOT_NAME = "xczs_inspection_robot"
-URDF_FILENAME = "xczs_inspection_robot.urdf"
+XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -25,6 +28,17 @@ def generate_launch_description() -> LaunchDescription:
     gazebo_ros_share = Path(get_package_share_directory("gazebo_ros"))
     description_share = Path(
         get_package_share_directory(DESCRIPTION_PACKAGE)
+    )
+    xacro_file = description_share / "urdf" / XACRO_FILENAME
+    robot_description = ParameterValue(
+        Command(
+            [
+                FindExecutable(name="xacro"),
+                " ",
+                str(xacro_file),
+            ]
+        ),
+        value_type=str,
     )
 
     gui_argument = DeclareLaunchArgument(
@@ -66,6 +80,20 @@ def generate_launch_description() -> LaunchDescription:
         condition=IfCondition(LaunchConfiguration("gui")),
     )
 
+    robot_state_publisher = Node(
+        package="robot_state_publisher",
+        executable="robot_state_publisher",
+        name="robot_state_publisher",
+        output="screen",
+        parameters=[
+            {
+                "robot_description": robot_description,
+                "use_sim_time": True,
+            }
+        ],
+        remappings=[("joint_states", "/xczs/joint_states")],
+    )
+
     spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
@@ -76,8 +104,8 @@ def generate_launch_description() -> LaunchDescription:
         arguments=[
             "-entity",
             ROBOT_NAME,
-            "-file",
-            str(description_share / "urdf" / URDF_FILENAME),
+            "-topic",
+            "robot_description",
             "-z",
             LaunchConfiguration("spawn_z"),
         ],
@@ -106,6 +134,7 @@ def generate_launch_description() -> LaunchDescription:
             spawn_z_argument,
             gazebo_server,
             gazebo_client,
+            robot_state_publisher,
             spawn_robot,
             start_teleop_after_spawn,
         ]
