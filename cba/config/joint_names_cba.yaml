@@ -1,0 +1,1 @@
+controller_joint_names: ['', 'leftarm1', 'leftarm2', 'leftarm3', 'leftarm4', 'leftarm5', 'leftarm6', 'leftarm7', 'rightarm1', 'rightarm2', 'rightarm3', 'rightarm4', 'rightarm5', 'rightarm6', 'rightarm7', 'fold2', 'fold1', 'leftwheel', 'rightwheel', ]

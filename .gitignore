@@ -1,0 +1,22 @@
+# ROS 2 / colcon generated directories
+/build/
+/install/
+/log/
+
+# SolidWorks URDF exporter generated logs
+export.log
+
+# Python generated files
+__pycache__/
+*.py[cod]
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+
+# Runtime and editor temporary files
+*.swp
+*.tmp
+*~

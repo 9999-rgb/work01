@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>xczs_inspection_robot_description</name>
+  <version>1.0.0</version>
+  <description>
+    <p>URDF description package for the XCZS inspection robot.</p>
+    <p>This package contains configuration data, 3D models and launch files
+for the XCZS inspection robot.</p>
+  </description>
+  <author>TODO</author>
+  <maintainer email="TODO@email.com" />
+  <license>BSD</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+    <gazebo_ros gazebo_model_path="${prefix}/.." />
+    <architecture_independent />
+  </export>
+</package>

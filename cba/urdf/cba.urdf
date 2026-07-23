@@ -1,0 +1,1301 @@
+<?xml version="1.0"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="cba">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="0.0067804093137977 -0.000362889529840682 0.187789146299373"
+        rpy="0 0 0" />
+      <mass
+        value="7.69398313415871" />
+      <inertia
+        ixx="0.0503642585173155"
+        ixy="-8.08427055922509E-06"
+        ixz="0.000564985593135876"
+        iyy="0.0369869156505769"
+        iyz="2.84318204838962E-05"
+        izz="0.0286847454706615" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="b-a-l1">
+    <inertial>
+      <origin
+        xyz="-0.00241369106128431 -6.24211777837669E-05 0.0641535873067028"
+        rpy="0 0 0" />
+      <mass
+        value="0.463748308404997" />
+      <inertia
+        ixx="0.000509058653397972"
+        ixy="3.63700041785635E-06"
+        ixz="4.21167997294083E-06"
+        iyy="0.000355201917574146"
+        iyz="1.19764927369094E-07"
+        izz="0.000365033443196716" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm1"
+    type="revolute">
+    <origin
+      xyz="-0.00250000000000272 -0.148799999999997 0.256"
+      rpy="1.5707963267949 0.0235521480564694 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="b-a-l1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-l2">
+    <inertial>
+      <origin
+        xyz="7.02013236375532E-07 -0.0324165249380941 0.0220420352577879"
+        rpy="0 0 0" />
+      <mass
+        value="0.0824730831987942" />
+      <inertia
+        ixx="4.36315754139634E-05"
+        ixy="4.82310961538218E-10"
+        ixz="3.49581062775402E-10"
+        iyy="4.03395143032521E-05"
+        iyz="-2.53766257899624E-06"
+        izz="6.54465459343669E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm2"
+    type="revolute">
+    <origin
+      xyz="-0.000299916798295441 0 0.0697"
+      rpy="0.0235521480564674 1.5707963267949 0" />
+    <parent
+      link="b-a-l1" />
+    <child
+      link="b-a-l2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-l3">
+    <inertial>
+      <origin
+        xyz="-0.000288227727231499 -0.000412373611748229 -0.0908991615300673"
+        rpy="0 0 0" />
+      <mass
+        value="0.340229800922129" />
+      <inertia
+        ixx="0.000229286531648286"
+        ixy="2.99227762566413E-07"
+        ixz="-9.25953879958144E-07"
+        iyy="0.000249338305229675"
+        iyz="1.40974605544986E-05"
+        izz="0.000154747181102576" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm3"
+    type="revolute">
+    <origin
+      xyz="0 -0.0660000000000009 0.000300000000000633"
+      rpy="1.5707963267949 0 -3.14159265358978" />
+    <parent
+      link="b-a-l2" />
+    <child
+      link="b-a-l3" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-l4">
+    <inertial>
+      <origin
+        xyz="0.000826529047364355 -0.0640719423296315 -0.00127720946248888"
+        rpy="0 0 0" />
+      <mass
+        value="0.162555503294084" />
+      <inertia
+        ixx="9.79936193001346E-05"
+        ixy="4.27824317895037E-07"
+        ixz="-6.54350021058735E-07"
+        iyy="7.06146013088528E-05"
+        iyz="1.00654801338795E-07"
+        izz="8.55695405495526E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm4"
+    type="revolute">
+    <origin
+      xyz="-4.99999999873935E-05 0 -0.154000000000001"
+      rpy="1.57079632679489 0.0235521480564685 1.57079632679456" />
+    <parent
+      link="b-a-l3" />
+    <child
+      link="b-a-l4" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-l5">
+    <inertial>
+      <origin
+        xyz="0.000876110377816763 0.00345644346935303 -0.0415644817327396"
+        rpy="0 0 0" />
+      <mass
+        value="0.179937492693145" />
+      <inertia
+        ixx="8.34770381984926E-05"
+        ixy="-2.83008853887541E-06"
+        ixz="1.5535228144014E-06"
+        iyy="0.000104281606663467"
+        iyz="-2.91878284312719E-07"
+        izz="7.32849116245771E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm5"
+    type="revolute">
+    <origin
+      xyz="0.00227257217316296 -0.0964732367847051 0"
+      rpy="1.59434847485142 -1.5707963267949 0" />
+    <parent
+      link="b-a-l4" />
+    <child
+      link="b-a-l5" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-l6">
+    <inertial>
+      <origin
+        xyz="0.00135859557697449 -0.0719008200001463 -0.00148895208007882"
+        rpy="0 0 0" />
+      <mass
+        value="0.137157956256964" />
+      <inertia
+        ixx="5.29012617089514E-05"
+        ixy="1.50450641939652E-07"
+        ixz="-2.73730164562708E-07"
+        iyy="4.47172479130353E-05"
+        iyz="-8.13478678885278E-08"
+        izz="4.59494942742236E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l6.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l6.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm6"
+    type="revolute">
+    <origin
+      xyz="0 0 -0.0445"
+      rpy="1.5708 0 3.1416" />
+    <parent
+      link="b-a-l5" />
+    <child
+      link="b-a-l6" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-l7">
+    <inertial>
+      <origin
+        xyz="0.0244358502946403 -0.0791960968825164 8.79621096065986E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.333602126647618" />
+      <inertia
+        ixx="0.000137563688066996"
+        ixy="-4.58196109991716E-05"
+        ixz="1.66105417233318E-06"
+        iyy="0.000338660798614829"
+        iyz="2.90364301098158E-07"
+        izz="0.000300892669598419" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l7.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-l7.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftarm7"
+    type="revolute">
+    <origin
+      xyz="-0.00125000000000114 -0.0749999999999985 0"
+      rpy="1.5707963267929 -1.54724417873842 -1.5707963267929" />
+    <parent
+      link="b-a-l6" />
+    <child
+      link="b-a-l7" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r1">
+    <inertial>
+      <origin
+        xyz="-0.0024139523948431 -5.13462895446182E-05 -0.0641535935982525"
+        rpy="0 0 0" />
+      <mass
+        value="0.463748223677198" />
+      <inertia
+        ixx="0.000509059459398576"
+        ixy="3.61573092533136E-06"
+        ixz="-4.21264496602977E-06"
+        iyy="0.000355200913345449"
+        iyz="-7.8709582601216E-08"
+        izz="0.000365033254886758" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm1"
+    type="revolute">
+    <origin
+      xyz="-0.00249999999999773 0.148800000000003 0.256"
+      rpy="1.5707963267949 0.0235521480564694 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="b-a-r1" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r2">
+    <inertial>
+      <origin
+        xyz="5.27351061763159E-07 -0.0324165702491777 0.0220418960176754"
+        rpy="0 0 0" />
+      <mass
+        value="0.0824723045892877" />
+      <inertia
+        ixx="4.36313320599424E-05"
+        ixy="1.8546746366611E-10"
+        ixz="3.19828629778282E-10"
+        iyy="4.03391953319011E-05"
+        iyz="-2.53763861188379E-06"
+        izz="6.54460091089604E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm2"
+    type="revolute">
+    <origin
+      xyz="-0.000299916798293609 0 -0.0697000000000002"
+      rpy="0.0235521480564674 1.5707963267949 0" />
+    <parent
+      link="b-a-r1" />
+    <child
+      link="b-a-r2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r3">
+    <inertial>
+      <origin
+        xyz="-0.000288104650496807 -0.000412383151374207 -0.0908992191199872"
+        rpy="0 0 0" />
+      <mass
+        value="0.340230618223525" />
+      <inertia
+        ixx="0.000229288673765766"
+        ixy="2.98842544385563E-07"
+        ixz="-9.23762624044848E-07"
+        iyy="0.000249340723230172"
+        iyz="1.4097851883354E-05"
+        izz="0.000154747598790903" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm3"
+    type="revolute">
+    <origin
+      xyz="0 -0.0660000000000001 0.000300000000000189"
+      rpy="1.5707963267949 0 3.14159265358979" />
+    <parent
+      link="b-a-r2" />
+    <child
+      link="b-a-r3" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r4">
+    <inertial>
+      <origin
+        xyz="0.000826528474057064 -0.0640719456383259 -0.00127720727724143"
+        rpy="0 0 0" />
+      <mass
+        value="0.162555491945982" />
+      <inertia
+        ixx="9.79936050602199E-05"
+        ixy="4.27826425838288E-07"
+        ixz="-6.54356338508025E-07"
+        iyy="7.06145890665022E-05"
+        iyz="1.00640935372924E-07"
+        izz="8.55695371197295E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r4.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r4.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm4"
+    type="revolute">
+    <origin
+      xyz="-4.99999999968026E-05 0 -0.154000000000001"
+      rpy="1.5707963267949 0.0235521480564688 1.57079632679498" />
+    <parent
+      link="b-a-r3" />
+    <child
+      link="b-a-r4" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r5">
+    <inertial>
+      <origin
+        xyz="-0.00087336 0.0034562 -0.037065"
+        rpy="0 0 0" />
+      <mass
+        value="0.17994" />
+      <inertia
+        ixx="8.347E-05"
+        ixy="2.8292E-06"
+        ixz="-1.5544E-06"
+        iyy="0.00010427"
+        iyz="-2.9018E-07"
+        izz="7.327E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r5.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r5.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm5"
+    type="revolute">
+    <origin
+      xyz="0.00237854704134394 -0.100971988759122 0"
+      rpy="1.59434847485141 -1.5707963267949 0" />
+    <parent
+      link="b-a-r4" />
+    <child
+      link="b-a-r5" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r6">
+    <inertial>
+      <origin
+        xyz="-0.00135859557697549 -0.071900820000148 -0.00170331001878443"
+        rpy="0 0 0" />
+      <mass
+        value="0.137157956256964" />
+      <inertia
+        ixx="5.29012617089515E-05"
+        ixy="-1.50450641939658E-07"
+        ixz="-2.97516853843593E-07"
+        iyy="4.47172479130354E-05"
+        iyz="-8.13483975533116E-08"
+        izz="4.59494942742236E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r6.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r6.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm6"
+    type="revolute">
+    <origin
+      xyz="0 0 -0.0399999999999996"
+      rpy="1.57079632679489 0 -3.14159265358972" />
+    <parent
+      link="b-a-r5" />
+    <child
+      link="b-a-r6" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-a-r7">
+    <inertial>
+      <origin
+        xyz="0.0244339400138946 -0.0791961419949987 -2.6855042169871E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.333602129225869" />
+      <inertia
+        ixx="0.000137561596273642"
+        ixy="-4.58196431177683E-05"
+        ixz="1.67296730819176E-06"
+        iyy="0.000338660798648343"
+        iyz="-2.12408911180259E-07"
+        izz="0.000300894763169734" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r7.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-a-r7.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightarm7"
+    type="revolute">
+    <origin
+      xyz="0.00125000000000033 -0.0749999999999997 0"
+      rpy="1.57079632679436 -1.54724417873837 -1.57079632679436" />
+    <parent
+      link="b-a-r6" />
+    <child
+      link="b-a-r7" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="b-f2">
+    <inertial>
+      <origin
+        xyz="0.142058350751713 -0.173155429768227 -0.00368677353767041"
+        rpy="0 0 0" />
+      <mass
+        value="5.21059264611161" />
+      <inertia
+        ixx="0.0604740278588472"
+        ixy="0.0332152239067206"
+        ixz="6.16204225876932E-05"
+        iyy="0.0335219385688589"
+        iyz="-0.000859867768938605"
+        izz="0.0876290672793094" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-f2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.698039215686274 0.698039215686274 0.698039215686274 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/b-f2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fold2"
+    type="revolute">
+    <origin
+      xyz="0.02 0 -0.1"
+      rpy="1.5707963267949 0.0235521480564694 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="b-f2" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="fold1_link">
+    <inertial>
+      <origin
+        xyz="0.0578830680459281 -0.197246670976565 -0.00690037778148034"
+        rpy="0 0 0" />
+      <mass
+        value="4.41098235557398" />
+      <inertia
+        ixx="0.0954641537743002"
+        ixy="0.0254135427562235"
+        ixz="1.40789447134198E-07"
+        iyy="0.0175387194983956"
+        iyz="-3.64844749365552E-07"
+        izz="0.111627962564579" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/fold1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.866666666666667 0.866666666666667 0.890196078431372 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/fold1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="fold1"
+    type="revolute">
+    <origin
+      xyz="0.225248976053019 -0.330549389332111 -0.00075000315088454"
+      rpy="0 0 0" />
+    <parent
+      link="b-f2" />
+    <child
+      link="fold1_link" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="f-w">
+    <inertial>
+      <origin
+        xyz="-0.271885369396879 -0.235722074623204 0.000595892398343885"
+        rpy="0 0 0" />
+      <mass
+        value="92.2772647703756" />
+      <inertia
+        ixx="1.01780676823627"
+        ixy="-0.0199154178064013"
+        ixz="0.000554465302770001"
+        iyy="1.92688153840452"
+        iyz="0.000542552911401644"
+        izz="1.17056679320486" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/f-w.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/f-w.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="frame"
+    type="fixed">
+    <origin
+      xyz="0.112597915758179 -0.383825102574221 -0.000249996849119617"
+      rpy="0 0 0" />
+    <parent
+      link="fold1_link" />
+    <child
+      link="f-w" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="w-lw">
+    <inertial>
+      <origin
+        xyz="8.845E-05 9.4648E-05 -0.049324"
+        rpy="0 0 0" />
+      <mass
+        value="1.2605" />
+      <inertia
+        ixx="0.0019687"
+        ixy="-1.3368E-06"
+        ixz="-1.571E-06"
+        iyy="0.0021724"
+        iyz="1.2998E-06"
+        izz="0.0037452" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/w-lw.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/w-lw.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="leftwheel"
+    type="revolute">
+    <origin
+      xyz="-0.498553863591967 -0.300824359215676 0.268049999999999"
+      rpy="0 0 0" />
+    <parent
+      link="f-w" />
+    <child
+      link="w-lw" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+  <link
+    name="w-rw">
+    <inertial>
+      <origin
+        xyz="-9.2809E-05 9.0379E-05 0.049324"
+        rpy="0 0 0" />
+      <mass
+        value="1.2605" />
+      <inertia
+        ixx="0.001969"
+        ixy="-8.2507E-06"
+        ixz="-1.508E-06"
+        iyy="0.0021721"
+        iyz="-1.3723E-06"
+        izz="0.0037452" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/w-rw.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://cba/meshes/w-rw.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rightwheel"
+    type="revolute">
+    <origin
+      xyz="-0.49855 -0.30082 -0.26805"
+      rpy="0 0 0" />
+    <parent
+      link="f-w" />
+    <child
+      link="w-rw" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="10" />
+    <dynamics
+      damping="0.3"
+      friction="0.5" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="0"
+      k_velocity="0" />
+  </joint>
+</robot>
