@@ -9,12 +9,14 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstddef>
-#include <cctype>
+#include <iomanip>
 #include <iostream>
 #include <iterator>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -30,6 +32,14 @@ namespace
 {
 
 using SteadyClock = std::chrono::steady_clock;
+
+enum class BaseMotion
+{
+  kForward,
+  kBackward,
+  kTurnLeft,
+  kTurnRight,
+};
 
 const std::array<std::string, 6> kArmJoints = {
   "body_arm1",
@@ -51,25 +61,27 @@ const std::array<std::string, 8> kControlledJoints = {
   "end_worklink2",
 };
 
-constexpr char kHelpText[] = R"(
-XCZS inspection robot keyboard control
+constexpr char kHelpText[] =
+  R"(
+XCZS 巡操机器人键盘遥控
 
-Base:
-  W / S       move forward / backward
-  A / D       turn left / right
-  X or SPACE  stop the base
+底盘：
+  W / S       前进 / 后退
+  A / D       左转 / 右转
+  X 或空格    停止
 
-Arm:
-  1 ... 6     select an arm joint
-  [ / ]       decrease / increase the selected joint angle
-  R           reset all arm joints to zero
+六轴机械臂：
+  1 ... 6     选择对应关节
+  [ / ]       减小 / 增大所选关节角度
+  - / =       减小 / 增大所选关节角度
+  R           六个关节回到零位
 
-Gripper:
-  O / P       open / close the gripper
+夹爪：
+  O / P       打开 / 关闭
 
-Other:
-  H or ?      show this help
-  Q or Ctrl-C stop and quit
+其他：
+  H 或 ?      显示帮助
+  Q 或 Ctrl-C 停止底盘并退出
 )";
 
 class TerminalGuard
@@ -184,7 +196,6 @@ public:
     joint_publish_period_ = 1.0 / joint_command_rate_;
     last_base_key_time_ = SteadyClock::now();
     last_joint_publish_time_ = SteadyClock::now();
-    pending_joint_publications_ = joint_command_repeats_;
 
     RCLCPP_INFO(
       get_logger(), "Publishing base commands on %s", cmd_vel_topic.c_str());
@@ -202,48 +213,52 @@ public:
       return false;
     }
 
-    if (normalized_key == 'w') {
-      set_base_command(linear_speed_, 0.0);
-      write_status("Base: forward");
-    } else if (normalized_key == 's') {
-      set_base_command(-linear_speed_, 0.0);
-      write_status("Base: backward");
-    } else if (normalized_key == 'a') {
-      set_base_command(0.0, angular_speed_);
-      write_status("Base: turn left");
-    } else if (normalized_key == 'd') {
-      set_base_command(0.0, -angular_speed_);
-      write_status("Base: turn right");
-    } else if (normalized_key == 'x' || key == ' ') {
-      stop_base();
-      write_status("Base: stopped");
-    } else if (key >= '1' && key <= '6') {
-      selected_joint_index_ = static_cast<std::size_t>(key - '1');
-      write_status(
-        "Selected joint " + std::string(1, key) + ": " +
-        kArmJoints[selected_joint_index_]);
-    } else if (key == '[') {
-      move_selected_joint(-joint_step_);
-    } else if (key == ']') {
-      move_selected_joint(joint_step_);
-    } else if (normalized_key == 'r') {
-      for (std::size_t index = 0; index < kArmJoints.size(); ++index) {
-        joint_targets_[index] = 0.0;
-      }
-      schedule_joint_trajectory();
-      write_status("Arm: reset to zero");
-    } else if (normalized_key == 'o') {
-      joint_targets_[6] = gripper_open_angle_;
-      joint_targets_[7] = -gripper_open_angle_;
-      schedule_joint_trajectory();
-      write_status("Gripper: open");
-    } else if (normalized_key == 'p') {
-      joint_targets_[6] = 0.0;
-      joint_targets_[7] = 0.0;
-      schedule_joint_trajectory();
-      write_status("Gripper: closed");
-    } else if (normalized_key == 'h' || key == '?') {
-      print_help();
+    if (key >= '1' && key <= '6') {
+      select_arm_joint(static_cast<std::size_t>(key - '1'));
+      return true;
+    }
+
+    switch (normalized_key) {
+      case 'w':
+        start_base_motion(BaseMotion::kForward);
+        break;
+      case 's':
+        start_base_motion(BaseMotion::kBackward);
+        break;
+      case 'a':
+        start_base_motion(BaseMotion::kTurnLeft);
+        break;
+      case 'd':
+        start_base_motion(BaseMotion::kTurnRight);
+        break;
+      case 'x':
+      case ' ':
+        stop_base();
+        write_status("底盘：已停止");
+        break;
+      case '[':
+      case '-':
+        move_selected_joint(-joint_step_);
+        break;
+      case ']':
+      case '=':
+        move_selected_joint(joint_step_);
+        break;
+      case 'r':
+        reset_arm();
+        break;
+      case 'o':
+        set_gripper(true);
+        break;
+      case 'p':
+        set_gripper(false);
+        break;
+      case 'h':
+      case '?':
+        print_help();
+        break;
+      default:
+        break;
     }
 
     return true;
@@ -272,7 +287,7 @@ public:
       current_time - last_base_key_time_).count();
     if (seconds_since_base_key >= command_timeout_) {
       stop_base();
-      write_status("Base: auto-stopped");
+      write_status("底盘：安全超时，已自动停止");
     } else {
       cmd_vel_publisher_->publish(base_command_);
     }
@@ -317,22 +332,86 @@ private:
         const auto target_index = static_cast<std::size_t>(
           std::distance(kControlledJoints.begin(), joint_iterator));
         measured_joint_positions_[target_index] = message.position[index];
+        joint_state_received_[target_index] = true;
       }
+    }
+
+    if (
+      !joint_targets_initialized_ &&
+      std::all_of(
+        joint_state_received_.begin(),
+        joint_state_received_.end(),
+        [](bool received) {return received;}))
+    {
+      joint_targets_ = measured_joint_positions_;
+      joint_targets_initialized_ = true;
+      RCLCPP_INFO(
+        get_logger(),
+        "Joint targets initialized from /xczs/joint_states.");
+      write_status("关节状态已同步，可以控制机械臂和夹爪");
     }
   }
 
-  void set_base_command(double linear_velocity, double angular_velocity)
+  void start_base_motion(BaseMotion motion)
   {
     base_command_ = geometry_msgs::msg::Twist{};
-    base_command_.linear.x = linear_velocity;
-    base_command_.angular.z = angular_velocity;
+
+    std::string status;
+    switch (motion) {
+      case BaseMotion::kForward:
+        // The imported SolidWorks model faces body -Y.
+        base_command_.linear.y = -linear_speed_;
+        status = "底盘：前进";
+        break;
+      case BaseMotion::kBackward:
+        base_command_.linear.y = linear_speed_;
+        status = "底盘：后退";
+        break;
+      case BaseMotion::kTurnLeft:
+        base_command_.angular.z = angular_speed_;
+        status = "底盘：左转";
+        break;
+      case BaseMotion::kTurnRight:
+        base_command_.angular.z = -angular_speed_;
+        status = "底盘：右转";
+        break;
+    }
+
     last_base_key_time_ = SteadyClock::now();
     base_is_moving_ = true;
     cmd_vel_publisher_->publish(base_command_);
+    write_status(status);
+  }
+
+  void select_arm_joint(std::size_t joint_index)
+  {
+    selected_joint_index_ = joint_index;
+    std::string status =
+      "机械臂：已选择关节 " + std::to_string(joint_index + 1) +
+      "（" + kArmJoints[joint_index] + "）";
+    if (joint_targets_initialized_) {
+      status += "，目标角度 " + format_angle(joint_targets_[joint_index]);
+    } else {
+      status += "，正在等待关节状态";
+    }
+    write_status(status);
+  }
+
+  bool joint_control_ready() const
+  {
+    if (joint_targets_initialized_) {
+      return true;
+    }
+    write_status("关节状态尚未就绪，请稍后重试");
+    return false;
   }
 
   void move_selected_joint(double increment)
   {
+    if (!joint_control_ready()) {
+      return;
+    }
+
     const auto target = std::clamp(
       joint_targets_[selected_joint_index_] + increment,
       -joint_limit_,
@@ -340,10 +419,36 @@ private:
     joint_targets_[selected_joint_index_] = target;
     schedule_joint_trajectory();
 
-    const std::string sign = target >= 0.0 ? "+" : "";
     write_status(
-      kArmJoints[selected_joint_index_] + ": " + sign +
-      std::to_string(target) + " rad");
+      "机械臂：关节 " + std::to_string(selected_joint_index_ + 1) +
+      "（" + kArmJoints[selected_joint_index_] + "）目标角度 " +
+      format_angle(target));
+  }
+
+  void reset_arm()
+  {
+    if (!joint_control_ready()) {
+      return;
+    }
+
+    for (std::size_t index = 0; index < kArmJoints.size(); ++index) {
+      joint_targets_[index] = 0.0;
+    }
+    schedule_joint_trajectory();
+    write_status("机械臂：六个关节已回到零位");
+  }
+
+  void set_gripper(bool open)
+  {
+    if (!joint_control_ready()) {
+      return;
+    }
+
+    const double target = open ? gripper_open_angle_ : 0.0;
+    joint_targets_[6] = target;
+    joint_targets_[7] = -target;
+    schedule_joint_trajectory();
+    write_status(open ? "夹爪：已打开" : "夹爪：已关闭");
   }
 
   void schedule_joint_trajectory()
@@ -354,6 +459,11 @@ private:
 
   void publish_joint_trajectory()
   {
+    if (!joint_targets_initialized_) {
+      pending_joint_publications_ = 0;
+      return;
+    }
+
     trajectory_msgs::msg::JointTrajectory trajectory;
     trajectory.header.frame_id = "world";
     trajectory.joint_names.assign(
@@ -374,6 +484,18 @@ private:
     std::cout << "\r\033[2K" << message << std::flush;
   }
 
+  static std::string format_angle(double angle)
+  {
+    if (std::abs(angle) < 0.005) {
+      angle = 0.0;
+    }
+
+    std::ostringstream stream;
+    stream << std::showpos << std::fixed << std::setprecision(2)
+           << angle << " rad";
+    return stream.str();
+  }
+
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr
     cmd_vel_publisher_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr
@@ -383,6 +505,7 @@ private:
 
   std::array<double, 8> joint_targets_{};
   std::array<double, 8> measured_joint_positions_{};
+  std::array<bool, 8> joint_state_received_{};
   std::size_t selected_joint_index_{0};
 
   geometry_msgs::msg::Twist base_command_;
@@ -401,6 +524,7 @@ private:
   int joint_command_repeats_{5};
   int pending_joint_publications_{0};
   bool base_is_moving_{false};
+  bool joint_targets_initialized_{false};
 };
 
 }  // namespace
@@ -408,36 +532,42 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<KeyboardTeleop>();
+  std::shared_ptr<KeyboardTeleop> node;
   int exit_code = 0;
 
   try {
-    {
-      TerminalGuard terminal_guard;
-      node->print_help();
+    node = std::make_shared<KeyboardTeleop>();
+    TerminalGuard terminal_guard;
+    node->print_help();
 
-      bool keep_running = true;
-      while (rclcpp::ok() && keep_running) {
-        rclcpp::spin_some(node);
+    bool keep_running = true;
+    while (rclcpp::ok() && keep_running) {
+      rclcpp::spin_some(node);
 
-        char key = '\0';
-        if (read_key(key, std::chrono::milliseconds(50))) {
-          keep_running = node->handle_key(key);
-        }
-        node->update();
+      char key = '\0';
+      if (read_key(key, std::chrono::milliseconds(50))) {
+        keep_running = node->handle_key(key);
       }
+      node->update();
     }
+  } catch (const std::exception & exception) {
+    if (node) {
+      RCLCPP_ERROR(node->get_logger(), "%s", exception.what());
+    } else {
+      std::cerr << "Failed to start keyboard control: "
+                << exception.what() << '\n';
+    }
+    exit_code = 1;
+  }
 
+  if (node && rclcpp::ok()) {
     node->stop_base();
     rclcpp::spin_some(node);
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
     node->stop_base();
-  } catch (const std::exception & exception) {
-    RCLCPP_ERROR(node->get_logger(), "%s", exception.what());
-    exit_code = 1;
   }
 
-  std::cout << "\r\nKeyboard control stopped.\r\n";
+  std::cout << "\r\n键盘遥控已关闭。\r\n";
   node.reset();
   if (rclcpp::ok()) {
     rclcpp::shutdown();

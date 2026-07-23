@@ -78,8 +78,11 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py paused:=tru
 ### 六轴机械臂
 
 - `1`～`6`：选择对应的机械臂关节。
-- `[` / `]`：减小 / 增大所选关节角度。
+- `[` / `]` 或 `-` / `=`：以 0.1 rad 为步长减小 / 增大所选关节角度。
 - `R`：将六个机械臂关节恢复到零位。
+
+键盘节点启动后会先读取 `/xczs/joint_states`，以机器人当前姿态初始化控制目标，
+不会在启动时强制机械臂或夹爪回零。
 
 ### 夹爪
 
