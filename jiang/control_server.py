@@ -177,6 +177,8 @@ class ControlServer:
         pos_str = "[" + ", ".join(str(p) for p in positions) + "]"
         names_str = "[" + ", ".join(self.JOINT_NAMES) + "]"
         yaml = (
+            "header:\n"
+            "  frame_id: world\n"
             "joint_names: " + names_str + "\n"
             "points:\n"
             "- positions: " + pos_str + "\n"
