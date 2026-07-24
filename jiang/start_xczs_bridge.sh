@@ -34,7 +34,7 @@ WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 # ── 选项 ──────────────────────────────────────────────────────────
 GAZEBO_GUI="true"
 WITH_PROXY="false"
-TASK_MODE="task"         # "task" = 任务调度器, "manual" = GUI 控制
+TASK_MODE="manual"         # 默认: GUI 手动控制, "task" = 任务调度器
 
 while [[ $# -gt 0 ]]; do
     case "$1" in

@@ -487,8 +487,17 @@ function subscribe(topic) {
     });
 
     es.onerror = () => {
-      log('err', `SSE 错误: ${topic}`);
-      // 浏览器会自动重连，但如果是 404 则不会
+      // EventSource 在连接建立但流为空时也可能触发 error；
+      // 不要立即报错 — 等几秒看是否有数据到达
+      const entry = subs.get(topic);
+      if (entry) {
+        if (entry._errTimer) clearTimeout(entry._errTimer);
+        entry._errTimer = setTimeout(() => {
+          if (entry.history.length === 0) {
+            log('err', `SSE 无数据: ${topic}（端口 ${restUrl} 上的 Zenoh 桥是否在运行？ROS2 话题是否有发布者？）`);
+          }
+        }, 5000);
+      }
     };
 
     subs.set(topic, { es, cardId: null, history: [] });
