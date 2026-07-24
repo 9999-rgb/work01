@@ -96,6 +96,17 @@ echo ""
 
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
 echo "[1/4] 启动 zenoh-bridge-ros2dds..."
+
+# 清理旧进程占用的端口
+for port in $BRIDGE_TCP_PORT $BRIDGE_REST_PORT; do
+    old_pid=$(lsof -ti:"$port" 2>/dev/null || true)
+    if [ -n "$old_pid" ]; then
+        echo "       清理端口 $port 上的旧进程 (PID $old_pid)..."
+        kill -9 $old_pid 2>/dev/null || true
+        sleep 0.5
+    fi
+done
+
 if [ -x "$ZENOH_BRIDGE" ]; then
     "$ZENOH_BRIDGE" \
         --listen "tcp/0.0.0.0:$BRIDGE_TCP_PORT" \
