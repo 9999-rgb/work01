@@ -70,6 +70,8 @@ cleanup() {
         fi
     done
     echo "  已全部关闭"
+    # 恢复系统 zenoh 桥（如果之前被我们停掉了）
+    systemctl start zenoh-ros2dds 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -129,30 +131,44 @@ _start_bridge() {
 }
 
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
-echo "[1/4] Zenoh Bridge..."
+echo "[1/5] Zenoh Bridge..."
 
-# 杀掉系统级 zenoh 桥（配置可能缺少 ros2dds 插件），用自己的命令行启动
+# 先停掉可能存在的 systemd 服务（它以 peer 模式运行，缺少 ros2dds）
+systemctl stop zenoh-ros2dds 2>/dev/null && echo "       已停止系统 zenoh 服务" || true
+
+# 再杀掉任何残留的桥进程
 pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
 sleep 1
 
 # 确保端口已释放
-while lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; do
-    echo "       等待端口 $BRIDGE_TCP_PORT 释放..."
-    sleep 1
+for i in $(seq 1 10); do
+    if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
+        echo "       等待端口 $BRIDGE_TCP_PORT 释放... ($i/10)"
+        sleep 1
+    else
+        break
+    fi
 done
+
+# 最后保险：如果端口还是被占，切到备用端口
+if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
+    echo "       端口 $BRIDGE_TCP_PORT 仍被占用，切换到备用端口"
+    BRIDGE_TCP_PORT=$((BRIDGE_TCP_PORT + 1))
+    BRIDGE_REST_PORT=$((BRIDGE_REST_PORT + 1))
+fi
 
 _start_bridge
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
 if [ "$WITH_PROXY" = "true" ]; then
-    echo "[2/4] 启动 XCZS Zenoh 代理..."
+    echo "[2/5] 启动 XCZS Zenoh 代理..."
     cd "$JIANG_DIR"
     python3 run_xczs_proxy.py &
     PROXY_PID=$!
     sleep 1
     echo "       代理已启动 (PID $PROXY_PID)"
 else
-    echo "[2/4] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
+    echo "[2/5] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
     PROXY_PID=""
 fi
 
@@ -173,7 +189,7 @@ sleep 1
 echo "       监控面板: http://localhost:$MONITOR_PORT/monitor.html"
 
 # ── 4. 启动 Gazebo + 机器人 ───────────────────────────────────────
-echo "[4/5] 启动 Gazebo + XCZS 机器人..."
+echo "[5/5] 启动 Gazebo + XCZS 机器人..."
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║  🌐 监控面板: http://localhost:$MONITOR_PORT/monitor.html"
