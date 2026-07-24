@@ -34,7 +34,7 @@ WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 # ── 选项 ──────────────────────────────────────────────────────────
 GAZEBO_GUI="true"
 WITH_PROXY="false"
-TASK_MODE="manual"         # 默认: GUI 手动控制, "task" = 任务调度器
+TASK_MODE="manual"    # 默认: GUI 手动控制, "task" = 任务调度器, "keyboard" = 键盘
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -42,6 +42,7 @@ while [[ $# -gt 0 ]]; do
         --with-proxy) WITH_PROXY="true"; shift ;;
         --manual)    TASK_MODE="manual"; shift ;;
         --task)      TASK_MODE="task"; shift ;;
+        --keyboard)  TASK_MODE="keyboard"; shift ;;
         -h|--help)
             sed -n '2,14p' "$0" | sed 's/^# //'
             exit 0
@@ -85,11 +86,21 @@ fi
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"
 
+# ── 自动检测 headless 环境 ─────────────────────────────────────────
+if [ -z "${DISPLAY:-}" ]; then
+    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，自动切换为 headless 模式"
+    GAZEBO_GUI="false"
+    if [ "$TASK_MODE" = "manual" ]; then
+        echo "  GUI 不可用，改用任务调度器（自主巡检）"
+        TASK_MODE="task"
+    fi
+fi
+
 echo "═══════════════════════════════════════════"
 echo "  XCZS 巡操机器人仿真系统"
 echo "═══════════════════════════════════════════"
 echo ""
-echo "  模式:       $(if [ "$TASK_MODE" = "task" ]; then echo '任务调度器'; else echo 'GUI 手动控制'; fi)"
+echo "  模式:       $(if [ "$TASK_MODE" = "task" ]; then echo '任务调度器'; elif [ "$TASK_MODE" = "keyboard" ]; then echo '键盘遥控'; else echo 'GUI 手动控制'; fi)"
 echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
 echo ""
@@ -173,6 +184,11 @@ if [ "$TASK_MODE" = "task" ]; then
         "gui:=$GAZEBO_GUI" \
         "control_gui:=false" \
         "task_scheduler:=true"
+elif [ "$TASK_MODE" = "keyboard" ]; then
+    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+        "gui:=$GAZEBO_GUI" \
+        "control_gui:=false" \
+        "teleop:=true"
 else
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
