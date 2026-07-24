@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>水电站巡检机器人 — 实时监控面板</title>
+<title>XCZS 巡操机器人 — 实时监控面板</title>
 <!-- 使用 Zenoh REST API SSE → 无需任何第三方 JS 依赖 -->
 <style>
   :root {
@@ -233,8 +233,8 @@
 <!-- ─── Header ─── -->
 <header class="header">
   <h1>
-    ⚡ 水电站巡检机器人
-    <small>实时数据监控面板</small>
+    ⚡ XCZS 巡操机器人
+    <small>实时数据监控面板 | Zenoh SSE</small>
   </h1>
   <div class="status-badge">
     <span class="status-dot" id="statusDot"></span>
@@ -258,13 +258,25 @@
     <h2>📡 话题管理</h2>
 
     <div class="topic-group">
-      <h3>常用话题</h3>
-      <button class="topic-preset" data-topic="odom/json">odom/json</button>
-      <button class="topic-preset" data-topic="cmd_vel/json">cmd_vel/json</button>
-      <button class="topic-preset" data-topic="*/pose/json">*/pose/json</button>
-      <button class="topic-preset" data-topic="*/odom/json">*/odom/json</button>
-      <button class="topic-preset" data-topic="scan/json">scan/json</button>
-      <button class="topic-preset" data-topic="joint_states/json">joint_states/json</button>
+      <h3>⚙️ 底盘与机械臂</h3>
+      <button class="topic-preset" data-topic="/xczs/cmd_vel/json">cmd_vel 底盘速度</button>
+      <button class="topic-preset" data-topic="/xczs/odom/json">odom 里程计</button>
+      <button class="topic-preset" data-topic="/xczs/joint_states/json">joint_states 关节状态</button>
+      <button class="topic-preset" data-topic="/xczs/joint_trajectory/json">joint_trajectory 关节指令</button>
+    </div>
+    <div class="topic-group">
+      <h3>📋 任务状态</h3>
+      <button class="topic-preset" data-topic="mission/phase/json">mission/phase 任务阶段</button>
+      <button class="topic-preset" data-topic="mission/phase">mission/phase (CDR)</button>
+    </div>
+    <div class="topic-group">
+      <h3>🚀 一键订阅</h3>
+      <button class="btn btn-primary" onclick="
+        subscribe('/xczs/cmd_vel/json');
+        subscribe('/xczs/odom/json');
+        subscribe('/xczs/joint_states/json');
+        subscribe('/xczs/joint_trajectory/json');
+      " style="width:100%;margin-top:4px">订阅全部 XCZS 话题</button>
     </div>
 
     <div class="topic-group">
