@@ -12,7 +12,7 @@
 #   监控面板: http://localhost:8080/monitor.html
 #   REST API:  http://localhost:8000
 # ============================================================================
-set -euo pipefail
+set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 

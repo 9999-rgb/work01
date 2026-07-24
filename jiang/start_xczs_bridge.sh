@@ -13,7 +13,12 @@
 #   - REST API:  http://localhost:8000
 #   - Zenoh TCP: tcp/localhost:7447
 # ============================================================================
-set -euo pipefail
+set -eo pipefail
+
+# ── 初始化 PID 变量（避免 cleanup 时未绑定） ─────────────────────
+BRIDGE_PID=""
+PROXY_PID=""
+HTTP_PID=""
 
 # ── 路径配置 ──────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -51,14 +56,14 @@ cleanup() {
     echo "═══════════════════════════════════════════"
     echo "  正在关闭..."
     echo "═══════════════════════════════════════════"
-    for pid in $BRIDGE_PID $PROXY_PID $HTTP_PID; do
-        if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    for pid in ${BRIDGE_PID:-} ${PROXY_PID:-} ${HTTP_PID:-}; do
+        if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
     done
     # 等待进程退出
-    for pid in $BRIDGE_PID $PROXY_PID $HTTP_PID; do
-        if [ -n "$pid" ]; then
+    for pid in ${BRIDGE_PID:-} ${PROXY_PID:-} ${HTTP_PID:-}; do
+        if [ -n "${pid:-}" ]; then
             wait "$pid" 2>/dev/null || true
         fi
     done
