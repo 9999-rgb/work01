@@ -38,17 +38,34 @@ register_standard_types()
 registry = get_registry()
 
 # ---- 方式 A：纯透传（只需反序列化 → JSON，无需处理）----
-# 适用于：/odom, /scan, /joint_states 等标准类型
+# 按照 README.md 中的话题表逐条注册
 
-# Twist = load_message_type("geometry_msgs.msg.Twist")
-# Pose = load_message_type("geometry_msgs.msg.Pose")
-# Odometry = load_message_type("nav_msgs.msg.Odometry")
-# LaserScan = load_message_type("sensor_msgs.msg.LaserScan")
-# JointState = load_message_type("sensor_msgs.msg.JointState")
+# 底盘控制
+Twist = load_message_type("geometry_msgs.msg.Twist")
+Odometry = load_message_type("nav_msgs.msg.Odometry")
 
-# registry.register("/odom", Odometry)
-# registry.register("/scan", LaserScan)
-# registry.register("/joint_states", JointState)
+registry.register("xczs/cmd_vel", Twist, description="底盘速度指令")
+registry.register("xczs/odom", Odometry, description="底盘里程计")
+
+# 机械臂与关节
+JointState = load_message_type("sensor_msgs.msg.JointState")
+JointTrajectory = load_message_type("trajectory_msgs.msg.JointTrajectory")
+
+registry.register("xczs/joint_states", JointState, description="机械臂/夹爪/车轮关节状态")
+registry.register("xczs/joint_trajectory", JointTrajectory, description="机械臂和夹爪目标位置")
+
+# 机器人模型与坐标变换
+String = load_message_type("std_msgs.msg.String")
+TFMessage = load_message_type("tf2_msgs.msg.TFMessage")
+
+registry.register("robot_description", String, description="Xacro 展开后的机器人模型")
+registry.register("tf", TFMessage, description="机器人 TF 坐标变换")
+registry.register("tf_static", TFMessage, description="机器人 TF 静态坐标变换")
+
+# 仿真时钟
+Clock = load_message_type("rosgraph_msgs.msg.Clock")
+
+registry.register("clock", Clock, description="Gazebo 仿真时间")
 
 # ---- 方式 B：带自定义处理（在 JSON 序列化前做转换/增强）----
 # 适用于：需要过滤字段、添加时间戳、合并数据等场景

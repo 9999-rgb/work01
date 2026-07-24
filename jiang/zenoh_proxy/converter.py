@@ -35,12 +35,31 @@ def _get_deserializer():
 def msg_to_dict(msg: Any) -> Any:
     """Recursively convert a ROS2 message object to plain Python dicts/lists/scalars.
 
-    Supports nested messages and arrays.  This is the same implementation as
-    the original ``proxy.py`` — preserved for backward compatibility.
+    Supports nested messages, numpy ndarray, array.array, tuple, and list.
     """
     # Primitive types — return as-is
-    if isinstance(msg, (int, float, str, bool)):
+    if isinstance(msg, (int, float, str, bool, type(None))):
         return msg
+
+    # numpy ndarray (e.g. float64 arrays from JointState/Odometry)
+    try:
+        import numpy as np
+        if isinstance(msg, np.ndarray):
+            return msg.tolist()
+    except ImportError:
+        pass
+
+    # Python built-in array.array (e.g. array('d', [...]))
+    try:
+        import array
+        if isinstance(msg, array.array):
+            return msg.tolist()
+    except ImportError:
+        pass
+
+    # Tuples — recurse into each element
+    if isinstance(msg, tuple):
+        return [msg_to_dict(item) for item in msg]
 
     # Lists — recurse into each element
     if isinstance(msg, list):
@@ -54,8 +73,11 @@ def msg_to_dict(msg: Any) -> Any:
             result[field_name] = msg_to_dict(value)
         return result
 
-    # Fallback — return unchanged
-    return msg
+    # Fallback — try to convert to string, otherwise return as-is
+    try:
+        return str(msg)
+    except Exception:
+        return msg
 
 
 # ============================================================================

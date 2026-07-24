@@ -324,23 +324,36 @@
 
     <div class="topic-group">
       <h3>⚙️ 底盘与机械臂</h3>
-      <button class="topic-preset" data-topic="/xczs/cmd_vel/json">cmd_vel 底盘速度</button>
-      <button class="topic-preset" data-topic="/xczs/odom/json">odom 里程计</button>
-      <button class="topic-preset" data-topic="/xczs/joint_states/json">joint_states 关节状态</button>
-      <button class="topic-preset" data-topic="/xczs/joint_trajectory/json">joint_trajectory 关节指令</button>
+      <button class="topic-preset" data-topic="xczs/cmd_vel/json">cmd_vel 底盘速度</button>
+      <button class="topic-preset" data-topic="xczs/odom/json">odom 里程计</button>
+      <button class="topic-preset" data-topic="xczs/joint_states/json">joint_states 关节状态</button>
+      <button class="topic-preset" data-topic="xczs/joint_trajectory/json">joint_trajectory 关节指令</button>
+    </div>
+    <div class="topic-group">
+      <h3>📐 模型与变换</h3>
+      <button class="topic-preset" data-topic="robot_description/json">robot_description</button>
+      <button class="topic-preset" data-topic="tf/json">tf</button>
+      <button class="topic-preset" data-topic="tf_static/json">tf_static</button>
+    </div>
+    <div class="topic-group">
+      <h3>⏱️ 仿真时钟</h3>
+      <button class="topic-preset" data-topic="clock/json">clock</button>
     </div>
     <div class="topic-group">
       <h3>📋 任务状态</h3>
       <button class="topic-preset" data-topic="mission/phase/json">mission/phase 任务阶段</button>
-      <button class="topic-preset" data-topic="mission/phase">mission/phase (CDR)</button>
     </div>
     <div class="topic-group">
       <h3>🚀 一键订阅</h3>
       <button class="btn btn-primary" onclick="
-        subscribe('/xczs/cmd_vel/json');
-        subscribe('/xczs/odom/json');
-        subscribe('/xczs/joint_states/json');
-        subscribe('/xczs/joint_trajectory/json');
+        subscribe('xczs/cmd_vel/json');
+        subscribe('xczs/odom/json');
+        subscribe('xczs/joint_states/json');
+        subscribe('xczs/joint_trajectory/json');
+        subscribe('robot_description/json');
+        subscribe('tf/json');
+        subscribe('tf_static/json');
+        subscribe('clock/json');
       " style="width:100%;margin-top:4px">订阅全部 XCZS 话题</button>
     </div>
 
