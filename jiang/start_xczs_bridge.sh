@@ -97,15 +97,24 @@ echo ""
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
 echo "[1/4] 启动 zenoh-bridge-ros2dds..."
 
-# 清理旧进程占用的端口
-for port in $BRIDGE_TCP_PORT $BRIDGE_REST_PORT; do
-    old_pid=$(lsof -ti:"$port" 2>/dev/null || true)
-    if [ -n "$old_pid" ]; then
-        echo "       清理端口 $port 上的旧进程 (PID $old_pid)..."
-        kill -9 $old_pid 2>/dev/null || true
-        sleep 0.5
+# 先杀掉已有的桥进程（systemd 可能会在 5s 后重启，但我们的会先占住端口）
+pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
+sleep 1
+
+# 如果标准端口被占用，自动切换到备用端口
+PORT_OFFSET=0
+while lsof -ti:"$((BRIDGE_TCP_PORT + PORT_OFFSET))" >/dev/null 2>&1; do
+    PORT_OFFSET=$((PORT_OFFSET + 1))
+    if [ $PORT_OFFSET -gt 10 ]; then
+        echo "ERROR: 端口 $BRIDGE_TCP_PORT-$((BRIDGE_TCP_PORT + 10)) 全部被占用"
+        exit 1
     fi
 done
+if [ $PORT_OFFSET -gt 0 ]; then
+    BRIDGE_TCP_PORT=$((BRIDGE_TCP_PORT + PORT_OFFSET))
+    BRIDGE_REST_PORT=$((BRIDGE_REST_PORT + PORT_OFFSET))
+    echo "       端口已切换: TCP=$BRIDGE_TCP_PORT REST=$BRIDGE_REST_PORT"
+fi
 
 if [ -x "$ZENOH_BRIDGE" ]; then
     "$ZENOH_BRIDGE" \
