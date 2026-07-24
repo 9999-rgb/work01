@@ -94,29 +94,12 @@ echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
 echo ""
 
-# ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
-echo "[1/4] 启动 zenoh-bridge-ros2dds..."
-
-# 先杀掉已有的桥进程（systemd 可能会在 5s 后重启，但我们的会先占住端口）
-pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
-sleep 1
-
-# 如果标准端口被占用，自动切换到备用端口
-PORT_OFFSET=0
-while lsof -ti:"$((BRIDGE_TCP_PORT + PORT_OFFSET))" >/dev/null 2>&1; do
-    PORT_OFFSET=$((PORT_OFFSET + 1))
-    if [ $PORT_OFFSET -gt 10 ]; then
-        echo "ERROR: 端口 $BRIDGE_TCP_PORT-$((BRIDGE_TCP_PORT + 10)) 全部被占用"
+# ── 函数：启动 Zenoh Bridge ────────────────────────────────────────
+_start_bridge() {
+    if [ ! -x "$ZENOH_BRIDGE" ]; then
+        echo "ERROR: zenoh-bridge-ros2dds 未找到: $ZENOH_BRIDGE"
         exit 1
     fi
-done
-if [ $PORT_OFFSET -gt 0 ]; then
-    BRIDGE_TCP_PORT=$((BRIDGE_TCP_PORT + PORT_OFFSET))
-    BRIDGE_REST_PORT=$((BRIDGE_REST_PORT + PORT_OFFSET))
-    echo "       端口已切换: TCP=$BRIDGE_TCP_PORT REST=$BRIDGE_REST_PORT"
-fi
-
-if [ -x "$ZENOH_BRIDGE" ]; then
     "$ZENOH_BRIDGE" \
         --listen "tcp/0.0.0.0:$BRIDGE_TCP_PORT" \
         --rest-http-port "$BRIDGE_REST_PORT" \
@@ -131,9 +114,28 @@ if [ -x "$ZENOH_BRIDGE" ]; then
         echo "ERROR: Zenoh Bridge 启动失败"
         exit 1
     fi
-else
-    echo "ERROR: zenoh-bridge-ros2dds 未找到: $ZENOH_BRIDGE"
-    exit 1
+}
+
+# ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
+echo "[1/4] Zenoh Bridge..."
+
+BRIDGE_ALREADY_RUNNING=false
+if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
+    # 检查 REST API 是否可达
+    if curl -s --max-time 2 "http://localhost:$BRIDGE_REST_PORT/@/router/local" >/dev/null 2>&1; then
+        echo "       复用已有的 Zenoh Bridge（端口 $BRIDGE_TCP_PORT, REST $BRIDGE_REST_PORT）"
+        BRIDGE_PID=""
+        BRIDGE_ALREADY_RUNNING=true
+    else
+        # 桥在运行但 REST 不可用 → 需要替换
+        echo "       已有的桥缺少 REST 插件，正在替换..."
+        pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
+        sleep 2
+    fi
+fi
+
+if [ "$BRIDGE_ALREADY_RUNNING" = false ]; then
+    _start_bridge
 fi
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
