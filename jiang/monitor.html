@@ -273,6 +273,86 @@
     font-family: 'SF Mono', 'Fira Code', monospace;
     font-size: 11px; width: 60px; color: var(--text);
   }
+
+/* ── Control Panel ───────────────────────── */
+.control-bar {
+  display: flex; gap: 16px; align-items: flex-start;
+  padding: 16px 20px; margin-bottom: 16px;
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 10px; flex-wrap: wrap;
+}
+.control-section { flex: 1; min-width: 200px; }
+.control-section h4 {
+  font-size: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+  color: var(--text-dim); margin-bottom: 8px;
+}
+
+/* ── D-Pad ───────────────────────────────── */
+.dpad {
+  display: grid; grid-template-columns: 56px 56px 56px;
+  grid-template-rows: 56px 56px 56px; gap: 3px;
+  justify-content: center;
+}
+.dpad-btn {
+  width: 56px; height: 56px; border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(255,255,255,0.06);
+  color: var(--text); font-size: 20px;
+  cursor: pointer; transition: all 0.1s;
+  user-select: none; -webkit-user-select: none;
+  display: flex; align-items: center; justify-content: center;
+}
+.dpad-btn:active, .dpad-btn.pressed {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.dpad-btn.empty { background: transparent; border: none; cursor: default; }
+
+/* ── Speed Controls ───────────────────────── */
+.speed-row {
+  display: flex; align-items: center; gap: 8px; margin-top: 8px;
+}
+.speed-row label {
+  font-size: 11px; color: var(--text-dim); white-space: nowrap;
+}
+.speed-row input[type=range] { flex: 1; accent-color: var(--accent); }
+
+/* ── Arm Sliders ──────────────────────────── */
+.joint-sliders { display: flex; flex-direction: column; gap: 5px; }
+.joint-slider-row { display: flex; align-items: center; gap: 6px; }
+.joint-slider-label {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px; width: 88px; text-align: right;
+  color: var(--text-dim); flex-shrink: 0;
+}
+.joint-slider-row input[type=range] {
+  flex: 1; accent-color: var(--accent); height: 6px;
+}
+.joint-slider-val {
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10px; width: 48px; color: var(--text);
+}
+
+/* ── Gripper Controls ─────────────────────── */
+.gripper-btns { display: flex; gap: 8px; margin-top: 10px; }
+.gripper-btns .btn { flex: 1; text-align: center; }
+
+/* ── Control Connect Bar ──────────────────── */
+.ctrl-connect {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: var(--text-dim);
+}
+.ctrl-connect input {
+  background: #0d1117; border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 8px; color: var(--text);
+  font-size: 12px; width: 130px;
+}
+.ctrl-status {
+  display: inline-block; font-size: 12px; padding: 4px 12px;
+  border-radius: 12px; margin-top: 8px;
+  background: rgba(255,255,255,0.06);
+}
+.ctrl-status.ok { color: var(--green); border: 1px solid var(--green); }
+.ctrl-status.err { color: var(--red); border: 1px solid var(--red); }
 </style>
 </head>
 <body>
@@ -314,6 +394,65 @@
   <button class="btn btn-primary" id="btnConnect" onclick="doConnect()">连接</button>
   <button class="btn btn-danger" id="btnDisconnect" onclick="doDisconnect()" disabled>断开</button>
   <span style="color:var(--text-dim);font-size:12px;margin-left:auto" id="sessionInfo"></span>
+</div>
+
+
+<!-- ─── Control Bar ─── -->
+<div class="control-bar" id="controlBar">
+  <!-- Chassis D-Pad -->
+  <div class="control-section">
+    <h4>🎮 底盘控制 (W/A/S/D)</h4>
+    <div class="dpad" id="dpad">
+      <button class="dpad-btn empty"></button>
+      <button class="dpad-btn" id="btnForward" title="前进 (W)">▲</button>
+      <button class="dpad-btn empty"></button>
+      <button class="dpad-btn" id="btnLeft" title="左转 (A)">◀</button>
+      <button class="dpad-btn btn-danger" id="btnStop" title="停止 (空格)" style="font-size:14px">■</button>
+      <button class="dpad-btn" id="btnRight" title="右转 (D)">▶</button>
+      <button class="dpad-btn empty"></button>
+      <button class="dpad-btn" id="btnBackward" title="后退 (S)">▼</button>
+      <button class="dpad-btn empty"></button>
+    </div>
+    <div class="speed-row">
+      <label>速度: <span id="spdLinVal">0.25</span> m/s</label>
+      <input type="range" id="spdLinear" min="0.05" max="1.00" value="0.25" step="0.05">
+    </div>
+    <div class="speed-row">
+      <label>转向: <span id="spdAngVal">0.60</span> rad/s</label>
+      <input type="range" id="spdAngular" min="0.10" max="1.50" value="0.60" step="0.10">
+    </div>
+  </div>
+
+  <!-- Arm Sliders -->
+  <div class="control-section" style="flex:2">
+    <h4>🦾 机械臂关节 (±2.80 rad)</h4>
+    <div class="joint-sliders" id="jointSliders">
+      <!-- Populated by JS -->
+    </div>
+    <div style="display:flex; gap:8px; margin-top:10px">
+      <button class="btn btn-outline" id="btnArmZero" style="flex:1">归零全部关节</button>
+    </div>
+    <h4 style="margin-top:14px">🤖 夹爪控制</h4>
+    <div class="gripper-btns">
+      <button class="btn btn-primary" id="btnGripperOpen">打开夹爪 (0.35 rad)</button>
+      <button class="btn btn-danger" id="btnGripperClose">关闭夹爪 (0.0 rad)</button>
+    </div>
+  </div>
+
+  <!-- Control Connection -->
+  <div class="control-section">
+    <h4>🔗 控制服务器</h4>
+    <div class="ctrl-connect">
+      <input type="text" id="ctrlUrl" value="http://localhost:8090" placeholder="http://localhost:8090">
+      <button class="btn btn-outline" id="btnCtrlTest" style="font-size:11px;padding:4px 10px">测试</button>
+    </div>
+    <span class="ctrl-status" id="ctrlStatus">未测试</span>
+    <div style="margin-top:10px;font-size:11px;color:var(--text-dim);line-height:1.5">
+      <p>按住方向键控制底盘，松开即停</p>
+      <p>键盘: W/A/S/D 移动，空格急停</p>
+      <p>拖动滑块调整机械臂关节角度</p>
+    </div>
+  </div>
 </div>
 
 <!-- ─── Dashboard ─── -->
@@ -732,6 +871,219 @@ onData = function(topic, jsonStr) {
 // ─── Initial state ───────────────────────────────────────────
 log('info', '页面已加载，输入 REST API 地址后点击"连接"');
 setStatus('', '未连接');
+
+// ─── Control State ──────────────────────────────────────────
+let ctrlConnected = true;   // optimistic: assume server is running
+let ctrlBaseUrl = 'http://localhost:8090';
+const armJointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const gripperJointNames = ['end_worklink1','end_worklink2'];
+const allJointNames = [...armJointNames, ...gripperJointNames];
+const gripperOpenVal = 0.35;
+
+let armPositions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+let gripperPositions = [0.0, -0.0];
+let baseActive = false;
+let activeMotion = null;
+let controlInterval = null;
+
+// ─── Control Connection ──────────────────────────────────────
+async function testControlConnection() {
+  const url = ($('ctrlUrl').value || 'http://localhost:8090').trim().replace(/\/+$/, '');
+  ctrlBaseUrl = url;
+  const st = $('ctrlStatus');
+  st.textContent = '测试中...';
+  st.className = 'ctrl-status';
+  try {
+    const r = await fetch(url + '/health');
+    if (r.ok) {
+      ctrlConnected = true;
+      st.textContent = '已连接';
+      st.className = 'ctrl-status ok';
+      log('ok', '控制服务器已连接: ' + url);
+    } else {
+      throw new Error('HTTP ' + r.status);
+    }
+  } catch (e) {
+    ctrlConnected = false;
+    st.textContent = '连接失败';
+    st.className = 'ctrl-status err';
+    log('err', '控制服务器连接失败: ' + e.message);
+  }
+}
+
+// periodic health check
+setInterval(async () => {
+  if (!ctrlConnected) return;
+  try {
+    const r = await fetch(ctrlBaseUrl + '/health');
+    if (!r.ok) throw new Error();
+  } catch (_) {
+    ctrlConnected = false;
+    $('ctrlStatus').textContent = '连接断开';
+    $('ctrlStatus').className = 'ctrl-status err';
+    stopBase();
+  }
+}, 5000);
+
+// ─── HTTP POST helpers ──────────────────────────────────────
+async function postCmdVel(ly, az) {
+  if (!ctrlConnected) return false;
+  try {
+    const r = await fetch(ctrlBaseUrl + '/cmd_vel', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        linear_x:0, linear_y:ly, linear_z:0,
+        angular_x:0, angular_y:0, angular_z:az
+      })
+    });
+    return r.ok;
+  } catch (_) { ctrlConnected = false; stopBase(); return false; }
+}
+
+async function postJointTrajectory(positions) {
+  if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return false; }
+  try {
+    const r = await fetch(ctrlBaseUrl + '/joint_trajectory', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({positions: positions})
+    });
+    if (!r.ok) { toast('joint_trajectory 发送失败: HTTP ' + r.status, 'err'); }
+    return r.ok;
+  } catch (e) { ctrlConnected = false; toast('控制服务器连接失败', 'err'); return false; }
+}
+
+// ─── Chassis Control ────────────────────────────────────────
+function getLinSpeed() { return parseFloat($('spdLinear').value) || 0.25; }
+function getAngSpeed() { return parseFloat($('spdAngular').value) || 0.60; }
+
+function startBaseMotion(motion) {
+  if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
+  activeMotion = motion;
+  baseActive = true;
+  sendBaseCommand();
+  if (controlInterval) clearInterval(controlInterval);
+  controlInterval = setInterval(sendBaseCommand, 50);
+}
+
+function sendBaseCommand() {
+  if (!baseActive || !activeMotion) return;
+  let ly = 0, az = 0;
+  switch (activeMotion) {
+    case 'forward':  ly =  getLinSpeed(); break;
+    case 'backward': ly = -getLinSpeed(); break;
+    case 'left':     az =  getAngSpeed(); break;
+    case 'right':    az = -getAngSpeed(); break;
+  }
+  postCmdVel(ly, az);
+}
+
+function stopBase() {
+  baseActive = false;
+  activeMotion = null;
+  if (controlInterval) { clearInterval(controlInterval); controlInterval = null; }
+  postCmdVel(0, 0);
+}
+
+// ─── D-Pad button wiring ────────────────────────────────────
+function wireDpad(id, motion) {
+  const btn = $(id); if (!btn) return;
+  btn.addEventListener('mousedown', e => { e.preventDefault(); startBaseMotion(motion); });
+  btn.addEventListener('mouseup', e => { e.preventDefault(); stopBase(); });
+  btn.addEventListener('mouseleave', () => stopBase());
+  btn.addEventListener('touchstart', e => { e.preventDefault(); startBaseMotion(motion); });
+  btn.addEventListener('touchend', e => { e.preventDefault(); stopBase(); });
+  btn.addEventListener('touchcancel', () => stopBase());
+}
+wireDpad('btnForward', 'forward');
+wireDpad('btnBackward', 'backward');
+wireDpad('btnLeft', 'left');
+wireDpad('btnRight', 'right');
+$('btnStop').addEventListener('click', () => { stopBase(); stopBase(); });
+
+// ─── Keyboard control ───────────────────────────────────────
+const keysPressed = new Set();
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT') return;
+  if (keysPressed.has(e.key)) return;
+  keysPressed.add(e.key);
+  switch (e.key.toLowerCase()) {
+    case 'w': e.preventDefault(); startBaseMotion('forward'); break;
+    case 's': e.preventDefault(); startBaseMotion('backward'); break;
+    case 'a': e.preventDefault(); startBaseMotion('left'); break;
+    case 'd': e.preventDefault(); startBaseMotion('right'); break;
+    case ' ': e.preventDefault(); stopBase(); break;
+  }
+});
+document.addEventListener('keyup', e => {
+  keysPressed.delete(e.key);
+  if (!keysPressed.has('w') && !keysPressed.has('s') &&
+      !keysPressed.has('a') && !keysPressed.has('d') &&
+      !keysPressed.has('W') && !keysPressed.has('S') &&
+      !keysPressed.has('A') && !keysPressed.has('D')) {
+    stopBase();
+  }
+});
+
+// ─── Arm Joint Sliders ──────────────────────────────────────
+function buildJointSliders() {
+  const ct = $('jointSliders'); if (!ct) return;
+  ct.innerHTML = armJointNames.map((name, i) =>
+    '<div class="joint-slider-row">' +
+      '<span class="joint-slider-label">' + name + '</span>' +
+      '<input type="range" id="armSlider' + i + '" min="-2.80" max="2.80" value="0.00" step="0.10" ' +
+        'oninput="onArmSlider(' + i + ', this.value)">' +
+      '<span class="joint-slider-val" id="armSliderVal' + i + '">0.00</span>' +
+    '</div>'
+  ).join('');
+}
+
+function onArmSlider(idx, val) {
+  armPositions[idx] = parseFloat(val) || 0.0;
+  const ve = document.getElementById('armSliderVal' + idx);
+  if (ve) ve.textContent = armPositions[idx].toFixed(2);
+  postJointTrajectory([...armPositions, ...gripperPositions]);
+}
+
+function resetArmToZero() {
+  armPositions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  armJointNames.forEach((_, i) => {
+    const s = document.getElementById('armSlider' + i);
+    const v = document.getElementById('armSliderVal' + i);
+    if (s) s.value = '0.00';
+    if (v) v.textContent = '0.00';
+  });
+  postJointTrajectory([...armPositions, ...gripperPositions]);
+}
+
+// ─── Gripper Control ────────────────────────────────────────
+function openGripper() {
+  gripperPositions = [gripperOpenVal, -gripperOpenVal];
+  postJointTrajectory([...armPositions, ...gripperPositions]);
+}
+function closeGripper() {
+  gripperPositions = [0.0, -0.0];
+  postJointTrajectory([...armPositions, ...gripperPositions]);
+}
+
+// ─── Control Init ───────────────────────────────────────────
+$('btnCtrlTest').addEventListener('click', testControlConnection);
+$('btnArmZero').addEventListener('click', resetArmToZero);
+$('btnGripperOpen').addEventListener('click', openGripper);
+$('btnGripperClose').addEventListener('click', closeGripper);
+$('spdLinear').addEventListener('input', function() {
+  $('spdLinVal').textContent = parseFloat(this.value).toFixed(2);
+});
+$('spdAngular').addEventListener('input', function() {
+  $('spdAngVal').textContent = parseFloat(this.value).toFixed(2);
+});
+
+// Build sliders on load
+buildJointSliders();
+
+// Auto-connect control server on load (no need to click "测试")
+testControlConnection();
 </script>
 </body>
 </html>

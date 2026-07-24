@@ -155,7 +155,7 @@ fi
 if [ "$WITH_PROXY" = "true" ]; then
     echo "[2/5] 启动 XCZS Zenoh 代理..."
     cd "$JIANG_DIR"
-    python3 run_xczs_proxy.py &
+    python3 run_xczs_proxy.py --control-port "${CONTROL_PORT:-8090}" &
     PROXY_PID=$!
     sleep 1
     echo "       代理已启动 (PID $PROXY_PID)"

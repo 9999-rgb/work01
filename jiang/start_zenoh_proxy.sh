@@ -36,6 +36,9 @@ ZENOH_TCP="tcp/0.0.0.0:7447"
 ZENOH_WS="ws/0.0.0.0:10000"
 ZENOH_REST_PORT="8000"
 
+# HTTP 控制服务器端口
+CONTROL_PORT="${CONTROL_PORT:-8090}"
+
 # 进程名标识
 BRIDGE_NAME="zenoh-bridge-ros2dds"
 PROXY_NAME="run_proxy.py"
@@ -147,7 +150,7 @@ done
 # Start run_proxy.py
 # -----------------------------------------------------------------------------
 info "Starting $PROXY_SCRIPT …"
-python3 "$PROXY_SCRIPT" &
+python3 "$PROXY_SCRIPT" --control-port "$CONTROL_PORT" &
 PROXY_PID=$!
 echo "  PID: $PROXY_PID"
 
@@ -157,9 +160,12 @@ echo "  PID: $PROXY_PID"
 info "=============================================="
 info "  Zenoh 数据桥已启动"
 info "  Bridge PID:  $BRIDGE_PID  (REST: http://localhost:$ZENOH_REST_PORT)"
-info "  Proxy PID:   $PROXY_PID"
+info "  Proxy PID:   $PROXY_PID  (Control: http://localhost:$CONTROL_PORT)"
 info "=============================================="
-info "在浏览器打开 monitor.html 可查看实时数据。"
+info "在浏览器打开 monitor.html 可查看实时数据并控制机器人。"
+info "  POST /cmd_vel          底盘速度控制"
+info "  POST /joint_trajectory 机械臂关节控制"
+info "  GET  /health           健康检查"
 info "停止命令: $0 stop"
 
 # Keep the script running so the user sees the status and can Ctrl+C

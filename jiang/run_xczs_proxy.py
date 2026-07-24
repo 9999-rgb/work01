@@ -102,6 +102,10 @@ def main():
         help="Zenoh bridge TCP port (default: 7447)",
     )
     parser.add_argument(
+        "--control-port", type=int, default=8090,
+        help="HTTP control server port (0=disabled, default: 8090)",
+    )
+    parser.add_argument(
         "--list", action="store_true",
         help="List registered topics and exit",
     )
@@ -118,11 +122,27 @@ def main():
             print(f"  {line}")
         return
 
+    # -- Start HTTP control server ---------------------------------------
+    ctrl = None
+    ctrl_port = int(args.control_port) if args.control_port > 0 else 0
+    if ctrl_port > 0:
+        from control_server import ControlServer
+        ctrl = ControlServer(port=ctrl_port)
+        ctrl.start()
+        print(f"Control server: http://0.0.0.0:{ctrl_port}")
+        print(f"  POST /cmd_vel")
+        print(f"  POST /joint_trajectory")
+        print(f"  GET  /health")
+
     # -- Connect and run -------------------------------------------------
     runner = ProxyRunner(host=args.host, port=args.port)
     runner.connect()
     runner.subscribe_all_registered()
-    runner.spin()
+    try:
+        runner.spin()
+    finally:
+        if ctrl is not None:
+            ctrl.stop()
 
 
 if __name__ == "__main__":

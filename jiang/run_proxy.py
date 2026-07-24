@@ -91,10 +91,37 @@ registry.register("clock", Clock, description="Gazebo 仿真时间")
 # 4. 启动代理
 # ============================================================================
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Zenoh CDR → JSON Proxy with optional HTTP control server",
+    )
+    parser.add_argument(
+        "--control-port", type=int, default=8090,
+        help="HTTP control server port (0=disabled, default: 8090)",
+    )
+    args = parser.parse_args()
+
     runner = ProxyRunner(
         host="127.0.0.1",   # Zenoh 路由器地址
         port=7447,           # Zenoh 路由器端口
     )
     runner.connect()
     runner.subscribe_all_registered()  # 自动订阅上面注册的所有模式
-    runner.spin()                      # 阻塞运行，Ctrl+C 退出
+
+    # ---- HTTP control server (web → ROS2) ----
+    ctrl = None
+    if args.control_port > 0:
+        from control_server import ControlServer
+        ctrl = ControlServer(port=args.control_port)
+        ctrl.start()
+        print(f"Control server: http://0.0.0.0:{args.control_port}")
+        print(f"  POST /cmd_vel")
+        print(f"  POST /joint_trajectory")
+        print(f"  GET  /health")
+
+    try:
+        runner.spin()                      # 阻塞运行，Ctrl+C 退出
+    finally:
+        if ctrl is not None:
+            ctrl.stop()
