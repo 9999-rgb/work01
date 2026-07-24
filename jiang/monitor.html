@@ -223,6 +223,56 @@
   .toast.err { border-color: var(--red); }
   .toast.ok  { border-color: var(--green); }
   @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+  /* ── Phase Banner ────────────────────────── */
+  .phase-banner {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 20px; margin-bottom: 16px;
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 10px; flex-wrap: wrap;
+  }
+  .phase-indicator {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 48px; height: 48px; border-radius: 50%;
+    font-size: 22px; font-weight: 700;
+    background: rgba(255,255,255,0.06); border: 3px solid var(--border);
+    color: var(--text-dim); transition: all 0.3s;
+  }
+  .phase-indicator.active { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 12px rgba(88,166,255,0.3); }
+  .phase-indicator.done   { border-color: var(--green); color: var(--green); }
+  .phase-indicator.error  { border-color: var(--red); color: var(--red); }
+  .phase-arrow { color: var(--text-dim); font-size: 16px; }
+  .waypoint-info { margin-left: auto; font-size: 13px; color: var(--text-dim); }
+  .waypoint-info span { color: var(--text); font-weight: 600; }
+
+  /* ── Joint Bars ──────────────────────────── */
+  .joint-bars {
+    margin-top: 16px; background: var(--card-bg);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 18px; display: none;
+  }
+  .joint-bars h3 { font-size: 14px; color: var(--text-dim); margin-bottom: 12px; }
+  .joint-row {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 8px;
+  }
+  .joint-label {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px; width: 100px; text-align: right;
+    color: var(--text-dim); flex-shrink: 0;
+  }
+  .joint-track {
+    flex: 1; height: 14px; background: rgba(255,255,255,0.05);
+    border-radius: 7px; overflow: hidden; position: relative;
+  }
+  .joint-fill {
+    height: 100%; border-radius: 7px;
+    background: linear-gradient(90deg, var(--accent), var(--cyan));
+    transition: width 0.3s ease;
+  }
+  .joint-val {
+    font-family: 'SF Mono', 'Fira Code', monospace;
+    font-size: 11px; width: 60px; color: var(--text);
+  }
 </style>
 </head>
 <body>
@@ -241,6 +291,21 @@
     <span id="statusText">未连接</span>
   </div>
 </header>
+
+<!-- ─── Phase Banner ─── -->
+<div class="phase-banner" id="phaseBanner">
+  <span style="font-size:13px;color:var(--text-dim)">任务阶段</span>
+  <span class="phase-indicator" id="phaseA">A</span>
+  <span class="phase-arrow">→</span>
+  <span class="phase-indicator" id="phaseB">B</span>
+  <span class="phase-arrow">→</span>
+  <span class="phase-indicator" id="phaseC">C</span>
+  <span class="phase-arrow">→</span>
+  <span class="phase-indicator" id="phaseD">D</span>
+  <div class="waypoint-info">
+    巡检点 <span id="wpCurrent">-</span> / <span id="wpTotal">4</span>
+  </div>
+</div>
 
 <!-- ─── Connection Bar ─── -->
 <div class="connect-bar">
@@ -304,6 +369,12 @@
       <div style="font-size:12px">通过 Zenoh REST SSE (<code style="color:var(--accent)">/{topic}</code>) 获取实时数据</div>
     </div>
     <div class="data-grid" id="dataGrid" style="display:none"></div>
+
+    <!-- Joint Position Visualization -->
+    <div class="joint-bars" id="jointBars">
+      <h3>🦾 机械臂关节角度</h3>
+      <div id="jointBarContainer"></div>
+    </div>
   </main>
 </div>
 
@@ -549,6 +620,92 @@ document.querySelectorAll('.topic-preset').forEach(btn => {
     subscribe(btn.dataset.topic);
   });
 });
+
+// ─── Phase Indicator ──────────────────────────────────────────
+let currentPhase = 'IDLE';
+function updatePhaseBanner(phase) {
+  if (phase === currentPhase) return;
+  currentPhase = phase;
+  ['A','B','C','D'].forEach(p => {
+    const el = document.getElementById('phase' + p);
+    if (!el) return;
+    el.classList.remove('active', 'done', 'error');
+    if (p === phase) el.classList.add('active');
+  });
+}
+
+// ─── Joint Bar Rendering ──────────────────────────────────────
+const jointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const jointLimit = 2.80;  // rad, from robot_control.yaml
+
+function buildJointBars() {
+  const container = document.getElementById('jointBarContainer');
+  if (!container) return;
+  container.innerHTML = jointNames.map((name, i) =>
+    `<div class="joint-row">
+      <span class="joint-label">${name}</span>
+      <div class="joint-track"><div class="joint-fill" id="jointFill${i}" style="width:50%"></div></div>
+      <span class="joint-val" id="jointVal${i}">0.00</span>
+    </div>`
+  ).join('');
+  document.getElementById('jointBars').style.display = 'block';
+}
+
+let jointBarsBuilt = false;
+function updateJointBars(data) {
+  // Handle both raw JointState arrays and flattened positions dict
+  let positions = data.positions || {};
+  if (!positions || Object.keys(positions).length === 0) {
+    // Try raw format: {name: [...], position: [...]}
+    if (data.name && data.position) {
+      for (let i = 0; i < Math.min(data.name.length, data.position.length); i++) {
+        positions[data.name[i]] = data.position[i];
+      }
+    }
+  }
+  if (Object.keys(positions).length === 0) return;
+  if (!jointBarsBuilt) { buildJointBars(); jointBarsBuilt = true; }
+
+  jointNames.forEach((name, i) => {
+    const val = positions[name];
+    if (val === undefined) return;
+    const pct = Math.max(0, Math.min(100, ((val + jointLimit) / (2 * jointLimit)) * 100));
+    const fill = document.getElementById('jointFill' + i);
+    const lbl  = document.getElementById('jointVal' + i);
+    if (fill) fill.style.width = pct + '%';
+    if (lbl)  lbl.textContent = val.toFixed(2);
+  });
+}
+
+// ── Hook into data processing ─────────────────────────────────
+const origOnData = onData;
+onData = function(topic, jsonStr) {
+  origOnData(topic, jsonStr);
+  // Parse once for special handling
+  let payload;
+  try {
+    const outer = JSON.parse(jsonStr);
+    payload = outer.value !== undefined ? outer.value : outer;
+  } catch(e) { return; }
+
+  // Phase tracking
+  if (topic.includes('mission/phase')) {
+    const phase = (typeof payload.data === 'string') ? payload.data : String(payload);
+    updatePhaseBanner(phase.trim());
+  }
+  // Joint state visualization
+  if (topic.includes('joint_states')) {
+    updateJointBars(payload);
+  }
+  // Waypoint tracking
+  if (topic.includes('current_waypoint')) {
+    const wp = typeof payload.data === 'number' ? payload.data : parseInt(payload.data);
+    if (!isNaN(wp)) {
+      const el = document.getElementById('wpCurrent');
+      if (el) el.textContent = String(wp + 1);  // 1-indexed display
+    }
+  }
+};
 
 // ─── Initial state ───────────────────────────────────────────
 log('info', '页面已加载，输入 REST API 地址后点击"连接"');
