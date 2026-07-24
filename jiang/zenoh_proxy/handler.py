@@ -45,6 +45,25 @@ def flatten_twist(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def flatten_joint_state(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert parallel arrays to key-value dicts for easier browser charting.
+
+    Before: ``{"name": ["j1","j2"], "position": [1.0, 2.0], "velocity": [...]}``
+    After:  ``{"positions": {"j1": 1.0, "j2": 2.0}, "velocities": {...}}``
+
+    The original ``name``, ``position``, ``velocity``, ``effort`` arrays are
+    preserved alongside the new key-value maps so nothing is lost.
+    """
+    names = data.get("name", [])
+    for field, out_key in (("position", "positions"),
+                           ("velocity", "velocities"),
+                           ("effort", "efforts")):
+        arr = data.get(field, [])
+        if isinstance(arr, list) and isinstance(names, list):
+            data[out_key] = {n: v for n, v in zip(names, arr)}
+    return data
+
+
 # ============================================================================
 # Standard type registration (replaces old if-elif chain)
 # ============================================================================
@@ -109,13 +128,45 @@ def register_standard_types() -> None:
             description="Odometry (any namespace)",
         )
 
+    # -- joint_states → JointState (any namespace) -----------------------
+    JointState = load_message_type("sensor_msgs.msg.JointState")
+    if JointState is not None:
+        registry.register(
+            "*/joint_states", JointState,
+            handler=add_timestamp,
+            description="JointState (any namespace)",
+        )
+
+    # -- joint_trajectory → JointTrajectory (any namespace) --------------
+    JointTrajectory = load_message_type("trajectory_msgs.msg.JointTrajectory")
+    if JointTrajectory is not None:
+        registry.register(
+            "*/joint_trajectory", JointTrajectory,
+            handler=add_timestamp,
+            description="JointTrajectory (any namespace)",
+        )
+
+    # -- std_msgs/String → for mission/phase, etc. -----------------------
+    String = load_message_type("std_msgs.msg.String")
+    if String is not None:
+        registry.register(
+            "*/mission/*", String,
+            handler=add_timestamp,
+            description="Mission status messages (String, any namespace)",
+        )
+
     # -- geometry_msgs/Pose — NOT registered via wildcard! ----------------
     # Register explicitly with the EXACT topic name when needed:
     #   Pose = load_message_type("geometry_msgs.msg.Pose")
     #   registry.register("your_robot/pose", Pose)
 
     # Print summary
-    all_none = Twist is None and Odometry is None and TurtlePose is None and Color is None
+    all_none = (
+        Twist is None and Odometry is None
+        and TurtlePose is None and Color is None
+        and JointState is None and JointTrajectory is None
+        and String is None
+    )
     if all_none:
         print(
             "NOTE: Could not load any standard ROS2 message types — "
