@@ -184,11 +184,15 @@ class SSEHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global _zenoh_source
         parsed = urlparse(self.path)
-        key = unquote(parsed.path.lstrip("/"))  # /xczs/odom → xczs/odom
+        key = unquote(parsed.path.lstrip("/"))  # //xczs/odom/json → xczs/odom/json
 
         if not key:
             self.send_error(400, "Missing key expression")
             return
+
+        # Strip /json suffix — we decode CDR ourselves
+        if key.endswith("/json"):
+            key = key[:-5]  # xczs/odom/json → xczs/odom
 
         # Respond with SSE stream
         self.send_response(200)
