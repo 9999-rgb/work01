@@ -130,24 +130,17 @@ _start_bridge() {
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
 echo "[1/4] Zenoh Bridge..."
 
-BRIDGE_ALREADY_RUNNING=false
-if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
-    # 检查 REST API 是否可达
-    if curl -s --max-time 2 "http://localhost:$BRIDGE_REST_PORT/@/router/local" >/dev/null 2>&1; then
-        echo "       复用已有的 Zenoh Bridge（端口 $BRIDGE_TCP_PORT, REST $BRIDGE_REST_PORT）"
-        BRIDGE_PID=""
-        BRIDGE_ALREADY_RUNNING=true
-    else
-        # 桥在运行但 REST 不可用 → 需要替换
-        echo "       已有的桥缺少 REST 插件，正在替换..."
-        pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
-        sleep 2
-    fi
-fi
+# 杀掉系统级 zenoh 桥（配置可能缺少 ros2dds 插件），用自己的命令行启动
+pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
+sleep 1
 
-if [ "$BRIDGE_ALREADY_RUNNING" = false ]; then
-    _start_bridge
-fi
+# 确保端口已释放
+while lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; do
+    echo "       等待端口 $BRIDGE_TCP_PORT 释放..."
+    sleep 1
+done
+
+_start_bridge
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
 if [ "$WITH_PROXY" = "true" ]; then

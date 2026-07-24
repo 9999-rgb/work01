@@ -87,15 +87,10 @@ class TaskScheduler(Node):
         self.declare_parameter("joint_limit", 2.80)         # rad
         self.declare_parameter("joint_command_rate", 20.0)  # Hz
 
-        # Waypoints: list of (x, y, yaw) relative to origin
+        # Waypoints: flat list [x1, y1, yaw1, x2, y2, yaw2, ...]
         self.declare_parameter(
             "waypoints",
-            [
-                {"x": 2.0, "y": 0.0, "yaw": 0.0},
-                {"x": 2.0, "y": 2.0, "yaw": 1.57},
-                {"x": 0.0, "y": 2.0, "yaw": 3.14},
-                {"x": 0.0, "y": 0.0, "yaw": 0.0},
-            ],
+            [2.0, 0.0, 0.0,  2.0, 2.0, 1.57,  0.0, 2.0, 3.14,  0.0, 0.0, 0.0],
         )
 
         # -- Publishers --------------------------------------------------
@@ -329,10 +324,14 @@ class TaskScheduler(Node):
     # ====================================================================
 
     def _get_current_waypoint(self) -> Optional[dict]:
-        waypoints = self.get_parameter("waypoints").value
-        if self._current_waypoint_idx >= len(waypoints):
+        """Parse flat waypoint list [x,y,yaw, x,y,yaw, ...] into dict."""
+        flat = self.get_parameter("waypoints").value
+        # Each waypoint is 3 floats
+        num_waypoints = len(flat) // 3
+        if self._current_waypoint_idx >= num_waypoints:
             return None
-        return waypoints[self._current_waypoint_idx]
+        i = self._current_waypoint_idx * 3
+        return {"x": float(flat[i]), "y": float(flat[i+1]), "yaw": float(flat[i+2])}
 
     def _stop_base(self) -> None:
         self._cmd_vel_pub.publish(Twist())  # all zeros
