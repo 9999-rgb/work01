@@ -1,0 +1,280 @@
+#!/usr/bin/env python3
+"""
+Zenoh → SSE 数据桥 — 直接从 Zenoh TCP 订阅数据，CDR 解码后转为 SSE 推送给浏览器。
+
+取代不可靠的 Zenoh REST SSE 端点。浏览器直接连接这个 HTTP SSE 服务器。
+
+需要 ROS2 环境 (rclpy) 来解码 CDR 二进制消息。
+
+用法:
+    source /opt/ros/humble/setup.bash
+    python3 sse_bridge.py                    # 默认: localhost:8001
+    python3 sse_bridge.py --port 8001
+
+浏览器:
+    new EventSource('http://localhost:8001/xczs/odom')
+    new EventSource('http://localhost:8001/xczs/joint_states')
+"""
+
+import json
+import sys
+import threading
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, unquote
+
+import zenoh
+
+# Lazy imports for CDR decoding (require rclpy)
+_cdr_decoder = None
+
+
+def _get_cdr_decoder():
+    """Lazy-init the CDR decoder using proxy's converter and registry."""
+    global _cdr_decoder
+    if _cdr_decoder is not None:
+        return _cdr_decoder
+
+    # Add parent dir to path for zenoh_proxy imports
+    import os
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+    from zenoh_proxy import register_standard_types
+    from zenoh_proxy.converter import deserialize_and_convert
+    from zenoh_proxy.registry import get_registry
+
+    # Also register xczs-specific topics
+    from zenoh_proxy.handler import add_timestamp, flatten_twist, flatten_joint_state
+
+    register_standard_types()
+
+    registry = get_registry()
+    # Register xczs-specific handlers
+    @registry.register_topic("xczs/cmd_vel", description="XCZS cmd_vel")
+    def _h1(topic, data):
+        data = flatten_twist(topic, data)
+        data = add_timestamp(topic, data)
+        return data
+
+    @registry.register_topic("xczs/joint_states", description="XCZS joint_states")
+    def _h2(topic, data):
+        data = flatten_joint_state(topic, data)
+        data = add_timestamp(topic, data)
+        return data
+
+    class Decoder:
+        def __init__(self):
+            self.registry = registry
+            self.deserialize_and_convert = deserialize_and_convert
+
+        def decode(self, topic, payload_bytes):
+            reg = self.registry.lookup(topic)
+            if reg is None:
+                return None
+            try:
+                return self.deserialize_and_convert(payload_bytes, reg, topic)
+            except Exception:
+                return None
+
+    _cdr_decoder = Decoder()
+    return _cdr_decoder
+
+# ============================================================================
+# Zenoh subscriber manager (shared across SSE connections)
+# ============================================================================
+
+
+class ZenohSource:
+    """Manages Zenoh subscriptions and fans out data to SSE clients."""
+
+    def __init__(self, connect_endpoint: str = "tcp/localhost:7447"):
+        conf = zenoh.Config()
+        conf.insert_json5("connect/endpoints", f'["{connect_endpoint}"]')
+        self._session = zenoh.open(conf)
+        self._subs: dict[str, zenoh.Subscriber] = {}
+        self._listeners: dict[str, list] = {}  # key -> list of callback functions
+        self._lock = threading.Lock()
+
+    def add_listener(self, key: str, callback) -> None:
+        """Register a callback for a Zenoh key expression. Auto-subscribes."""
+        with self._lock:
+            if key not in self._subs:
+                self._subs[key] = self._session.declare_subscriber(
+                    key, self._make_callback(key)
+                )
+                self._listeners[key] = []
+                print(f"[zenoh] subscribed: {key}", file=sys.stderr)
+            self._listeners[key].append(callback)
+
+    def remove_listener(self, key: str, callback) -> None:
+        """Remove a callback. Unsubscribes when last listener is removed."""
+        with self._lock:
+            if key in self._listeners:
+                self._listeners[key] = [
+                    c for c in self._listeners[key] if c is not callback
+                ]
+                if not self._listeners[key]:
+                    try:
+                        self._subs[key].undeclare()
+                    except Exception:
+                        pass
+                    del self._subs[key]
+                    del self._listeners[key]
+                    print(f"[zenoh] unsubscribed: {key}", file=sys.stderr)
+
+    def _make_callback(self, key: str):
+        def _callback(sample: zenoh.Sample):
+            payload = bytes(sample.payload)
+            topic = str(sample.key_expr)
+            # Try CDR decode first (ROS2 binary), then JSON, then hex fallback
+            json_str = None
+            decoder = _get_cdr_decoder()
+            if decoder:
+                result = decoder.decode(topic, payload)
+                if result:
+                    json_str = result
+            if json_str is None:
+                try:
+                    data = json.loads(payload.decode())
+                    json_str = json.dumps(data, ensure_ascii=False)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    json_str = json.dumps(
+                        {"_raw_hex": payload.hex()[:60] + "...", "_topic": topic, "_len": len(payload)}
+                    )
+            # Fan out to all listeners for this key
+            with self._lock:
+                listeners = list(self._listeners.get(key, []))
+            for cb in listeners:
+                try:
+                    cb(topic, json_str)
+                except Exception:
+                    pass
+
+        return _callback
+
+    def close(self) -> None:
+        with self._lock:
+            for sub in self._subs.values():
+                try:
+                    sub.undeclare()
+                except Exception:
+                    pass
+            self._subs.clear()
+            self._listeners.clear()
+        self._session.close()
+
+    @property
+    def session(self):
+        return self._session
+
+
+# ============================================================================
+# HTTP SSE server
+# ============================================================================
+
+_zenoh_source: ZenohSource | None = None
+
+
+class SSEHandler(BaseHTTPRequestHandler):
+    """Serves Zenoh data as SSE (Server-Sent Events)."""
+
+    def log_message(self, format, *args):
+        print(f"[http] {args[0]}", file=sys.stderr)
+
+    def do_GET(self):
+        global _zenoh_source
+        parsed = urlparse(self.path)
+        key = unquote(parsed.path.lstrip("/"))  # /xczs/odom → xczs/odom
+
+        if not key:
+            self.send_error(400, "Missing key expression")
+            return
+
+        # Respond with SSE stream
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "keep-alive")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        # Connect to Zenoh and fan out
+        queue: list = []
+        event = threading.Event()
+
+        def on_data(topic, json_str):
+            queue.append((topic, json_str))
+            event.set()
+
+        _zenoh_source.add_listener(key, on_data)
+
+        try:
+            while True:
+                event.wait(timeout=15)  # Send heartbeat every 15s
+                if not queue:
+                    # Heartbeat to keep connection alive
+                    self.wfile.write(b":heartbeat\n\n")
+                    self.wfile.flush()
+                    continue
+                # Drain queue
+                batch = list(queue)
+                queue.clear()
+                event.clear()
+                for topic, json_str in batch:
+                    ts = int(time.time() * 1000)
+                    sse_data = json.dumps(
+                        {
+                            "key": topic,
+                            "value": json.loads(json_str),
+                            "encoding": "application/json",
+                            "timestamp": str(ts),
+                        }
+                    )
+                    self.wfile.write(
+                        f"event:PUT\ndata:{sse_data}\n\n".encode()
+                    )
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            _zenoh_source.remove_listener(key, on_data)
+
+    def do_OPTIONS(self):
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
+        self.end_headers()
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+
+def main():
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Zenoh → SSE bridge")
+    parser.add_argument("--port", type=int, default=8001, help="HTTP port (default: 8001)")
+    parser.add_argument("--zenoh", default="tcp/localhost:7447", help="Zenoh endpoint")
+    args = parser.parse_args()
+
+    global _zenoh_source
+    print(f"[init] Connecting to Zenoh at {args.zenoh}...", file=sys.stderr)
+    _zenoh_source = ZenohSource(connect_endpoint=args.zenoh)
+
+    server = HTTPServer(("0.0.0.0", args.port), SSEHandler)
+    print(f"[init] SSE bridge: http://0.0.0.0:{args.port}/<key>", file=sys.stderr)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _zenoh_source.close()
+        server.shutdown()
+
+
+if __name__ == "__main__":
+    main()

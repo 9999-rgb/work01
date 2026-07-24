@@ -18,6 +18,7 @@ set -eo pipefail
 # ── 初始化 PID 变量（避免 cleanup 时未绑定） ─────────────────────
 BRIDGE_PID=""
 PROXY_PID=""
+SSE_PID=""
 HTTP_PID=""
 
 # ── 路径配置 ──────────────────────────────────────────────────────
@@ -57,13 +58,13 @@ cleanup() {
     echo "═══════════════════════════════════════════"
     echo "  正在关闭..."
     echo "═══════════════════════════════════════════"
-    for pid in ${BRIDGE_PID:-} ${PROXY_PID:-} ${HTTP_PID:-}; do
+    for pid in ${BRIDGE_PID:-} ${PROXY_PID:-} ${SSE_PID:-} ${HTTP_PID:-}; do
         if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
             kill "$pid" 2>/dev/null || true
         fi
     done
     # 等待进程退出
-    for pid in ${BRIDGE_PID:-} ${PROXY_PID:-} ${HTTP_PID:-}; do
+    for pid in ${BRIDGE_PID:-} ${PROXY_PID:-} ${SSE_PID:-} ${HTTP_PID:-}; do
         if [ -n "${pid:-}" ]; then
             wait "$pid" 2>/dev/null || true
         fi
@@ -155,16 +156,24 @@ else
     PROXY_PID=""
 fi
 
-# ── 3. 启动 HTTP 文件服务器（monitor.html） ────────────────────────
-echo "[3/4] 启动 HTTP 服务器 (port $MONITOR_PORT)..."
+# ── 3a. 启动 SSE 桥（Zenoh TCP → HTTP SSE） ─────────────────────
+SSE_PORT="${SSE_PORT:-8001}"
+echo "[3a/5] 启动 SSE 数据桥 (port $SSE_PORT)..."
 cd "$JIANG_DIR"
+python3 sse_bridge.py --port "$SSE_PORT" --zenoh "tcp/localhost:$BRIDGE_TCP_PORT" &
+SSE_PID=$!
+sleep 1
+echo "       SSE 数据桥: http://localhost:$SSE_PORT/<key>"
+
+# ── 3b. 启动 HTTP 文件服务器（monitor.html） ────────────────────────
+echo "[3b/5] 启动 HTTP 服务器 (port $MONITOR_PORT)..."
 python3 -m http.server "$MONITOR_PORT" --bind 0.0.0.0 &
 HTTP_PID=$!
 sleep 1
 echo "       监控面板: http://localhost:$MONITOR_PORT/monitor.html"
 
 # ── 4. 启动 Gazebo + 机器人 ───────────────────────────────────────
-echo "[4/4] 启动 Gazebo + XCZS 机器人..."
+echo "[4/5] 启动 Gazebo + XCZS 机器人..."
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║  🌐 监控面板: http://localhost:$MONITOR_PORT/monitor.html"
