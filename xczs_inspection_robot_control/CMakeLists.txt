@@ -41,10 +41,15 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(
+  PROGRAMS scripts/task_scheduler
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY include/ DESTINATION include)
 
 install(
-  DIRECTORY config launch
+  DIRECTORY config launch scripts
   DESTINATION share/${PROJECT_NAME}
   PATTERN "__pycache__" EXCLUDE
 )

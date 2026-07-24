@@ -1,0 +1,385 @@
+#!/usr/bin/env python3
+"""
+XCZS 巡操机器人 — 自主任务调度器.
+
+Implements the A→B→C→D inspection pipeline for a single hydro-plant
+power-distribution-room waypoint, then loops to the next waypoint.
+
+Phases:
+  A — Global Navigation (odom-based dead reckoning via cmd_vel)
+  B — Precise Positioning (fine approach dwell)
+  C — Arm Operation (scripted joint trajectory sequence)
+  D — Retract & Transfer (fold arm, loop to next waypoint)
+
+Publishes:
+  /xczs/cmd_vel          — geometry_msgs/Twist (base velocity)
+  /xczs/joint_trajectory — trajectory_msgs/JointTrajectory (arm commands)
+  /mission/phase         — std_msgs/String ("A"|"B"|"C"|"D"|"IDLE"|"DONE")
+  /mission/current_waypoint — std_msgs/Int32
+
+Subscribes:
+  /xczs/odom             — nav_msgs/Odometry (position feedback)
+  /xczs/joint_states     — sensor_msgs/JointState (arm feedback, init sync)
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from enum import Enum
+from typing import List, Optional
+
+import rclpy
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Int32, String
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+
+
+# ============================================================================
+# Constants
+# ============================================================================
+
+# 8 controlled joints (order from xczs URDF / keyboard_teleop)
+CONTROLLED_JOINTS = [
+    "body_arm1", "arm1_arm2", "arm2_arm3", "arm3_arm4",
+    "arm4_arm5", "arm5_end", "end_worklink1", "end_worklink2",
+]
+
+# Pre-defined inspection poses (joint angles in radians)
+# These are placeholders — tune to match your actual robot.
+ARM_FOLDED = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+ARM_DEPLOYED = [0.0, -0.8, 1.2, -0.5, 0.0, 0.8, 0.35, -0.35]
+ARM_APPROACH = [0.15, -1.0, 1.5, -0.6, 0.1, 0.6, 0.35, -0.35]
+
+
+class Phase(Enum):
+    IDLE = "IDLE"
+    NAVIGATING = "A"
+    POSITIONING = "B"
+    OPERATING = "C"
+    RETRACTING = "D"
+    DONE = "DONE"
+    ERROR = "ERROR"
+
+
+# ============================================================================
+# Task Scheduler Node
+# ============================================================================
+
+
+class TaskScheduler(Node):
+    """Autonomous A→B→C→D inspection pipeline controller."""
+
+    def __init__(self):
+        super().__init__("task_scheduler")
+
+        # -- Parameters --------------------------------------------------
+        self.declare_parameter("linear_speed", 0.15)       # m/s (slow, safe)
+        self.declare_parameter("angular_speed", 0.40)      # rad/s
+        self.declare_parameter("arrival_tolerance_linear", 0.10)  # m
+        self.declare_parameter("arrival_tolerance_angular", 0.10) # rad
+        self.declare_parameter("phase_b_dwell", 2.0)       # seconds
+        self.declare_parameter("arm_trajectory_dwell", 1.5) # seconds per pose
+        self.declare_parameter("navigation_timeout", 60.0)  # seconds
+        self.declare_parameter("joint_limit", 2.80)         # rad
+        self.declare_parameter("joint_command_rate", 20.0)  # Hz
+
+        # Waypoints: list of (x, y, yaw) relative to origin
+        self.declare_parameter(
+            "waypoints",
+            [
+                {"x": 2.0, "y": 0.0, "yaw": 0.0},
+                {"x": 2.0, "y": 2.0, "yaw": 1.57},
+                {"x": 0.0, "y": 2.0, "yaw": 3.14},
+                {"x": 0.0, "y": 0.0, "yaw": 0.0},
+            ],
+        )
+
+        # -- Publishers --------------------------------------------------
+        self._cmd_vel_pub = self.create_publisher(Twist, "/xczs/cmd_vel", 10)
+        self._trajectory_pub = self.create_publisher(
+            JointTrajectory, "/xczs/joint_trajectory", 10
+        )
+        self._phase_pub = self.create_publisher(String, "/mission/phase", 10)
+        self._waypoint_pub = self.create_publisher(
+            Int32, "/mission/current_waypoint", 10
+        )
+
+        # -- Subscribers -------------------------------------------------
+        self._odom_sub = self.create_subscription(
+            Odometry, "/xczs/odom", self._odom_callback, 10
+        )
+        self._joint_sub = self.create_subscription(
+            JointState, "/xczs/joint_states", self._joint_callback, 10
+        )
+
+        # -- State -------------------------------------------------------
+        self._phase = Phase.IDLE
+        self._current_waypoint_idx = 0
+        self._odom_x = 0.0
+        self._odom_y = 0.0
+        self._odom_yaw = 0.0
+        self._odom_received = False
+        self._joint_positions = [0.0] * 8
+        self._joints_initialized = False
+
+        # -- Timer -------------------------------------------------------
+        self._timer = self.create_timer(0.05, self._control_loop)  # 20 Hz
+        self._phase_start_time = time.time()
+        self._arm_sequence: List[List[float]] = []
+        self._arm_seq_idx = 0
+        self._arm_seq_timer = 0.0
+
+        self.get_logger().info("TaskScheduler ready — waiting for odom & joints")
+
+    # ====================================================================
+    # Subscriber Callbacks
+    # ====================================================================
+
+    def _odom_callback(self, msg: Odometry) -> None:
+        self._odom_x = msg.pose.pose.position.x
+        self._odom_y = msg.pose.pose.position.y
+        # Extract yaw from quaternion (simplified — assumes flat ground)
+        q = msg.pose.pose.orientation
+        siny = 2.0 * (q.w * q.z + q.x * q.y)
+        cosy = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
+        self._odom_yaw = math.atan2(siny, cosy)
+        self._odom_received = True
+
+    def _joint_callback(self, msg: JointState) -> None:
+        if self._joints_initialized:
+            return
+        for i, name in enumerate(CONTROLLED_JOINTS):
+            try:
+                idx = msg.name.index(name)
+                if idx < len(msg.position) and math.isfinite(msg.position[idx]):
+                    self._joint_positions[i] = msg.position[idx]
+            except ValueError:
+                pass
+        # Check if all 8 joints have been seen at least once
+        # (Simple heuristic: if we got this callback, most joints are present)
+        if len(msg.name) >= 8 and not self._joints_initialized:
+            self._joints_initialized = True
+            self.get_logger().info("Joint targets synchronized from /xczs/joint_states")
+
+    # ====================================================================
+    # Control Loop (20 Hz)
+    # ====================================================================
+
+    def _control_loop(self) -> None:
+        if self._phase == Phase.IDLE:
+            if self._odom_received and self._joints_initialized:
+                self._transition(Phase.NAVIGATING)
+        elif self._phase == Phase.NAVIGATING:
+            self._run_navigation()
+        elif self._phase == Phase.POSITIONING:
+            self._run_positioning()
+        elif self._phase == Phase.OPERATING:
+            self._run_operation()
+        elif self._phase == Phase.RETRACTING:
+            self._run_retracting()
+        elif self._phase == Phase.DONE:
+            self._stop_base()
+
+    # ====================================================================
+    # Phase Transitions
+    # ====================================================================
+
+    def _transition(self, new_phase: Phase) -> None:
+        self.get_logger().info(
+            f"Phase: {self._phase.value} → {new_phase.value}"
+        )
+        self._phase = new_phase
+        self._phase_start_time = time.time()
+        self._phase_pub.publish(String(data=new_phase.value))
+
+    # ====================================================================
+    # Phase A — Global Navigation (dead reckoning to waypoint)
+    # ====================================================================
+
+    def _run_navigation(self) -> None:
+        wp = self._get_current_waypoint()
+        if wp is None:
+            self._transition(Phase.DONE)
+            return
+
+        # Compute error
+        dx = wp["x"] - self._odom_x
+        dy = wp["y"] - self._odom_y
+        dist = math.hypot(dx, dy)
+        target_yaw = math.atan2(dy, dx)
+        yaw_error = self._normalize_angle(target_yaw - self._odom_yaw)
+
+        # Timeout check
+        elapsed = time.time() - self._phase_start_time
+        timeout = self.get_parameter("navigation_timeout").value
+        if elapsed > timeout:
+            self.get_logger().warn(f"Navigation timeout ({timeout}s) — advancing")
+            self._transition(Phase.POSITIONING)
+            return
+
+        # Arrived?
+        linear_tol = self.get_parameter("arrival_tolerance_linear").value
+        angular_tol = self.get_parameter("arrival_tolerance_angular").value
+        if dist < linear_tol and abs(yaw_error) < angular_tol:
+            self.get_logger().info(f"Arrived at waypoint {self._current_waypoint_idx}")
+            self._transition(Phase.POSITIONING)
+            return
+
+        # Proportional control
+        linear_speed = self.get_parameter("linear_speed").value
+        angular_speed = self.get_parameter("angular_speed").value
+
+        twist = Twist()
+        if abs(yaw_error) > 0.2:
+            # Turn in place
+            twist.angular.z = math.copysign(
+                min(abs(yaw_error) * angular_speed * 2.0, angular_speed),
+                yaw_error,
+            )
+        else:
+            # Drive forward while correcting heading
+            twist.linear.y = min(dist * linear_speed * 2.0, linear_speed)
+            twist.angular.z = math.copysign(
+                min(abs(yaw_error) * angular_speed * 3.0, angular_speed),
+                yaw_error,
+            )
+        self._cmd_vel_pub.publish(twist)
+
+    # ====================================================================
+    # Phase B — Precise Positioning (simulated dwell)
+    # ====================================================================
+
+    def _run_positioning(self) -> None:
+        self._stop_base()
+        dwell = self.get_parameter("phase_b_dwell").value
+        elapsed = time.time() - self._phase_start_time
+        if elapsed >= dwell:
+            self._transition(Phase.OPERATING)
+
+    # ====================================================================
+    # Phase C — Arm Operation (scripted trajectory sequence)
+    # ====================================================================
+
+    def _run_operation(self) -> None:
+        # Initialize arm sequence on first tick
+        if not self._arm_sequence:
+            self._arm_sequence = [
+                ARM_DEPLOYED,   # Unfold arm to inspection pose
+                ARM_APPROACH,   # Approach button
+                ARM_DEPLOYED,   # Back to deployed (simulate button rotation)
+                ARM_FOLDED,     # Start folding
+            ]
+            self._arm_seq_idx = 0
+            self._arm_seq_timer = 0.0
+            self._send_arm_command(self._arm_sequence[0])
+            self.get_logger().info("Arm operation: deploying")
+
+        dwell = self.get_parameter("arm_trajectory_dwell").value
+        elapsed = time.time() - self._phase_start_time
+
+        # Advance through arm sequence
+        if elapsed - self._arm_seq_timer >= dwell:
+            self._arm_seq_idx += 1
+            if self._arm_seq_idx >= len(self._arm_sequence):
+                self.get_logger().info("Arm sequence complete")
+                self._arm_sequence = []
+                self._transition(Phase.RETRACTING)
+                return
+            self._arm_seq_timer = elapsed
+            labels = ["deploy", "approach", "operate", "fold"]
+            label = labels[self._arm_seq_idx] if self._arm_seq_idx < len(labels) else "step"
+            self.get_logger().info(f"Arm: {label} ({self._arm_seq_idx + 1}/{len(self._arm_sequence)})")
+            self._send_arm_command(self._arm_sequence[self._arm_seq_idx])
+
+    # ====================================================================
+    # Phase D — Retract & Transfer
+    # ====================================================================
+
+    def _run_retracting(self) -> None:
+        self._stop_base()
+
+        # Ensure arm is folded
+        if self._arm_sequence:
+            self._arm_sequence = []
+        self._send_arm_command(ARM_FOLDED)
+
+        dwell = self.get_parameter("arm_trajectory_dwell").value
+        elapsed = time.time() - self._phase_start_time
+        if elapsed >= dwell:
+            self._current_waypoint_idx += 1
+            wp = self._get_current_waypoint()
+            if wp is None:
+                self.get_logger().info("All waypoints completed!")
+                self._transition(Phase.DONE)
+            else:
+                self.get_logger().info(
+                    f"Transferring to waypoint {self._current_waypoint_idx}"
+                )
+                self._waypoint_pub.publish(
+                    Int32(data=self._current_waypoint_idx)
+                )
+                self._transition(Phase.NAVIGATING)
+
+    # ====================================================================
+    # Helpers
+    # ====================================================================
+
+    def _get_current_waypoint(self) -> Optional[dict]:
+        waypoints = self.get_parameter("waypoints").value
+        if self._current_waypoint_idx >= len(waypoints):
+            return None
+        return waypoints[self._current_waypoint_idx]
+
+    def _stop_base(self) -> None:
+        self._cmd_vel_pub.publish(Twist())  # all zeros
+
+    def _send_arm_command(self, positions: List[float]) -> None:
+        """Send a single joint trajectory point to the arm."""
+        traj = JointTrajectory()
+        traj.header.frame_id = "world"
+        traj.joint_names = list(CONTROLLED_JOINTS)
+
+        point = JointTrajectoryPoint()
+        limit = self.get_parameter("joint_limit").value
+        point.positions = [
+            max(-limit, min(limit, p)) for p in positions
+        ]
+        traj.points.append(point)
+
+        # Publish multiple times for reliability (same as GUI/keyboard pattern)
+        rate = self.get_parameter("joint_command_rate").value
+        # Publish at ~20 Hz for ~0.3s = 6 repeats
+        for _ in range(6):
+            self._trajectory_pub.publish(traj)
+            time.sleep(1.0 / rate)
+
+    @staticmethod
+    def _normalize_angle(angle: float) -> float:
+        """Wrap angle to [-pi, pi]."""
+        return math.atan2(math.sin(angle), math.cos(angle))
+
+
+# ============================================================================
+# Main
+# ============================================================================
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TaskScheduler()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node._stop_base()
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

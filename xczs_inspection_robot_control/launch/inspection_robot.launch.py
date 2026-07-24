@@ -63,6 +63,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="true",
         description="Start the graphical robot controller.",
     )
+    task_scheduler_argument = DeclareLaunchArgument(
+        "task_scheduler",
+        default_value="false",
+        description="Start the autonomous task scheduler (A→B→C→D pipeline).",
+    )
     spawn_z_argument = DeclareLaunchArgument(
         "spawn_z",
         default_value="0.515",
@@ -135,10 +140,18 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[str(control_config)],
         condition=IfCondition(LaunchConfiguration("control_gui")),
     )
+    task_scheduler_node = Node(
+        package=CONTROL_PACKAGE,
+        executable="task_scheduler",
+        name="xczs_task_scheduler",
+        output="screen",
+        parameters=[str(control_config)],
+        condition=IfCondition(LaunchConfiguration("task_scheduler")),
+    )
     start_controllers_after_spawn = RegisterEventHandler(
         OnProcessExit(
             target_action=spawn_robot,
-            on_exit=[keyboard_teleop, gui_controller],
+            on_exit=[keyboard_teleop, gui_controller, task_scheduler_node],
         )
     )
 
@@ -148,6 +161,7 @@ def generate_launch_description() -> LaunchDescription:
             paused_argument,
             teleop_argument,
             control_gui_argument,
+            task_scheduler_argument,
             spawn_z_argument,
             gazebo_server,
             gazebo_client,
