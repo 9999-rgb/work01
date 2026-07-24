@@ -133,31 +133,23 @@ _start_bridge() {
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
 echo "[1/5] Zenoh Bridge..."
 
-# 先停掉可能存在的 systemd 服务（它以 peer 模式运行，缺少 ros2dds）
-systemctl stop zenoh-ros2dds 2>/dev/null && echo "       已停止系统 zenoh 服务" || true
-
-# 再杀掉任何残留的桥进程
-pkill -9 -f "zenoh-bridge-ros2dds" 2>/dev/null || true
-sleep 1
-
-# 确保端口已释放
-for i in $(seq 1 10); do
-    if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
-        echo "       等待端口 $BRIDGE_TCP_PORT 释放... ($i/10)"
-        sleep 1
-    else
-        break
-    fi
-done
-
-# 最后保险：如果端口还是被占，切到备用端口
+# 如果系统桥已存在且有 ros2dds（/zenoh_bridge_ros2dds 节点存在），直接复用
 if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
-    echo "       端口 $BRIDGE_TCP_PORT 仍被占用，切换到备用端口"
-    BRIDGE_TCP_PORT=$((BRIDGE_TCP_PORT + 1))
-    BRIDGE_REST_PORT=$((BRIDGE_REST_PORT + 1))
+    source "$ROS2_SETUP" 2>/dev/null
+    if ros2 node list 2>/dev/null | grep -q zenoh_bridge_ros2dds; then
+        echo "       系统 Zenoh 桥已运行且 ros2dds 正常，直接复用"
+        echo "       TCP: tcp/localhost:$BRIDGE_TCP_PORT"
+        BRIDGE_PID=""
+    else
+        # 系统桥在运行但无 ros2dds → 用不同端口
+        echo "       系统桥无 ros2dds，使用备用端口 7448"
+        BRIDGE_TCP_PORT=7448
+        BRIDGE_REST_PORT=8001
+        _start_bridge
+    fi
+else
+    _start_bridge
 fi
-
-_start_bridge
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
 if [ "$WITH_PROXY" = "true" ]; then
