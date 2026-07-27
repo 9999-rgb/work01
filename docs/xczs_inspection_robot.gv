@@ -1,0 +1,41 @@
+digraph G {
+node [shape=box];
+"body" [label="body"];
+"arm1" [label="arm1"];
+"arm2" [label="arm2"];
+"arm3" [label="arm3"];
+"arm4" [label="arm4"];
+"arm5" [label="arm5"];
+"end" [label="end"];
+"worklink1" [label="worklink1"];
+"worklink2" [label="worklink2"];
+"back_left_wheel" [label="back_left_wheel"];
+"back_right_wheel" [label="back_right_wheel"];
+"front_left_wheel" [label="front_left_wheel"];
+"front_right_wheel" [label="front_right_wheel"];
+node [shape=ellipse, color=blue, fontcolor=blue];
+"body" -> "body_arm1" [label="xyz: 0 0 0.1713 \nrpy: 0 -0 0"]
+"body_arm1" -> "arm1"
+"arm1" -> "arm1_arm2" [label="xyz: -0.0643 0 0.07985 \nrpy: 0 1.5708 -0"]
+"arm1_arm2" -> "arm2"
+"arm2" -> "arm2_arm3" [label="xyz: 0 0.43 0.0003 \nrpy: 0 -0 0"]
+"arm2_arm3" -> "arm3"
+"arm3" -> "arm3_arm4" [label="xyz: 0 0.3685 -0.0045 \nrpy: 0 -0 0"]
+"arm3_arm4" -> "arm4"
+"arm4" -> "arm4_arm5" [label="xyz: 0 0.068 -0.0455 \nrpy: 0 -1.5708 1.5708"]
+"arm4_arm5" -> "arm5"
+"arm5" -> "arm5_end" [label="xyz: 0.049 0 0.0455 \nrpy: 1.5708 -0 1.5708"]
+"arm5_end" -> "end"
+"end" -> "end_worklink1" [label="xyz: 0 -0.021 -0.2695 \nrpy: 0 -1.5708 3.1416"]
+"end_worklink1" -> "worklink1"
+"end" -> "end_worklink2" [label="xyz: 0 0.021 -0.2695 \nrpy: 0 -1.5708 3.1416"]
+"end_worklink2" -> "worklink2"
+"body" -> "body_blw" [label="xyz: -0.301 0.165 -0.414 \nrpy: 0 1.5708 -0"]
+"body_blw" -> "back_left_wheel"
+"body" -> "body_brw" [label="xyz: 0.301 0.165 -0.414 \nrpy: 0 1.5708 -0"]
+"body_brw" -> "back_right_wheel"
+"body" -> "body_flw" [label="xyz: -0.165 -0.313 -0.454 \nrpy: 0 1.5708 -0"]
+"body_flw" -> "front_left_wheel"
+"body" -> "body_frw" [label="xyz: 0.165 -0.313 -0.454 \nrpy: 0 1.5708 -0"]
+"body_frw" -> "front_right_wheel"
+}
