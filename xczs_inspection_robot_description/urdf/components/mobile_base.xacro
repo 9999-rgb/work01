@@ -1,0 +1,249 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="xczs_base_body" params="">
+    <link name="body">
+      <inertial>
+        <origin
+          xyz="-0.0028688 -0.12904 -0.2447"
+          rpy="0 0 0" />
+        <mass value="87.371" />
+        <inertia
+          ixx="2.5745"
+          ixy="0.00027436"
+          ixz="0.00010738"
+          iyy="1.225"
+          iyz="0.06048"
+          izz="3.0663" />
+      </inertial>
+      <visual>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/body.STL" />
+        </geometry>
+        <material name="industrial_navy" />
+      </visual>
+      <collision>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/collision/body.STL" />
+        </geometry>
+      </collision>
+    </link>
+  </xacro:macro>
+
+  <xacro:macro name="xczs_wheels" params="">
+    <link name="front_right_wheel">
+      <inertial>
+        <origin
+          xyz="-0.018873 -0.0062155 -0.00011669"
+          rpy="0 0 0" />
+        <mass value="0.37338" />
+        <inertia
+          ixx="0.0003725"
+          ixy="-0.00010324"
+          ixz="7.9185E-07"
+          iyy="0.00064633"
+          iyz="2.7521E-07"
+          izz="0.0007665" />
+      </inertial>
+      <visual>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/front_right_wheel.STL" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+      <collision>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <cylinder
+            radius="${front_wheel_collision_radius}"
+            length="${front_wheel_collision_length}" />
+        </geometry>
+      </collision>
+    </link>
+    <joint
+      name="body_frw"
+      type="continuous">
+      <origin
+        xyz="0.165 -0.313 -0.454"
+        rpy="0 1.5708 0" />
+      <parent link="body" />
+      <child link="front_right_wheel" />
+      <axis xyz="0 0 1" />
+      <limit
+        effort="${wheel_joint_effort}"
+        velocity="${wheel_joint_velocity}" />
+      <dynamics
+        damping="${wheel_joint_damping}"
+        friction="${wheel_joint_friction}" />
+    </joint>
+
+    <link name="front_left_wheel">
+      <inertial>
+        <origin
+          xyz="-0.018873 -0.0062155 -0.00011669"
+          rpy="0 0 0" />
+        <mass value="0.37338" />
+        <inertia
+          ixx="0.0003725"
+          ixy="-0.00010324"
+          ixz="7.9185E-07"
+          iyy="0.00064633"
+          iyz="2.7521E-07"
+          izz="0.0007665" />
+      </inertial>
+      <visual>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/front_left_wheel.STL" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+      <collision>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <cylinder
+            radius="${front_wheel_collision_radius}"
+            length="${front_wheel_collision_length}" />
+        </geometry>
+      </collision>
+    </link>
+    <joint
+      name="body_flw"
+      type="continuous">
+      <origin
+        xyz="-0.165 -0.313 -0.454"
+        rpy="0 1.5708 0" />
+      <parent link="body" />
+      <child link="front_left_wheel" />
+      <axis xyz="0 0 1" />
+      <limit
+        effort="${wheel_joint_effort}"
+        velocity="${wheel_joint_velocity}" />
+      <dynamics
+        damping="${wheel_joint_damping}"
+        friction="${wheel_joint_friction}" />
+    </joint>
+
+    <link name="back_right_wheel">
+      <inertial>
+        <origin
+          xyz="-0.00032255 0.00013376 -0.033724"
+          rpy="0 0 0" />
+        <mass value="1.6743" />
+        <inertia
+          ixx="0.0039013"
+          ixy="1.0843E-05"
+          ixz="-3.1413E-06"
+          iyy="0.0034767"
+          iyz="-1.9739E-06"
+          izz="0.0064797" />
+      </inertial>
+      <visual>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/back_right_wheel.STL" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+      <collision>
+        <origin
+          xyz="0 0 -0.067"
+          rpy="0 0 0" />
+        <geometry>
+          <cylinder
+            radius="${back_wheel_collision_radius}"
+            length="${back_wheel_collision_length}" />
+        </geometry>
+      </collision>
+    </link>
+    <joint
+      name="body_brw"
+      type="continuous">
+      <origin
+        xyz="0.301 0.165 -0.414"
+        rpy="0 1.5708 0" />
+      <parent link="body" />
+      <child link="back_right_wheel" />
+      <axis xyz="0 0 1" />
+      <limit
+        effort="${wheel_joint_effort}"
+        velocity="${wheel_joint_velocity}" />
+      <dynamics
+        damping="${wheel_joint_damping}"
+        friction="${wheel_joint_friction}" />
+    </joint>
+
+    <link name="back_left_wheel">
+      <inertial>
+        <origin
+          xyz="-0.00032255 -0.00013376 0.033724"
+          rpy="0 0 0" />
+        <mass value="1.6743" />
+        <inertia
+          ixx="0.0039013"
+          ixy="-1.0843E-05"
+          ixz="3.1413E-06"
+          iyy="0.0034767"
+          iyz="-1.9739E-06"
+          izz="0.0064797" />
+      </inertial>
+      <visual>
+        <origin
+          xyz="0 0 0"
+          rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/back_left_wheel.STL" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+      <collision>
+        <origin
+          xyz="0 0 0.067"
+          rpy="0 0 0" />
+        <geometry>
+          <cylinder
+            radius="${back_wheel_collision_radius}"
+            length="${back_wheel_collision_length}" />
+        </geometry>
+      </collision>
+    </link>
+    <joint
+      name="body_blw"
+      type="continuous">
+      <origin
+        xyz="-0.301 0.165 -0.414"
+        rpy="0 1.5708 0" />
+      <parent link="body" />
+      <child link="back_left_wheel" />
+      <axis xyz="0 0 -1" />
+      <limit
+        effort="${wheel_joint_effort}"
+        velocity="${wheel_joint_velocity}" />
+      <dynamics
+        damping="${wheel_joint_damping}"
+        friction="${wheel_joint_friction}" />
+    </joint>
+  </xacro:macro>
+</robot>

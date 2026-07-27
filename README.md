@@ -134,7 +134,10 @@ http://localhost:8080/monitor.html
 
 ```text
 work01/
-├── xczs_inspection_robot_description/  # Xacro、网格和仿真世界
+├── xczs_inspection_robot_description/  # 机器人模型与仿真环境
+│   └── urdf/
+│       ├── xczs_inspection_robot.urdf.xacro  # 模型组装入口
+│       └── components/                       # 模型功能组件
 ├── xczs_inspection_robot_control/      # 控制节点、配置和统一 launch
 ├── jiang/                              # Web、Zenoh 和前后端接口
 ├── docs/                               # 图片等项目文档资源

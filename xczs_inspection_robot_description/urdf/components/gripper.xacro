@@ -1,0 +1,96 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="xczs_gripper" params="">
+    <link name="worklink1">
+      <inertial>
+        <origin xyz="-0.026954 -0.00060856 0.00020469" rpy="0 0 0" />
+        <mass value="0.15355" />
+        <inertia
+          ixx="6.267E-05"
+          ixy="-1.1937E-06"
+          ixz="3.0638E-09"
+          iyy="8.5862E-05"
+          iyz="-7.3249E-10"
+          izz="3.7389E-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/worklink1.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/collision/worklink1.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="end_worklink1" type="revolute">
+      <origin xyz="0 -0.021 -0.2695" rpy="3.1416 -1.5708 0" />
+      <parent link="end" />
+      <child link="worklink1" />
+      <axis xyz="0 0 -1" />
+      <limit
+        lower="-3.14"
+        upper="3.14"
+        effort="100"
+        velocity="10" />
+      <dynamics damping="5.0" friction="30.0" />
+      <safety_controller
+        soft_upper="3.14"
+        soft_lower="-3.14"
+        k_position="1"
+        k_velocity="1" />
+    </joint>
+
+    <link name="worklink2">
+      <inertial>
+        <origin xyz="-0.026954 0.00060856 2.3242E-06" rpy="0 0 0" />
+        <mass value="0.15355" />
+        <inertia
+          ixx="6.267E-05"
+          ixy="1.1937E-06"
+          ixz="-3.2813E-09"
+          iyy="8.5862E-05"
+          iyz="5.5779E-10"
+          izz="3.7389E-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/worklink2.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh
+            filename="package://xczs_inspection_robot_description/meshes/collision/worklink2.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="end_worklink2" type="revolute">
+      <origin xyz="0 0.021 -0.2695" rpy="3.1416 -1.5708 0" />
+      <parent link="end" />
+      <child link="worklink2" />
+      <axis xyz="0 0 -1" />
+      <limit
+        lower="-3.14"
+        upper="3.14"
+        effort="100"
+        velocity="10" />
+      <dynamics damping="5.0" friction="30.0" />
+      <safety_controller
+        soft_upper="3.14"
+        soft_lower="-3.14"
+        k_position="1"
+        k_velocity="1" />
+    </joint>
+  </xacro:macro>
+</robot>
