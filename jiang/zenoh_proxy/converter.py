@@ -2,8 +2,7 @@
 """
 CDR deserialization and ROS2-message-to-dict conversion.
 
-Extracted from the original ``proxy.py`` — the ``msg_to_dict()`` logic is
-preserved verbatim for backward compatibility.
+Provides reusable conversion utilities for the XCZS Zenoh bridge.
 """
 
 from __future__ import annotations
@@ -29,7 +28,7 @@ def _get_deserializer():
 
 
 # ============================================================================
-# msg_to_dict — identical logic to original proxy.py
+# ROS 2 message conversion
 # ============================================================================
 
 def msg_to_dict(msg: Any) -> Any:

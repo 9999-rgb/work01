@@ -136,7 +136,7 @@ class TopicRegistry:
         """Register a topic pattern with a ROS2 message type.
 
         Args:
-            pattern: Topic string or pattern (``"/turtle1/cmd_vel"``,
+            pattern: Topic string or pattern (``"xczs/cmd_vel"``,
                      ``"/robot/*/pose"``).
             msg_type: A ROS2 message class (e.g. ``geometry_msgs.msg.Twist``).
             handler: Optional callback ``(topic, data) -> data`` for

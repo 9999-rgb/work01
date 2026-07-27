@@ -26,7 +26,7 @@ class ProxyRunner:
 
         runner = ProxyRunner(host="127.0.0.1", port=7447)
         runner.connect()
-        runner.subscribe(["/turtle1/cmd_vel"])
+        runner.subscribe(["xczs/cmd_vel"])
         runner.spin()  # blocks until Ctrl+C
 
     Or with auto-subscribe from registry::

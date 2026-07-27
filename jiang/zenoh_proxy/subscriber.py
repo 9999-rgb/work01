@@ -64,7 +64,7 @@ class SubscriptionManager:
         """Subscribe to a single topic or wildcard pattern.
 
         Args:
-            topic: Zenoh key expression (e.g. ``"turtle1/cmd_vel"`` or
+            topic: Zenoh key expression (e.g. ``"xczs/cmd_vel"`` or
                    ``"robot/**"``).
         """
         if topic in self._subscribers:

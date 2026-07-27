@@ -2,9 +2,6 @@
 """
 Built-in handlers and standard type registration.
 
-The ``register_standard_types()`` function replaces the old hardcoded if-elif
-chain (lines 69-76 of the original ``proxy.py``).
-
 Usage::
 
     from zenoh_proxy.handler import register_standard_types
@@ -69,7 +66,7 @@ def flatten_joint_state(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ============================================================================
-# Standard type registration (replaces old if-elif chain)
+# Standard type registration
 # ============================================================================
 
 def register_standard_types() -> None:
@@ -79,8 +76,8 @@ def register_standard_types() -> None:
     .. warning::
 
        Topic names alone cannot reliably determine the ROS2 message type.
-       For example, ``turtle1/pose`` is ``turtlesim/msg/Pose`` (5×float32),
-       while ``robot/pose`` could be ``geometry_msgs/msg/Pose`` (7×float64).
+       Register exact topic patterns when multiple message types could use
+       the same final topic name.
 
        Use **exact** topic patterns where possible, and consult the bridge's
        REST admin API (``http://localhost:8000/@/**``) to verify the actual
@@ -92,37 +89,11 @@ def register_standard_types() -> None:
     Twist = load_message_type("geometry_msgs.msg.Twist")
     Odometry = load_message_type("nav_msgs.msg.Odometry")
 
-    # -- TurtleSim Pose (turtlesim/msg/Pose: 5 float32 fields) -------------
-    TurtlePose = load_message_type("turtlesim.msg.Pose")
-
-    # -- TurtleSim Color (turtlesim/msg/Color: 3 uint8 fields) -------------
-    Color = load_message_type("turtlesim.msg.Color")
-
     # -- cmd_vel topics → Twist -------------------------------------------
     if Twist is not None:
         registry.register(
-            "turtle1/cmd_vel", Twist,
-            description="TurtleSim velocity commands",
-        )
-        registry.register(
             "*/cmd_vel", Twist,
             description="Any namespace cmd_vel",
-        )
-
-    # -- TurtleSim pose → turtlesim/msg/Pose -------------------------------
-    if TurtlePose is not None:
-        registry.register(
-            "turtle1/pose", TurtlePose,
-            handler=add_timestamp,
-            description="TurtleSim pose (turtlesim/msg/Pose)",
-        )
-
-    # -- TurtleSim color_sensor → turtlesim/msg/Color ----------------------
-    if Color is not None:
-        registry.register(
-            "turtle1/color_sensor", Color,
-            handler=add_timestamp,
-            description="TurtleSim color sensor (turtlesim/msg/Color)",
         )
 
     # -- odom topics → Odometry -------------------------------------------
@@ -175,7 +146,6 @@ def register_standard_types() -> None:
     # Print summary
     all_none = (
         Twist is None and Odometry is None
-        and TurtlePose is None and Color is None
         and JointState is None and JointTrajectory is None
         and String is None and Int32 is None
     )

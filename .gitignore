@@ -17,6 +17,8 @@ cmake_install.cmake
 Makefile
 
 # Runtime and editor temporary files
+.claude/
+.idea/
 *.swp
 *.tmp
 *~
