@@ -31,7 +31,10 @@ def add_timestamp(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def flatten_twist(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Flatten nested ``linear`` / ``angular`` Vector3 fields in Twist messages
+    """
+    Flatten nested Vector3 fields in Twist messages.
+
+    Flatten the ``linear`` and ``angular`` fields
     for cleaner JSON output.
 
     Before: ``{"linear": {"x": 1, "y": 0, "z": 0}, "angular": {...}}``
@@ -46,7 +49,8 @@ def flatten_twist(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def flatten_joint_state(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert parallel arrays to key-value dicts for easier browser charting.
+    """
+    Convert parallel arrays to key-value dicts for browser charting.
 
     Before: ``{"name": ["j1","j2"], "position": [1.0, 2.0], "velocity": [...]}``
     After:  ``{"positions": {"j1": 1.0, "j2": 2.0}, "velocities": {...}}``
@@ -69,7 +73,8 @@ def flatten_joint_state(topic: str, data: Dict[str, Any]) -> Dict[str, Any]:
 # ============================================================================
 
 def register_standard_types() -> None:
-    """Register all standard ROS2 message types used by the project.
+    """
+    Register all standard ROS2 message types used by the project.
 
     .. warning::
 
@@ -146,13 +151,20 @@ def register_standard_types() -> None:
             description="JointTrajectory (any namespace)",
         )
 
-    # -- std_msgs/String → for mission/phase, etc. -----------------------
+    # -- Mission state topics --------------------------------------------
     String = load_message_type("std_msgs.msg.String")
+    Int32 = load_message_type("std_msgs.msg.Int32")
     if String is not None:
         registry.register(
-            "*/mission/*", String,
+            "mission/phase", String,
             handler=add_timestamp,
-            description="Mission status messages (String, any namespace)",
+            description="Mission phase",
+        )
+    if Int32 is not None:
+        registry.register(
+            "mission/current_waypoint", Int32,
+            handler=add_timestamp,
+            description="Mission waypoint index",
         )
 
     # -- geometry_msgs/Pose — NOT registered via wildcard! ----------------
@@ -165,7 +177,7 @@ def register_standard_types() -> None:
         Twist is None and Odometry is None
         and TurtlePose is None and Color is None
         and JointState is None and JointTrajectory is None
-        and String is None
+        and String is None and Int32 is None
     )
     if all_none:
         print(

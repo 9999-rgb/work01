@@ -6,7 +6,7 @@
 ## 功能包
 
 - `xczs_inspection_robot_description`：Xacro 模型、网格和 Gazebo 世界。
-- `xczs_inspection_robot_control`：GUI 控制节点、键盘控制节点和统一启动文件。
+- `xczs_inspection_robot_control`：GUI、键盘、自主任务调度节点和统一启动文件。
 
 ## 编译
 
@@ -66,32 +66,49 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 ## 一键启动（仿真 + 桥 + 监控面板）
 
 ```bash
-./run_all.sh                # 全部自动启动（任务调度器模式）
-./run_all.sh --manual       # GUI 手动控制模式
-./run_all.sh --with-proxy   # 附加 CDR→JSON 代理
-./run_all.sh --no-gui       # headless（无 Gazebo 窗口）
+./run_all.sh                # Gazebo + Qt GUI + 浏览器监控
+./run_all.sh --web          # 浏览器控制模式
+./run_all.sh --task         # 自主任务调度器模式
+./run_all.sh --keyboard     # 键盘控制模式
+./run_all.sh --with-proxy   # 附加 JSON 再发布代理
+./run_all.sh --no-gui       # 无显示器时自动使用任务调度器
 ```
 
 启动后打开浏览器访问 `http://localhost:8080/monitor.html`：
+
 1. 点击"连接"
 2. 点击"订阅全部 XCZS 话题"
 3. 观察实时数据（底盘速度、里程计、关节状态、任务阶段）
+
+浏览器控制底盘、机械臂和夹爪时必须使用 `./run_all.sh --web`。各控制模式
+互斥，避免多个节点同时向控制话题发布指令。
+
+首次使用 Zenoh 功能前安装 Python 依赖：
+
+```bash
+/usr/bin/python3 -m pip install -r jiang/requirements.txt
+```
+
+一键脚本还需要
+`/opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds`。
 
 ## Zenoh 桥与实时监控
 
 本项目通过 [Zenoh](https://zenoh.io/) 将 ROS2 话题实时转发至浏览器：
 
 ```
-Gazebo/ROS2 → zenoh-bridge-ros2dds → REST SSE → monitor.html
-                                 └→ TCP:7447 → proxy.py (CDR→JSON)
+Gazebo/ROS2 → zenoh-bridge-ros2dds → TCP:7447 → SSE bridge:8001 → monitor.html
+                                             └→ JSON proxy（可选）
+monitor.html → HTTP control:8090 → rclpy → ROS 2 控制话题
 ```
 
 | 组件 | 地址 | 说明 |
 |------|------|------|
-| Zenoh Bridge TCP | `tcp/localhost:7447` | 原生协议（proxy 连接） |
-| Zenoh REST SSE | `http://localhost:8000` | 浏览器 SSE 数据源 |
+| Zenoh Bridge TCP | `tcp/localhost:7447` | ROS 2 与 Zenoh 数据桥 |
+| SSE 数据桥 | `http://localhost:8001` | 浏览器实时数据源 |
 | 监控面板 HTTP | `http://localhost:8080/monitor.html` | 零依赖实时看板 |
-| CDR→JSON 代理 | `jiang/run_xczs_proxy.py` | 可选，提供数据扁平化 |
+| Web 控制服务 | `http://localhost:8090` | 仅 `--web` 模式启动 |
+| CDR→JSON 代理 | `jiang/run_xczs_proxy.py` | 可选 JSON 再发布 |
 
 监控面板功能：
 - 实时数据卡片（底盘速度、里程计、关节状态、关节指令）
@@ -107,11 +124,13 @@ Gazebo/ROS2 → zenoh-bridge-ros2dds → REST SSE → monitor.html
 | `/robot_state_publisher` | 发布机器人模型和 TF。 |
 | `/xczs_inspection_robot_gui` | GUI 控制节点。 |
 | `/xczs_keyboard_teleop` | 键盘控制节点。 |
+| `/xczs_task_scheduler` | 自主巡检任务调度。 |
+| `/xczs_web_control_server` | 浏览器控制，仅 Web 模式启动。 |
 | `/xczs/xczs_planar_move` | 底盘运动和里程计。 |
 | `/xczs/xczs_joint_pose_trajectory` | 机械臂和夹爪位置控制。 |
 | `/xczs/xczs_joint_state_publisher` | 关节状态发布。 |
 
-GUI 和键盘节点根据启动参数二选一，其余节点由统一启动文件启动。
+Qt GUI、键盘、任务调度器和浏览器控制根据运行模式四选一。
 
 ## ROS 2 话题
 
@@ -125,6 +144,6 @@ GUI 和键盘节点根据启动参数二选一，其余节点由统一启动文�
 | `/xczs/joint_states` | `sensor_msgs/msg/JointState` | 机械臂、夹爪和车轮关节状态。 |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Gazebo 仿真时间。 |
 | `/mission/phase` | `std_msgs/msg/String` | 任务调度器当前阶段（A/B/C/D/IDLE/DONE）。 |
-| `/mission/current_waypoint` | `std_msgs/msg/Int32` | 当前巡检点序号。
+| `/mission/current_waypoint` | `std_msgs/msg/Int32` | 当前巡检点序号。 |
 
 当前控制接口均使用 ROS 2 标准消息，不需要单独维护自定义消息包。

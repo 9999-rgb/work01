@@ -19,8 +19,12 @@ from __future__ import annotations
 
 import argparse
 
+from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
+from sensor_msgs.msg import JointState
+from trajectory_msgs.msg import JointTrajectory
+
 from zenoh_proxy import (
-    add_message_path,
     get_registry,
     register_standard_types,
 )
@@ -33,7 +37,8 @@ from zenoh_proxy.runner import ProxyRunner
 
 
 def register_xczs_topics() -> None:
-    """Register XCZS-specific topic patterns with custom handlers.
+    """
+    Register XCZS-specific topic patterns with custom handlers.
 
     These are MORE SPECIFIC than the wildcard registrations in
     ``register_standard_types()``, so they win the specificity contest and
@@ -44,6 +49,7 @@ def register_xczs_topics() -> None:
     # -- XCZS cmd_vel: flatten + timestamp -------------------------------
     @registry.register_topic(
         "xczs/cmd_vel",
+        Twist,
         description="XCZS base velocity (flattened)",
     )
     def handle_xczs_cmd_vel(topic: str, data: dict) -> dict:
@@ -54,6 +60,7 @@ def register_xczs_topics() -> None:
     # -- XCZS joint_states: flatten + timestamp --------------------------
     @registry.register_topic(
         "xczs/joint_states",
+        JointState,
         description="XCZS joint states (flattened positions/velocities/efforts)",
     )
     def handle_xczs_joint_states(topic: str, data: dict) -> dict:
@@ -64,6 +71,7 @@ def register_xczs_topics() -> None:
     # -- XCZS odom: timestamp only (already flat enough) -----------------
     @registry.register_topic(
         "xczs/odom",
+        Odometry,
         description="XCZS odometry (timestamped)",
     )
     def handle_xczs_odom(topic: str, data: dict) -> dict:
@@ -73,23 +81,15 @@ def register_xczs_topics() -> None:
     # -- XCZS joint_trajectory: timestamp only ---------------------------
     @registry.register_topic(
         "xczs/joint_trajectory",
+        JointTrajectory,
         description="XCZS joint trajectory commands (timestamped)",
     )
     def handle_xczs_joint_trajectory(topic: str, data: dict) -> dict:
         data = add_timestamp(topic, data)
         return data
 
-    # -- Mission phase: timestamp only -----------------------------------
-    @registry.register_topic(
-        "mission/phase",
-        description="Mission phase (A/B/C/D)",
-    )
-    def handle_mission_phase(topic: str, data: dict) -> dict:
-        data = add_timestamp(topic, data)
-        return data
 
-
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="XCZS inspection robot Zenoh proxy",
     )
@@ -129,10 +129,10 @@ def main():
         from control_server import ControlServer
         ctrl = ControlServer(port=ctrl_port)
         ctrl.start()
-        print(f"Control server: http://0.0.0.0:{ctrl_port}")
-        print(f"  POST /cmd_vel")
-        print(f"  POST /joint_trajectory")
-        print(f"  GET  /health")
+        print(f"Control server: http://127.0.0.1:{ctrl_port}")
+        print("  POST /cmd_vel")
+        print("  POST /joint_trajectory")
+        print("  GET  /health")
 
     # -- Connect and run -------------------------------------------------
     runner = ProxyRunner(host=args.host, port=args.port)

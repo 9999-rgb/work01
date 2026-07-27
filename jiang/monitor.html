@@ -481,6 +481,7 @@
     <div class="topic-group">
       <h3>📋 任务状态</h3>
       <button class="topic-preset" data-topic="mission/phase/json">mission/phase 任务阶段</button>
+      <button class="topic-preset" data-topic="mission/current_waypoint/json">mission/current_waypoint 当前巡检点</button>
     </div>
     <div class="topic-group">
       <h3>🚀 一键订阅</h3>
@@ -493,6 +494,8 @@
         subscribe('tf/json');
         subscribe('tf_static/json');
         subscribe('clock/json');
+        subscribe('mission/phase/json');
+        subscribe('mission/current_waypoint/json');
       " style="width:100%;margin-top:4px">订阅全部 XCZS 话题</button>
     </div>
 
@@ -518,7 +521,7 @@
     <div class="empty-state" id="emptyState">
       <div class="icon">📊</div>
       <div>连接 REST API 后订阅话题，数据将在此显示</div>
-      <div style="font-size:12px">通过 Zenoh REST SSE (<code style="color:var(--accent)">/{topic}</code>) 获取实时数据</div>
+      <div style="font-size:12px">通过 Zenoh SSE 数据桥 (<code style="color:var(--accent)">/{topic}</code>) 获取实时数据</div>
     </div>
     <div class="data-grid" id="dataGrid" style="display:none"></div>
 
@@ -582,7 +585,7 @@ function setStatus(state, text) {
 // ─── Connection ──────────────────────────────────────────────
 function doConnect() {
   if (connected) return;
-  const baseUrl = ($('restUrl').value || 'http://localhost:8000').trim().replace(/\/+$/, '');
+  const baseUrl = ($('restUrl').value || 'http://localhost:8001').trim().replace(/\/+$/, '');
   connected = true;
   setStatus('connected', `已连接 (${baseUrl})`);
   btnConnect.disabled = true;
@@ -617,7 +620,7 @@ function subscribe(topic) {
   if (!connected) { toast('请先连接', 'err'); return; }
   if (subs.has(topic)) { toast(`已订阅 ${topic}`, 'err'); return; }
 
-  const baseUrl = ($('restUrl').value || 'http://localhost:8000').trim().replace(/\/+$/, '');
+  const baseUrl = ($('restUrl').value || 'http://localhost:8001').trim().replace(/\/+$/, '');
   const url = `${baseUrl}/${topic}`;
   log('info', `Subscribing SSE ${url} …`);
 
@@ -633,7 +636,7 @@ function subscribe(topic) {
       // SSE 默认 message 事件（非 PUT/DELETE 等命名事件）
     };
 
-    // 监听 PUT 事件（Zenoh REST SSE 主要用 event:PUT）
+    // 监听 SSE 数据桥使用的 PUT 事件。
     es.addEventListener('PUT', (event) => {
       onData(topic, event.data);
     });
@@ -873,7 +876,7 @@ log('info', '页面已加载，输入 REST API 地址后点击"连接"');
 setStatus('', '未连接');
 
 // ─── Control State ──────────────────────────────────────────
-let ctrlConnected = true;   // optimistic: assume server is running
+let ctrlConnected = false;
 let ctrlBaseUrl = 'http://localhost:8090';
 const armJointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
 const gripperJointNames = ['end_worklink1','end_worklink2'];
@@ -964,7 +967,7 @@ function startBaseMotion(motion) {
   baseActive = true;
   sendBaseCommand();
   if (controlInterval) clearInterval(controlInterval);
-  controlInterval = setInterval(sendBaseCommand, 50);
+  controlInterval = setInterval(sendBaseCommand, 100);
 }
 
 function sendBaseCommand() {

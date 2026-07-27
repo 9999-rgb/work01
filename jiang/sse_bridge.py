@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Zenoh → SSE 数据桥 — 直接从 Zenoh TCP 订阅数据，CDR 解码后转为 SSE 推送给浏览器。
+Bridge Zenoh CDR data to browser-compatible HTTP SSE.
 
 取代不可靠的 Zenoh REST SSE 端点。浏览器直接连接这个 HTTP SSE 服务器。
 
@@ -20,7 +20,8 @@ import json
 import sys
 import threading
 import time
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from queue import Empty, Queue
 from urllib.parse import urlparse, unquote
 
 import zenoh
@@ -43,24 +44,61 @@ def _get_cdr_decoder():
     from zenoh_proxy.converter import deserialize_and_convert
     from zenoh_proxy.registry import get_registry
 
-    # Also register xczs-specific topics
-    from zenoh_proxy.handler import add_timestamp, flatten_twist, flatten_joint_state
+    from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
+    from rosgraph_msgs.msg import Clock
+    from sensor_msgs.msg import JointState
+    from std_msgs.msg import String
+    from tf2_msgs.msg import TFMessage
+    from trajectory_msgs.msg import JointTrajectory
+    from zenoh_proxy.handler import (
+        add_timestamp,
+        flatten_joint_state,
+        flatten_twist,
+    )
 
     register_standard_types()
 
     registry = get_registry()
-    # Register xczs-specific handlers
-    @registry.register_topic("xczs/cmd_vel", description="XCZS cmd_vel")
+
+    @registry.register_topic(
+        "xczs/cmd_vel",
+        Twist,
+        description="XCZS cmd_vel",
+    )
     def _h1(topic, data):
         data = flatten_twist(topic, data)
         data = add_timestamp(topic, data)
         return data
 
-    @registry.register_topic("xczs/joint_states", description="XCZS joint_states")
+    @registry.register_topic(
+        "xczs/joint_states",
+        JointState,
+        description="XCZS joint_states",
+    )
     def _h2(topic, data):
         data = flatten_joint_state(topic, data)
         data = add_timestamp(topic, data)
         return data
+
+    for topic, message_type, description in (
+        ("xczs/odom", Odometry, "XCZS odometry"),
+        (
+            "xczs/joint_trajectory",
+            JointTrajectory,
+            "XCZS joint trajectory",
+        ),
+        ("robot_description", String, "Robot description"),
+        ("tf", TFMessage, "Dynamic transforms"),
+        ("tf_static", TFMessage, "Static transforms"),
+        ("clock", Clock, "Simulation clock"),
+    ):
+        registry.register(
+            topic,
+            message_type,
+            handler=add_timestamp,
+            description=description,
+        )
 
     class Decoder:
         def __init__(self):
@@ -139,7 +177,11 @@ class ZenohSource:
                     json_str = json.dumps(data, ensure_ascii=False)
                 except (json.JSONDecodeError, UnicodeDecodeError):
                     json_str = json.dumps(
-                        {"_raw_hex": payload.hex()[:60] + "...", "_topic": topic, "_len": len(payload)}
+                        {
+                            "_raw_hex": payload.hex()[:60] + "...",
+                            "_topic": topic,
+                            "_len": len(payload),
+                        }
                     )
             # Fan out to all listeners for this key
             with self._lock:
@@ -178,6 +220,8 @@ _zenoh_source: ZenohSource | None = None
 class SSEHandler(BaseHTTPRequestHandler):
     """Serves Zenoh data as SSE (Server-Sent Events)."""
 
+    protocol_version = "HTTP/1.1"
+
     def log_message(self, format, *args):
         print(f"[http] {args[0]}", file=sys.stderr)
 
@@ -203,27 +247,29 @@ class SSEHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         # Connect to Zenoh and fan out
-        queue: list = []
-        event = threading.Event()
+        events: Queue[tuple[str, str]] = Queue()
 
         def on_data(topic, json_str):
-            queue.append((topic, json_str))
-            event.set()
+            events.put((topic, json_str))
 
         _zenoh_source.add_listener(key, on_data)
 
         try:
             while True:
-                event.wait(timeout=15)  # Send heartbeat every 15s
-                if not queue:
+                try:
+                    first_item = events.get(timeout=15)
+                except Empty:
                     # Heartbeat to keep connection alive
                     self.wfile.write(b":heartbeat\n\n")
                     self.wfile.flush()
                     continue
-                # Drain queue
-                batch = list(queue)
-                queue.clear()
-                event.clear()
+
+                batch = [first_item]
+                while True:
+                    try:
+                        batch.append(events.get_nowait())
+                    except Empty:
+                        break
                 for topic, json_str in batch:
                     ts = int(time.time() * 1000)
                     sse_data = json.dumps(
@@ -268,7 +314,8 @@ def main():
     print(f"[init] Connecting to Zenoh at {args.zenoh}...", file=sys.stderr)
     _zenoh_source = ZenohSource(connect_endpoint=args.zenoh)
 
-    server = HTTPServer(("0.0.0.0", args.port), SSEHandler)
+    server = ThreadingHTTPServer(("0.0.0.0", args.port), SSEHandler)
+    server.daemon_threads = True
     print(f"[init] SSE bridge: http://0.0.0.0:{args.port}/<key>", file=sys.stderr)
 
     try:

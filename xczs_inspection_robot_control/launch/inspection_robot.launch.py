@@ -145,7 +145,10 @@ def generate_launch_description() -> LaunchDescription:
         executable="task_scheduler",
         name="xczs_task_scheduler",
         output="screen",
-        parameters=[str(control_config)],
+        parameters=[
+            str(control_config),
+            {"use_sim_time": True},
+        ],
         condition=IfCondition(LaunchConfiguration("task_scheduler")),
     )
     start_controllers_after_spawn = RegisterEventHandler(
