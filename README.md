@@ -83,7 +83,7 @@ http://localhost:8080/monitor.html
 | Zenoh TCP | `tcp/localhost:7447` |
 
 前后端接口格式和调用示例见
-[FRONTEND_API.md](jiang/FRONTEND_API.md)。
+[FRONTEND_API.md](FRONTEND_API.md)。
 
 ## 键盘控制
 
