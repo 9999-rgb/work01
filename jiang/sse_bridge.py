@@ -215,6 +215,7 @@ class ZenohSource:
 # ============================================================================
 
 _zenoh_source: ZenohSource | None = None
+MONITOR_UPDATE_INTERVAL_SECONDS = 1.0
 
 
 class SSEHandler(BaseHTTPRequestHandler):
@@ -247,43 +248,58 @@ class SSEHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
         # Connect to Zenoh and fan out
-        events: Queue[tuple[str, str]] = Queue()
+        # Web 监控只保留每个订阅话题的最新数据，避免高频 ROS 2
+        # 话题在浏览器端堆积。该限流不影响 ROS 2 或控制接口频率。
+        events: Queue[tuple[str, str]] = Queue(maxsize=1)
+        events_lock = threading.Lock()
 
         def on_data(topic, json_str):
-            events.put((topic, json_str))
+            with events_lock:
+                try:
+                    events.get_nowait()
+                except Empty:
+                    pass
+                events.put_nowait((topic, json_str))
 
         _zenoh_source.add_listener(key, on_data)
 
+        next_send_time = 0.0
         try:
             while True:
                 try:
-                    first_item = events.get(timeout=15)
+                    latest_item = events.get(timeout=15)
                 except Empty:
                     # Heartbeat to keep connection alive
                     self.wfile.write(b":heartbeat\n\n")
                     self.wfile.flush()
                     continue
 
-                batch = [first_item]
-                while True:
+                remaining = next_send_time - time.monotonic()
+                if remaining > 0.0:
+                    time.sleep(remaining)
+                    # 等待期间若有新数据，则用最新值替换待发送值。
                     try:
-                        batch.append(events.get_nowait())
+                        latest_item = events.get_nowait()
                     except Empty:
-                        break
-                for topic, json_str in batch:
-                    ts = int(time.time() * 1000)
-                    sse_data = json.dumps(
-                        {
-                            "key": topic,
-                            "value": json.loads(json_str),
-                            "encoding": "application/json",
-                            "timestamp": str(ts),
-                        }
-                    )
-                    self.wfile.write(
-                        f"event:PUT\ndata:{sse_data}\n\n".encode()
-                    )
+                        pass
+
+                topic, json_str = latest_item
+                ts = int(time.time() * 1000)
+                sse_data = json.dumps(
+                    {
+                        "key": topic,
+                        "value": json.loads(json_str),
+                        "encoding": "application/json",
+                        "timestamp": str(ts),
+                    }
+                )
+                self.wfile.write(
+                    f"event:PUT\ndata:{sse_data}\n\n".encode()
+                )
                 self.wfile.flush()
+                next_send_time = (
+                    time.monotonic() + MONITOR_UPDATE_INTERVAL_SECONDS
+                )
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
