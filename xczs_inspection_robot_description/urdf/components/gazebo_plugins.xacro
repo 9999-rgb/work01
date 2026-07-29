@@ -105,11 +105,6 @@
         <covariance_yaw>0.001</covariance_yaw>
       </plugin>
       <plugin
-        name="xczs_planar_stabilizer"
-        filename="libxczs_planar_stabilizer.so">
-        <settling_duration>1.5</settling_duration>
-      </plugin>
-      <plugin
         name="xczs_joint_pose_trajectory"
         filename="libgazebo_ros_joint_pose_trajectory.so">
         <ros>
@@ -117,6 +112,21 @@
           <remapping>set_joint_trajectory:=joint_trajectory</remapping>
         </ros>
         <update_rate>100</update_rate>
+      </plugin>
+      <!-- Load after the trajectory plugin so commanded positions are
+           captured before each physics step. -->
+      <plugin
+        name="xczs_planar_stabilizer"
+        filename="libxczs_planar_stabilizer.so">
+        <settling_duration>1.5</settling_duration>
+        <hold_joint>body_arm1</hold_joint>
+        <hold_joint>arm1_arm2</hold_joint>
+        <hold_joint>arm2_arm3</hold_joint>
+        <hold_joint>arm3_arm4</hold_joint>
+        <hold_joint>arm4_arm5</hold_joint>
+        <hold_joint>arm5_end</hold_joint>
+        <hold_joint>end_worklink1</hold_joint>
+        <hold_joint>end_worklink2</hold_joint>
       </plugin>
       <plugin
         name="xczs_joint_state_publisher"
