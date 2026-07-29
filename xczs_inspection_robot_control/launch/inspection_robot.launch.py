@@ -21,6 +21,9 @@ CONTROL_PACKAGE = "xczs_inspection_robot_control"
 DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
 ROBOT_NAME = "xczs_inspection_robot"
 XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
+CABINET_NAME = "control_cabinet"
+CABINET_URDF_FILENAME = "control_cabinet.urdf"
+CABINET_EXPORT_ROLL = "1.57079632679"
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -32,6 +35,9 @@ def generate_launch_description() -> LaunchDescription:
     )
     control_config = control_share / "config" / "robot_control.yaml"
     xacro_file = description_share / "urdf" / XACRO_FILENAME
+    cabinet_urdf = (
+        description_share / "urdf" / CABINET_URDF_FILENAME
+    )
     robot_description = ParameterValue(
         Command(
             [
@@ -72,6 +78,31 @@ def generate_launch_description() -> LaunchDescription:
         "spawn_z",
         default_value="0.515",
         description="Initial robot height above the Gazebo world origin.",
+    )
+    spawn_cabinet_argument = DeclareLaunchArgument(
+        "spawn_cabinet",
+        default_value="true",
+        description="Spawn the control cabinet model in Gazebo.",
+    )
+    cabinet_x_argument = DeclareLaunchArgument(
+        "cabinet_x",
+        default_value="2.0",
+        description="Control cabinet X position in the Gazebo world.",
+    )
+    cabinet_y_argument = DeclareLaunchArgument(
+        "cabinet_y",
+        default_value="0.33",
+        description="Control cabinet Y position in the Gazebo world.",
+    )
+    cabinet_z_argument = DeclareLaunchArgument(
+        "cabinet_z",
+        default_value="0.0",
+        description="Control cabinet Z position in the Gazebo world.",
+    )
+    cabinet_yaw_argument = DeclareLaunchArgument(
+        "cabinet_yaw",
+        default_value="-1.57079632679",
+        description="Control cabinet yaw angle in radians.",
     )
 
     gazebo_server = IncludeLaunchDescription(
@@ -122,6 +153,31 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration("spawn_z"),
         ],
     )
+    spawn_cabinet = Node(
+        package="gazebo_ros",
+        executable="spawn_entity.py",
+        name="spawn_control_cabinet",
+        output="screen",
+        # Avoid a Conda Python shadowing the ROS 2 system Python.
+        prefix="/usr/bin/python3",
+        condition=IfCondition(LaunchConfiguration("spawn_cabinet")),
+        arguments=[
+            "-entity",
+            CABINET_NAME,
+            "-file",
+            str(cabinet_urdf),
+            "-x",
+            LaunchConfiguration("cabinet_x"),
+            "-y",
+            LaunchConfiguration("cabinet_y"),
+            "-z",
+            LaunchConfiguration("cabinet_z"),
+            "-R",
+            CABINET_EXPORT_ROLL,
+            "-Y",
+            LaunchConfiguration("cabinet_yaw"),
+        ],
+    )
 
     keyboard_teleop = Node(
         package=CONTROL_PACKAGE,
@@ -166,10 +222,16 @@ def generate_launch_description() -> LaunchDescription:
             control_gui_argument,
             task_scheduler_argument,
             spawn_z_argument,
+            spawn_cabinet_argument,
+            cabinet_x_argument,
+            cabinet_y_argument,
+            cabinet_z_argument,
+            cabinet_yaw_argument,
             gazebo_server,
             gazebo_client,
             robot_state_publisher,
             spawn_robot,
+            spawn_cabinet,
             start_controllers_after_spawn,
         ]
     )

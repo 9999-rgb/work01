@@ -37,7 +37,19 @@ source install/setup.bash
 ros2 launch xczs_inspection_robot_control inspection_robot.launch.py
 ```
 
-该命令启动 Gazebo、机器人模型和 Qt 控制界面。
+该命令启动 Gazebo、巡操机器人、控制柜模型和 Qt 控制界面。控制柜默认位于
+`x=2.0`、`y=0.33`，并已从 SolidWorks 的 Y-up 坐标系旋转为 Gazebo 的
+Z-up 坐标系。
+
+如需调整控制柜位置或不加载控制柜，可使用统一启动入口的参数：
+
+```bash
+ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+  cabinet_x:=3.0 cabinet_y:=0.0 cabinet_yaw:=-1.5708
+
+ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+  spawn_cabinet:=false
+```
 
 ### 启动完整系统
 
@@ -135,9 +147,12 @@ http://localhost:8080/monitor.html
 ```text
 work01/
 ├── xczs_inspection_robot_description/  # 机器人模型与仿真环境
+│   ├── meshes/
+│   │   └── control_cabinet/                  # 控制柜英文命名网格
 │   └── urdf/
-│       ├── xczs_inspection_robot.urdf.xacro  # 模型组装入口
-│       └── components/                       # 模型功能组件
+│       ├── xczs_inspection_robot.urdf.xacro  # 机器人模型组装入口
+│       ├── control_cabinet.urdf              # Gazebo 控制柜模型
+│       └── components/                       # 机器人模型功能组件
 ├── xczs_inspection_robot_control/      # 控制节点、配置和统一 launch
 ├── jiang/                              # Web、Zenoh 和前后端接口
 ├── docs/                               # 图片等项目文档资源

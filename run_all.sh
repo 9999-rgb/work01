@@ -9,6 +9,7 @@
 #   ./run_all.sh --task           # 自主任务调度器模式
 #   ./run_all.sh --with-proxy     # 附加 CDR→JSON 代理（精细化数据处理）
 #   ./run_all.sh --no-gui         # headless 模式
+#   CONTROL_HOST=0.0.0.0 ./run_all.sh --web   # 供其他计算机访问 Web 控制
 #
 # 启动后:
 #   监控面板: http://localhost:8080/monitor.html
