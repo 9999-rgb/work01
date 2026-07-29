@@ -1,0 +1,44 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="control_cabinet_body" params="">
+    <link name="cabinet_body">
+      <!--
+        Gazebo's URDF converter requires physical data on the root link.
+        The original CAD inertia is retained even though the model is static.
+      -->
+      <inertial>
+        <origin
+          xyz="0.330766521229304 1.03415228323184 -0.397159955186761"
+          rpy="0 0 0" />
+        <mass value="1451.51992534344" />
+        <inertia
+          ixx="733.581502457551"
+          ixy="0.156713592222765"
+          ixz="0.0840247478052017"
+          iyy="83.6204876914266"
+          iyz="29.0108942178945"
+          izz="757.514081227971" />
+      </inertial>
+
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/cabinet_body.stl" />
+        </geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+
+      <!-- A convex primitive gives Gazebo stable, watertight contact. -->
+      <collision>
+        <origin xyz="${cabinet_collision_origin}" rpy="0 0 0" />
+        <geometry>
+          <box size="${cabinet_collision_size}" />
+        </geometry>
+      </collision>
+    </link>
+    <xacro:control_cabinet_gazebo_link
+      link_name="cabinet_body"
+      gazebo_material="Gazebo/DarkGrey"
+      has_collision="true" />
+  </xacro:macro>
+</robot>

@@ -1,0 +1,18 @@
+<?xml version="1.0"?>
+<robot
+  xmlns:xacro="http://www.ros.org/wiki/xacro"
+  name="control_cabinet">
+  <!-- Shared cabinet definitions. -->
+  <xacro:include filename="control_cabinet/components/properties.xacro" />
+  <xacro:include filename="control_cabinet/components/materials.xacro" />
+  <xacro:include filename="control_cabinet/components/gazebo.xacro" />
+  <xacro:include filename="control_cabinet/components/primitives.xacro" />
+
+  <!-- Cabinet components. -->
+  <xacro:include filename="control_cabinet/components/cabinet_body.xacro" />
+  <xacro:include filename="control_cabinet/components/cabinet_modules.xacro" />
+
+  <xacro:control_cabinet_body />
+  <xacro:control_cabinet_modules />
+  <xacro:control_cabinet_gazebo />
+</robot>

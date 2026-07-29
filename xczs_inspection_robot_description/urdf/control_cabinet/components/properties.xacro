@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property
+    name="cabinet_mesh_directory"
+    value="package://xczs_inspection_robot_description/meshes/control_cabinet" />
+
+  <!--
+    One convex enclosure replaces the exported concave triangle collisions.
+    It covers the complete cabinet, including protruding knobs and buttons.
+  -->
+  <xacro:property
+    name="cabinet_collision_origin"
+    value="0.331 1.115 -0.274" />
+  <xacro:property
+    name="cabinet_collision_size"
+    value="0.680 2.230 0.690" />
+
+  <xacro:property name="cabinet_contact_friction" value="1.0" />
+  <xacro:property name="cabinet_contact_kp" value="1000000" />
+  <xacro:property name="cabinet_contact_kd" value="100" />
+  <xacro:property name="cabinet_contact_max_velocity" value="0.1" />
+  <xacro:property name="cabinet_contact_min_depth" value="0.001" />
+</robot>

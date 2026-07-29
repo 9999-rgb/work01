@@ -27,11 +27,10 @@
       </visual>
       <collision>
         <origin
-          xyz="0 0 0"
+          xyz="${base_collision_origin}"
           rpy="0 0 0" />
         <geometry>
-          <mesh
-            filename="package://xczs_inspection_robot_description/meshes/collision/body.STL" />
+          <box size="${base_collision_size}" />
         </geometry>
       </collision>
     </link>

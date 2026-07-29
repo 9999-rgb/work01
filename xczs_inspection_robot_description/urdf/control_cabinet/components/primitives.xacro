@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro
+    name="control_cabinet_visual_link"
+    params="link_name mesh_name urdf_material gazebo_material">
+    <link name="${link_name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/${mesh_name}.stl" />
+        </geometry>
+        <material name="${urdf_material}" />
+      </visual>
+    </link>
+    <xacro:control_cabinet_gazebo_link
+      link_name="${link_name}"
+      gazebo_material="${gazebo_material}" />
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_fixed_joint"
+    params="joint_name parent_link child_link xyz">
+    <joint name="${joint_name}" type="fixed">
+      <origin xyz="${xyz}" rpy="0 0 0" />
+      <parent link="${parent_link}" />
+      <child link="${child_link}" />
+    </joint>
+  </xacro:macro>
+</robot>

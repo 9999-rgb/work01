@@ -8,6 +8,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(gazebo_dev REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
@@ -16,6 +17,11 @@ find_package(trajectory_msgs REQUIRED)
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
 add_executable(inspection_robot_gui src/inspection_robot_gui.cpp)
+add_library(
+  xczs_planar_stabilizer
+  SHARED
+  src/gazebo/planar_stabilizer_plugin.cpp
+)
 
 foreach(target keyboard_teleop inspection_robot_gui)
   target_compile_features(${target} PUBLIC cxx_std_17)
@@ -36,9 +42,17 @@ endforeach()
 
 target_link_libraries(inspection_robot_gui Qt5::Widgets)
 
+target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
+ament_target_dependencies(xczs_planar_stabilizer gazebo_dev)
+
 install(
   TARGETS keyboard_teleop inspection_robot_gui
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  TARGETS xczs_planar_stabilizer
+  LIBRARY DESTINATION lib
 )
 
 install(
@@ -55,4 +69,6 @@ install(
 )
 
 ament_export_include_directories(include)
+ament_export_libraries(xczs_planar_stabilizer)
+ament_export_dependencies(gazebo_dev)
 ament_package()

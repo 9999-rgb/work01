@@ -151,8 +151,9 @@ work01/
 │   │   └── control_cabinet/                  # 控制柜英文命名网格
 │   └── urdf/
 │       ├── xczs_inspection_robot.urdf.xacro  # 机器人模型组装入口
-│       ├── control_cabinet.urdf              # Gazebo 控制柜模型
-│       └── components/                       # 机器人模型功能组件
+│       ├── control_cabinet.urdf.xacro        # 控制柜模型组装入口
+│       ├── components/                       # 机器人模型功能组件
+│       └── control_cabinet/components/       # 控制柜模型功能组件
 ├── xczs_inspection_robot_control/      # 控制节点、配置和统一 launch
 ├── jiang/                              # Web、Zenoh 和前后端接口
 ├── docs/                               # 图片等项目文档资源

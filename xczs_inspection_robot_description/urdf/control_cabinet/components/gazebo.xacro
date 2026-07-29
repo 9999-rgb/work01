@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro
+    name="control_cabinet_gazebo_link"
+    params="link_name gazebo_material has_collision:=false">
+    <gazebo reference="${link_name}">
+      <material>${gazebo_material}</material>
+      <xacro:if value="${has_collision}">
+        <mu1>${cabinet_contact_friction}</mu1>
+        <mu2>${cabinet_contact_friction}</mu2>
+        <kp>${cabinet_contact_kp}</kp>
+        <kd>${cabinet_contact_kd}</kd>
+        <maxVel>${cabinet_contact_max_velocity}</maxVel>
+        <minDepth>${cabinet_contact_min_depth}</minDepth>
+      </xacro:if>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:macro name="control_cabinet_gazebo" params="">
+    <gazebo>
+      <static>true</static>
+    </gazebo>
+  </xacro:macro>
+</robot>

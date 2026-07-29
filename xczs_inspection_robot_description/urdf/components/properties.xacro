@@ -9,8 +9,17 @@
   <xacro:property name="front_wheel_collision_length" value="0.0496" />
   <xacro:property name="back_wheel_collision_radius" value="0.090" />
   <xacro:property name="back_wheel_collision_length" value="0.184" />
+  <!-- Stable convex base collision instead of the exported triangle mesh. -->
+  <xacro:property
+    name="base_collision_origin"
+    value="0 -0.070 -0.105" />
+  <xacro:property
+    name="base_collision_size"
+    value="0.680 0.890 0.700" />
   <xacro:property name="contact_kp" value="1000000" />
   <xacro:property name="contact_kd" value="100" />
   <xacro:property name="contact_max_velocity" value="0.2" />
   <xacro:property name="contact_min_depth" value="0.001" />
+  <!-- Zero means that planar constraints are applied every physics update. -->
+  <xacro:property name="planar_move_update_rate" value="0" />
 </robot>

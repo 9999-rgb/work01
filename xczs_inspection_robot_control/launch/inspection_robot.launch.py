@@ -22,7 +22,7 @@ DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
 ROBOT_NAME = "xczs_inspection_robot"
 XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_NAME = "control_cabinet"
-CABINET_URDF_FILENAME = "control_cabinet.urdf"
+CABINET_URDF_FILENAME = "generated/control_cabinet.urdf"
 CABINET_EXPORT_ROLL = "1.57079632679"
 
 

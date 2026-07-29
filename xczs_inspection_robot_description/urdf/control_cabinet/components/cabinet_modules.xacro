@@ -1,0 +1,178 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro
+    name="control_cabinet_module"
+    params="index body_xyz knob_xyz">
+    <xacro:control_cabinet_visual_link
+      link_name="box_${index}"
+      mesh_name="box_${index}"
+      urdf_material="cabinet_light_gray"
+      gazebo_material="Gazebo/Grey" />
+    <xacro:control_cabinet_fixed_joint
+      joint_name="cabinet_body_box_${index}"
+      parent_link="cabinet_body"
+      child_link="box_${index}"
+      xyz="${body_xyz}" />
+
+    <xacro:control_cabinet_visual_link
+      link_name="box_${index}_knob"
+      mesh_name="box_${index}_knob"
+      urdf_material="cabinet_black"
+      gazebo_material="Gazebo/Black" />
+    <xacro:control_cabinet_fixed_joint
+      joint_name="box_${index}_box_${index}_knob"
+      parent_link="box_${index}"
+      child_link="box_${index}_knob"
+      xyz="${knob_xyz}" />
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_buttons"
+    params="index button_1_xyz button_2_xyz">
+    <xacro:control_cabinet_visual_link
+      link_name="box_${index}_button_1"
+      mesh_name="box_${index}_button_1"
+      urdf_material="cabinet_red"
+      gazebo_material="Gazebo/Red" />
+    <xacro:control_cabinet_fixed_joint
+      joint_name="box_${index}_box_${index}_button_1"
+      parent_link="box_${index}"
+      child_link="box_${index}_button_1"
+      xyz="${button_1_xyz}" />
+
+    <xacro:control_cabinet_visual_link
+      link_name="box_${index}_button_2"
+      mesh_name="box_${index}_button_2"
+      urdf_material="cabinet_green"
+      gazebo_material="Gazebo/Green" />
+    <xacro:control_cabinet_fixed_joint
+      joint_name="box_${index}_box_${index}_button_2"
+      parent_link="box_${index}"
+      child_link="box_${index}_button_2"
+      xyz="${button_2_xyz}" />
+  </xacro:macro>
+
+  <xacro:macro name="control_cabinet_switch" params="">
+    <xacro:control_cabinet_visual_link
+      link_name="cabinet_switch_base"
+      mesh_name="cabinet_switch_base"
+      urdf_material="cabinet_light_gray"
+      gazebo_material="Gazebo/Grey" />
+    <xacro:control_cabinet_fixed_joint
+      joint_name="cabinet_body_cabinet_switch_base"
+      parent_link="cabinet_body"
+      child_link="cabinet_switch_base"
+      xyz="0.352 1.69 -0.618" />
+
+    <xacro:control_cabinet_visual_link
+      link_name="cabinet_switch_handle"
+      mesh_name="cabinet_switch_handle"
+      urdf_material="cabinet_black"
+      gazebo_material="Gazebo/Black" />
+    <xacro:control_cabinet_fixed_joint
+      joint_name="cabinet_switch_base_cabinet_switch_handle"
+      parent_link="cabinet_switch_base"
+      child_link="cabinet_switch_handle"
+      xyz="0.01 -0.04 0" />
+  </xacro:macro>
+
+  <xacro:macro name="control_cabinet_modules" params="">
+    <xacro:control_cabinet_module
+      index="1"
+      body_xyz="0.005 1.826 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="1"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="2"
+      body_xyz="0.334 1.826 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="2"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="3"
+      body_xyz="0.005 1.497 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="3"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="4"
+      body_xyz="0.334 1.497 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="4"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="5"
+      body_xyz="0.005 1.168 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="5"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="6"
+      body_xyz="0.334 1.168 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="6"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="7"
+      body_xyz="0.005 0.839 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="7"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <xacro:control_cabinet_module
+      index="8"
+      body_xyz="0.334 0.839 0"
+      knob_xyz="0.16247 0.22494 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="8"
+      button_1_xyz="0.115 0.05 0.011"
+      button_2_xyz="0.165 0.05 0.011" />
+
+    <!-- Box 9 has a knob but no buttons in the source assembly. -->
+    <xacro:control_cabinet_module
+      index="9"
+      body_xyz="0.005 0.721 0"
+      knob_xyz="0.11994 0.053526 0.0295" />
+
+    <xacro:control_cabinet_module
+      index="10"
+      body_xyz="0.005 0.519 0"
+      knob_xyz="0.13047 0.11194 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="10"
+      button_1_xyz="0.487 0.055 0.011"
+      button_2_xyz="0.522 0.055 0.011" />
+
+    <xacro:control_cabinet_module
+      index="11"
+      body_xyz="0.005 0.322 0"
+      knob_xyz="0.13047 0.11194 0.0295" />
+    <xacro:control_cabinet_buttons
+      index="11"
+      button_1_xyz="0.487 0.055 0.011"
+      button_2_xyz="0.522 0.055 0.011" />
+
+    <xacro:control_cabinet_switch />
+  </xacro:macro>
+</robot>

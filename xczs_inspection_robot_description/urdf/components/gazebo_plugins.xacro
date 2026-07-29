@@ -94,7 +94,7 @@
         <ros>
           <namespace>/xczs</namespace>
         </ros>
-        <update_rate>100</update_rate>
+        <update_rate>${planar_move_update_rate}</update_rate>
         <publish_rate>20</publish_rate>
         <publish_odom>true</publish_odom>
         <publish_odom_tf>true</publish_odom_tf>
@@ -103,6 +103,11 @@
         <covariance_x>0.0001</covariance_x>
         <covariance_y>0.0001</covariance_y>
         <covariance_yaw>0.001</covariance_yaw>
+      </plugin>
+      <plugin
+        name="xczs_planar_stabilizer"
+        filename="libxczs_planar_stabilizer.so">
+        <settling_duration>1.5</settling_duration>
       </plugin>
       <plugin
         name="xczs_joint_pose_trajectory"
