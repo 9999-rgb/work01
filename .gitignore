@@ -6,6 +6,10 @@
 # SolidWorks URDF exporter generated logs
 export.log
 
+# Generated robot kinematic graph artifacts
+/docs/xczs_inspection_robot.gv
+/docs/xczs_inspection_robot.pdf
+
 # Python generated files
 __pycache__/
 *.py[cod]
