@@ -14,6 +14,7 @@
 # 启动后:
 #   监控面板: http://localhost:8080/monitor.html
 #   SSE 数据:  http://localhost:8001
+#   传感器流:  http://localhost:8003
 # ============================================================================
 set -eo pipefail
 

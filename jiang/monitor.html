@@ -4,7 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>XCZS 巡操机器人 — 实时监控面板</title>
-<!-- 使用 Zenoh REST API SSE → 无需任何第三方 JS 依赖 -->
+<link rel="icon" href="data:,">
+<!-- 使用 Zenoh SSE、MJPEG 与 WebSocket，无需第三方前端依赖 -->
 <style>
   :root {
     --bg: #0f1419;
@@ -274,6 +275,47 @@
     font-size: 11px; width: 60px; color: var(--text);
   }
 
+  /* ── Sensor Views ────────────────────────── */
+  .sensor-grid {
+    display: grid; grid-template-columns: minmax(320px, 1fr) minmax(320px, 1fr);
+    gap: 16px; margin-bottom: 16px;
+  }
+  @media (max-width: 900px) {
+    .sensor-grid { grid-template-columns: 1fr; }
+  }
+  .sensor-card {
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 10px; overflow: hidden;
+  }
+  .sensor-card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255,255,255,0.02);
+  }
+  .sensor-card-header h3 { font-size: 14px; font-weight: 600; }
+  .sensor-state { font-size: 11px; color: var(--text-dim); }
+  .sensor-state.ok { color: var(--green); }
+  .sensor-state.err { color: var(--red); }
+  .sensor-viewport {
+    min-height: 300px; display: flex; align-items: center;
+    justify-content: center; background: #080c11; position: relative;
+  }
+  .camera-stream {
+    display: block; width: 100%; max-height: 520px;
+    aspect-ratio: 1 / 1; object-fit: contain;
+  }
+  .lidar-canvas {
+    display: block; width: 100%; height: auto; min-height: 300px;
+  }
+  .sensor-metrics {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    padding: 8px 14px; border-top: 1px solid var(--border);
+    color: var(--text-dim); font-size: 11px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+  }
+  .sensor-metrics strong { color: var(--text); font-weight: 500; }
+
 /* ── Control Panel ───────────────────────── */
 .control-bar {
   display: flex; gap: 16px; align-items: flex-start;
@@ -364,7 +406,7 @@
 <header class="header">
   <h1>
     ⚡ XCZS 巡操机器人
-    <small>实时数据监控面板 | Zenoh SSE</small>
+    <small>实时数据、相机与雷达监控</small>
   </h1>
   <div class="status-badge">
     <span class="status-dot" id="statusDot"></span>
@@ -389,13 +431,54 @@
 
 <!-- ─── Connection Bar ─── -->
 <div class="connect-bar">
-  <label>REST API</label>
-  <input type="text" id="restUrl" value="http://localhost:8001" placeholder="SSE 桥地址: http://localhost:8001" style="width:190px">
+  <label>SSE API</label>
+  <input type="text" id="restUrl" placeholder="http://localhost:8001" style="width:190px">
+  <label>传感器 API</label>
+  <input type="text" id="sensorUrl" placeholder="http://localhost:8003" style="width:190px">
   <button class="btn btn-primary" id="btnConnect" onclick="doConnect()">连接</button>
   <button class="btn btn-danger" id="btnDisconnect" onclick="doDisconnect()" disabled>断开</button>
   <span style="color:var(--text-dim);font-size:12px;margin-left:auto" id="sessionInfo"></span>
 </div>
 
+<!-- ─── Camera and Lidar ─── -->
+<div class="sensor-grid">
+  <section class="sensor-card">
+    <div class="sensor-card-header">
+      <h3>📷 腕部 RGB 相机</h3>
+      <span class="sensor-state" id="cameraState">未连接</span>
+    </div>
+    <div class="sensor-viewport">
+      <img
+        class="camera-stream"
+        id="cameraStream"
+        alt="等待相机图像">
+    </div>
+    <div class="sensor-metrics">
+      <span>格式 <strong>MJPEG</strong></span>
+      <span>源话题 <strong>/xczs/camera/arm_camera/image_raw</strong></span>
+    </div>
+  </section>
+
+  <section class="sensor-card">
+    <div class="sensor-card-header">
+      <h3>📡 车身 2D 激光雷达</h3>
+      <span class="sensor-state" id="lidarState">未连接</span>
+    </div>
+    <div class="sensor-viewport">
+      <canvas
+        class="lidar-canvas"
+        id="lidarCanvas"
+        width="760"
+        height="420"></canvas>
+    </div>
+    <div class="sensor-metrics">
+      <span>采样 <strong id="lidarSamples">-</strong></span>
+      <span>有效 <strong id="lidarValid">-</strong></span>
+      <span>最近 <strong id="lidarClosest">-</strong></span>
+      <span>接口 <strong>WebSocket JSON</strong></span>
+    </div>
+  </section>
+</div>
 
 <!-- ─── Control Bar ─── -->
 <div class="control-bar" id="controlBar">
@@ -443,7 +526,7 @@
   <div class="control-section">
     <h4>🔗 控制服务器</h4>
     <div class="ctrl-connect">
-      <input type="text" id="ctrlUrl" value="http://localhost:8090" placeholder="http://localhost:8090">
+      <input type="text" id="ctrlUrl" placeholder="http://localhost:8090">
       <button class="btn btn-outline" id="btnCtrlTest" style="font-size:11px;padding:4px 10px">测试</button>
     </div>
     <span class="ctrl-status" id="ctrlStatus">未测试</span>
@@ -540,6 +623,10 @@ let connected = false;
 const subs = new Map();       // topic -> { es, cardId, history:[] }
 const historyMax = 50;
 let cardCounter = 0;
+let sensorEnabled = false;
+let lidarSocket = null;
+let lidarReconnectTimer = null;
+let sensorHealthTimer = null;
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -554,6 +641,19 @@ const dataGrid     = $('dataGrid');
 const emptyState   = $('emptyState');
 const logPanel     = $('logPanel');
 const toastContainer = $('toastContainer');
+const cameraStream = $('cameraStream');
+const cameraState = $('cameraState');
+const lidarState = $('lidarState');
+const lidarCanvas = $('lidarCanvas');
+
+function defaultServiceUrl(port) {
+  const host = window.location.hostname || 'localhost';
+  return `${window.location.protocol}//${host}:${port}`;
+}
+
+$('restUrl').value = defaultServiceUrl(8001);
+$('sensorUrl').value = defaultServiceUrl(8003);
+$('ctrlUrl').value = defaultServiceUrl(8090);
 
 // ─── Logging ─────────────────────────────────────────────────
 function log(level, msg) {
@@ -590,6 +690,7 @@ function doConnect() {
   btnDisconnect.disabled = false;
   sessionInfo.textContent = baseUrl;
   log('ok', `REST API ${baseUrl}`);
+  connectSensorStreams();
   toast('连接成功');
 }
 
@@ -599,6 +700,7 @@ function doDisconnect() {
   for (const [topic, entry] of subs) {
     try { entry.es.close(); } catch (_) {}
   }
+  disconnectSensorStreams();
   subs.clear();
   dataGrid.innerHTML = '';
   dataGrid.style.display = 'none';
@@ -647,7 +749,7 @@ function subscribe(topic) {
         if (entry._errTimer) clearTimeout(entry._errTimer);
         entry._errTimer = setTimeout(() => {
           if (entry.history.length === 0) {
-            log('err', `SSE 无数据: ${topic}（端口 ${restUrl} 上的 Zenoh 桥是否在运行？ROS2 话题是否有发布者？）`);
+            log('err', `SSE 无数据: ${topic}（${baseUrl} 上的 Zenoh 桥是否在运行？ROS2 话题是否有发布者？）`);
           }
         }, 5000);
       }
@@ -748,6 +850,211 @@ function syntaxHighlight(json) {
     .replace(/:\s*(true|false)/g, ': <span class="bool">$1</span>')
     .replace(/:\s*null/g, ': <span class="null">null</span>');
 }
+
+// ─── Camera and Lidar Streams ───────────────────────────────
+function sensorBaseUrl() {
+  return ($('sensorUrl').value || defaultServiceUrl(8003))
+    .trim().replace(/\/+$/, '');
+}
+
+function websocketUrl(baseUrl, path) {
+  const url = new URL(baseUrl + path);
+  url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+  return url.toString();
+}
+
+function setSensorState(element, text, stateClass = '') {
+  element.textContent = text;
+  element.className = 'sensor-state';
+  if (stateClass) element.classList.add(stateClass);
+}
+
+function connectSensorStreams() {
+  disconnectSensorStreams(false);
+  sensorEnabled = true;
+  const baseUrl = sensorBaseUrl();
+  setSensorState(cameraState, '正在连接…');
+  setSensorState(lidarState, '正在连接…');
+  cameraStream.src = `${baseUrl}/camera.mjpg?t=${Date.now()}`;
+  connectLidarSocket();
+  checkSensorHealth();
+  sensorHealthTimer = setInterval(checkSensorHealth, 2000);
+  log('info', `传感器流 ${baseUrl}`);
+}
+
+function disconnectSensorStreams(updateState = true) {
+  sensorEnabled = false;
+  if (lidarReconnectTimer) {
+    clearTimeout(lidarReconnectTimer);
+    lidarReconnectTimer = null;
+  }
+  if (sensorHealthTimer) {
+    clearInterval(sensorHealthTimer);
+    sensorHealthTimer = null;
+  }
+  if (lidarSocket) {
+    const socket = lidarSocket;
+    lidarSocket = null;
+    try { socket.close(); } catch (_) {}
+  }
+  cameraStream.removeAttribute('src');
+  if (updateState) {
+    setSensorState(cameraState, '未连接');
+    setSensorState(lidarState, '未连接');
+    clearLidarCanvas();
+  }
+}
+
+async function checkSensorHealth() {
+  if (!sensorEnabled) return;
+  try {
+    const response = await fetch(`${sensorBaseUrl()}/health`, {
+      cache: 'no-store'
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const health = await response.json();
+    if (health.camera && health.camera.ready) {
+      const age = Number(health.camera.age_seconds || 0);
+      setSensorState(cameraState, `在线 · ${age.toFixed(1)} s`, 'ok');
+    } else {
+      setSensorState(cameraState, '等待 ROS 2 图像…');
+    }
+  } catch (error) {
+    setSensorState(cameraState, '连接失败', 'err');
+  }
+}
+
+cameraStream.addEventListener('error', () => {
+  if (!sensorEnabled) return;
+  setSensorState(cameraState, '图像流中断', 'err');
+  setTimeout(() => {
+    if (sensorEnabled) {
+      cameraStream.src =
+        `${sensorBaseUrl()}/camera.mjpg?t=${Date.now()}`;
+    }
+  }, 2000);
+});
+
+function connectLidarSocket() {
+  if (!sensorEnabled) return;
+  let socket;
+  try {
+    socket = new WebSocket(websocketUrl(sensorBaseUrl(), '/lidar/ws'));
+  } catch (error) {
+    setSensorState(lidarState, '地址无效', 'err');
+    return;
+  }
+  lidarSocket = socket;
+  socket.addEventListener('open', () => {
+    if (socket !== lidarSocket) return;
+    setSensorState(lidarState, '在线', 'ok');
+  });
+  socket.addEventListener('message', event => {
+    if (socket !== lidarSocket) return;
+    try {
+      drawLidarScan(JSON.parse(event.data));
+    } catch (error) {
+      setSensorState(lidarState, '数据格式错误', 'err');
+    }
+  });
+  socket.addEventListener('error', () => {
+    if (socket === lidarSocket) {
+      setSensorState(lidarState, '连接异常', 'err');
+    }
+  });
+  socket.addEventListener('close', () => {
+    if (socket !== lidarSocket) return;
+    lidarSocket = null;
+    if (!sensorEnabled) return;
+    setSensorState(lidarState, '正在重连…');
+    lidarReconnectTimer = setTimeout(connectLidarSocket, 2000);
+  });
+}
+
+function clearLidarCanvas() {
+  const context = lidarCanvas.getContext('2d');
+  context.fillStyle = '#080c11';
+  context.fillRect(0, 0, lidarCanvas.width, lidarCanvas.height);
+  context.fillStyle = '#8b949e';
+  context.font = '14px sans-serif';
+  context.textAlign = 'center';
+  context.fillText(
+    '等待雷达扫描数据',
+    lidarCanvas.width / 2,
+    lidarCanvas.height / 2
+  );
+  $('lidarSamples').textContent = '-';
+  $('lidarValid').textContent = '-';
+  $('lidarClosest').textContent = '-';
+}
+
+function drawLidarScan(scan) {
+  const context = lidarCanvas.getContext('2d');
+  const width = lidarCanvas.width;
+  const height = lidarCanvas.height;
+  const originX = width / 2;
+  const originY = height - 28;
+  const maxDisplayRange = Math.min(
+    Number(scan.range_max) || 4.0,
+    4.0
+  );
+  const scale = (Math.min(width / 2, height) - 42) / maxDisplayRange;
+
+  context.fillStyle = '#080c11';
+  context.fillRect(0, 0, width, height);
+  context.strokeStyle = '#253346';
+  context.lineWidth = 1;
+  context.fillStyle = '#8b949e';
+  context.font = '11px monospace';
+  context.textAlign = 'center';
+
+  for (let range = 1; range <= Math.floor(maxDisplayRange); range++) {
+    const radius = range * scale;
+    context.beginPath();
+    context.arc(originX, originY, radius, Math.PI, 2 * Math.PI);
+    context.stroke();
+    context.fillText(`${range} m`, originX + radius, originY - 5);
+  }
+
+  context.beginPath();
+  context.moveTo(originX, originY);
+  context.lineTo(originX, originY - maxDisplayRange * scale);
+  context.stroke();
+
+  const ranges = Array.isArray(scan.ranges) ? scan.ranges : [];
+  const angleMin = Number(scan.angle_min) || 0;
+  const angleIncrement = Number(scan.angle_increment) || 0;
+  context.fillStyle = '#39d2c0';
+  for (let index = 0; index < ranges.length; index++) {
+    const range = ranges[index];
+    if (range === null || !Number.isFinite(range)) continue;
+    const angle = angleMin + index * angleIncrement;
+    const clippedRange = Math.min(range, maxDisplayRange);
+    const x = originX - Math.sin(angle) * clippedRange * scale;
+    const y = originY - Math.cos(angle) * clippedRange * scale;
+    context.fillRect(x - 1.5, y - 1.5, 3, 3);
+  }
+
+  context.fillStyle = '#58a6ff';
+  context.beginPath();
+  context.moveTo(originX, originY - 10);
+  context.lineTo(originX - 7, originY + 4);
+  context.lineTo(originX + 7, originY + 4);
+  context.closePath();
+  context.fill();
+
+  $('lidarSamples').textContent = String(
+    scan.sample_count !== undefined ? scan.sample_count : ranges.length
+  );
+  $('lidarValid').textContent = String(scan.valid_count || 0);
+  $('lidarClosest').textContent =
+    Number.isFinite(scan.closest_range)
+      ? `${scan.closest_range.toFixed(2)} m`
+      : '-';
+  setSensorState(lidarState, '在线', 'ok');
+}
+
+clearLidarCanvas();
 
 // ─── Render Subscription List ────────────────────────────────
 function renderSubList() {

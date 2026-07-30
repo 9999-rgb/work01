@@ -2,10 +2,14 @@
 
 ## 概述
 
-前端通过 **SSE（Server-Sent Events）** 读取机器人实时数据，通过 **HTTP POST** 发送控制指令。
+前端通过 **SSE（Server-Sent Events）** 读取常规 ROS 2 数据，通过
+**MJPEG** 显示相机，通过 **WebSocket JSON** 显示雷达，并通过
+**HTTP POST** 发送控制指令。
 
 ```
 monitor.html ──SSE GET──▶ SSE bridge :8001/{topic}/json   ← 数据读取
+monitor.html ──MJPEG────▶ Sensor API :8003/camera.mjpg    ← 相机图像
+monitor.html ──WebSocket▶ Sensor API :8003/lidar/ws       ← 雷达扫描
 monitor.html ──POST─────▶ HTTP :8090/cmd_vel             ← 底盘控制
 monitor.html ──POST─────▶ HTTP :8090/joint_trajectory    ← 关节控制
 ```
@@ -121,7 +125,98 @@ es.addEventListener('PUT', (event) => {
 
 ---
 
-## 二、控制指令（HTTP POST）
+## 二、相机与雷达接口
+
+### 服务地址
+
+```text
+http://localhost:8003
+```
+
+| 方法 | 端点 | 响应格式 | 说明 |
+|---|---|---|---|
+| `GET` | `/health` | JSON | 相机、雷达数据就绪状态和数据年龄 |
+| `GET` | `/camera.mjpg` | MJPEG | 浏览器实时相机流 |
+| `GET` | `/camera.jpg` | JPEG | 最新相机单帧 |
+| `GET` | `/lidar.json` | JSON | 最新雷达扫描快照 |
+| `WS` | `/lidar/ws` | JSON | 持续推送最新雷达扫描 |
+
+### 相机 MJPEG
+
+浏览器可直接通过 `<img>` 标签显示，不需要额外 JavaScript 解码：
+
+```html
+<img src="http://localhost:8003/camera.mjpg" alt="XCZS camera">
+```
+
+单帧图像可直接下载：
+
+```bash
+curl http://localhost:8003/camera.jpg --output camera.jpg
+```
+
+服务端默认把 ROS 2 的 `800×800 rgb8` 图像转换为质量 `80` 的 JPEG，并以
+约 `10 FPS` 向浏览器传输；这不会改变 ROS 2 原始图像话题的 `30 Hz` 频率。
+
+### 雷达 JSON 快照
+
+```bash
+curl http://localhost:8003/lidar.json
+```
+
+主要字段：
+
+```json
+{
+  "type": "sensor_msgs/msg/LaserScan",
+  "frame_id": "body_lidar_link",
+  "angle_min": -1.570796,
+  "angle_max": 1.570796,
+  "angle_increment": 0.004369,
+  "range_min": 0.1,
+  "range_max": 30.0,
+  "sample_count": 720,
+  "valid_count": 141,
+  "closest_range": 0.142,
+  "ranges": [null, null, 1.82]
+}
+```
+
+无有效回波的 `NaN` 或无穷大数据会转换为 JSON `null`，因此浏览器可直接
+调用 `JSON.parse()`，不会收到非法 JSON 数值。
+
+### 雷达 WebSocket
+
+```javascript
+const socket = new WebSocket('ws://localhost:8003/lidar/ws');
+socket.onmessage = (event) => {
+  const scan = JSON.parse(event.data);
+  console.log(scan.sample_count, scan.closest_range, scan.ranges);
+};
+```
+
+WebSocket 默认最多以约 `10 Hz` 推送最新雷达帧。服务只保留最新一帧，慢速
+浏览器不会导致 ROS 2 的 `40 Hz` 雷达消息不断积压。
+
+### 健康检查
+
+```bash
+curl http://localhost:8003/health
+```
+
+相机和雷达都已收到数据时，响应示例：
+
+```json
+{
+  "status": "ok",
+  "camera": {"ready": true, "sequence": 12, "age_seconds": 0.03},
+  "lidar": {"ready": true, "sequence": 48, "age_seconds": 0.01}
+}
+```
+
+---
+
+## 三、控制指令（HTTP POST）
 
 ### 控制服务器地址
 
@@ -263,7 +358,7 @@ await fetch('http://localhost:8090/joint_trajectory', {
 
 ---
 
-## 三、控制服务器启动方式
+## 四、服务启动方式
 
 ```bash
 # 方式 1：一键启动浏览器控制模式
@@ -272,10 +367,17 @@ await fetch('http://localhost:8090/joint_trajectory', {
 # 方式 2：单独启动控制服务
 source /opt/ros/humble/setup.bash
 /usr/bin/python3 jiang/control_server.py
+
+# 单独启动相机与雷达流服务
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+/usr/bin/python3 jiang/scripts/sensor_stream_server
 ```
 
 启动后确认端口可访问：
 ```bash
 curl http://localhost:8090/health    # 应返回 {"status":"ok"}
+curl http://localhost:8003/health
+curl http://localhost:8003/lidar.json
 curl -N http://localhost:8001/xczs/odom/json
 ```

@@ -13,6 +13,7 @@
 # 启动后:
 #   - 监控面板: http://localhost:8080/monitor.html
 #   - SSE 数据:  http://localhost:8001
+#   - 传感器流:  http://localhost:8003
 #   - Zenoh TCP: tcp/localhost:7447
 # ============================================================================
 set -eo pipefail
@@ -21,6 +22,7 @@ set -eo pipefail
 BRIDGE_PID=""
 PROXY_PID=""
 SSE_PID=""
+SENSOR_PID=""
 HTTP_PID=""
 CONTROL_PID=""
 CLEANUP_DONE="false"
@@ -34,6 +36,8 @@ MONITOR_PORT="${MONITOR_PORT:-8080}"
 BRIDGE_REST_PORT="${BRIDGE_REST_PORT:-8000}"
 BRIDGE_TCP_PORT="${BRIDGE_TCP_PORT:-7447}"
 SSE_PORT="${SSE_PORT:-8001}"
+SENSOR_PORT="${SENSOR_PORT:-8003}"
+SENSOR_HOST="${SENSOR_HOST:-0.0.0.0}"
 CONTROL_PORT="${CONTROL_PORT:-8090}"
 CONTROL_HOST="${CONTROL_HOST:-127.0.0.1}"
 ROS2_SETUP="/opt/ros/humble/setup.bash"
@@ -75,6 +79,7 @@ cleanup() {
         ${BRIDGE_PID:-} \
         ${PROXY_PID:-} \
         ${SSE_PID:-} \
+        ${SENSOR_PID:-} \
         ${HTTP_PID:-} \
         ${CONTROL_PID:-}; do
         if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
@@ -86,6 +91,7 @@ cleanup() {
         ${BRIDGE_PID:-} \
         ${PROXY_PID:-} \
         ${SSE_PID:-} \
+        ${SENSOR_PID:-} \
         ${HTTP_PID:-} \
         ${CONTROL_PID:-}; do
         if [ -n "${pid:-}" ]; then
@@ -113,7 +119,9 @@ fi
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"
-if ! "$PYTHON_BIN" -c "import rclpy, zenoh" 2>/dev/null; then
+if ! "$PYTHON_BIN" -c \
+    "import aiohttp, rclpy, zenoh; from PIL import Image" \
+    2>/dev/null; then
     echo "ERROR: Python dependencies are incomplete."
     echo "Run: $PYTHON_BIN -m pip install -r $JIANG_DIR/requirements.txt"
     exit 1
@@ -176,7 +184,7 @@ _check_process() {
 }
 
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
-echo "[1/5] Zenoh Bridge..."
+echo "[1/6] Zenoh Bridge..."
 
 # 如果系统桥已存在且有 ros2dds（/zenoh_bridge_ros2dds 节点存在），直接复用
 if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
@@ -198,7 +206,7 @@ fi
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
 if [ "$WITH_PROXY" = "true" ]; then
-    echo "[2/5] 启动 XCZS Zenoh 代理..."
+    echo "[2/6] 启动 XCZS Zenoh 代理..."
     cd "$JIANG_DIR"
     "$PYTHON_BIN" run_xczs_proxy.py \
         --port "$BRIDGE_TCP_PORT" \
@@ -208,12 +216,12 @@ if [ "$WITH_PROXY" = "true" ]; then
     _check_process "$PROXY_PID" "XCZS Zenoh 代理"
     echo "       代理已启动 (PID $PROXY_PID)"
 else
-    echo "[2/5] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
+    echo "[2/6] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
     PROXY_PID=""
 fi
 
 # ── 3a. 启动 SSE 桥（Zenoh TCP → HTTP SSE） ─────────────────────
-echo "[3a/5] 启动 SSE 数据桥 (port $SSE_PORT)..."
+echo "[3a/6] 启动 SSE 数据桥 (port $SSE_PORT)..."
 cd "$JIANG_DIR"
 "$PYTHON_BIN" sse_bridge.py \
     --port "$SSE_PORT" \
@@ -223,8 +231,19 @@ sleep 1
 _check_process "$SSE_PID" "SSE 数据桥"
 echo "       SSE 数据桥: http://localhost:$SSE_PORT/<key>"
 
-# ── 3b. 启动 HTTP 文件服务器（monitor.html） ────────────────────────
-echo "[3b/5] 启动 HTTP 服务器 (port $MONITOR_PORT)..."
+# ── 3b. 启动 ROS 2 传感器 Web 流 ────────────────────────────────
+echo "[3b/6] 启动传感器流服务 (port $SENSOR_PORT)..."
+"$PYTHON_BIN" scripts/sensor_stream_server \
+    --host "$SENSOR_HOST" \
+    --port "$SENSOR_PORT" &
+SENSOR_PID=$!
+sleep 1
+_check_process "$SENSOR_PID" "传感器流服务"
+echo "       相机 MJPEG: http://localhost:$SENSOR_PORT/camera.mjpg"
+echo "       雷达 WebSocket: ws://localhost:$SENSOR_PORT/lidar/ws"
+
+# ── 3c. 启动 HTTP 文件服务器（monitor.html） ────────────────────────
+echo "[3c/6] 启动 HTTP 服务器 (port $MONITOR_PORT)..."
 "$PYTHON_BIN" -m http.server "$MONITOR_PORT" --bind 0.0.0.0 &
 HTTP_PID=$!
 sleep 1
@@ -233,7 +252,7 @@ echo "       监控面板: http://localhost:$MONITOR_PORT/monitor.html"
 
 # ── 4. 按需启动浏览器控制服务 ───────────────────────────────────
 if [ "$TASK_MODE" = "web" ]; then
-    echo "[4/5] 启动 Web 控制服务 (port $CONTROL_PORT)..."
+    echo "[4/6] 启动 Web 控制服务 (port $CONTROL_PORT)..."
     "$PYTHON_BIN" control_server.py \
         --host "$CONTROL_HOST" \
         --port "$CONTROL_PORT" &
@@ -242,17 +261,20 @@ if [ "$TASK_MODE" = "web" ]; then
     _check_process "$CONTROL_PID" "Web 控制服务"
     echo "       Web 控制: http://localhost:$CONTROL_PORT"
 else
-    echo "[4/5] 跳过 Web 控制服务（当前模式由专用 ROS 2 节点控制）"
+    echo "[4/6] 跳过 Web 控制服务（当前模式由专用 ROS 2 节点控制）"
 fi
 
-# ── 5. 启动 Gazebo + 机器人 ───────────────────────────────────────
-echo "[5/5] 启动 Gazebo + XCZS 机器人..."
+# ── 5. 显示访问地址 ───────────────────────────────────────────────
 echo ""
 echo "  ╔══════════════════════════════════════════════════════╗"
 echo "  ║  🌐 监控面板: http://localhost:$MONITOR_PORT/monitor.html"
 echo "  ║  📡 SSE 数据:  http://localhost:$SSE_PORT"
+echo "  ║  📷 传感器流:  http://localhost:$SENSOR_PORT"
 echo "  ╚══════════════════════════════════════════════════════╝"
 echo ""
+
+# ── 6. 启动 Gazebo + 机器人 ───────────────────────────────────────
+echo "[6/6] 启动 Gazebo + XCZS 机器人..."
 
 if [ "$TASK_MODE" = "task" ]; then
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \

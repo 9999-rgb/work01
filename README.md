@@ -16,7 +16,7 @@
 Web 监控还需要：
 
 - `/opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds`
-- Python 依赖：`jiang/requirements.txt`
+- Python 依赖：`jiang/requirements.txt`（Zenoh、HTTP/WebSocket、JPEG 编码）
 
 ## 获取与编译
 
@@ -86,17 +86,40 @@ http://localhost:8080/monitor.html
 ```
 
 点击“连接”，再选择需要监控的话题。监控数据每秒更新一次；Web 控制功能仅在
-`--web` 模式下可用。
+`--web` 模式下可用。腕部相机和车身雷达无需手动订阅，点击“连接”后会自动
+连接 MJPEG 图像流和雷达 WebSocket。
 
 | 服务 | 地址 |
 | --- | --- |
 | 监控页面 | `http://localhost:8080/monitor.html` |
 | SSE 数据 | `http://localhost:8001` |
+| 相机与雷达流 | `http://localhost:8003` |
 | Web 控制 | `http://localhost:8090` |
 | Zenoh TCP | `tcp/localhost:7447` |
 
 前后端接口格式和调用示例见
 [FRONTEND_API.md](FRONTEND_API.md)。
+
+传感器流服务提供以下浏览器接口：
+
+| 接口 | 格式 | 用途 |
+| --- | --- | --- |
+| `/camera.mjpg` | `multipart/x-mixed-replace` | 浏览器实时相机画面 |
+| `/camera.jpg` | `image/jpeg` | 获取最新单帧图像 |
+| `/lidar.json` | JSON | 获取最新一帧雷达扫描 |
+| `/lidar/ws` | WebSocket JSON | 持续接收雷达扫描 |
+| `/health` | JSON | 检查相机和雷达数据状态 |
+
+从其他计算机访问并控制时，应让控制服务监听局域网地址：
+
+```bash
+CONTROL_HOST=0.0.0.0 ./run_all.sh --web
+```
+
+然后在另一台计算机打开
+`http://<simulation-host-ip>:8080/monitor.html`。页面会自动使用当前主机名
+连接 `8001`、`8003` 和 `8090` 端口，无需手动把 `localhost` 改成服务器
+地址。
 
 ## 键盘控制
 
