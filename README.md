@@ -6,6 +6,15 @@
 
 ![XCZS 巡操机器人](docs/images/xczs_inspection_robot_preview.png)
 
+## 功能概览
+
+- ROS 2 Humble + Gazebo Classic 11 仿真，不包含 ROS 1 启动或通信逻辑
+- 移动底盘、六自由度机械臂、两指夹爪和控制柜碰撞仿真
+- 腕部 RGB 相机和车身 180° 2D 激光雷达
+- Qt GUI、键盘、网页和自主任务四种互斥控制模式
+- 浏览器 MJPEG 相机画面、WebSocket 雷达扫描和 SSE 状态监控
+- `run_all.sh` 一键启动、统一退出和子进程清理
+
 ## 运行环境
 
 - Ubuntu 22.04
@@ -30,7 +39,25 @@ source install/setup.bash
 
 如果终端当前处于 Conda 环境，请先执行 `conda deactivate`。
 
-## 启动
+## 快速启动
+
+推荐使用网页控制模式启动完整系统：
+
+```bash
+/usr/bin/python3 -m pip install -r jiang/requirements.txt
+./run_all.sh --web
+```
+
+启动完成后打开：
+
+```text
+http://localhost:8080/monitor.html
+```
+
+点击页面顶部的“连接”，相机和雷达会自动连接；底盘、机械臂和夹爪控制服务
+也会自动检测。按 `Ctrl+C` 可统一关闭 Gazebo、Web 服务和桥接进程。
+
+## 其他启动方式
 
 ### 仅启动 ROS 2 仿真
 
@@ -52,7 +79,7 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
   spawn_cabinet:=false
 ```
 
-### 启动完整系统
+### 完整系统控制模式
 
 首次使用 Web 功能时安装 Python 依赖：
 
@@ -87,7 +114,9 @@ http://localhost:8080/monitor.html
 
 点击“连接”，再选择需要监控的话题。监控数据每秒更新一次；Web 控制功能仅在
 `--web` 模式下可用。腕部相机和车身雷达无需手动订阅，点击“连接”后会自动
-连接 MJPEG 图像流和雷达 WebSocket。
+连接 MJPEG 图像流和雷达 WebSocket。浏览器相机流默认为约 `10 FPS`，雷达
+WebSocket 默认为约 `10 Hz`；这不会改变 ROS 2 原始相机 `30 Hz` 和雷达
+`40 Hz` 的发布频率。
 
 | 服务 | 地址 |
 | --- | --- |
@@ -110,6 +139,14 @@ http://localhost:8080/monitor.html
 | `/lidar/ws` | WebSocket JSON | 持续接收雷达扫描 |
 | `/health` | JSON | 检查相机和雷达数据状态 |
 
+可直接使用以下命令检查传感器 Web 服务：
+
+```bash
+curl http://localhost:8003/health
+curl http://localhost:8003/lidar.json
+curl http://localhost:8003/camera.jpg --output camera.jpg
+```
+
 从其他计算机访问并控制时，应让控制服务监听局域网地址：
 
 ```bash
@@ -119,7 +156,19 @@ CONTROL_HOST=0.0.0.0 ./run_all.sh --web
 然后在另一台计算机打开
 `http://<simulation-host-ip>:8080/monitor.html`。页面会自动使用当前主机名
 连接 `8001`、`8003` 和 `8090` 端口，无需手动把 `localhost` 改成服务器
-地址。
+地址。局域网防火墙至少需要允许 TCP 端口 `8001`、`8003`、`8080` 和
+`8090`；浏览器不需要直接访问 Zenoh TCP 端口。
+
+Web 服务端口可通过环境变量调整：
+
+| 环境变量 | 默认值 | 用途 |
+| --- | --- | --- |
+| `MONITOR_PORT` | `8080` | 监控页面 |
+| `SSE_PORT` | `8001` | 常规 ROS 2 数据 SSE |
+| `SENSOR_PORT` | `8003` | 相机和雷达 Web 服务 |
+| `CONTROL_PORT` | `8090` | 网页控制服务 |
+| `CONTROL_HOST` | `127.0.0.1` | 网页控制监听地址 |
+| `SENSOR_HOST` | `0.0.0.0` | 传感器流监听地址 |
 
 ## 键盘控制
 
@@ -147,6 +196,7 @@ CONTROL_HOST=0.0.0.0 ./run_all.sh --web
 | `/xczs_keyboard_teleop` | 键盘控制节点 |
 | `/xczs_task_scheduler` | 自主巡检任务节点 |
 | `/xczs_web_control_server` | Web 控制节点 |
+| `/xczs_web_sensor_stream` | 相机 JPEG/MJPEG 与雷达 JSON/WebSocket 转换 |
 
 控制节点根据启动模式选择，不会全部同时运行。
 
@@ -183,6 +233,37 @@ work01/
 │       └── control_cabinet/components/       # 控制柜模型功能组件
 ├── xczs_inspection_robot_control/      # 控制节点、配置和统一 launch
 ├── jiang/                              # Web、Zenoh 和前后端接口
+│   ├── monitor.html                    # 浏览器监控与控制页面
+│   ├── sensor_bridge/                  # ROS 2 传感器 Web 转换模块
+│   ├── scripts/sensor_stream_server    # 传感器流启动入口
+│   ├── control_server.py               # HTTP → ROS 2 控制服务
+│   └── sse_bridge.py                   # Zenoh → SSE 数据服务
 ├── docs/                               # 图片等项目文档资源
 └── run_all.sh                          # 完整系统启动入口
 ```
+
+## 常见检查
+
+确认 ROS 2 传感器原始数据：
+
+```bash
+ros2 topic hz /xczs/camera/arm_camera/image_raw
+ros2 topic hz /xczs/lidar/scan
+```
+
+如果网页显示“等待 ROS 2 图像”或雷达持续重连，依次检查：
+
+```bash
+curl http://localhost:8003/health
+ros2 topic info /xczs/camera/arm_camera/image_raw --verbose
+ros2 topic info /xczs/lidar/scan --verbose
+```
+
+如果端口被占用：
+
+```bash
+lsof -nP -iTCP:8003 -sTCP:LISTEN
+```
+
+更完整的 SSE、MJPEG、WebSocket 和控制请求格式参见
+[FRONTEND_API.md](FRONTEND_API.md)。
