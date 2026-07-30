@@ -1,7 +1,8 @@
 # XCZS 巡操机器人仿真
 
 基于 ROS 2 Humble 和 Gazebo Classic 的巡操机器人仿真项目，包含移动底盘、
-六自由度机械臂、两指夹爪、手动控制、自主巡检以及 Web 数据监控。
+六自由度机械臂、两指夹爪、腕部 RGB 相机、车身 2D 激光雷达、手动控制、
+自主巡检以及 Web 数据监控。
 
 ![XCZS 巡操机器人](docs/images/xczs_inspection_robot_preview.png)
 
@@ -134,6 +135,9 @@ http://localhost:8080/monitor.html
 | `/xczs/odom` | `nav_msgs/msg/Odometry` | Gazebo → 底盘里程计 |
 | `/xczs/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | 控制节点 → 机械臂和夹爪目标 |
 | `/xczs/joint_states` | `sensor_msgs/msg/JointState` | Gazebo → 关节状态 |
+| `/xczs/camera/arm_camera/image_raw` | `sensor_msgs/msg/Image` | 腕部相机彩色图像 |
+| `/xczs/camera/arm_camera/camera_info` | `sensor_msgs/msg/CameraInfo` | 腕部相机标定参数 |
+| `/xczs/lidar/scan` | `sensor_msgs/msg/LaserScan` | 车身 180° 激光扫描 |
 | `/robot_description` | `std_msgs/msg/String` | 机器人模型描述 |
 | `/tf` | `tf2_msgs/msg/TFMessage` | 机器人坐标变换 |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Gazebo 仿真时间 |

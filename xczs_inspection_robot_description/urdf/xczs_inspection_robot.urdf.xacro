@@ -13,12 +13,14 @@
   <xacro:include filename="components/mobile_base.xacro" />
   <xacro:include filename="components/manipulator.xacro" />
   <xacro:include filename="components/gripper.xacro" />
+  <xacro:include filename="components/sensors.xacro" />
   <xacro:include filename="components/gazebo_plugins.xacro" />
 
   <!-- Keep component order aligned with the original exported model. -->
   <xacro:xczs_base_body />
   <xacro:xczs_manipulator />
   <xacro:xczs_gripper />
+  <xacro:xczs_sensors />
   <xacro:xczs_wheels />
   <xacro:xczs_gazebo />
 </robot>
