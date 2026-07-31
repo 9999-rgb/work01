@@ -47,12 +47,11 @@
     </link>
     <joint name="wrist_camera_mount" type="fixed">
       <!--
-        Mount the camera on the upper side of the wrist. Its positive X axis
-        points along the tool's negative Z axis, while the diagonal offset
-        keeps the gripper near the edge of the optical path.
+        Mount the camera above the centerline of the end link that carries the
+        gripper. Its positive X axis points along the tool's negative Z axis.
       -->
       <origin
-        xyz="0.065 -0.105 -0.190"
+        xyz="0.075 0 -0.190"
         rpy="0 1.57079632679 0" />
       <parent link="end" />
       <child link="arm_camera_link" />
