@@ -2,10 +2,10 @@
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:macro
     name="control_cabinet_module"
-    params="index body_xyz knob_xyz">
+    params="index body_mesh knob_mesh body_xyz knob_xyz">
     <xacro:control_cabinet_visual_link
       link_name="box_${index}"
-      mesh_name="box_${index}"
+      mesh_name="${body_mesh}"
       urdf_material="cabinet_light_gray"
       gazebo_material="Gazebo/Grey" />
     <xacro:control_cabinet_fixed_joint
@@ -16,7 +16,7 @@
 
     <xacro:control_cabinet_visual_link
       link_name="box_${index}_knob"
-      mesh_name="box_${index}_knob"
+      mesh_name="${knob_mesh}"
       urdf_material="cabinet_black"
       gazebo_material="Gazebo/Black" />
     <xacro:control_cabinet_fixed_joint
@@ -28,10 +28,10 @@
 
   <xacro:macro
     name="control_cabinet_buttons"
-    params="index button_1_xyz button_2_xyz">
+    params="index button_1_mesh button_2_mesh button_1_xyz button_2_xyz">
     <xacro:control_cabinet_visual_link
       link_name="box_${index}_button_1"
-      mesh_name="box_${index}_button_1"
+      mesh_name="${button_1_mesh}"
       urdf_material="cabinet_red"
       gazebo_material="Gazebo/Red" />
     <xacro:control_cabinet_fixed_joint
@@ -42,7 +42,7 @@
 
     <xacro:control_cabinet_visual_link
       link_name="box_${index}_button_2"
-      mesh_name="box_${index}_button_2"
+      mesh_name="${button_2_mesh}"
       urdf_material="cabinet_green"
       gazebo_material="Gazebo/Green" />
     <xacro:control_cabinet_fixed_joint
@@ -79,97 +79,139 @@
   <xacro:macro name="control_cabinet_modules" params="">
     <xacro:control_cabinet_module
       index="1"
+      body_mesh="box_type_a"
+      knob_mesh="knob_standard"
       body_xyz="0.005 1.826 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="1"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="2"
+      body_mesh="box_2"
+      knob_mesh="knob_standard"
       body_xyz="0.334 1.826 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="2"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="3"
+      body_mesh="box_type_b"
+      knob_mesh="knob_standard"
       body_xyz="0.005 1.497 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="3"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="4"
+      body_mesh="box_type_a"
+      knob_mesh="knob_standard"
       body_xyz="0.334 1.497 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="4"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="5"
+      body_mesh="box_type_b"
+      knob_mesh="knob_standard"
       body_xyz="0.005 1.168 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="5"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="6"
+      body_mesh="box_type_a"
+      knob_mesh="knob_standard"
       body_xyz="0.334 1.168 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="6"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="7"
+      body_mesh="box_type_b"
+      knob_mesh="knob_standard"
       body_xyz="0.005 0.839 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="7"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <xacro:control_cabinet_module
       index="8"
+      body_mesh="box_type_a"
+      knob_mesh="knob_standard"
       body_xyz="0.334 0.839 0"
       knob_xyz="0.16247 0.22494 0.0295" />
     <xacro:control_cabinet_buttons
       index="8"
+      button_1_mesh="button_standard"
+      button_2_mesh="button_standard"
       button_1_xyz="0.115 0.05 0.011"
       button_2_xyz="0.165 0.05 0.011" />
 
     <!-- Box 9 has a knob but no buttons in the source assembly. -->
     <xacro:control_cabinet_module
       index="9"
+      body_mesh="box_9"
+      knob_mesh="box_9_knob"
       body_xyz="0.005 0.721 0"
       knob_xyz="0.11994 0.053526 0.0295" />
 
     <xacro:control_cabinet_module
       index="10"
+      body_mesh="box_10"
+      knob_mesh="knob_standard"
       body_xyz="0.005 0.519 0"
       knob_xyz="0.13047 0.11194 0.0295" />
     <xacro:control_cabinet_buttons
       index="10"
+      button_1_mesh="box_10_button_1"
+      button_2_mesh="box_10_button_2"
       button_1_xyz="0.487 0.055 0.011"
       button_2_xyz="0.522 0.055 0.011" />
 
     <xacro:control_cabinet_module
       index="11"
+      body_mesh="box_11"
+      knob_mesh="box_11_knob"
       body_xyz="0.005 0.322 0"
       knob_xyz="0.13047 0.11194 0.0295" />
     <xacro:control_cabinet_buttons
       index="11"
+      button_1_mesh="box_11_button_1"
+      button_2_mesh="box_11_button_2"
       button_1_xyz="0.487 0.055 0.011"
       button_2_xyz="0.522 0.055 0.011" />
 

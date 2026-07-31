@@ -14,8 +14,19 @@ fi
 
 mkdir -p -- "${collision_mesh_dir}"
 
-for visual_mesh in "${visual_mesh_dir}"/*.STL; do
-  mesh_name="$(basename -- "${visual_mesh}")"
+collision_mesh_names=(
+  arm1.STL
+  arm2.STL
+  arm3.STL
+  arm4.STL
+  arm5.STL
+  end.STL
+  worklink1.STL
+  worklink2.STL
+)
+
+for mesh_name in "${collision_mesh_names[@]}"; do
+  visual_mesh="${visual_mesh_dir}/${mesh_name}"
   collision_mesh="${collision_mesh_dir}/${mesh_name}"
 
   echo "Generating convex collision mesh: ${mesh_name}"

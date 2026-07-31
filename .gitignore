@@ -23,6 +23,8 @@ Makefile
 # Runtime and editor temporary files
 .claude/
 .idea/
+/.vscode/c_cpp_properties.json
+/.vscode/browse.vc.db*
 *.swp
 *.tmp
 *~
