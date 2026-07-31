@@ -72,8 +72,10 @@ source install/setup.bash
 http://localhost:8080/monitor.html
 ```
 
-点击页面顶部的“连接”，相机和雷达会自动连接；底盘、机械臂和夹爪控制服务
-也会自动检测。按 `Ctrl+C` 可统一关闭 Gazebo、Web 服务和桥接进程。
+`--web` 会在同一个进程树中启动 Gazebo、MoveIt 2、Nav2、传感器服务和网页
+控制服务，不需要再分别打开 RViz 或命令行控制节点。点击页面顶部的“连接”
+即可使用手动底盘、地图导航、机械臂规划、夹爪控制、相机和雷达。按
+`Ctrl+C` 可统一关闭全部进程。
 
 ## 其他启动方式
 
@@ -124,7 +126,7 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 
 | 模式 | 命令 | 用途 |
 | --- | --- | --- |
-| Web 控制 | `./run_all.sh --web` | 浏览器监控并控制底盘、机械臂和夹爪 |
+| Web 统一控制 | `./run_all.sh --web` | 浏览器控制底盘、Nav2、MoveIt 2、夹爪并监控传感器 |
 | Qt GUI | `./run_all.sh --manual` | 使用桌面控制界面 |
 | 键盘遥控 | `./run_all.sh --keyboard` | 使用键盘控制机器人 |
 | Nav2 导航 | `./run_all.sh --nav2` | 使用 AMCL 定位、规划绕障并打开 Nav2 RViz |
@@ -135,15 +137,20 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 ./run_all.sh --web --no-gui
 ```
 
-三种手动控制模式互斥，不要同时启动多个控制节点。启用 Nav2 后，手动底盘
-速度会被阻止，但机械臂和夹爪仍可使用。手动控制和 MoveIt 规划可以同时保持
-在线，但不能同时向同一控制组执行轨迹；兼容路由器会在 MoveIt action 执行
-期间拒绝同组手动轨迹。
+三种手动控制模式互斥，不要同时启动多个控制节点。Web 模式会自动启用 Nav2
+和 MoveIt 2，底盘初始处于 Nav2 模式；点击页面中的“切换手动模式”后可使用
+方向键，发送新的导航目标时会自动切回 Nav2 模式。手动控制和 MoveIt 规划可以
+同时保持在线，但不能同时向同一控制组执行轨迹；兼容路由器会在 MoveIt
+action 执行期间拒绝同组手动轨迹。
 
 ## MoveIt 2 规划控制
 
-启动统一入口并等待控制器激活后，可在另一个终端执行以下命令。默认只规划，
-添加 `--execute` 才会让 Gazebo 中的机器人运动。
+推荐直接运行 `./run_all.sh --web`，在网页的 “MoveIt 2 Motion” 区域选择
+机械臂回零、夹爪开合，或填写末端位置和姿态后执行“仅规划”或“规划并执行”。
+页面会显示规划状态、规划耗时、错误码，并可取消正在执行的动作。
+
+下面的命令行方式保留用于调试。启动统一入口并等待控制器激活后，可在另一个
+终端执行。默认只规划，添加 `--execute` 才会让 Gazebo 中的机器人运动。
 
 机械臂规划回零：
 
@@ -178,7 +185,18 @@ ros2 run xczs_inspection_robot_control moveit_planner \
 
 ## Nav2 底盘自主导航
 
-一键启动 Gazebo、机器人、控制柜、AMCL、Nav2 和导航 RViz：
+推荐在网页中统一控制。下面一条命令会启动 Gazebo、机器人、控制柜、AMCL、
+Nav2、MoveIt 2 和网页服务，不会额外打开导航 RViz：
+
+```bash
+./run_all.sh --web
+```
+
+页面地图中可直接单击空闲区域选择目标，调整 `x`、`y` 和朝向后开始导航；
+页面会显示机器人实时位置、全局路径、剩余距离、预计时间和恢复次数，也可随时
+取消导航或切回手动底盘模式。
+
+需要使用 Nav2 RViz 做桌面调试时：
 
 ```bash
 ./run_all.sh --nav2
@@ -233,10 +251,16 @@ http://localhost:8080/monitor.html
 ```
 
 点击“连接”，再选择需要监控的话题。监控数据每秒更新一次；Web 控制功能仅在
-`--web` 模式下可用。腕部相机和车身雷达无需手动订阅，点击“连接”后会自动
-连接 MJPEG 图像流和雷达 WebSocket。浏览器相机流默认为约 `10 FPS`，雷达
-WebSocket 默认为约 `10 Hz`；这不会改变 ROS 2 原始相机 `30 Hz` 和雷达
-`40 Hz` 的发布频率。
+`--web` 模式下可用。页面提供以下统一功能：
+
+- 手动底盘速度控制，以及手动/Nav2 模式互斥切换
+- Nav2 占用地图、机器人位置和全局路径显示，地图选点、目标导航与取消
+- MoveIt 2 机械臂回零、末端位姿规划/执行、夹爪开合与动作取消
+- 相机 MJPEG 图像、雷达扫描图以及 ROS 2 话题状态监控
+
+腕部相机和车身雷达无需手动订阅，点击“连接”后会自动连接 MJPEG 图像流和
+雷达 WebSocket。浏览器相机流默认为约 `10 FPS`，雷达 WebSocket 默认为约
+`10 Hz`；这不会改变 ROS 2 原始相机 `30 Hz` 和雷达 `40 Hz` 的发布频率。
 
 | 服务 | 地址 |
 | --- | --- |
@@ -323,7 +347,7 @@ Web 服务端口可通过环境变量调整：
 | `/xczs_legacy_trajectory_router` | 将旧手动轨迹拆分到两个标准控制器并执行互斥 |
 | `/xczs_inspection_robot_gui` | Qt GUI 控制节点 |
 | `/xczs_keyboard_teleop` | 键盘控制节点 |
-| `/xczs_web_control_server` | Web 控制节点 |
+| `/xczs_web_control_server` | Web 手动控制、Nav2 action 和 MoveIt action 网关 |
 | `/xczs_web_sensor_stream` | 相机 JPEG/MJPEG 与雷达 JSON/WebSocket 转换 |
 
 控制节点根据启动模式选择，不会全部同时运行。
@@ -335,6 +359,7 @@ Web 服务端口可通过环境变量调整：
 | `/xczs/manual_cmd_vel` | `geometry_msgs/msg/Twist` | GUI、键盘或 Web → 手动命令输入 |
 | `/cmd_vel` | `geometry_msgs/msg/Twist` | Nav2 → 导航命令输入（REP-105 `base_link`） |
 | `/xczs/cmd_vel` | `geometry_msgs/msg/Twist` | 命令路由器 → Gazebo 底盘最终速度 |
+| `/xczs/navigation_mode` | `std_msgs/msg/Bool` | 命令路由器 → 当前手动/Nav2 模式 |
 | `/xczs/odom` | `nav_msgs/msg/Odometry` | Gazebo → 底盘里程计 |
 | `/map` | `nav_msgs/msg/OccupancyGrid` | Nav2 静态占用地图 |
 | `/amcl_pose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | AMCL 地图定位结果 |
@@ -406,8 +431,9 @@ work01/
 ├── jiang/                              # Web、Zenoh 和前后端接口
 │   ├── monitor.html                    # 浏览器监控与控制页面
 │   ├── sensor_bridge/                  # ROS 2 传感器 Web 转换模块
+│   ├── control_gateway/                # 手动、Nav2 与 MoveIt 2 Web 网关模块
 │   ├── scripts/sensor_stream_server    # 传感器流启动入口
-│   ├── control_server.py               # HTTP → ROS 2 控制服务
+│   ├── control_server.py               # Web 控制网关启动入口
 │   └── sse_bridge.py                   # Zenoh → SSE 数据服务
 ├── docs/                               # 图片等项目文档资源
 └── run_all.sh                          # 完整系统启动入口

@@ -12,6 +12,7 @@
 #   ros2 launch xczs_inspection_robot_control inspection_robot.launch.py moveit_rviz:=true
 #   CONTROL_HOST=0.0.0.0 ./run_all.sh --web   # 供其他计算机访问 Web 控制
 #
+#
 # 启动后:
 #   监控面板: http://localhost:8080/monitor.html
 #   SSE 数据:  http://localhost:8001

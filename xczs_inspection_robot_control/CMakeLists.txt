@@ -17,6 +17,7 @@ find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(trajectory_msgs REQUIRED)
@@ -89,6 +90,7 @@ ament_target_dependencies(
   base_command_router
   geometry_msgs
   rclcpp
+  std_msgs
   std_srvs
 )
 

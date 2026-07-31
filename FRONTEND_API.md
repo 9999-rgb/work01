@@ -10,8 +10,9 @@
 monitor.html ──SSE GET──▶ SSE bridge :8001/{topic}/json   ← 数据读取
 monitor.html ──MJPEG────▶ Sensor API :8003/camera.mjpg    ← 相机图像
 monitor.html ──WebSocket▶ Sensor API :8003/lidar/ws       ← 雷达扫描
-monitor.html ──POST─────▶ HTTP :8090/cmd_vel             ← 底盘控制
-monitor.html ──POST─────▶ HTTP :8090/joint_trajectory    ← 关节控制
+monitor.html ──HTTP─────▶ Control API :8090              ← 手动控制
+                                      ├── Nav2 action    ← 导航目标
+                                      └── MoveIt action  ← 机械臂规划
 ```
 
 ---
@@ -229,9 +230,18 @@ http://localhost:8090
 
 | 方法 | 端点 | 说明 |
 |---|---|---|
-| `GET` | `/health` | 健康检查 |
+| `GET` | `/health` | 服务、Nav2 和 MoveIt 2 可用状态 |
+| `GET` | `/navigation/status` | Nav2 状态、定位、路径和反馈 |
+| `GET` | `/navigation/map` | Nav2 占用地图 |
+| `GET` | `/motion/status` | MoveIt 2 规划和执行状态 |
 | `POST` | `/cmd_vel` | 底盘速度控制 |
 | `POST` | `/joint_trajectory` | 机械臂 + 夹爪控制 |
+| `POST` | `/navigation/mode` | 切换手动/Nav2 底盘模式 |
+| `POST` | `/navigation/goal` | 发送 Nav2 地图坐标目标 |
+| `POST` | `/navigation/cancel` | 取消 Nav2 导航 |
+| `POST` | `/motion/named` | MoveIt 2 命名目标规划/执行 |
+| `POST` | `/motion/pose` | MoveIt 2 末端位姿规划/执行 |
+| `POST` | `/motion/cancel` | 取消 MoveIt 2 动作 |
 
 所有接口均支持 CORS，可从任意域名访问。
 
@@ -248,7 +258,11 @@ curl http://localhost:8090/health
 
 **响应：**
 ```json
-{"status": "ok"}
+{
+  "status": "ok",
+  "navigation_available": true,
+  "moveit_available": true
+}
 ```
 
 ---
@@ -370,10 +384,177 @@ await fetch('http://localhost:8090/joint_trajectory', {
 
 ---
 
-## 四、服务启动方式
+## 四、Nav2 导航接口
+
+网页通过标准 ROS 2 `NavigateToPose` action 控制 Nav2。提交目标时，服务会
+自动把底盘路由切换为 Nav2 模式；切回手动模式时会先取消活动导航并停车。
+
+### GET /navigation/status
 
 ```bash
-# 方式 1：一键启动浏览器控制模式
+curl http://localhost:8090/navigation/status
+```
+
+响应包含 action 可用性、命令路由模式、当前目标、AMCL 位置、全局路径和导航
+反馈。`state` 可能为 `idle`、`enabling`、`sending`、`navigating`、
+`canceling`、`succeeded`、`canceled`、`rejected` 或 `failed`。
+
+```json
+{
+  "available": true,
+  "mode": true,
+  "state": "navigating",
+  "message": "Nav2 is driving to the selected goal.",
+  "goal": {"x": 0.0, "y": 1.0, "yaw": 1.57079632679},
+  "current_pose": {"x": 0.0, "y": 0.42, "yaw": 1.55},
+  "distance_remaining": 0.58,
+  "eta_seconds": 2.4,
+  "navigation_time_seconds": 3.1,
+  "recoveries": 0,
+  "plan": [{"x": 0.0, "y": 0.42}, {"x": 0.0, "y": 1.0}]
+}
+```
+
+### GET /navigation/map
+
+返回 `/map` 的 `nav_msgs/OccupancyGrid` 浏览器快照：
+
+```bash
+curl http://localhost:8090/navigation/map
+```
+
+```json
+{
+  "frame_id": "map",
+  "width": 200,
+  "height": 200,
+  "resolution": 0.05,
+  "origin": {"x": -5.0, "y": -5.0, "yaw": 0.0},
+  "data": [-1, 0, 0, 100]
+}
+```
+
+`data` 按 ROS 2 OccupancyGrid 规则使用行优先排列：`-1` 表示未知，`0` 表示
+空闲，`100` 表示占用。
+
+### POST /navigation/mode
+
+```bash
+# 启用 Nav2 底盘命令
+curl -X POST http://localhost:8090/navigation/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true}'
+
+# 恢复网页手动底盘控制
+curl -X POST http://localhost:8090/navigation/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":false}'
+```
+
+### POST /navigation/goal
+
+目标使用 `map` 坐标系，`yaw` 单位为弧度：
+
+```bash
+curl -X POST http://localhost:8090/navigation/goal \
+  -H 'Content-Type: application/json' \
+  -d '{"x":0.0,"y":1.0,"yaw":1.57079632679}'
+```
+
+服务会拒绝地图外、占用或未知栅格中的目标，也不会覆盖仍在执行的导航目标。
+成功接收后返回 HTTP `202`；后续进度通过 `/navigation/status` 获取。
+
+### POST /navigation/cancel
+
+```bash
+curl -X POST http://localhost:8090/navigation/cancel \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+---
+
+## 五、MoveIt 2 规划接口
+
+网页通过标准 ROS 2 `MoveGroup` action 提交规划。`execute:false` 只进行逆运动
+学、路径规划和碰撞检查，`execute:true` 会在规划成功后通过
+`JointTrajectoryController` 执行轨迹。
+
+### GET /motion/status
+
+```bash
+curl http://localhost:8090/motion/status
+```
+
+`state` 可能为 `idle`、`sending`、`planning`、`executing`、
+`canceling`、`succeeded`、`canceled`、`rejected` 或 `failed`。
+
+```json
+{
+  "available": true,
+  "state": "succeeded",
+  "message": "MoveIt motion succeeded.",
+  "execute": false,
+  "target": {
+    "type": "named",
+    "group": "manipulator",
+    "name": "home"
+  },
+  "planning_time": 0.031,
+  "error_code": 1
+}
+```
+
+### POST /motion/named
+
+当前支持 `manipulator/home`、`gripper/open` 和 `gripper/closed`：
+
+```bash
+curl -X POST http://localhost:8090/motion/named \
+  -H 'Content-Type: application/json' \
+  -d '{"group":"manipulator","target":"home","execute":true}'
+
+curl -X POST http://localhost:8090/motion/named \
+  -H 'Content-Type: application/json' \
+  -d '{"group":"gripper","target":"open","execute":true}'
+```
+
+### POST /motion/pose
+
+位置单位为米，四元数顺序为 `[x, y, z, w]`。允许的参考坐标系为 `body`、
+`odom` 和 `map`：
+
+```bash
+curl -X POST http://localhost:8090/motion/pose \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "frame_id":"body",
+    "position":[-0.226,0.787,0.318],
+    "orientation":[0.653,0.153,0.741,0.015],
+    "execute":false
+  }'
+```
+
+把 `execute` 改为 `true` 即可规划并执行。服务会归一化非零四元数；MoveIt 2
+负责关节限位、自碰撞和 Planning Scene 柜体碰撞检查。
+
+### POST /motion/cancel
+
+```bash
+curl -X POST http://localhost:8090/motion/cancel \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+同一时间只能执行一个 MoveIt 目标。规划执行期间，旧的手动关节接口会被对应
+控制组拒绝，避免绕过碰撞检查。
+
+---
+
+## 六、服务启动方式
+
+```bash
+# 方式 1：一键启动网页、Gazebo、Nav2 和 MoveIt 2
 ./run_all.sh --web
 
 # 方式 2：单独启动控制服务
@@ -388,7 +569,9 @@ source install/setup.bash
 
 启动后确认端口可访问：
 ```bash
-curl http://localhost:8090/health    # 应返回 {"status":"ok"}
+curl http://localhost:8090/health
+curl http://localhost:8090/navigation/status
+curl http://localhost:8090/motion/status
 curl http://localhost:8003/health
 curl http://localhost:8003/lidar.json
 curl -N http://localhost:8001/xczs/odom/json

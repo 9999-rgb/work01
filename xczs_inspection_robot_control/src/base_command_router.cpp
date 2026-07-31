@@ -10,6 +10,7 @@
 
 #include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/set_bool.hpp"
 
 namespace xczs_inspection_robot_control
@@ -60,6 +61,9 @@ public:
     max_angular_speed_ = positive_parameter("max_angular_speed", 1.2);
 
     output_publisher_ = create_publisher<Twist>(output_topic, 10);
+    navigation_mode_publisher_ = create_publisher<std_msgs::msg::Bool>(
+      "/xczs/navigation_mode",
+      rclcpp::QoS(1).reliable().transient_local());
     manual_subscription_ = create_subscription<Twist>(
       manual_topic,
       10,
@@ -90,6 +94,7 @@ public:
       });
 
     publish_stop();
+    publish_navigation_mode();
     RCLCPP_INFO(
       get_logger(),
       "Base command router started in %s mode. Output: %s",
@@ -181,6 +186,7 @@ private:
     has_manual_command_ = false;
     has_navigation_command_ = false;
     publish_stop();
+    publish_navigation_mode();
 
     response.success = true;
     response.message = navigation_enabled_ ?
@@ -226,7 +232,16 @@ private:
     stop_is_published_ = true;
   }
 
+  void publish_navigation_mode()
+  {
+    std_msgs::msg::Bool message;
+    message.data = navigation_enabled_;
+    navigation_mode_publisher_->publish(message);
+  }
+
   rclcpp::Publisher<Twist>::SharedPtr output_publisher_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr
+    navigation_mode_publisher_;
   rclcpp::Subscription<Twist>::SharedPtr manual_subscription_;
   rclcpp::Subscription<Twist>::SharedPtr navigation_subscription_;
   rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr mode_service_;

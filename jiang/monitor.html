@@ -374,6 +374,87 @@
 }
 .ctrl-status.ok { color: var(--green); border: 1px solid var(--green); }
 .ctrl-status.err { color: var(--red); border: 1px solid var(--red); }
+
+/* ── Nav2 and MoveIt ─────────────────────── */
+.autonomy-grid {
+  display: grid; grid-template-columns: minmax(420px, 1.2fr) minmax(380px, 1fr);
+  gap: 16px; margin-bottom: 16px;
+}
+@media (max-width: 1000px) {
+  .autonomy-grid { grid-template-columns: 1fr; }
+}
+.autonomy-card {
+  background: var(--card-bg); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden;
+}
+.autonomy-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 11px 14px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255,255,255,0.02);
+}
+.autonomy-header h3 { font-size: 14px; }
+.autonomy-state {
+  font-size: 11px; padding: 3px 10px; border-radius: 12px;
+  border: 1px solid var(--border); color: var(--text-dim);
+}
+.autonomy-state.ok { color: var(--green); border-color: var(--green); }
+.autonomy-state.busy { color: var(--yellow); border-color: var(--yellow); }
+.autonomy-state.err { color: var(--red); border-color: var(--red); }
+.autonomy-body { padding: 14px; }
+.nav-map-wrap {
+  position: relative; background: #080c11; border: 1px solid var(--border);
+  border-radius: 8px; overflow: hidden;
+}
+.nav-map-canvas {
+  display: block; width: 100%; height: auto; aspect-ratio: 1 / 1;
+  cursor: crosshair; image-rendering: pixelated;
+}
+.map-hint {
+  position: absolute; left: 8px; bottom: 8px;
+  padding: 4px 8px; border-radius: 4px;
+  background: rgba(8,12,17,0.82); color: var(--text-dim);
+  font-size: 10px; pointer-events: none;
+}
+.field-grid {
+  display: grid; grid-template-columns: repeat(3, minmax(80px, 1fr));
+  gap: 8px; margin-top: 10px;
+}
+.field-grid.quaternion-grid {
+  grid-template-columns: repeat(3, minmax(72px, 1fr));
+}
+.form-field { display: flex; flex-direction: column; gap: 4px; }
+.form-field label {
+  font-size: 10px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.3px;
+}
+.form-field input, .form-field select {
+  width: 100%; background: #0d1117; border: 1px solid var(--border);
+  border-radius: 5px; padding: 6px 8px; color: var(--text);
+  font-size: 12px;
+}
+.form-field input:focus, .form-field select:focus {
+  outline: none; border-color: var(--accent);
+}
+.command-row {
+  display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;
+}
+.command-row .btn { flex: 1; min-width: 100px; }
+.status-detail {
+  margin-top: 10px; padding: 9px 10px; border-radius: 6px;
+  background: rgba(255,255,255,0.035);
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-size: 10.5px; line-height: 1.65; color: var(--text-dim);
+  min-height: 54px;
+}
+.status-detail strong { color: var(--text); font-weight: 500; }
+.section-label {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
+  color: var(--text-dim); font-size: 11px; font-weight: 600;
+}
+.dpad-btn:disabled, .joint-slider-row input:disabled {
+  opacity: 0.35; cursor: not-allowed;
+}
 </style>
 </head>
 <body>
@@ -385,7 +466,7 @@
 <header class="header">
   <h1>
     ⚡ XCZS 巡操机器人
-    <small>实时数据、相机与雷达监控</small>
+    <small>统一监控、Nav2 导航与 MoveIt 2 规划</small>
   </h1>
   <div class="status-badge">
     <span class="status-dot" id="statusDot"></span>
@@ -448,7 +529,7 @@
 <div class="control-bar" id="controlBar">
   <!-- Chassis D-Pad -->
   <div class="control-section">
-    <h4>🎮 底盘控制 (W/A/S/D)</h4>
+    <h4>🎮 手动底盘控制 (W/A/S/D)</h4>
     <div class="dpad" id="dpad">
       <button class="dpad-btn empty"></button>
       <button class="dpad-btn" id="btnForward" title="前进 (W)">▲</button>
@@ -468,11 +549,14 @@
       <label>转向: <span id="spdAngVal">0.60</span> rad/s</label>
       <input type="range" id="spdAngular" min="0.10" max="1.50" value="0.60" step="0.10">
     </div>
+    <div class="status-detail" style="min-height:0">
+      底盘模式：<strong id="baseModeState">等待状态</strong>
+    </div>
   </div>
 
   <!-- Arm Sliders -->
   <div class="control-section" style="flex:2">
-    <h4>🦾 机械臂关节 (±2.80 rad)</h4>
+    <h4>🦾 机械臂手动调试（不经过 MoveIt）</h4>
     <div class="joint-sliders" id="jointSliders">
       <!-- Populated by JS -->
     </div>
@@ -502,6 +586,120 @@
   </div>
 </div>
 
+<!-- ─── Nav2 and MoveIt 2 ─── -->
+<div class="autonomy-grid">
+  <section class="autonomy-card">
+    <div class="autonomy-header">
+      <h3>🧭 Nav2 地图导航</h3>
+      <span class="autonomy-state" id="navState">等待服务</span>
+    </div>
+    <div class="autonomy-body">
+      <div class="nav-map-wrap">
+        <canvas
+          class="nav-map-canvas"
+          id="navMapCanvas"
+          width="700"
+          height="700"></canvas>
+        <span class="map-hint">单击地图选择目标点，再点击“开始导航”</span>
+      </div>
+      <div class="field-grid">
+        <div class="form-field">
+          <label for="navGoalX">目标 X / m</label>
+          <input id="navGoalX" type="number" step="0.05" value="0.00">
+        </div>
+        <div class="form-field">
+          <label for="navGoalY">目标 Y / m</label>
+          <input id="navGoalY" type="number" step="0.05" value="1.00">
+        </div>
+        <div class="form-field">
+          <label for="navGoalYaw">朝向 / deg</label>
+          <input id="navGoalYaw" type="number" step="5" value="90">
+        </div>
+      </div>
+      <div class="command-row">
+        <button class="btn btn-outline" id="btnManualMode">切换手动模式</button>
+        <button class="btn btn-primary" id="btnNavSend">开始导航</button>
+        <button class="btn btn-danger" id="btnNavCancel">取消导航</button>
+      </div>
+      <div class="status-detail" id="navDetail">
+        启动时使用 <strong>./run_all.sh --web</strong>
+      </div>
+    </div>
+  </section>
+
+  <section class="autonomy-card">
+    <div class="autonomy-header">
+      <h3>🦾 MoveIt 2 机械臂规划</h3>
+      <span class="autonomy-state" id="moveitState">等待服务</span>
+    </div>
+    <div class="autonomy-body">
+      <div class="command-row" style="margin-top:0">
+        <button class="btn btn-primary moveit-command" id="btnMoveitHome">
+          机械臂回零
+        </button>
+        <button class="btn btn-outline moveit-command" id="btnMoveitOpen">
+          规划打开夹爪
+        </button>
+        <button class="btn btn-outline moveit-command" id="btnMoveitClose">
+          规划关闭夹爪
+        </button>
+      </div>
+
+      <div class="section-label">末端 end 目标位姿</div>
+      <div class="field-grid">
+        <div class="form-field">
+          <label for="moveitX">X / m</label>
+          <input id="moveitX" type="number" step="0.01" value="-0.226">
+        </div>
+        <div class="form-field">
+          <label for="moveitY">Y / m</label>
+          <input id="moveitY" type="number" step="0.01" value="0.787">
+        </div>
+        <div class="form-field">
+          <label for="moveitZ">Z / m</label>
+          <input id="moveitZ" type="number" step="0.01" value="0.318">
+        </div>
+      </div>
+      <div class="field-grid quaternion-grid">
+        <div class="form-field">
+          <label for="moveitRoll">Roll / deg</label>
+          <input id="moveitRoll" type="number" step="1" value="67.83">
+        </div>
+        <div class="form-field">
+          <label for="moveitPitch">Pitch / deg</label>
+          <input id="moveitPitch" type="number" step="1" value="-74.40">
+        </div>
+        <div class="form-field">
+          <label for="moveitYaw">Yaw / deg</label>
+          <input id="moveitYaw" type="number" step="1" value="123.14">
+        </div>
+      </div>
+      <div class="field-grid" style="grid-template-columns:1fr">
+        <div class="form-field">
+          <label for="moveitFrame">参考坐标系</label>
+          <select id="moveitFrame">
+            <option value="body">body（跟随车身）</option>
+            <option value="odom">odom（仿真世界）</option>
+            <option value="map">map（导航地图）</option>
+          </select>
+        </div>
+      </div>
+      <div class="command-row">
+        <button class="btn btn-outline moveit-command" id="btnMoveitPlan">
+          仅规划
+        </button>
+        <button class="btn btn-primary moveit-command" id="btnMoveitExecute">
+          规划并执行
+        </button>
+        <button class="btn btn-danger" id="btnMoveitCancel">取消动作</button>
+      </div>
+      <div class="status-detail" id="moveitDetail">
+        MoveIt 会检查关节限位、自碰撞和控制柜碰撞。
+      </div>
+    </div>
+  </section>
+</div>
+
 <!-- ─── Dashboard ─── -->
 <div class="dashboard">
   <!-- Sidebar -->
@@ -514,6 +712,12 @@
       <button class="topic-preset" data-topic="xczs/odom/json">odom 里程计</button>
       <button class="topic-preset" data-topic="xczs/joint_states/json">joint_states 关节状态</button>
       <button class="topic-preset" data-topic="xczs/joint_trajectory/json">joint_trajectory 关节指令</button>
+    </div>
+    <div class="topic-group">
+      <h3>🧭 Nav2 导航</h3>
+      <button class="topic-preset" data-topic="amcl_pose/json">amcl_pose 定位</button>
+      <button class="topic-preset" data-topic="plan/json">plan 全局路径</button>
+      <button class="topic-preset" data-topic="xczs/navigation_mode/json">navigation_mode</button>
     </div>
     <div class="topic-group">
       <h3>📐 模型与变换</h3>
@@ -531,6 +735,9 @@
         subscribe('xczs/odom/json');
         subscribe('xczs/joint_states/json');
         subscribe('xczs/joint_trajectory/json');
+        subscribe('amcl_pose/json');
+        subscribe('plan/json');
+        subscribe('xczs/navigation_mode/json');
         subscribe('robot_description/json');
         subscribe('tf/json');
         subscribe('clock/json');
@@ -584,6 +791,13 @@ let sensorEnabled = false;
 let lidarSocket = null;
 let lidarReconnectTimer = null;
 let sensorHealthTimer = null;
+let autonomyStatusTimer = null;
+let autonomyMapTimer = null;
+let navigationMap = null;
+let navigationMapImage = null;
+let navigationStatus = null;
+let moveitStatus = null;
+let selectedNavigationGoal = null;
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -602,6 +816,11 @@ const cameraStream = $('cameraStream');
 const cameraState = $('cameraState');
 const lidarState = $('lidarState');
 const lidarCanvas = $('lidarCanvas');
+const navMapCanvas = $('navMapCanvas');
+const navState = $('navState');
+const navDetail = $('navDetail');
+const moveitState = $('moveitState');
+const moveitDetail = $('moveitDetail');
 
 function defaultServiceUrl(port) {
   const host = window.location.hostname || 'localhost';
@@ -1135,10 +1354,18 @@ async function testControlConnection() {
   try {
     const r = await fetch(url + '/health');
     if (r.ok) {
+      const health = await r.json();
       ctrlConnected = true;
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
+      startAutonomyPolling();
+      if (!health.navigation_available) {
+        log('info', 'Nav2 未启动；使用 --web 可启用网页地图导航');
+      }
+      if (!health.moveit_available) {
+        log('info', 'MoveIt 2 尚未就绪');
+      }
     } else {
       throw new Error('HTTP ' + r.status);
     }
@@ -1147,6 +1374,7 @@ async function testControlConnection() {
     st.textContent = '连接失败';
     st.className = 'ctrl-status err';
     log('err', '控制服务器连接失败: ' + e.message);
+    stopAutonomyPolling();
   }
 }
 
@@ -1161,6 +1389,7 @@ setInterval(async () => {
     $('ctrlStatus').textContent = '连接断开';
     $('ctrlStatus').className = 'ctrl-status err';
     stopBase();
+    stopAutonomyPolling();
   }
 }, 5000);
 
@@ -1193,12 +1422,496 @@ async function postJointTrajectory(positions) {
   } catch (e) { ctrlConnected = false; toast('控制服务器连接失败', 'err'); return false; }
 }
 
+async function controlRequest(path, method = 'GET', payload = null) {
+  if (!ctrlConnected) throw new Error('控制服务器未连接');
+  const options = {method, cache: 'no-store'};
+  if (payload !== null) {
+    options.headers = {'Content-Type': 'application/json'};
+    options.body = JSON.stringify(payload);
+  }
+  const response = await fetch(ctrlBaseUrl + path, options);
+  let body = {};
+  try { body = await response.json(); } catch (_) {}
+  if (!response.ok) {
+    throw new Error(body.error || `HTTP ${response.status}`);
+  }
+  return body;
+}
+
+// ─── Nav2 and MoveIt 2 unified control ─────────────────────
+const navActiveStates = new Set(['enabling', 'sending', 'navigating', 'canceling']);
+const moveitActiveStates = new Set(['sending', 'planning', 'executing', 'canceling']);
+const stateLabels = {
+  idle: '空闲',
+  enabling: '正在切换模式',
+  sending: '正在发送',
+  navigating: '导航中',
+  planning: '规划中',
+  executing: '执行中',
+  canceling: '正在取消',
+  succeeded: '已完成',
+  canceled: '已取消',
+  rejected: '已拒绝',
+  failed: '失败'
+};
+
+function setAutonomyState(element, text, stateClass = '') {
+  element.textContent = text;
+  element.className = 'autonomy-state';
+  if (stateClass) element.classList.add(stateClass);
+}
+
+function formatMetric(value, digits = 2, suffix = '') {
+  return Number.isFinite(Number(value))
+    ? `${Number(value).toFixed(digits)}${suffix}`
+    : '-';
+}
+
+function startAutonomyPolling() {
+  stopAutonomyPolling();
+  refreshAutonomyStatus();
+  loadNavigationMap();
+  autonomyStatusTimer = setInterval(refreshAutonomyStatus, 750);
+  autonomyMapTimer = setInterval(loadNavigationMap, 10000);
+}
+
+function stopAutonomyPolling() {
+  if (autonomyStatusTimer) clearInterval(autonomyStatusTimer);
+  if (autonomyMapTimer) clearInterval(autonomyMapTimer);
+  autonomyStatusTimer = null;
+  autonomyMapTimer = null;
+}
+
+async function refreshAutonomyStatus() {
+  if (!ctrlConnected) return;
+  const results = await Promise.allSettled([
+    controlRequest('/navigation/status'),
+    controlRequest('/motion/status')
+  ]);
+  if (results[0].status === 'fulfilled') {
+    navigationStatus = results[0].value;
+    renderNavigationStatus();
+  }
+  if (results[1].status === 'fulfilled') {
+    moveitStatus = results[1].value;
+    renderMoveitStatus();
+  }
+}
+
+async function loadNavigationMap() {
+  if (!ctrlConnected) return;
+  try {
+    const map = await controlRequest('/navigation/map');
+    const changed = !navigationMap ||
+      navigationMap.width !== map.width ||
+      navigationMap.height !== map.height ||
+      navigationMap.resolution !== map.resolution;
+    navigationMap = map;
+    if (changed || !navigationMapImage) buildNavigationMapImage();
+    drawNavigationMap();
+  } catch (_) {
+    if (!navigationMap) showNavigationMapMessage('等待 Nav2 地图');
+  }
+}
+
+function buildNavigationMapImage() {
+  if (!navigationMap) return;
+  const width = navigationMap.width;
+  const height = navigationMap.height;
+  const offscreen = document.createElement('canvas');
+  offscreen.width = width;
+  offscreen.height = height;
+  const context = offscreen.getContext('2d');
+  const image = context.createImageData(width, height);
+  for (let row = 0; row < height; row++) {
+    for (let column = 0; column < width; column++) {
+      const occupancy = navigationMap.data[row * width + column];
+      const pixelRow = height - row - 1;
+      const offset = (pixelRow * width + column) * 4;
+      let color;
+      if (occupancy < 0) color = [63, 74, 88];
+      else if (occupancy >= 65) color = [16, 20, 25];
+      else color = [222, 229, 235];
+      image.data[offset] = color[0];
+      image.data[offset + 1] = color[1];
+      image.data[offset + 2] = color[2];
+      image.data[offset + 3] = 255;
+    }
+  }
+  context.putImageData(image, 0, 0);
+  navigationMapImage = offscreen;
+}
+
+function worldToMapCanvas(x, y) {
+  if (!navigationMap) return null;
+  const origin = navigationMap.origin;
+  const yaw = Number(origin.yaw) || 0;
+  const dx = x - origin.x;
+  const dy = y - origin.y;
+  const localX = Math.cos(yaw) * dx + Math.sin(yaw) * dy;
+  const localY = -Math.sin(yaw) * dx + Math.cos(yaw) * dy;
+  return {
+    x: localX / (navigationMap.width * navigationMap.resolution) *
+      navMapCanvas.width,
+    y: navMapCanvas.height -
+      localY / (navigationMap.height * navigationMap.resolution) *
+      navMapCanvas.height
+  };
+}
+
+function mapCanvasToWorld(canvasX, canvasY) {
+  if (!navigationMap) return null;
+  const localX = canvasX / navMapCanvas.width *
+    navigationMap.width * navigationMap.resolution;
+  const localY = (navMapCanvas.height - canvasY) / navMapCanvas.height *
+    navigationMap.height * navigationMap.resolution;
+  const yaw = Number(navigationMap.origin.yaw) || 0;
+  return {
+    x: navigationMap.origin.x +
+      Math.cos(yaw) * localX - Math.sin(yaw) * localY,
+    y: navigationMap.origin.y +
+      Math.sin(yaw) * localX + Math.cos(yaw) * localY
+  };
+}
+
+function drawPoseMarker(context, pose, color, radius = 11) {
+  const point = worldToMapCanvas(pose.x, pose.y);
+  if (!point) return;
+  const mapYaw = Number(navigationMap.origin.yaw) || 0;
+  context.save();
+  context.translate(point.x, point.y);
+  context.rotate(-(pose.yaw - mapYaw));
+  context.fillStyle = color;
+  context.strokeStyle = '#0d1117';
+  context.lineWidth = 2;
+  context.beginPath();
+  context.moveTo(radius, 0);
+  context.lineTo(-radius * 0.7, -radius * 0.65);
+  context.lineTo(-radius * 0.7, radius * 0.65);
+  context.closePath();
+  context.fill();
+  context.stroke();
+  context.restore();
+}
+
+function drawNavigationMap() {
+  const context = navMapCanvas.getContext('2d');
+  if (!navigationMap || !navigationMapImage) {
+    showNavigationMapMessage('等待 Nav2 地图');
+    return;
+  }
+  context.imageSmoothingEnabled = false;
+  context.drawImage(
+    navigationMapImage,
+    0,
+    0,
+    navMapCanvas.width,
+    navMapCanvas.height
+  );
+
+  const plan = navigationStatus && Array.isArray(navigationStatus.plan)
+    ? navigationStatus.plan : [];
+  if (plan.length > 1) {
+    context.strokeStyle = '#d29922';
+    context.lineWidth = 4;
+    context.beginPath();
+    plan.forEach((pose, index) => {
+      const point = worldToMapCanvas(pose.x, pose.y);
+      if (!point) return;
+      if (index === 0) context.moveTo(point.x, point.y);
+      else context.lineTo(point.x, point.y);
+    });
+    context.stroke();
+  }
+
+  if (navigationStatus && navigationStatus.current_pose) {
+    drawPoseMarker(context, navigationStatus.current_pose, '#39d2c0', 12);
+  }
+  if (selectedNavigationGoal) {
+    drawPoseMarker(context, selectedNavigationGoal, '#bc8cff', 13);
+  } else if (navigationStatus && navigationStatus.goal) {
+    drawPoseMarker(context, navigationStatus.goal, '#bc8cff', 13);
+  }
+}
+
+function showNavigationMapMessage(message) {
+  const context = navMapCanvas.getContext('2d');
+  context.fillStyle = '#080c11';
+  context.fillRect(0, 0, navMapCanvas.width, navMapCanvas.height);
+  context.fillStyle = '#8b949e';
+  context.font = '18px sans-serif';
+  context.textAlign = 'center';
+  context.fillText(
+    message,
+    navMapCanvas.width / 2,
+    navMapCanvas.height / 2
+  );
+}
+
+navMapCanvas.addEventListener('click', event => {
+  if (!navigationMap) {
+    toast('Nav2 地图尚未加载', 'err');
+    return;
+  }
+  const bounds = navMapCanvas.getBoundingClientRect();
+  const canvasX = (event.clientX - bounds.left) / bounds.width *
+    navMapCanvas.width;
+  const canvasY = (event.clientY - bounds.top) / bounds.height *
+    navMapCanvas.height;
+  const goal = mapCanvasToWorld(canvasX, canvasY);
+  if (!goal) return;
+
+  const column = Math.max(
+    0,
+    Math.min(
+      navigationMap.width - 1,
+      Math.floor(canvasX / navMapCanvas.width * navigationMap.width)
+    )
+  );
+  const row = Math.max(
+    0,
+    Math.min(
+      navigationMap.height - 1,
+      Math.floor(
+        (navMapCanvas.height - canvasY) / navMapCanvas.height *
+        navigationMap.height
+      )
+    )
+  );
+  const occupancy = navigationMap.data[
+    row * navigationMap.width + column
+  ];
+  if (occupancy === undefined || occupancy < 0 || occupancy >= 65) {
+    toast('请选择地图中的自由区域', 'err');
+    return;
+  }
+  const yawDegrees = Number($('navGoalYaw').value) || 0;
+  selectedNavigationGoal = {
+    x: goal.x,
+    y: goal.y,
+    yaw: yawDegrees * Math.PI / 180
+  };
+  $('navGoalX').value = goal.x.toFixed(2);
+  $('navGoalY').value = goal.y.toFixed(2);
+  drawNavigationMap();
+});
+
+function renderNavigationStatus() {
+  if (!navigationStatus) return;
+  const available = Boolean(navigationStatus.available);
+  const state = navigationStatus.state || 'idle';
+  const active = navActiveStates.has(state);
+  let stateClass = '';
+  if (!available || ['failed', 'rejected'].includes(state)) stateClass = 'err';
+  else if (active) stateClass = 'busy';
+  else if (state === 'succeeded') stateClass = 'ok';
+  setAutonomyState(
+    navState,
+    available ? (stateLabels[state] || state) : 'Nav2 未启动',
+    stateClass
+  );
+
+  const pose = navigationStatus.current_pose;
+  const detail = [
+    navigationStatus.message || '',
+    `模式: ${navigationStatus.mode === true ? 'Nav2' :
+      navigationStatus.mode === false ? '手动' : '未知'}`,
+    `位置: ${pose ?
+      `x=${formatMetric(pose.x)} y=${formatMetric(pose.y)} ` +
+      `yaw=${formatMetric(pose.yaw * 180 / Math.PI, 1, '°')}` : '-'}`,
+    `剩余: ${formatMetric(navigationStatus.distance_remaining, 2, ' m')}  ` +
+      `ETA: ${formatMetric(navigationStatus.eta_seconds, 1, ' s')}  ` +
+      `恢复: ${navigationStatus.recoveries || 0}`
+  ];
+  navDetail.textContent = detail.join('\n');
+  navDetail.style.whiteSpace = 'pre-line';
+  $('baseModeState').textContent = navigationStatus.mode === true
+    ? 'Nav2 自动导航'
+    : navigationStatus.mode === false
+      ? '网页手动'
+      : '等待路由器状态';
+
+  $('btnNavSend').disabled = !available || active;
+  $('btnNavCancel').disabled = !active;
+  $('btnManualMode').disabled = navigationStatus.mode === false && !active;
+  const manualBlocked = navigationStatus.mode === true;
+  document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
+    button.disabled = manualBlocked;
+  });
+  drawNavigationMap();
+}
+
+function renderMoveitStatus() {
+  if (!moveitStatus) return;
+  const available = Boolean(moveitStatus.available);
+  const state = moveitStatus.state || 'idle';
+  const active = moveitActiveStates.has(state);
+  let stateClass = '';
+  if (!available || ['failed', 'rejected'].includes(state)) stateClass = 'err';
+  else if (active) stateClass = 'busy';
+  else if (state === 'succeeded') stateClass = 'ok';
+  setAutonomyState(
+    moveitState,
+    available ? (stateLabels[state] || state) : 'MoveIt 未启动',
+    stateClass
+  );
+  const detail = [
+    moveitStatus.message || '',
+    `反馈: ${moveitStatus.feedback || '-'}`,
+    `规划耗时: ${formatMetric(moveitStatus.planning_time, 3, ' s')}  ` +
+      `错误码: ${moveitStatus.error_code === null ||
+        moveitStatus.error_code === undefined ? '-' : moveitStatus.error_code}`
+  ];
+  moveitDetail.textContent = detail.join('\n');
+  moveitDetail.style.whiteSpace = 'pre-line';
+  document.querySelectorAll('.moveit-command').forEach(button => {
+    button.disabled = !available || active;
+  });
+  $('btnMoveitCancel').disabled = !active;
+  document.querySelectorAll('#jointSliders input').forEach(input => {
+    input.disabled = active;
+  });
+  $('btnArmZero').disabled = active;
+  $('btnGripperOpen').disabled = active;
+  $('btnGripperClose').disabled = active;
+}
+
+async function switchToManualMode() {
+  try {
+    stopBase();
+    await controlRequest(
+      '/navigation/mode',
+      'POST',
+      {enabled: false}
+    );
+    toast('已请求切换到手动底盘模式', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`模式切换失败: ${error.message}`, 'err');
+  }
+}
+
+async function sendNavigationGoal() {
+  const x = Number($('navGoalX').value);
+  const y = Number($('navGoalY').value);
+  const yawDegrees = Number($('navGoalYaw').value);
+  if (![x, y, yawDegrees].every(Number.isFinite)) {
+    toast('导航目标必须是有效数字', 'err');
+    return;
+  }
+  selectedNavigationGoal = {
+    x,
+    y,
+    yaw: yawDegrees * Math.PI / 180
+  };
+  try {
+    await controlRequest(
+      '/navigation/goal',
+      'POST',
+      selectedNavigationGoal
+    );
+    toast('Nav2 目标已提交', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`导航目标失败: ${error.message}`, 'err');
+  }
+}
+
+async function cancelNavigation() {
+  try {
+    await controlRequest('/navigation/cancel', 'POST', {});
+    toast('正在取消 Nav2 导航', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`取消导航失败: ${error.message}`, 'err');
+  }
+}
+
+async function sendNamedMoveit(group, target) {
+  try {
+    await controlRequest(
+      '/motion/named',
+      'POST',
+      {group, target, execute: true}
+    );
+    toast(`MoveIt 目标 ${target} 已提交`, 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`MoveIt 目标失败: ${error.message}`, 'err');
+  }
+}
+
+function quaternionFromEuler(roll, pitch, yaw) {
+  const cr = Math.cos(roll / 2);
+  const sr = Math.sin(roll / 2);
+  const cp = Math.cos(pitch / 2);
+  const sp = Math.sin(pitch / 2);
+  const cy = Math.cos(yaw / 2);
+  const sy = Math.sin(yaw / 2);
+  return [
+    sr * cp * cy - cr * sp * sy,
+    cr * sp * cy + sr * cp * sy,
+    cr * cp * sy - sr * sp * cy,
+    cr * cp * cy + sr * sp * sy
+  ];
+}
+
+async function sendMoveitPose(execute) {
+  const position = [
+    Number($('moveitX').value),
+    Number($('moveitY').value),
+    Number($('moveitZ').value)
+  ];
+  const euler = [
+    Number($('moveitRoll').value),
+    Number($('moveitPitch').value),
+    Number($('moveitYaw').value)
+  ];
+  if (![...position, ...euler].every(Number.isFinite)) {
+    toast('MoveIt 位姿必须是有效数字', 'err');
+    return;
+  }
+  const radians = euler.map(value => value * Math.PI / 180);
+  try {
+    await controlRequest(
+      '/motion/pose',
+      'POST',
+      {
+        frame_id: $('moveitFrame').value,
+        position,
+        orientation: quaternionFromEuler(...radians),
+        execute
+      }
+    );
+    toast(execute ? 'MoveIt 正在规划并执行' : 'MoveIt 正在规划', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`MoveIt 位姿失败: ${error.message}`, 'err');
+  }
+}
+
+async function cancelMoveit() {
+  try {
+    await controlRequest('/motion/cancel', 'POST', {});
+    toast('正在取消 MoveIt 动作', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`取消 MoveIt 失败: ${error.message}`, 'err');
+  }
+}
+
+showNavigationMapMessage('等待控制服务器');
+
 // ─── Chassis Control ────────────────────────────────────────
 function getLinSpeed() { return parseFloat($('spdLinear').value) || 0.25; }
 function getAngSpeed() { return parseFloat($('spdAngular').value) || 0.60; }
 
 function startBaseMotion(motion) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
+  if (navigationStatus && navigationStatus.mode === true) {
+    toast('请先切换到手动底盘模式', 'err');
+    return;
+  }
   activeMotion = motion;
   baseActive = true;
   sendBaseCommand();
@@ -1311,6 +2024,24 @@ $('btnCtrlTest').addEventListener('click', testControlConnection);
 $('btnArmZero').addEventListener('click', resetArmToZero);
 $('btnGripperOpen').addEventListener('click', openGripper);
 $('btnGripperClose').addEventListener('click', closeGripper);
+$('btnManualMode').addEventListener('click', switchToManualMode);
+$('btnNavSend').addEventListener('click', sendNavigationGoal);
+$('btnNavCancel').addEventListener('click', cancelNavigation);
+$('btnMoveitHome').addEventListener(
+  'click',
+  () => sendNamedMoveit('manipulator', 'home')
+);
+$('btnMoveitOpen').addEventListener(
+  'click',
+  () => sendNamedMoveit('gripper', 'open')
+);
+$('btnMoveitClose').addEventListener(
+  'click',
+  () => sendNamedMoveit('gripper', 'closed')
+);
+$('btnMoveitPlan').addEventListener('click', () => sendMoveitPose(false));
+$('btnMoveitExecute').addEventListener('click', () => sendMoveitPose(true));
+$('btnMoveitCancel').addEventListener('click', cancelMoveit);
 $('spdLinear').addEventListener('input', function() {
   $('spdLinVal').textContent = parseFloat(this.value).toFixed(2);
 });
