@@ -6,8 +6,10 @@
 #   ./run_all.sh                  # 全部启动（Gazebo + 桥 + 监控 + Qt GUI）
 #   ./run_all.sh --manual         # GUI 手动控制模式
 #   ./run_all.sh --web            # 浏览器控制模式（最常用）
+#   ./run_all.sh --nav2           # Nav2 自主导航模式（同时启动导航 RViz）
 #   ./run_all.sh --with-proxy     # 附加 CDR→JSON 代理（精细化数据处理）
 #   ./run_all.sh --no-gui         # headless 模式
+#   ros2 launch xczs_inspection_robot_control inspection_robot.launch.py moveit_rviz:=true
 #   CONTROL_HOST=0.0.0.0 ./run_all.sh --web   # 供其他计算机访问 Web 控制
 #
 # 启动后:

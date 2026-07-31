@@ -44,8 +44,11 @@ es.addEventListener('PUT', (event) => {
 
 | SSE URL | ROS2 话题 | 消息类型 | 说明 |
 |---|---|---|---|
-| `http://localhost:8001/xczs/cmd_vel/json` | `/xczs/cmd_vel` | `geometry_msgs/Twist` | 底盘速度指令 |
+| `http://localhost:8001/xczs/cmd_vel/json` | `/xczs/cmd_vel` | `geometry_msgs/Twist` | 路由后的底盘最终速度指令 |
+| `http://localhost:8001/xczs/manual_cmd_vel/json` | `/xczs/manual_cmd_vel` | `geometry_msgs/Twist` | Web、GUI 或键盘手动速度输入 |
 | `http://localhost:8001/xczs/odom/json` | `/xczs/odom` | `nav_msgs/Odometry` | 底盘里程计 |
+| `http://localhost:8001/amcl_pose/json` | `/amcl_pose` | `geometry_msgs/PoseWithCovarianceStamped` | Nav2 地图定位结果 |
+| `http://localhost:8001/plan/json` | `/plan` | `nav_msgs/Path` | Nav2 当前全局规划路径 |
 | `http://localhost:8001/xczs/joint_states/json` | `/xczs/joint_states` | `sensor_msgs/JointState` | 关节状态（位置/速度/力矩） |
 | `http://localhost:8001/xczs/joint_trajectory/json` | `/xczs/joint_trajectory` | `trajectory_msgs/JointTrajectory` | 机械臂/夹爪目标位置 |
 | `http://localhost:8001/robot_description/json` | `/robot_description` | `std_msgs/String` | 机器人 URDF/Xacro 模型 |
@@ -252,7 +255,9 @@ curl http://localhost:8090/health
 
 ### POST /cmd_vel
 
-控制底盘速度。
+发送手动底盘速度。控制服务实际发布到 `/xczs/manual_cmd_vel`，再由底盘命令
+路由器转发到 Gazebo。Nav2 模式启用时该接口仍会正常响应 HTTP 请求，但手动
+运动命令会被路由器阻止，避免绕过导航规划和碰撞保护。
 
 **请求：**
 
@@ -280,6 +285,9 @@ await fetch('http://localhost:8090/cmd_vel', {
 
 > 底盘持续运动建议以 10 Hz 重复发送。服务端超过 0.3 秒未收到新指令时会自动
 > 平滑停车；停止时应主动发送 `{"linear_y":0,"angular_z":0}`。
+> 恢复 Web 手动底盘控制前，执行
+> `ros2 service call /xczs/set_navigation_mode std_srvs/srv/SetBool
+> "{data: false}"`；需要重新交给 Nav2 时将 `data` 设置为 `true`。
 
 **响应：**
 ```json

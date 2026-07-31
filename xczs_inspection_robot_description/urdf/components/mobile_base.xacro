@@ -42,6 +42,19 @@
         </geometry>
       </collision>
     </link>
+
+    <!--
+      The exported SolidWorks model uses body +Y as its physical forward
+      direction. Nav2 follows REP-105 and expects base_link +X to point
+      forward, so this navigation frame is rotated without changing the
+      existing model geometry or Gazebo dynamics.
+    -->
+    <link name="base_link" />
+    <joint name="body_base_link" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 1.57079632679" />
+      <parent link="body" />
+      <child link="base_link" />
+    </joint>
   </xacro:macro>
 
   <xacro:macro name="xczs_wheels" params="">

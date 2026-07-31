@@ -311,7 +311,7 @@ class ControlServer:
     def __init__(
         self,
         port: int = 8090,
-        cmd_vel_topic: str = "/xczs/cmd_vel",
+        cmd_vel_topic: str = "/xczs/manual_cmd_vel",
         joint_trajectory_topic: str = "/xczs/joint_trajectory",
         host: str = "127.0.0.1",
         max_linear_speed: float = 0.25,

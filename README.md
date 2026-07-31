@@ -2,7 +2,7 @@
 
 基于 ROS 2 Humble 和 Gazebo Classic 的巡操机器人仿真项目，包含移动底盘、
 六自由度机械臂、两指夹爪、腕部 RGB 相机、车身 2D 激光雷达、手动控制、
-MoveIt 2 路径规划、柜体避碰以及 Web 数据监控。
+MoveIt 2 机械臂路径规划、Nav2 底盘自主导航、柜体避碰以及 Web 数据监控。
 
 ![XCZS 巡操机器人](docs/images/xczs_inspection_robot_preview.png)
 
@@ -12,8 +12,10 @@ MoveIt 2 路径规划、柜体避碰以及 Web 数据监控。
 - 移动底盘、六自由度机械臂、两指夹爪和控制柜碰撞仿真
 - 腕部 RGB 相机和车身 180° 2D 激光雷达
 - MoveIt 2 逆运动学、OMPL 路径规划、自碰撞与控制柜碰撞检查
+- Nav2 + AMCL 定位、全局/局部路径规划、激光雷达动态避障和柜体绕障
 - `ros2_control` + `JointTrajectoryController` 标准轨迹执行链路
-- Qt GUI、键盘和网页三种互斥控制模式
+- 手动底盘与 Nav2 速度命令路由、模式互斥和失联自动停车
+- Qt GUI、键盘和网页三种手动控制模式
 - 保留 `/xczs/joint_trajectory` 手动接口，并在 MoveIt 执行期间自动阻止同组手动指令
 - 浏览器 MJPEG 相机画面、WebSocket 雷达扫描和 SSE 状态监控
 - `run_all.sh` 一键启动、统一退出和子进程清理
@@ -23,7 +25,7 @@ MoveIt 2 路径规划、柜体避碰以及 Web 数据监控。
 - Ubuntu 22.04
 - ROS 2 Humble
 - Gazebo Classic 11
-- MoveIt 2、`ros2_control` 和 `gazebo_ros2_control`
+- MoveIt 2、Nav2、`ros2_control` 和 `gazebo_ros2_control`
 - `colcon`、Xacro 和 Qt 5
 
 可通过以下命令安装主要 ROS 2 依赖：
@@ -32,6 +34,8 @@ MoveIt 2 路径规划、柜体避碰以及 Web 数据监控。
 sudo apt update
 sudo apt install \
   ros-humble-moveit \
+  ros-humble-navigation2 \
+  ros-humble-nav2-bringup \
   ros-humble-gazebo-ros2-control \
   ros-humble-ros2-controllers
 ```
@@ -123,6 +127,7 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 | Web 控制 | `./run_all.sh --web` | 浏览器监控并控制底盘、机械臂和夹爪 |
 | Qt GUI | `./run_all.sh --manual` | 使用桌面控制界面 |
 | 键盘遥控 | `./run_all.sh --keyboard` | 使用键盘控制机器人 |
+| Nav2 导航 | `./run_all.sh --nav2` | 使用 AMCL 定位、规划绕障并打开 Nav2 RViz |
 
 无图形桌面或不需要 Gazebo 窗口时，在命令后添加 `--no-gui`，例如：
 
@@ -130,9 +135,10 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 ./run_all.sh --web --no-gui
 ```
 
-三种手动控制模式互斥，不要同时启动多个控制节点。手动控制和 MoveIt 规划
-可以同时保持在线，但不能同时向同一控制组执行轨迹；兼容路由器会在 MoveIt
-action 执行期间拒绝同组手动轨迹。
+三种手动控制模式互斥，不要同时启动多个控制节点。启用 Nav2 后，手动底盘
+速度会被阻止，但机械臂和夹爪仍可使用。手动控制和 MoveIt 规划可以同时保持
+在线，但不能同时向同一控制组执行轨迹；兼容路由器会在 MoveIt action 执行
+期间拒绝同组手动轨迹。
 
 ## MoveIt 2 规划控制
 
@@ -167,9 +173,56 @@ ros2 run xczs_inspection_robot_control moveit_planner \
   --group gripper --named closed --execute
 ```
 
-规划目标会检查关节限位、机器人自碰撞和 Planning Scene 中的控制柜。底盘
-导航仍由 `/xczs/cmd_vel` 控制；后续需要自主导航时应接入 Nav2，而不是把
-底盘加入机械臂 MoveIt 规划组。
+规划目标会检查关节限位、机器人自碰撞和 Planning Scene 中的控制柜。MoveIt
+只负责机械臂和夹爪，底盘自主导航由 Nav2 独立负责。
+
+## Nav2 底盘自主导航
+
+一键启动 Gazebo、机器人、控制柜、AMCL、Nav2 和导航 RViz：
+
+```bash
+./run_all.sh --nav2
+```
+
+也可以只通过统一 ROS 2 启动入口启用 Nav2：
+
+```bash
+ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+  nav2:=true nav2_rviz:=true
+```
+
+系统默认加载
+`xczs_inspection_robot_nav2/maps/inspection_map.yaml`，并根据机器人默认出生
+姿态自动设置 AMCL 初始位姿。RViz 中等待 Nav2 节点激活后，点击
+`Nav2 Goal` 并在地图上指定目标位置和朝向，底盘会规划路径、绕开静态柜体，
+并使用车身雷达更新局部和全局代价地图。
+
+也可从命令行发送地图坐标系目标，例如移动到 `(0, 1)`，末端朝向 `+Y`：
+
+```bash
+ros2 action send_goal /navigate_to_pose \
+  nav2_msgs/action/NavigateToPose \
+  "{pose: {header: {frame_id: map}, pose: {
+    position: {x: 0.0, y: 1.0, z: 0.0},
+    orientation: {x: 0.0, y: 0.0, z: 0.70710678, w: 0.70710678}
+  }}}"
+```
+
+手动底盘命令与 Nav2 命令不会同时下发。运行中可显式切换模式：
+
+```bash
+# 启用 Nav2，阻止 GUI、键盘和 Web 底盘速度
+ros2 service call /xczs/set_navigation_mode \
+  std_srvs/srv/SetBool "{data: true}"
+
+# 恢复手动底盘控制，阻止 Nav2 速度
+ros2 service call /xczs/set_navigation_mode \
+  std_srvs/srv/SetBool "{data: false}"
+```
+
+默认地图与统一启动入口中的默认柜体位姿匹配。修改 `cabinet_x`、
+`cabinet_y` 或 `cabinet_yaw` 后，雷达仍能检测真实障碍，但静态地图中的柜体
+位置不会自动改变；用于正式导航前应同步更新地图，或通过 SLAM 重新建图。
 
 ## Web 监控
 
@@ -257,11 +310,15 @@ Web 服务端口可通过环境变量调整：
 | `/gazebo` | 运行物理仿真并发布仿真时间 |
 | `/robot_state_publisher` | 发布机器人模型和 TF |
 | `/xczs/xczs_planar_move` | 接收底盘速度并发布里程计 |
+| `/xczs_base_command_router` | 在手动和 Nav2 底盘命令之间互斥切换、限速和超时停车 |
 | `/xczs/controller_manager` | 管理 Gazebo `ros2_control` 硬件和控制器 |
 | `/xczs/joint_state_broadcaster` | 发布全部仿真关节状态 |
 | `/xczs/arm_controller` | 执行六轴机械臂标准关节轨迹 |
 | `/xczs/gripper_controller` | 执行两指夹爪标准关节轨迹 |
 | `/move_group` | MoveIt 2 规划、碰撞检查和轨迹执行 |
+| `/amcl` | 使用静态地图和激光雷达估计底盘位姿 |
+| `/planner_server`、`/controller_server` | Nav2 全局路径规划和局部轨迹控制 |
+| `/bt_navigator` | 执行 Nav2 导航行为树和恢复行为 |
 | `/xczs_cabinet_planning_scene` | 将控制柜碰撞体同步到 Planning Scene |
 | `/xczs_legacy_trajectory_router` | 将旧手动轨迹拆分到两个标准控制器并执行互斥 |
 | `/xczs_inspection_robot_gui` | Qt GUI 控制节点 |
@@ -275,8 +332,15 @@ Web 服务端口可通过环境变量调整：
 
 | 话题 | 消息类型 | 方向与用途 |
 | --- | --- | --- |
-| `/xczs/cmd_vel` | `geometry_msgs/msg/Twist` | 控制节点 → 底盘速度控制 |
+| `/xczs/manual_cmd_vel` | `geometry_msgs/msg/Twist` | GUI、键盘或 Web → 手动命令输入 |
+| `/cmd_vel` | `geometry_msgs/msg/Twist` | Nav2 → 导航命令输入（REP-105 `base_link`） |
+| `/xczs/cmd_vel` | `geometry_msgs/msg/Twist` | 命令路由器 → Gazebo 底盘最终速度 |
 | `/xczs/odom` | `nav_msgs/msg/Odometry` | Gazebo → 底盘里程计 |
+| `/map` | `nav_msgs/msg/OccupancyGrid` | Nav2 静态占用地图 |
+| `/amcl_pose` | `geometry_msgs/msg/PoseWithCovarianceStamped` | AMCL 地图定位结果 |
+| `/plan` | `nav_msgs/msg/Path` | Nav2 当前全局规划路径 |
+| `/local_costmap/costmap` | `nav_msgs/msg/OccupancyGrid` | 雷达更新的局部代价地图 |
+| `/global_costmap/costmap` | `nav_msgs/msg/OccupancyGrid` | 静态地图与雷达融合的全局代价地图 |
 | `/xczs/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | 控制节点 → 机械臂和夹爪目标 |
 | `/xczs/joint_states` | `sensor_msgs/msg/JointState` | Gazebo → 关节状态 |
 | `/xczs/arm_controller/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | 机械臂控制器话题入口 |
@@ -295,7 +359,16 @@ MoveIt 通过以下标准 action 执行轨迹：
 /xczs/gripper_controller/follow_joint_trajectory
 ```
 
-项目当前全部使用 ROS 2 标准消息，不需要额外的自定义消息包。
+Nav2 提供以下标准导航 action：
+
+```text
+/navigate_to_pose
+/navigate_through_poses
+/follow_waypoints
+```
+
+项目当前全部使用 ROS 2 标准消息、service 和 action，不需要额外的自定义
+消息包。
 
 ## 项目结构
 
@@ -319,11 +392,16 @@ work01/
 │   │   ├── ompl_planning.yaml                # OMPL 规划器
 │   │   └── moveit_controllers.yaml           # FollowJointTrajectory 对接
 │   └── launch/move_group.launch.py           # MoveIt 规划层入口
+├── xczs_inspection_robot_nav2/                # Nav2 底盘自主导航配置
+│   ├── config/nav2_params.yaml                # AMCL、规划器与代价地图参数
+│   ├── launch/navigation.launch.py            # Nav2 模块启动入口
+│   └── maps/inspection_map.{yaml,pgm}         # 默认仿真静态地图
 ├── xczs_inspection_robot_control/            # 控制节点和统一 launch
 │   ├── launch/inspection_robot.launch.py     # 项目统一启动入口
 │   └── src/
 │       ├── moveit_planner.cpp                # 位姿/命名目标规划工具
 │       ├── cabinet_planning_scene.cpp        # 柜体碰撞场景
+│       ├── base_command_router.cpp            # 手动/Nav2 底盘命令互斥
 │       └── legacy_trajectory_router.cpp      # 旧接口兼容与控制互斥
 ├── jiang/                              # Web、Zenoh 和前后端接口
 │   ├── monitor.html                    # 浏览器监控与控制页面
@@ -356,6 +434,14 @@ ros2 service call /get_planning_scene \
 ```bash
 ros2 topic hz /xczs/camera/arm_camera/image_raw
 ros2 topic hz /xczs/lidar/scan
+```
+
+确认 Nav2 生命周期、定位和导航 action：
+
+```bash
+ros2 lifecycle get /bt_navigator
+ros2 topic echo --once /amcl_pose
+ros2 action list | grep -E 'navigate_to_pose|navigate_through_poses|follow_waypoints'
 ```
 
 如果网页显示“等待 ROS 2 图像”或雷达持续重连，依次检查：

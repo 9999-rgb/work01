@@ -21,6 +21,7 @@ from launch_ros.parameter_descriptions import ParameterValue
 CONTROL_PACKAGE = "xczs_inspection_robot_control"
 DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
 MOVEIT_CONFIG_PACKAGE = "xczs_inspection_robot_moveit_config"
+NAV2_CONFIG_PACKAGE = "xczs_inspection_robot_nav2"
 ROBOT_NAME = "xczs_inspection_robot"
 XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_NAME = "control_cabinet"
@@ -37,6 +38,9 @@ def generate_launch_description() -> LaunchDescription:
     )
     moveit_share = Path(
         get_package_share_directory(MOVEIT_CONFIG_PACKAGE)
+    )
+    nav2_share = Path(
+        get_package_share_directory(NAV2_CONFIG_PACKAGE)
     )
     control_config = control_share / "config" / "robot_control.yaml"
     xacro_file = description_share / "urdf" / XACRO_FILENAME
@@ -83,6 +87,23 @@ def generate_launch_description() -> LaunchDescription:
         "moveit_rviz",
         default_value="false",
         description="Start RViz with the MoveIt Motion Planning plugin.",
+    )
+    nav2_argument = DeclareLaunchArgument(
+        "nav2",
+        default_value="false",
+        description="Start Nav2 localization and autonomous navigation.",
+    )
+    nav2_rviz_argument = DeclareLaunchArgument(
+        "nav2_rviz",
+        default_value="false",
+        description="Start RViz with the Nav2 navigation panel.",
+    )
+    nav2_map_argument = DeclareLaunchArgument(
+        "nav2_map",
+        default_value=str(
+            nav2_share / "maps" / "inspection_map.yaml"
+        ),
+        description="Occupancy map YAML used by Nav2 and AMCL.",
     )
     spawn_z_argument = DeclareLaunchArgument(
         "spawn_z",
@@ -140,6 +161,16 @@ def generate_launch_description() -> LaunchDescription:
             "rviz": LaunchConfiguration("moveit_rviz"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("moveit")),
+    )
+    nav2 = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            str(nav2_share / "launch" / "navigation.launch.py")
+        ),
+        launch_arguments={
+            "map": LaunchConfiguration("nav2_map"),
+            "rviz": LaunchConfiguration("nav2_rviz"),
+        }.items(),
+        condition=IfCondition(LaunchConfiguration("nav2")),
     )
 
     robot_state_publisher = Node(
@@ -243,6 +274,22 @@ def generate_launch_description() -> LaunchDescription:
             {"use_sim_time": True},
         ],
     )
+    base_command_router = Node(
+        package=CONTROL_PACKAGE,
+        executable="base_command_router",
+        name="xczs_base_command_router",
+        output="screen",
+        parameters=[
+            str(control_config),
+            {
+                "use_sim_time": True,
+                "navigation_enabled": ParameterValue(
+                    LaunchConfiguration("nav2"),
+                    value_type=bool,
+                ),
+            },
+        ],
+    )
     cabinet_planning_scene = Node(
         package=CONTROL_PACKAGE,
         executable="cabinet_planning_scene",
@@ -293,11 +340,13 @@ def generate_launch_description() -> LaunchDescription:
         OnProcessExit(
             target_action=ros2_control_spawner,
             on_exit=[
+                base_command_router,
                 legacy_trajectory_router,
                 keyboard_teleop,
                 gui_controller,
                 move_group,
                 cabinet_planning_scene,
+                nav2,
             ],
         )
     )
@@ -310,6 +359,9 @@ def generate_launch_description() -> LaunchDescription:
             control_gui_argument,
             moveit_argument,
             moveit_rviz_argument,
+            nav2_argument,
+            nav2_rviz_argument,
+            nav2_map_argument,
             spawn_z_argument,
             spawn_cabinet_argument,
             cabinet_x_argument,

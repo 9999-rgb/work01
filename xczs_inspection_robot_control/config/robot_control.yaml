@@ -15,6 +15,6 @@
     joint_command_rate: 20.0
     joint_command_repeats: 5
 
-    cmd_vel_topic: /xczs/cmd_vel
+    cmd_vel_topic: /xczs/manual_cmd_vel
     joint_trajectory_topic: /xczs/joint_trajectory
     joint_state_topic: /xczs/joint_states

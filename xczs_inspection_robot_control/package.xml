@@ -23,6 +23,7 @@
   <depend>rclcpp</depend>
   <depend>sensor_msgs</depend>
   <depend>shape_msgs</depend>
+  <depend>std_srvs</depend>
   <depend>tf2</depend>
   <depend>trajectory_msgs</depend>
 
@@ -39,6 +40,7 @@
   <exec_depend>xacro</exec_depend>
   <exec_depend>xczs_inspection_robot_description</exec_depend>
   <exec_depend>xczs_inspection_robot_moveit_config</exec_depend>
+  <exec_depend>xczs_inspection_robot_nav2</exec_depend>
   <exec_depend>xfce4-terminal</exec_depend>
 
   <export>

@@ -17,6 +17,7 @@ find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
@@ -31,6 +32,7 @@ add_executable(
   src/cabinet_planning_scene.cpp
 )
 add_executable(moveit_planner src/moveit_planner.cpp)
+add_executable(base_command_router src/base_command_router.cpp)
 add_library(
   xczs_planar_stabilizer
   SHARED
@@ -82,6 +84,14 @@ ament_target_dependencies(
   rclcpp
 )
 
+target_compile_features(base_command_router PUBLIC cxx_std_17)
+ament_target_dependencies(
+  base_command_router
+  geometry_msgs
+  rclcpp
+  std_srvs
+)
+
 target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
 ament_target_dependencies(xczs_planar_stabilizer gazebo_dev)
 
@@ -92,6 +102,7 @@ install(
     legacy_trajectory_router
     cabinet_planning_scene
     moveit_planner
+    base_command_router
   DESTINATION lib/${PROJECT_NAME}
 )
 

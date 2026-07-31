@@ -8,6 +8,7 @@
 #   ./start_xczs_bridge.sh --with-proxy      # 同时启动 CDR→JSON 代理
 #   ./start_xczs_bridge.sh --manual          # 使用 GUI 手动控制
 #   ./start_xczs_bridge.sh --web             # 使用浏览器控制
+#   ./start_xczs_bridge.sh --nav2            # 使用 Nav2 自主导航
 #
 # 启动后:
 #   - 监控面板: http://localhost:8080/monitor.html
@@ -47,6 +48,8 @@ PYTHON_BIN="/usr/bin/python3"
 GAZEBO_GUI="true"
 WITH_PROXY="false"
 CONTROL_MODE="manual"
+NAV2_ENABLED="false"
+NAV2_RVIZ="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -55,6 +58,11 @@ while [[ $# -gt 0 ]]; do
         --manual)    CONTROL_MODE="manual"; shift ;;
         --web)       CONTROL_MODE="web"; shift ;;
         --keyboard)  CONTROL_MODE="keyboard"; shift ;;
+        --nav2)
+            NAV2_ENABLED="true"
+            NAV2_RVIZ="true"
+            shift
+            ;;
         -h|--help)
             sed -n '3,15p' "$0" | sed 's/^# *//'
             exit 0
@@ -117,6 +125,12 @@ fi
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"
+if [ "$NAV2_ENABLED" = "true" ] &&
+    ! ros2 pkg prefix nav2_bringup >/dev/null 2>&1; then
+    echo "ERROR: Nav2 binary packages are not installed."
+    echo "Run: sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup"
+    exit 1
+fi
 if ! "$PYTHON_BIN" -c \
     "import aiohttp, rclpy, zenoh; from PIL import Image" \
     2>/dev/null; then
@@ -129,6 +143,7 @@ fi
 if [ -z "${DISPLAY:-}" ]; then
     echo "⚠ 未检测到显示器 (DISPLAY 未设置)，自动切换为 headless 模式"
     GAZEBO_GUI="false"
+    NAV2_RVIZ="false"
 fi
 if [ "$GAZEBO_GUI" = "false" ] && [ "$CONTROL_MODE" = "manual" ]; then
     echo "  GUI 不可用，自动切换为浏览器控制"
@@ -147,6 +162,7 @@ esac
 echo "  模式:       $MODE_LABEL"
 echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
+echo "  Nav2 导航: $(if [ "$NAV2_ENABLED" = "true" ]; then echo '启用'; else echo '禁用'; fi)"
 echo ""
 
 # ── 函数：启动 Zenoh Bridge ────────────────────────────────────────
@@ -277,14 +293,20 @@ if [ "$CONTROL_MODE" = "keyboard" ]; then
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
         "control_gui:=false" \
-        "teleop:=true"
+        "teleop:=true" \
+        "nav2:=$NAV2_ENABLED" \
+        "nav2_rviz:=$NAV2_RVIZ"
 elif [ "$CONTROL_MODE" = "web" ]; then
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
         "control_gui:=false" \
-        "teleop:=false"
+        "teleop:=false" \
+        "nav2:=$NAV2_ENABLED" \
+        "nav2_rviz:=$NAV2_RVIZ"
 else
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
-        "control_gui:=true"
+        "control_gui:=true" \
+        "nav2:=$NAV2_ENABLED" \
+        "nav2_rviz:=$NAV2_RVIZ"
 fi
