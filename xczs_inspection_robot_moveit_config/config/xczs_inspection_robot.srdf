@@ -1,0 +1,66 @@
+<?xml version="1.0"?>
+<robot name="xczs_inspection_robot">
+  <virtual_joint
+    name="odom_joint"
+    type="planar"
+    parent_frame="odom"
+    child_link="body" />
+
+  <group name="manipulator">
+    <chain base_link="body" tip_link="end" />
+  </group>
+
+  <group name="gripper">
+    <joint name="end_worklink1" />
+    <joint name="end_worklink2" />
+  </group>
+
+  <group name="manipulator_with_gripper">
+    <group name="manipulator" />
+    <group name="gripper" />
+  </group>
+
+  <group_state name="home" group="manipulator">
+    <joint name="body_arm1" value="0" />
+    <joint name="arm1_arm2" value="0" />
+    <joint name="arm2_arm3" value="0" />
+    <joint name="arm3_arm4" value="0" />
+    <joint name="arm4_arm5" value="0" />
+    <joint name="arm5_end" value="0" />
+  </group_state>
+
+  <group_state name="open" group="gripper">
+    <joint name="end_worklink1" value="0.35" />
+    <joint name="end_worklink2" value="-0.35" />
+  </group_state>
+
+  <group_state name="closed" group="gripper">
+    <joint name="end_worklink1" value="0" />
+    <joint name="end_worklink2" value="0" />
+  </group_state>
+
+  <end_effector
+    name="inspection_gripper"
+    parent_link="end"
+    group="gripper"
+    parent_group="manipulator" />
+
+  <disable_collisions link1="body" link2="arm1" reason="Adjacent" />
+  <disable_collisions link1="body" link2="arm2" reason="Default" />
+  <disable_collisions link1="body" link2="front_right_wheel" reason="Adjacent" />
+  <disable_collisions link1="body" link2="front_left_wheel" reason="Adjacent" />
+  <disable_collisions link1="body" link2="back_right_wheel" reason="Adjacent" />
+  <disable_collisions link1="body" link2="back_left_wheel" reason="Adjacent" />
+  <disable_collisions link1="body" link2="body_lidar_link" reason="Adjacent" />
+  <disable_collisions link1="arm1" link2="arm2" reason="Adjacent" />
+  <disable_collisions link1="arm2" link2="arm3" reason="Adjacent" />
+  <disable_collisions link1="arm3" link2="arm4" reason="Adjacent" />
+  <disable_collisions link1="arm3" link2="arm5" reason="Default" />
+  <disable_collisions link1="arm4" link2="arm5" reason="Adjacent" />
+  <disable_collisions link1="arm5" link2="end" reason="Adjacent" />
+  <disable_collisions link1="end" link2="arm_camera_link" reason="Adjacent" />
+  <disable_collisions link1="arm_camera_link" link2="arm_camera_optical_frame" reason="Adjacent" />
+  <disable_collisions link1="end" link2="worklink1" reason="Adjacent" />
+  <disable_collisions link1="end" link2="worklink2" reason="Adjacent" />
+  <disable_collisions link1="worklink1" link2="worklink2" reason="Default" />
+</robot>

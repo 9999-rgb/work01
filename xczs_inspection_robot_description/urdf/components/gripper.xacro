@@ -35,14 +35,14 @@
       <child link="worklink1" />
       <axis xyz="0 0 -1" />
       <limit
-        lower="-3.14"
-        upper="3.14"
+        lower="0.0"
+        upper="0.35"
         effort="100"
-        velocity="10" />
+        velocity="0.5" />
       <dynamics damping="5.0" friction="30.0" />
       <safety_controller
-        soft_upper="3.14"
-        soft_lower="-3.14"
+        soft_upper="0.35"
+        soft_lower="0.0"
         k_position="1"
         k_velocity="1" />
     </joint>
@@ -81,14 +81,14 @@
       <child link="worklink2" />
       <axis xyz="0 0 -1" />
       <limit
-        lower="-3.14"
-        upper="3.14"
+        lower="-0.35"
+        upper="0.0"
         effort="100"
-        velocity="10" />
+        velocity="0.5" />
       <dynamics damping="5.0" friction="30.0" />
       <safety_controller
-        soft_upper="3.14"
-        soft_lower="-3.14"
+        soft_upper="0.0"
+        soft_lower="-0.35"
         k_position="1"
         k_velocity="1" />
     </joint>

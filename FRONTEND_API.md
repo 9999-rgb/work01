@@ -354,6 +354,12 @@ await fetch('http://localhost:8090/joint_trajectory', {
 {"status": "ok", "positions": [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.35, -0.35]}
 ```
 
+该接口属于手动关节调试模式，不执行逆运动学和路径规划。MoveIt 正在通过
+`FollowJointTrajectory` action 执行机械臂或夹爪时，ROS 2 兼容路由器会拒绝
+对应控制组的手动轨迹，避免 Web 指令绕过碰撞保护并中断规划动作。需要指定
+末端位姿时，应使用 MoveIt 规划接口；当前命令行入口和参数格式见
+[README.md](README.md#moveit-2-规划控制)。
+
 ---
 
 ## 四、服务启动方式

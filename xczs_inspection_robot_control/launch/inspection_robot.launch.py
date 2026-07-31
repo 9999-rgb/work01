@@ -13,12 +13,14 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command
 from launch.substitutions import FindExecutable
 from launch.substitutions import LaunchConfiguration
+from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
 CONTROL_PACKAGE = "xczs_inspection_robot_control"
 DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
+MOVEIT_CONFIG_PACKAGE = "xczs_inspection_robot_moveit_config"
 ROBOT_NAME = "xczs_inspection_robot"
 XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_NAME = "control_cabinet"
@@ -32,6 +34,9 @@ def generate_launch_description() -> LaunchDescription:
     control_share = Path(get_package_share_directory(CONTROL_PACKAGE))
     description_share = Path(
         get_package_share_directory(DESCRIPTION_PACKAGE)
+    )
+    moveit_share = Path(
+        get_package_share_directory(MOVEIT_CONFIG_PACKAGE)
     )
     control_config = control_share / "config" / "robot_control.yaml"
     xacro_file = description_share / "urdf" / XACRO_FILENAME
@@ -68,6 +73,16 @@ def generate_launch_description() -> LaunchDescription:
         "control_gui",
         default_value="true",
         description="Start the graphical robot controller.",
+    )
+    moveit_argument = DeclareLaunchArgument(
+        "moveit",
+        default_value="true",
+        description="Start MoveIt 2 planning and trajectory execution.",
+    )
+    moveit_rviz_argument = DeclareLaunchArgument(
+        "moveit_rviz",
+        default_value="false",
+        description="Start RViz with the MoveIt Motion Planning plugin.",
     )
     spawn_z_argument = DeclareLaunchArgument(
         "spawn_z",
@@ -116,6 +131,15 @@ def generate_launch_description() -> LaunchDescription:
             str(gazebo_ros_share / "launch" / "gzclient.launch.py")
         ),
         condition=IfCondition(LaunchConfiguration("gui")),
+    )
+    move_group = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            str(moveit_share / "launch" / "move_group.launch.py")
+        ),
+        launch_arguments={
+            "rviz": LaunchConfiguration("moveit_rviz"),
+        }.items(),
+        condition=IfCondition(LaunchConfiguration("moveit")),
     )
 
     robot_state_publisher = Node(
@@ -191,10 +215,90 @@ def generate_launch_description() -> LaunchDescription:
         parameters=[str(control_config)],
         condition=IfCondition(LaunchConfiguration("control_gui")),
     )
+    ros2_control_spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        name="xczs_controller_spawner",
+        output="screen",
+        arguments=[
+            "joint_state_broadcaster",
+            "arm_controller",
+            "gripper_controller",
+            "--controller-manager",
+            "/xczs/controller_manager",
+            "--controller-manager-timeout",
+            "30",
+            "--switch-timeout",
+            "30",
+            "--activate-as-group",
+        ],
+    )
+    legacy_trajectory_router = Node(
+        package=CONTROL_PACKAGE,
+        executable="legacy_trajectory_router",
+        name="xczs_legacy_trajectory_router",
+        output="screen",
+        parameters=[
+            str(control_config),
+            {"use_sim_time": True},
+        ],
+    )
+    cabinet_planning_scene = Node(
+        package=CONTROL_PACKAGE,
+        executable="cabinet_planning_scene",
+        name="xczs_cabinet_planning_scene",
+        output="screen",
+        parameters=[
+            {
+                "use_sim_time": True,
+                "frame_id": "odom",
+                "cabinet_x": ParameterValue(
+                    LaunchConfiguration("cabinet_x"),
+                    value_type=float,
+                ),
+                "cabinet_y": ParameterValue(
+                    LaunchConfiguration("cabinet_y"),
+                    value_type=float,
+                ),
+                "cabinet_z": ParameterValue(
+                    LaunchConfiguration("cabinet_z"),
+                    value_type=float,
+                ),
+                "cabinet_roll": float(CABINET_EXPORT_ROLL),
+                "cabinet_yaw": ParameterValue(
+                    LaunchConfiguration("cabinet_yaw"),
+                    value_type=float,
+                ),
+            }
+        ],
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("moveit"),
+                    "' == 'true' and '",
+                    LaunchConfiguration("spawn_cabinet"),
+                    "' == 'true'",
+                ]
+            )
+        ),
+    )
     start_controllers_after_spawn = RegisterEventHandler(
         OnProcessExit(
             target_action=spawn_robot,
-            on_exit=[keyboard_teleop, gui_controller],
+            on_exit=[ros2_control_spawner],
+        )
+    )
+    start_control_interfaces_after_ros2_control = RegisterEventHandler(
+        OnProcessExit(
+            target_action=ros2_control_spawner,
+            on_exit=[
+                legacy_trajectory_router,
+                keyboard_teleop,
+                gui_controller,
+                move_group,
+                cabinet_planning_scene,
+            ],
         )
     )
 
@@ -204,6 +308,8 @@ def generate_launch_description() -> LaunchDescription:
             paused_argument,
             teleop_argument,
             control_gui_argument,
+            moveit_argument,
+            moveit_rviz_argument,
             spawn_z_argument,
             spawn_cabinet_argument,
             cabinet_x_argument,
@@ -216,5 +322,6 @@ def generate_launch_description() -> LaunchDescription:
             spawn_robot,
             spawn_cabinet,
             start_controllers_after_spawn,
+            start_control_interfaces_after_ros2_control,
         ]
     )

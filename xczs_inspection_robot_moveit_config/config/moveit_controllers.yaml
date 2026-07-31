@@ -1,0 +1,33 @@
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+
+moveit_manage_controllers: false
+
+moveit_simple_controller_manager:
+  controller_names:
+    - xczs/arm_controller
+    - xczs/gripper_controller
+
+  xczs/arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - body_arm1
+      - arm1_arm2
+      - arm2_arm3
+      - arm3_arm4
+      - arm4_arm5
+      - arm5_end
+
+  xczs/gripper_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+      - end_worklink1
+      - end_worklink2
+
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.5
+  allowed_goal_duration_margin: 1.0
+  allowed_start_tolerance: 0.05

@@ -1,7 +1,6 @@
 <?xml version="1.0"?>
-<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com)
-     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
-     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<!-- Model geometry originated from a SolidWorks URDF export and was
+     subsequently modularized for ROS 2 and Gazebo. -->
 <robot
   xmlns:xacro="http://www.ros.org/wiki/xacro"
   name="xczs_inspection_robot">
@@ -14,6 +13,7 @@
   <xacro:include filename="components/manipulator.xacro" />
   <xacro:include filename="components/gripper.xacro" />
   <xacro:include filename="components/sensors.xacro" />
+  <xacro:include filename="components/ros2_control.xacro" />
   <xacro:include filename="components/gazebo_plugins.xacro" />
 
   <!-- Keep component order aligned with the original exported model. -->
@@ -22,5 +22,6 @@
   <xacro:xczs_gripper />
   <xacro:xczs_sensors />
   <xacro:xczs_wheels />
+  <xacro:xczs_ros2_control />
   <xacro:xczs_gazebo />
 </robot>

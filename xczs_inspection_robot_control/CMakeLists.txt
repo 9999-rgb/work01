@@ -8,15 +8,29 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(action_msgs REQUIRED)
 find_package(gazebo_dev REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(moveit_msgs REQUIRED)
+find_package(moveit_ros_planning_interface REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
+find_package(shape_msgs REQUIRED)
+find_package(tf2 REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
 add_executable(inspection_robot_gui src/inspection_robot_gui.cpp)
+add_executable(
+  legacy_trajectory_router
+  src/legacy_trajectory_router.cpp
+)
+add_executable(
+  cabinet_planning_scene
+  src/cabinet_planning_scene.cpp
+)
+add_executable(moveit_planner src/moveit_planner.cpp)
 add_library(
   xczs_planar_stabilizer
   SHARED
@@ -42,11 +56,42 @@ endforeach()
 
 target_link_libraries(inspection_robot_gui Qt5::Widgets)
 
+target_compile_features(legacy_trajectory_router PUBLIC cxx_std_17)
+ament_target_dependencies(
+  legacy_trajectory_router
+  action_msgs
+  rclcpp
+  trajectory_msgs
+)
+
+target_compile_features(cabinet_planning_scene PUBLIC cxx_std_17)
+ament_target_dependencies(
+  cabinet_planning_scene
+  moveit_msgs
+  moveit_ros_planning_interface
+  rclcpp
+  shape_msgs
+  tf2
+)
+
+target_compile_features(moveit_planner PUBLIC cxx_std_17)
+ament_target_dependencies(
+  moveit_planner
+  geometry_msgs
+  moveit_ros_planning_interface
+  rclcpp
+)
+
 target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
 ament_target_dependencies(xczs_planar_stabilizer gazebo_dev)
 
 install(
-  TARGETS keyboard_teleop inspection_robot_gui
+  TARGETS
+    keyboard_teleop
+    inspection_robot_gui
+    legacy_trajectory_router
+    cabinet_planning_scene
+    moveit_planner
   DESTINATION lib/${PROJECT_NAME}
 )
 

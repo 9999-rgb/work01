@@ -1,0 +1,61 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="xczs_position_controlled_joint" params="joint_name">
+    <joint name="${joint_name}">
+      <command_interface name="position" />
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity" />
+      <state_interface name="effort" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="xczs_state_only_joint" params="joint_name">
+    <joint name="${joint_name}">
+      <state_interface name="position">
+        <param name="initial_value">0.0</param>
+      </state_interface>
+      <state_interface name="velocity" />
+      <state_interface name="effort" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="xczs_ros2_control" params="">
+    <ros2_control name="XCZSGazeboSystem" type="system">
+      <hardware>
+        <plugin>gazebo_ros2_control/GazeboSystem</plugin>
+      </hardware>
+
+      <xacro:xczs_position_controlled_joint joint_name="body_arm1" />
+      <xacro:xczs_position_controlled_joint joint_name="arm1_arm2" />
+      <xacro:xczs_position_controlled_joint joint_name="arm2_arm3" />
+      <xacro:xczs_position_controlled_joint joint_name="arm3_arm4" />
+      <xacro:xczs_position_controlled_joint joint_name="arm4_arm5" />
+      <xacro:xczs_position_controlled_joint joint_name="arm5_end" />
+      <xacro:xczs_position_controlled_joint joint_name="end_worklink1" />
+      <xacro:xczs_position_controlled_joint joint_name="end_worklink2" />
+
+      <!-- The planar Gazebo plugin moves the base. ros2_control only exposes
+           wheel state so robot_state_publisher keeps the complete TF tree. -->
+      <xacro:xczs_state_only_joint joint_name="body_frw" />
+      <xacro:xczs_state_only_joint joint_name="body_flw" />
+      <xacro:xczs_state_only_joint joint_name="body_brw" />
+      <xacro:xczs_state_only_joint joint_name="body_blw" />
+    </ros2_control>
+
+    <gazebo>
+      <plugin name="xczs_ros2_control" filename="libgazebo_ros2_control.so">
+        <robot_param>robot_description</robot_param>
+        <robot_param_node>/robot_state_publisher</robot_param_node>
+        <parameters>
+          $(find xczs_inspection_robot_description)/config/ros2_controllers.yaml
+        </parameters>
+        <hold_joints>true</hold_joints>
+        <ros>
+          <namespace>/xczs</namespace>
+        </ros>
+      </plugin>
+    </gazebo>
+  </xacro:macro>
+</robot>

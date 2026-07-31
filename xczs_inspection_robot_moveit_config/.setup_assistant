@@ -1,0 +1,10 @@
+moveit_setup_assistant_config:
+  urdf:
+    package: xczs_inspection_robot_description
+    relative_path: urdf/xczs_inspection_robot.urdf.xacro
+  srdf:
+    relative_path: config/xczs_inspection_robot.srdf
+  package_settings:
+    author_name: XCZS Project
+    author_email: xczs@example.com
+    generated_timestamp: 1785486881
