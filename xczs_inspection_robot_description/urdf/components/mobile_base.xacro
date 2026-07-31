@@ -25,12 +25,20 @@
         </geometry>
         <material name="industrial_navy" />
       </visual>
-      <collision>
+      <collision name="body_rear_collision">
         <origin
-          xyz="${base_collision_origin}"
+          xyz="${base_rear_collision_origin}"
           rpy="0 0 0" />
         <geometry>
-          <box size="${base_collision_size}" />
+          <box size="${base_rear_collision_size}" />
+        </geometry>
+      </collision>
+      <collision name="body_front_collision">
+        <origin
+          xyz="${base_front_collision_origin}"
+          rpy="0 0 0" />
+        <geometry>
+          <box size="${base_front_collision_size}" />
         </geometry>
       </collision>
     </link>

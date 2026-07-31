@@ -16,6 +16,15 @@
   <xacro:property name="body_lidar_min_range" value="0.10" />
   <xacro:property name="body_lidar_max_range" value="30.0" />
   <xacro:property name="body_lidar_range_resolution" value="0.01" />
+  <!--
+    The visible lidar housing is already part of body.STL. Place the virtual
+    scan frame just above its center and face the 180-degree fan away from the
+    body to prevent the chassis from masking the measurements.
+  -->
+  <xacro:property name="body_lidar_mount_xyz" value="0 0.259 -0.100" />
+  <xacro:property
+    name="body_lidar_mount_rpy"
+    value="0 0 1.57079632679" />
 
   <xacro:macro name="xczs_arm_camera" params="">
     <link name="arm_camera_link">
@@ -123,16 +132,11 @@
           iyz="0"
           izz="1.0125e-04" />
       </inertial>
-      <visual>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <cylinder radius="0.045" length="0.060" />
-        </geometry>
-        <material name="graphite_black" />
-      </visual>
     </link>
     <joint name="body_lidar_mount" type="fixed">
-      <origin xyz="0 -0.230 0.280" rpy="0 0 0" />
+      <origin
+        xyz="${body_lidar_mount_xyz}"
+        rpy="${body_lidar_mount_rpy}" />
       <parent link="body" />
       <child link="body_lidar_link" />
     </joint>
@@ -141,7 +145,6 @@
     </gazebo>
 
     <gazebo reference="body_lidar_link">
-      <material>Gazebo/Black</material>
       <gravity>false</gravity>
       <sensor name="body_lidar" type="ray">
         <pose>0 0 0 0 0 0</pose>
