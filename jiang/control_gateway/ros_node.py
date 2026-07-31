@@ -7,6 +7,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
+import rclpy
 from action_msgs.msg import GoalStatus
 from action_msgs.srv import CancelGoal
 from geometry_msgs.msg import Pose
@@ -100,6 +101,16 @@ class RosControlNode(Node):
             "xczs_web_control_server",
             context=context,
         )
+
+        # Enable sim time so the control node synchronises with the
+        # Gazebo /clock topic in simulation.
+        sim_time_param = rclpy.parameter.Parameter(
+            "use_sim_time",
+            rclpy.parameter.Parameter.Type.BOOL,
+            True,
+        )
+        self.set_parameters([sim_time_param])
+
         self._lock = threading.RLock()
         self._cmd_vel_publisher = self.create_publisher(
             Twist,
@@ -249,6 +260,12 @@ class RosControlNode(Node):
         trajectory.joint_names = list(self.JOINT_NAMES)
         point = JointTrajectoryPoint()
         point.positions = safe_positions
+        # Give the controller a 0.5 s window to reach the target so it
+        # can interpolate a smooth trajectory.  Without this the
+        # ros2_control JointTrajectoryController has no timing
+        # reference and may reject the command outright.
+        point.time_from_start.sec = 0
+        point.time_from_start.nanosec = 500_000_000
         trajectory.points.append(point)
 
         with self._lock:

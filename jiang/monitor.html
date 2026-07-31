@@ -1378,6 +1378,12 @@ async function testControlConnection() {
       startAutonomyPolling();
       if (!health.navigation_available) {
         log('info', 'Nav2 未启动；使用 --web 可启用网页地图导航');
+      } else {
+        // When Nav2 is running alongside the web UI, default to
+        // manual base mode so the D-pad and WASD work immediately.
+        // The operator can re-enable Nav2 through the UI.
+        switchToManualMode();
+        log('info', '已自动切换到手动底盘模式（可通过 Nav2 面板启用导航）');
       }
       if (!health.moveit_available) {
         log('info', 'MoveIt 2 尚未就绪');
