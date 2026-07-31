@@ -1,13 +1,17 @@
 {
   "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
-  "files.exclude": {
-    "**/build": true,
-    "**/install": true,
-    "**/log": true
-  },
   "search.exclude": {
     "**/build": true,
     "**/install": true,
     "**/log": true
-  }
+  },
+  "ROS2.distro": "humble",
+  "python.autoComplete.extraPaths": [
+    "/opt/ros/humble/lib/python3.10/site-packages",
+    "/opt/ros/humble/local/lib/python3.10/dist-packages"
+  ],
+  "python.analysis.extraPaths": [
+    "/opt/ros/humble/lib/python3.10/site-packages",
+    "/opt/ros/humble/local/lib/python3.10/dist-packages"
+  ]
 }

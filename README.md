@@ -37,7 +37,6 @@ colcon build --symlink-install
 source install/setup.bash
 ```
 
-如果终端当前处于 Conda 环境，请先执行 `conda deactivate`。
 
 ## 快速启动
 
