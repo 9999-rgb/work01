@@ -788,6 +788,7 @@ const subs = new Map();       // topic -> { es, cardId, history:[] }
 const historyMax = 50;
 let cardCounter = 0;
 let sensorEnabled = false;
+let cameraReconnectTimer = null;
 let lidarSocket = null;
 let lidarReconnectTimer = null;
 let sensorHealthTimer = null;
@@ -1051,7 +1052,7 @@ function connectSensorStreams() {
   const baseUrl = sensorBaseUrl();
   setSensorState(cameraState, '正在连接…');
   setSensorState(lidarState, '正在连接…');
-  cameraStream.src = `${baseUrl}/camera.mjpg?t=${Date.now()}`;
+  connectCameraStream();
   connectLidarSocket();
   checkSensorHealth();
   sensorHealthTimer = setInterval(checkSensorHealth, 2000);
@@ -1060,6 +1061,10 @@ function connectSensorStreams() {
 
 function disconnectSensorStreams(updateState = true) {
   sensorEnabled = false;
+  if (cameraReconnectTimer) {
+    clearTimeout(cameraReconnectTimer);
+    cameraReconnectTimer = null;
+  }
   if (lidarReconnectTimer) {
     clearTimeout(lidarReconnectTimer);
     lidarReconnectTimer = null;
@@ -1079,6 +1084,16 @@ function disconnectSensorStreams(updateState = true) {
     setSensorState(lidarState, '未连接');
     clearLidarCanvas();
   }
+}
+
+function connectCameraStream() {
+  if (!sensorEnabled) return;
+  if (cameraReconnectTimer) {
+    clearTimeout(cameraReconnectTimer);
+    cameraReconnectTimer = null;
+  }
+  cameraStream.src =
+    `${sensorBaseUrl()}/camera.mjpg?t=${Date.now()}`;
 }
 
 async function checkSensorHealth() {
@@ -1103,10 +1118,11 @@ async function checkSensorHealth() {
 cameraStream.addEventListener('error', () => {
   if (!sensorEnabled) return;
   setSensorState(cameraState, '图像流中断', 'err');
-  setTimeout(() => {
+  if (cameraReconnectTimer) return;
+  cameraReconnectTimer = setTimeout(() => {
+    cameraReconnectTimer = null;
     if (sensorEnabled) {
-      cameraStream.src =
-        `${sensorBaseUrl()}/camera.mjpg?t=${Date.now()}`;
+      connectCameraStream();
     }
   }, 2000);
 });
@@ -2052,7 +2068,8 @@ $('spdAngular').addEventListener('input', function() {
 // Build sliders on load
 buildJointSliders();
 
-// Auto-connect control server on load (no need to click "测试")
+// Auto-connect monitoring, sensors and control on page load.
+doConnect();
 testControlConnection();
 </script>
 </body>
