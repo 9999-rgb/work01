@@ -55,17 +55,11 @@ install(
   LIBRARY DESTINATION lib
 )
 
-install(
-  PROGRAMS scripts/task_scheduler
-  DESTINATION lib/${PROJECT_NAME}
-)
-
 install(DIRECTORY include/ DESTINATION include)
 
 install(
-  DIRECTORY config launch scripts
+  DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}
-  PATTERN "__pycache__" EXCLUDE
 )
 
 ament_export_include_directories(include)

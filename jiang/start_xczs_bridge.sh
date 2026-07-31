@@ -6,9 +6,8 @@
 #   ./start_xczs_bridge.sh                   # 启动全部（含 Gazebo GUI）
 #   ./start_xczs_bridge.sh --no-gui          # 无 Gazebo 界面（headless）
 #   ./start_xczs_bridge.sh --with-proxy      # 同时启动 CDR→JSON 代理
-#   ./start_xczs_bridge.sh --manual          # 使用 GUI 手动控制（非任务调度器）
+#   ./start_xczs_bridge.sh --manual          # 使用 GUI 手动控制
 #   ./start_xczs_bridge.sh --web             # 使用浏览器控制
-#   ./start_xczs_bridge.sh --task            # 使用自主任务调度器
 #
 # 启动后:
 #   - 监控面板: http://localhost:8080/monitor.html
@@ -47,16 +46,15 @@ PYTHON_BIN="/usr/bin/python3"
 # ── 选项 ──────────────────────────────────────────────────────────
 GAZEBO_GUI="true"
 WITH_PROXY="false"
-TASK_MODE="manual"
+CONTROL_MODE="manual"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-gui)    GAZEBO_GUI="false"; shift ;;
         --with-proxy) WITH_PROXY="true"; shift ;;
-        --manual)    TASK_MODE="manual"; shift ;;
-        --web)       TASK_MODE="web"; shift ;;
-        --task)      TASK_MODE="task"; shift ;;
-        --keyboard)  TASK_MODE="keyboard"; shift ;;
+        --manual)    CONTROL_MODE="manual"; shift ;;
+        --web)       CONTROL_MODE="web"; shift ;;
+        --keyboard)  CONTROL_MODE="keyboard"; shift ;;
         -h|--help)
             sed -n '3,15p' "$0" | sed 's/^# *//'
             exit 0
@@ -132,17 +130,16 @@ if [ -z "${DISPLAY:-}" ]; then
     echo "⚠ 未检测到显示器 (DISPLAY 未设置)，自动切换为 headless 模式"
     GAZEBO_GUI="false"
 fi
-if [ "$GAZEBO_GUI" = "false" ] && [ "$TASK_MODE" = "manual" ]; then
-    echo "  GUI 不可用，改用任务调度器（自主巡检）"
-    TASK_MODE="task"
+if [ "$GAZEBO_GUI" = "false" ] && [ "$CONTROL_MODE" = "manual" ]; then
+    echo "  GUI 不可用，自动切换为浏览器控制"
+    CONTROL_MODE="web"
 fi
 
 echo "═══════════════════════════════════════════"
 echo "  XCZS 巡操机器人仿真系统"
 echo "═══════════════════════════════════════════"
 echo ""
-case "$TASK_MODE" in
-    task) MODE_LABEL="任务调度器" ;;
+case "$CONTROL_MODE" in
     keyboard) MODE_LABEL="键盘遥控" ;;
     web) MODE_LABEL="浏览器控制" ;;
     *) MODE_LABEL="GUI 手动控制" ;;
@@ -251,7 +248,7 @@ _check_process "$HTTP_PID" "HTTP 文件服务器"
 echo "       监控面板: http://localhost:$MONITOR_PORT/monitor.html"
 
 # ── 4. 按需启动浏览器控制服务 ───────────────────────────────────
-if [ "$TASK_MODE" = "web" ]; then
+if [ "$CONTROL_MODE" = "web" ]; then
     echo "[4/6] 启动 Web 控制服务 (port $CONTROL_PORT)..."
     "$PYTHON_BIN" control_server.py \
         --host "$CONTROL_HOST" \
@@ -276,22 +273,16 @@ echo ""
 # ── 6. 启动 Gazebo + 机器人 ───────────────────────────────────────
 echo "[6/6] 启动 Gazebo + XCZS 机器人..."
 
-if [ "$TASK_MODE" = "task" ]; then
-    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
-        "gui:=$GAZEBO_GUI" \
-        "control_gui:=false" \
-        "task_scheduler:=true"
-elif [ "$TASK_MODE" = "keyboard" ]; then
+if [ "$CONTROL_MODE" = "keyboard" ]; then
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
         "control_gui:=false" \
         "teleop:=true"
-elif [ "$TASK_MODE" = "web" ]; then
+elif [ "$CONTROL_MODE" = "web" ]; then
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
         "control_gui:=false" \
-        "teleop:=false" \
-        "task_scheduler:=false"
+        "teleop:=false"
 else
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \

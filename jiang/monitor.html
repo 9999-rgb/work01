@@ -225,27 +225,6 @@
   .toast.ok  { border-color: var(--green); }
   @keyframes slideIn { from { transform: translateX(40px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
-  /* ── Phase Banner ────────────────────────── */
-  .phase-banner {
-    display: flex; align-items: center; gap: 14px;
-    padding: 14px 20px; margin-bottom: 16px;
-    background: var(--card-bg); border: 1px solid var(--border);
-    border-radius: 10px; flex-wrap: wrap;
-  }
-  .phase-indicator {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 48px; height: 48px; border-radius: 50%;
-    font-size: 22px; font-weight: 700;
-    background: rgba(255,255,255,0.06); border: 3px solid var(--border);
-    color: var(--text-dim); transition: all 0.3s;
-  }
-  .phase-indicator.active { border-color: var(--accent); color: var(--accent); box-shadow: 0 0 12px rgba(88,166,255,0.3); }
-  .phase-indicator.done   { border-color: var(--green); color: var(--green); }
-  .phase-indicator.error  { border-color: var(--red); color: var(--red); }
-  .phase-arrow { color: var(--text-dim); font-size: 16px; }
-  .waypoint-info { margin-left: auto; font-size: 13px; color: var(--text-dim); }
-  .waypoint-info span { color: var(--text); font-weight: 600; }
-
   /* ── Joint Bars ──────────────────────────── */
   .joint-bars {
     margin-top: 16px; background: var(--card-bg);
@@ -414,21 +393,6 @@
   </div>
 </header>
 
-<!-- ─── Phase Banner ─── -->
-<div class="phase-banner" id="phaseBanner">
-  <span style="font-size:13px;color:var(--text-dim)">任务阶段</span>
-  <span class="phase-indicator" id="phaseA">A</span>
-  <span class="phase-arrow">→</span>
-  <span class="phase-indicator" id="phaseB">B</span>
-  <span class="phase-arrow">→</span>
-  <span class="phase-indicator" id="phaseC">C</span>
-  <span class="phase-arrow">→</span>
-  <span class="phase-indicator" id="phaseD">D</span>
-  <div class="waypoint-info">
-    巡检点 <span id="wpCurrent">-</span> / <span id="wpTotal">4</span>
-  </div>
-</div>
-
 <!-- ─── Connection Bar ─── -->
 <div class="connect-bar">
   <label>SSE API</label>
@@ -561,11 +525,6 @@
       <button class="topic-preset" data-topic="clock/json">clock</button>
     </div>
     <div class="topic-group">
-      <h3>📋 任务状态</h3>
-      <button class="topic-preset" data-topic="mission/phase/json">mission/phase 任务阶段</button>
-      <button class="topic-preset" data-topic="mission/current_waypoint/json">mission/current_waypoint 当前巡检点</button>
-    </div>
-    <div class="topic-group">
       <h3>🚀 一键订阅</h3>
       <button class="btn btn-primary" onclick="
         subscribe('xczs/cmd_vel/json');
@@ -575,8 +534,6 @@
         subscribe('robot_description/json');
         subscribe('tf/json');
         subscribe('clock/json');
-        subscribe('mission/phase/json');
-        subscribe('mission/current_waypoint/json');
       " style="width:100%;margin-top:4px">订阅全部 XCZS 话题</button>
     </div>
 
@@ -1090,19 +1047,6 @@ document.querySelectorAll('.topic-preset').forEach(btn => {
   });
 });
 
-// ─── Phase Indicator ──────────────────────────────────────────
-let currentPhase = 'IDLE';
-function updatePhaseBanner(phase) {
-  if (phase === currentPhase) return;
-  currentPhase = phase;
-  ['A','B','C','D'].forEach(p => {
-    const el = document.getElementById('phase' + p);
-    if (!el) return;
-    el.classList.remove('active', 'done', 'error');
-    if (p === phase) el.classList.add('active');
-  });
-}
-
 // ─── Joint Bar Rendering ──────────────────────────────────────
 const jointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
 const jointLimit = 2.80;  // rad, from robot_control.yaml
@@ -1157,22 +1101,9 @@ onData = function(topic, jsonStr) {
     payload = outer.value !== undefined ? outer.value : outer;
   } catch(e) { return; }
 
-  // Phase tracking
-  if (topic.includes('mission/phase')) {
-    const phase = (typeof payload.data === 'string') ? payload.data : String(payload);
-    updatePhaseBanner(phase.trim());
-  }
   // Joint state visualization
   if (topic.includes('joint_states')) {
     updateJointBars(payload);
-  }
-  // Waypoint tracking
-  if (topic.includes('current_waypoint')) {
-    const wp = typeof payload.data === 'number' ? payload.data : parseInt(payload.data);
-    if (!isNaN(wp)) {
-      const el = document.getElementById('wpCurrent');
-      if (el) el.textContent = String(wp + 1);  // 1-indexed display
-    }
   }
 };
 

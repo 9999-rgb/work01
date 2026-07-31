@@ -52,8 +52,6 @@ es.addEventListener('PUT', (event) => {
 | `http://localhost:8001/tf/json` | `/tf` | `tf2_msgs/TFMessage` | 坐标变换 |
 | `http://localhost:8001/tf_static/json` | `/tf_static` | `tf2_msgs/TFMessage` | 静态坐标变换 |
 | `http://localhost:8001/clock/json` | `/clock` | `rosgraph_msgs/Clock` | 仿真时钟 |
-| `http://localhost:8001/mission/phase/json` | `/mission/phase` | `std_msgs/String` | 任务阶段（A/B/C/D/IDLE/DONE） |
-| `http://localhost:8001/mission/current_waypoint/json` | `/mission/current_waypoint` | `std_msgs/Int32` | 当前巡检点序号 |
 
 ### SSE 响应格式
 

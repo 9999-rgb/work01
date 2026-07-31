@@ -122,22 +122,6 @@ def register_standard_types() -> None:
             description="JointTrajectory (any namespace)",
         )
 
-    # -- Mission state topics --------------------------------------------
-    String = load_message_type("std_msgs.msg.String")
-    Int32 = load_message_type("std_msgs.msg.Int32")
-    if String is not None:
-        registry.register(
-            "mission/phase", String,
-            handler=add_timestamp,
-            description="Mission phase",
-        )
-    if Int32 is not None:
-        registry.register(
-            "mission/current_waypoint", Int32,
-            handler=add_timestamp,
-            description="Mission waypoint index",
-        )
-
     # -- geometry_msgs/Pose — NOT registered via wildcard! ----------------
     # Register explicitly with the EXACT topic name when needed:
     #   Pose = load_message_type("geometry_msgs.msg.Pose")
@@ -147,7 +131,6 @@ def register_standard_types() -> None:
     all_none = (
         Twist is None and Odometry is None
         and JointState is None and JointTrajectory is None
-        and String is None and Int32 is None
     )
     if all_none:
         print(

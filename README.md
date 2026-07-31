@@ -2,7 +2,7 @@
 
 基于 ROS 2 Humble 和 Gazebo Classic 的巡操机器人仿真项目，包含移动底盘、
 六自由度机械臂、两指夹爪、腕部 RGB 相机、车身 2D 激光雷达、手动控制、
-自主巡检以及 Web 数据监控。
+以及 Web 数据监控。
 
 ![XCZS 巡操机器人](docs/images/xczs_inspection_robot_preview.png)
 
@@ -11,7 +11,7 @@
 - ROS 2 Humble + Gazebo Classic 11 仿真，不包含 ROS 1 启动或通信逻辑
 - 移动底盘、六自由度机械臂、两指夹爪和控制柜碰撞仿真
 - 腕部 RGB 相机和车身 180° 2D 激光雷达
-- Qt GUI、键盘、网页和自主任务四种互斥控制模式
+- Qt GUI、键盘和网页三种互斥控制模式
 - 浏览器 MJPEG 相机画面、WebSocket 雷达扫描和 SSE 状态监控
 - `run_all.sh` 一键启动、统一退出和子进程清理
 
@@ -93,7 +93,6 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 | Web 控制 | `./run_all.sh --web` | 浏览器监控并控制底盘、机械臂和夹爪 |
 | Qt GUI | `./run_all.sh --manual` | 使用桌面控制界面 |
 | 键盘遥控 | `./run_all.sh --keyboard` | 使用键盘控制机器人 |
-| 自主任务 | `./run_all.sh --task` | 自动执行 A→B→C→D 巡检流程 |
 
 无图形桌面或不需要 Gazebo 窗口时，在命令后添加 `--no-gui`，例如：
 
@@ -101,7 +100,7 @@ ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
 ./run_all.sh --web --no-gui
 ```
 
-四种控制模式互斥，不要同时启动多个控制节点。
+三种控制模式互斥，不要同时启动多个控制节点。
 
 ## Web 监控
 
@@ -193,7 +192,6 @@ Web 服务端口可通过环境变量调整：
 | `/xczs/xczs_joint_state_publisher` | 发布机器人关节状态 |
 | `/xczs_inspection_robot_gui` | Qt GUI 控制节点 |
 | `/xczs_keyboard_teleop` | 键盘控制节点 |
-| `/xczs_task_scheduler` | 自主巡检任务节点 |
 | `/xczs_web_control_server` | Web 控制节点 |
 | `/xczs_web_sensor_stream` | 相机 JPEG/MJPEG 与雷达 JSON/WebSocket 转换 |
 
@@ -213,8 +211,6 @@ Web 服务端口可通过环境变量调整：
 | `/robot_description` | `std_msgs/msg/String` | 机器人模型描述 |
 | `/tf` | `tf2_msgs/msg/TFMessage` | 机器人坐标变换 |
 | `/clock` | `rosgraph_msgs/msg/Clock` | Gazebo 仿真时间 |
-| `/mission/phase` | `std_msgs/msg/String` | 自主任务当前阶段 |
-| `/mission/current_waypoint` | `std_msgs/msg/Int32` | 自主任务当前巡检点 |
 
 项目当前全部使用 ROS 2 标准消息，不需要额外的自定义消息包。
 
