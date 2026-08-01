@@ -1,6 +1,13 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:macro name="control_cabinet_body" params="">
+    <!-- Anchor the dynamic cabinet body while allowing child controls to move. -->
+    <link name="world" />
+    <joint name="world_cabinet_body" type="fixed">
+      <parent link="world" />
+      <child link="cabinet_body" />
+    </joint>
+
     <link name="cabinet_body">
       <!--
         Gazebo's URDF converter requires physical data on the root link.

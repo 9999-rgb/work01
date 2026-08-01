@@ -2,7 +2,7 @@
 <robot name="xczs_inspection_robot">
   <virtual_joint
     name="odom_joint"
-    type="planar"
+    type="floating"
     parent_frame="odom"
     child_link="body" />
 
@@ -63,4 +63,7 @@
   <disable_collisions link1="end" link2="worklink1" reason="Adjacent" />
   <disable_collisions link1="end" link2="worklink2" reason="Adjacent" />
   <disable_collisions link1="worklink1" link2="worklink2" reason="Default" />
+  <disable_collisions link1="end" link2="button_press_tip" reason="Adjacent" />
+  <disable_collisions link1="worklink1" link2="button_press_tip" reason="Default" />
+  <disable_collisions link1="worklink2" link2="button_press_tip" reason="Default" />
 </robot>

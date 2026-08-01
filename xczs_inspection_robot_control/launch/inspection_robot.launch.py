@@ -330,6 +330,49 @@ def generate_launch_description() -> LaunchDescription:
             )
         ),
     )
+    cabinet_button_operator = Node(
+        package=CONTROL_PACKAGE,
+        executable="cabinet_button_operator",
+        name="xczs_cabinet_button_operator",
+        output="screen",
+        remappings=[("joint_states", "/xczs/joint_states")],
+        parameters=[
+            {
+                "use_sim_time": True,
+                "planning_frame": "odom",
+                "navigation_frame": "map",
+                "cabinet_x": ParameterValue(
+                    LaunchConfiguration("cabinet_x"),
+                    value_type=float,
+                ),
+                "cabinet_y": ParameterValue(
+                    LaunchConfiguration("cabinet_y"),
+                    value_type=float,
+                ),
+                "cabinet_z": ParameterValue(
+                    LaunchConfiguration("cabinet_z"),
+                    value_type=float,
+                ),
+                "cabinet_roll": float(CABINET_EXPORT_ROLL),
+                "cabinet_pitch": 0.0,
+                "cabinet_yaw": ParameterValue(
+                    LaunchConfiguration("cabinet_yaw"),
+                    value_type=float,
+                ),
+            }
+        ],
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("moveit"),
+                    "' == 'true' and '",
+                    LaunchConfiguration("spawn_cabinet"),
+                    "' == 'true'",
+                ]
+            )
+        ),
+    )
     start_controllers_after_spawn = RegisterEventHandler(
         OnProcessExit(
             target_action=spawn_robot,
@@ -346,6 +389,7 @@ def generate_launch_description() -> LaunchDescription:
                 gui_controller,
                 move_group,
                 cabinet_planning_scene,
+                cabinet_button_operator,
                 nav2,
             ],
         )

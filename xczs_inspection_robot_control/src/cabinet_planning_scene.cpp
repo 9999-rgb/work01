@@ -38,13 +38,13 @@ public:
     collision_origin_y_ = declare_parameter<double>(
       "collision_origin_y", 1.115);
     collision_origin_z_ = declare_parameter<double>(
-      "collision_origin_z", -0.274);
+      "collision_origin_z", -0.304);
     collision_size_x_ = declare_parameter<double>(
-      "collision_size_x", 0.680);
+      "collision_size_x", 0.662);
     collision_size_y_ = declare_parameter<double>(
       "collision_size_y", 2.230);
     collision_size_z_ = declare_parameter<double>(
-      "collision_size_z", 0.690);
+      "collision_size_z", 0.608);
 
     retry_timer_ = create_wall_timer(
       std::chrono::seconds(1),
@@ -126,10 +126,10 @@ private:
   double cabinet_yaw_{-1.57079632679};
   double collision_origin_x_{0.331};
   double collision_origin_y_{1.115};
-  double collision_origin_z_{-0.274};
-  double collision_size_x_{0.680};
+  double collision_origin_z_{-0.304};
+  double collision_size_x_{0.662};
   double collision_size_y_{2.230};
-  double collision_size_z_{0.690};
+  double collision_size_z_{0.608};
 };
 
 }  // namespace xczs_inspection_robot_control

@@ -11,6 +11,7 @@
   <license>BSD-3-Clause</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
+  <buildtool_depend>rosidl_default_generators</buildtool_depend>
 
   <build_depend>qt5-qmake</build_depend>
   <build_depend>qtbase5-dev</build_depend>
@@ -18,26 +19,30 @@
   <depend>action_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>gazebo_dev</depend>
+  <depend>gazebo_ros</depend>
   <depend>moveit_msgs</depend>
+  <depend>moveit_core</depend>
   <depend>moveit_ros_planning_interface</depend>
+  <depend>nav2_msgs</depend>
   <depend>rclcpp</depend>
+  <depend>rclcpp_action</depend>
   <depend>sensor_msgs</depend>
   <depend>shape_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
   <depend>tf2</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>tf2_ros</depend>
   <depend>trajectory_msgs</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>controller_manager</exec_depend>
-  <exec_depend>gazebo_ros</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>libqt5-gui</exec_depend>
   <exec_depend>libqt5-widgets</exec_depend>
-  <exec_depend>nav2_msgs</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
   <exec_depend>xacro</exec_depend>
@@ -45,6 +50,9 @@
   <exec_depend>xczs_inspection_robot_moveit_config</exec_depend>
   <exec_depend>xczs_inspection_robot_nav2</exec_depend>
   <exec_depend>xfce4-terminal</exec_depend>
+  <exec_depend>rosidl_default_runtime</exec_depend>
+
+  <member_of_group>rosidl_interface_packages</member_of_group>
 
   <export>
     <build_type>ament_cmake</build_type>

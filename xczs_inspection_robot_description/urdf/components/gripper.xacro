@@ -92,5 +92,50 @@
         k_position="1"
         k_velocity="1" />
     </joint>
+
+    <!--
+      A slim probe between the fingers provides a deterministic tool center
+      point for cabinet-button contact. Its frame is at the distal tip.
+    -->
+    <link name="button_press_tip">
+      <inertial>
+        <origin xyz="0 0 0.05" rpy="0 0 0" />
+        <mass value="0.02" />
+        <inertia
+          ixx="1.7e-05"
+          ixy="0"
+          ixz="0"
+          iyy="1.7e-05"
+          iyz="0"
+          izz="1.0e-06" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0.05" rpy="0 0 0" />
+        <geometry>
+          <cylinder radius="0.010" length="0.100" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.05" rpy="0 0 0" />
+        <geometry>
+          <cylinder radius="0.010" length="0.100" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="end_button_press_tip" type="fixed">
+      <origin xyz="0 0 -0.370" rpy="0 0 0" />
+      <parent link="end" />
+      <child link="button_press_tip" />
+    </joint>
+    <gazebo reference="end_button_press_tip">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+    <gazebo reference="button_press_tip">
+      <material>Gazebo/Orange</material>
+      <gravity>false</gravity>
+      <mu1>0.8</mu1>
+      <mu2>0.8</mu2>
+    </gazebo>
   </xacro:macro>
 </robot>

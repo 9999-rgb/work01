@@ -1,0 +1,33 @@
+# Goal
+string button_id
+bool navigate_to_staging_pose
+---
+# Result
+uint8 SUCCESS=0
+uint8 INVALID_BUTTON=1
+uint8 NOT_READY=2
+uint8 NAVIGATION_FAILED=3
+uint8 PLANNING_FAILED=4
+uint8 EXECUTION_FAILED=5
+uint8 PRESS_NOT_DETECTED=6
+uint8 RELEASE_NOT_DETECTED=7
+uint8 CANCELED=8
+uint8 INTERNAL_ERROR=9
+bool success
+uint8 error_code
+string message
+float64 max_travel
+---
+# Feedback
+uint8 WAITING_FOR_SYSTEM=0
+uint8 NAVIGATING=1
+uint8 MOVING_TO_PREPRESS=2
+uint8 APPROACHING=3
+uint8 PRESSING=4
+uint8 VERIFYING_PRESS=5
+uint8 RETRACTING=6
+uint8 VERIFYING_RELEASE=7
+uint8 phase
+float32 progress
+float64 button_travel
+string message

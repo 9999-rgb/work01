@@ -13,6 +13,7 @@ MoveIt 2 机械臂路径规划、Nav2 底盘自主导航、柜体避碰以及 We
 - 腕部 RGB 相机和车身 180° 2D 激光雷达
 - MoveIt 2 逆运动学、OMPL 路径规划、自碰撞与控制柜碰撞检查
 - Nav2 + AMCL 定位、全局/局部路径规划、激光雷达动态避障和柜体绕障
+- 控制柜实体按钮行程、弹簧回弹及 Nav2 + MoveIt 闭环按压操作
 - `ros2_control` + `JointTrajectoryController` 标准轨迹执行链路
 - 手动底盘与 Nav2 速度命令路由、模式互斥和失联自动停车
 - Qt GUI、键盘和网页三种手动控制模式
@@ -242,6 +243,40 @@ ros2 service call /xczs/set_navigation_mode \
 `cabinet_y` 或 `cabinet_yaw` 后，雷达仍能检测真实障碍，但静态地图中的柜体
 位置不会自动改变；用于正式导航前应同步更新地图，或通过 SLAM 重新建图。
 
+## 控制柜按钮操作验证
+
+当前支持 `box_10_button_1`，即控制柜 10 号模块上的红色按钮。从柜体正面看，
+它位于同模块绿色按钮左侧，默认世界坐标约为
+`(1.989, -0.162, 0.574)`。按钮具有 8 mm 物理行程和弹簧回弹。
+
+启动带 Nav2 的统一入口：
+
+```bash
+ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+  nav2:=true control_gui:=false
+```
+
+等待 Gazebo、MoveIt 2 和 Nav2 就绪后发送操作目标：
+
+```bash
+ros2 action send_goal /xczs/press_cabinet_button \
+  xczs_inspection_robot_control/action/PressCabinetButton \
+  "{button_id: box_10_button_1, navigate_to_staging_pose: true}" \
+  --feedback
+```
+
+机器人会依次完成底盘停靠、机械臂预接触、直线按压、按下状态确认、撤离和
+回弹确认。成功结果中的 `max_travel` 应不小于 `0.006` 米，目标值约为
+`0.007` 米。可在其他终端观察按钮行程和按下状态：
+
+```bash
+ros2 topic echo /xczs/cabinet/box_10_button_1/joint_states
+ros2 topic echo /xczs/cabinet/box_10_button_1/pressed
+```
+
+如果底盘已经停在柜体前，可以将目标中的
+`navigate_to_staging_pose` 设为 `false`，跳过自动导航。
+
 ## Web 监控
 
 启动完整系统后访问：
@@ -344,6 +379,7 @@ Web 服务端口可通过环境变量调整：
 | `/planner_server`、`/controller_server` | Nav2 全局路径规划和局部轨迹控制 |
 | `/bt_navigator` | 执行 Nav2 导航行为树和恢复行为 |
 | `/xczs_cabinet_planning_scene` | 将控制柜碰撞体同步到 Planning Scene |
+| `/xczs_cabinet_button_operator` | 执行底盘停靠、机械臂按压及按钮状态闭环验证 |
 | `/xczs_legacy_trajectory_router` | 将旧手动轨迹拆分到两个标准控制器并执行互斥 |
 | `/xczs_inspection_robot_gui` | Qt GUI 控制节点 |
 | `/xczs_keyboard_teleop` | 键盘控制节点 |
@@ -368,6 +404,8 @@ Web 服务端口可通过环境变量调整：
 | `/global_costmap/costmap` | `nav_msgs/msg/OccupancyGrid` | 静态地图与雷达融合的全局代价地图 |
 | `/xczs/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | 控制节点 → 机械臂和夹爪目标 |
 | `/xczs/joint_states` | `sensor_msgs/msg/JointState` | Gazebo → 关节状态 |
+| `/xczs/cabinet/box_10_button_1/joint_states` | `sensor_msgs/msg/JointState` | Gazebo → 红色按钮行程 |
+| `/xczs/cabinet/box_10_button_1/pressed` | `std_msgs/msg/Bool` | Gazebo → 红色按钮按下状态 |
 | `/xczs/arm_controller/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | 机械臂控制器话题入口 |
 | `/xczs/gripper_controller/joint_trajectory` | `trajectory_msgs/msg/JointTrajectory` | 夹爪控制器话题入口 |
 | `/xczs/camera/arm_camera/image_raw` | `sensor_msgs/msg/Image` | 腕部相机彩色图像 |
@@ -392,8 +430,14 @@ Nav2 提供以下标准导航 action：
 /follow_waypoints
 ```
 
-项目当前全部使用 ROS 2 标准消息、service 和 action，不需要额外的自定义
-消息包。
+控制柜按钮操作提供以下自定义 action：
+
+```text
+/xczs/press_cabinet_button
+```
+
+节点间通信全部使用 ROS 2 topic、service 和 action。按钮 action 定义在控制
+功能包内，不需要额外的独立消息包。
 
 ## 项目结构
 
@@ -422,10 +466,12 @@ work01/
 │   ├── launch/navigation.launch.py            # Nav2 模块启动入口
 │   └── maps/inspection_map.{yaml,pgm}         # 默认仿真静态地图
 ├── xczs_inspection_robot_control/            # 控制节点和统一 launch
+│   ├── action/PressCabinetButton.action       # 控制柜按钮操作接口
 │   ├── launch/inspection_robot.launch.py     # 项目统一启动入口
 │   └── src/
 │       ├── moveit_planner.cpp                # 位姿/命名目标规划工具
 │       ├── cabinet_planning_scene.cpp        # 柜体碰撞场景
+│       ├── cabinet_button_operator.cpp       # 控制柜按钮操作状态机
 │       ├── base_command_router.cpp            # 手动/Nav2 底盘命令互斥
 │       └── legacy_trajectory_router.cpp      # 旧接口兼容与控制互斥
 ├── jiang/                              # Web、Zenoh 和前后端接口

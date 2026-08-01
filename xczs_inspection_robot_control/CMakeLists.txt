@@ -10,17 +10,28 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(gazebo_dev REQUIRED)
+find_package(gazebo_ros REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
+find_package(moveit_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
+find_package(nav2_msgs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rclcpp REQUIRED)
+find_package(rclcpp_action REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
 find_package(tf2 REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
 find_package(trajectory_msgs REQUIRED)
+
+rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/PressCabinetButton.action"
+)
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
 add_executable(inspection_robot_gui src/inspection_robot_gui.cpp)
@@ -33,11 +44,17 @@ add_executable(
   src/cabinet_planning_scene.cpp
 )
 add_executable(moveit_planner src/moveit_planner.cpp)
+add_executable(cabinet_button_operator src/cabinet_button_operator.cpp)
 add_executable(base_command_router src/base_command_router.cpp)
 add_library(
   xczs_planar_stabilizer
   SHARED
   src/gazebo/planar_stabilizer_plugin.cpp
+)
+add_library(
+  xczs_cabinet_button
+  SHARED
+  src/gazebo/cabinet_button_plugin.cpp
 )
 
 foreach(target keyboard_teleop inspection_robot_gui)
@@ -85,6 +102,33 @@ ament_target_dependencies(
   rclcpp
 )
 
+target_compile_features(cabinet_button_operator PUBLIC cxx_std_17)
+ament_target_dependencies(
+  cabinet_button_operator
+  geometry_msgs
+  moveit_core
+  moveit_msgs
+  moveit_ros_planning_interface
+  nav2_msgs
+  rclcpp
+  rclcpp_action
+  sensor_msgs
+  std_msgs
+  std_srvs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
+)
+rosidl_get_typesupport_target(
+  cabinet_button_operator_typesupport
+  ${PROJECT_NAME}
+  "rosidl_typesupport_cpp"
+)
+target_link_libraries(
+  cabinet_button_operator
+  "${cabinet_button_operator_typesupport}"
+)
+
 target_compile_features(base_command_router PUBLIC cxx_std_17)
 ament_target_dependencies(
   base_command_router
@@ -97,19 +141,30 @@ ament_target_dependencies(
 target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
 ament_target_dependencies(xczs_planar_stabilizer gazebo_dev)
 
+target_compile_features(xczs_cabinet_button PUBLIC cxx_std_17)
+ament_target_dependencies(
+  xczs_cabinet_button
+  gazebo_dev
+  gazebo_ros
+  rclcpp
+  sensor_msgs
+  std_msgs
+)
+
 install(
   TARGETS
     keyboard_teleop
     inspection_robot_gui
     legacy_trajectory_router
     cabinet_planning_scene
+    cabinet_button_operator
     moveit_planner
     base_command_router
   DESTINATION lib/${PROJECT_NAME}
 )
 
 install(
-  TARGETS xczs_planar_stabilizer
+  TARGETS xczs_planar_stabilizer xczs_cabinet_button
   LIBRARY DESTINATION lib
 )
 
@@ -122,5 +177,7 @@ install(
 
 ament_export_include_directories(include)
 ament_export_libraries(xczs_planar_stabilizer)
+ament_export_libraries(xczs_cabinet_button)
 ament_export_dependencies(gazebo_dev)
+ament_export_dependencies(rosidl_default_runtime)
 ament_package()

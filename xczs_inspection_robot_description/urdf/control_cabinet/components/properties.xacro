@@ -5,15 +5,21 @@
     value="package://xczs_inspection_robot_description/meshes/control_cabinet" />
 
   <!--
-    One convex enclosure replaces the exported concave triangle collisions.
-    It covers the complete cabinet, including protruding knobs and buttons.
+    One convex enclosure replaces the exported concave cabinet-body mesh.
+    Its front face ends at the CAD panel plane (local Z = 0), leaving the
+    controls in front of the panel available for physical interaction.
   -->
   <xacro:property
     name="cabinet_collision_origin"
-    value="0.331 1.115 -0.274" />
+    value="0.331 1.115 -0.304" />
   <xacro:property
     name="cabinet_collision_size"
-    value="0.680 2.230 0.690" />
+    value="0.662 2.230 0.608" />
+
+  <!-- box_10_button_1 is the first physically interactive control. -->
+  <xacro:property name="cabinet_button_travel" value="0.008" />
+  <xacro:property name="cabinet_button_radius" value="0.015" />
+  <xacro:property name="cabinet_button_collision_length" value="0.012" />
 
   <xacro:property name="cabinet_contact_friction" value="1.0" />
   <xacro:property name="cabinet_contact_kp" value="1000000" />
