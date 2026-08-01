@@ -13,6 +13,8 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -38,6 +40,8 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "xczs_inspection_robot_control/action/press_cabinet_button.hpp"
+#include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
+#include "xczs_inspection_robot_control/msg/cabinet_control_catalog.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -56,6 +60,8 @@ using MoveGroupInterface =
 
 constexpr char kActionName[] = "/xczs/press_cabinet_button";
 constexpr char kDefaultButtonId[] = "box_10_button_1";
+constexpr char kSecondButtonId[] = "box_10_button_2";
+constexpr char kControlCatalogTopic[] = "/xczs/cabinet/control_catalog";
 constexpr char kArmGroup[] = "manipulator";
 constexpr char kArmTipLink[] = "end";
 
@@ -79,6 +85,38 @@ struct OperationPoses
   geometry_msgs::msg::Pose pressed_pose;
 };
 
+struct ButtonSnapshot
+{
+  bool received{false};
+  bool pressed_received{false};
+  bool pressed{false};
+  std::uint64_t pressed_transition_sequence{0};
+  double position{0.0};
+  double max_position{0.0};
+  std::chrono::steady_clock::time_point received_at{};
+  std::chrono::steady_clock::time_point pressed_received_at{};
+};
+
+struct ButtonRuntime
+{
+  mutable std::mutex mutex;
+  std::condition_variable condition;
+  ButtonSnapshot state;
+};
+
+struct ButtonSpec
+{
+  std::string id;
+  std::string display_name;
+  std::string joint_name;
+  std::string joint_state_topic;
+  std::string pressed_topic;
+  double local_x{0.0};
+  double local_y{0.0};
+  double local_z{0.0};
+  std::shared_ptr<ButtonRuntime> runtime{std::make_shared<ButtonRuntime>()};
+};
+
 geometry_msgs::msg::Quaternion to_message(const tf2::Quaternion & quaternion)
 {
   geometry_msgs::msg::Quaternion message;
@@ -97,20 +135,23 @@ public:
   CabinetButtonOperator()
   : Node("xczs_cabinet_button_operator")
   {
-    supported_button_id_ = declare_parameter<std::string>(
+    const auto legacy_button_id = declare_parameter<std::string>(
       "button_id", kDefaultButtonId);
     planning_frame_ = declare_parameter<std::string>(
       "planning_frame", "odom");
     navigation_frame_ = declare_parameter<std::string>(
       "navigation_frame", "map");
-    button_joint_name_ = declare_parameter<std::string>(
+    const auto legacy_button_joint_name = declare_parameter<std::string>(
       "button_joint_name", "box_10_box_10_button_1");
-    const auto button_joint_state_topic = declare_parameter<std::string>(
+    const auto legacy_button_joint_state_topic =
+      declare_parameter<std::string>(
       "button_joint_state_topic",
       "/xczs/cabinet/box_10_button_1/joint_states");
-    const auto button_pressed_topic = declare_parameter<std::string>(
+    const auto legacy_button_pressed_topic = declare_parameter<std::string>(
       "button_pressed_topic",
       "/xczs/cabinet/box_10_button_1/pressed");
+    const auto control_catalog_topic = declare_parameter<std::string>(
+      "control_catalog_topic", kControlCatalogTopic);
     const auto manual_base_topic = declare_parameter<std::string>(
       "manual_base_topic", "/xczs/manual_cmd_vel");
 
@@ -123,9 +164,11 @@ public:
     cabinet_yaw_ = declare_parameter<double>(
       "cabinet_yaw", -1.57079632679);
 
-    button_local_x_ = declare_parameter<double>("button_local_x", 0.492);
-    button_local_y_ = declare_parameter<double>("button_local_y", 0.574);
-    button_local_z_ = declare_parameter<double>(
+    const double legacy_button_local_x = declare_parameter<double>(
+      "button_local_x", 0.492);
+    const double legacy_button_local_y = declare_parameter<double>(
+      "button_local_y", 0.574);
+    const double legacy_button_local_z = declare_parameter<double>(
       "button_local_z", 0.011494);
     tool_tip_offset_ = positive_parameter("tool_tip_offset", 0.370);
     staging_distance_ = positive_parameter("staging_distance", 1.040);
@@ -164,19 +207,19 @@ public:
     cartesian_acceleration_scale_ = unit_interval_parameter(
       "cartesian_acceleration_scale", 0.08);
 
-    button_joint_state_subscription_ =
-      create_subscription<sensor_msgs::msg::JointState>(
-      button_joint_state_topic,
-      10,
-      [this](const sensor_msgs::msg::JointState::SharedPtr message) {
-        receive_button_joint_state(*message);
-      });
-    button_pressed_subscription_ = create_subscription<std_msgs::msg::Bool>(
-      button_pressed_topic,
-      rclcpp::QoS(1).reliable().transient_local(),
-      [this](const std_msgs::msg::Bool::SharedPtr message) {
-        receive_button_pressed(*message);
-      });
+    configure_buttons(
+      legacy_button_id,
+      legacy_button_joint_name,
+      legacy_button_joint_state_topic,
+      legacy_button_pressed_topic,
+      {legacy_button_local_x, legacy_button_local_y,
+        legacy_button_local_z});
+    subscribe_to_button_states();
+    control_catalog_publisher_ =
+      create_publisher<
+      xczs_inspection_robot_control::msg::CabinetControlCatalog>(
+      control_catalog_topic,
+      rclcpp::QoS(1).reliable().transient_local());
 
     navigation_client_ = rclcpp_action::create_client<NavigateToPose>(
       this, "/navigate_to_pose");
@@ -203,11 +246,12 @@ public:
       [this](const std::shared_ptr<PressGoalHandle> goal_handle) {
         handle_accepted(goal_handle);
       });
+    publish_control_catalog();
 
     RCLCPP_INFO(
       get_logger(),
-      "Cabinet button action %s controls %s.",
-      kActionName, supported_button_id_.c_str());
+      "Cabinet button action %s controls %zu configured buttons.",
+      kActionName, buttons_in_order_.size());
   }
 
   ~CabinetButtonOperator() override
@@ -222,6 +266,140 @@ public:
   }
 
 private:
+  void configure_buttons(
+    const std::string & legacy_button_id,
+    const std::string & legacy_joint_name,
+    const std::string & legacy_joint_state_topic,
+    const std::string & legacy_pressed_topic,
+    const std::vector<double> & legacy_local_position)
+  {
+    const std::vector<std::string> default_button_ids =
+      legacy_button_id == kDefaultButtonId ?
+      std::vector<std::string>{kDefaultButtonId, kSecondButtonId} :
+    std::vector<std::string>{legacy_button_id};
+    const auto button_ids = declare_parameter<std::vector<std::string>>(
+      "button_ids", default_button_ids);
+    if (button_ids.empty()) {
+      throw std::invalid_argument(
+              "Parameter 'button_ids' must contain at least one button.");
+    }
+
+    std::unordered_set<std::string> seen_button_ids;
+    for (const auto & button_id : button_ids) {
+      if (button_id.empty()) {
+        throw std::invalid_argument(
+                "Parameter 'button_ids' must not contain an empty ID.");
+      }
+      if (!seen_button_ids.insert(button_id).second) {
+        throw std::invalid_argument(
+                "Duplicate cabinet button ID '" + button_id + "'.");
+      }
+
+      const bool is_legacy_button = button_id == legacy_button_id;
+      const bool is_second_button = button_id == kSecondButtonId;
+      const std::string default_display_name = is_second_button ?
+        "10号模块绿色按钮" :
+        (button_id == kDefaultButtonId ?
+        "10号模块红色按钮" : button_id);
+      const std::string default_joint_name = is_legacy_button ?
+        legacy_joint_name :
+        (is_second_button ? "box_10_box_10_button_2" : button_id);
+      const std::string default_joint_state_topic = is_legacy_button ?
+        legacy_joint_state_topic :
+        "/xczs/cabinet/" + button_id + "/joint_states";
+      const std::string default_pressed_topic = is_legacy_button ?
+        legacy_pressed_topic :
+        "/xczs/cabinet/" + button_id + "/pressed";
+      const std::vector<double> default_local_position = is_legacy_button ?
+        legacy_local_position :
+        (is_second_button ?
+        std::vector<double>{0.527, 0.574, 0.011494} :
+        std::vector<double>{0.0, 0.0, 0.0});
+
+      const std::string prefix = "buttons." + button_id + ".";
+      auto button = std::make_shared<ButtonSpec>();
+      button->id = button_id;
+      button->display_name = declare_parameter<std::string>(
+        prefix + "display_name", default_display_name);
+      button->joint_name = declare_parameter<std::string>(
+        prefix + "joint_name", default_joint_name);
+      button->joint_state_topic = declare_parameter<std::string>(
+        prefix + "joint_state_topic", default_joint_state_topic);
+      button->pressed_topic = declare_parameter<std::string>(
+        prefix + "pressed_topic", default_pressed_topic);
+      const auto local_position = declare_parameter<std::vector<double>>(
+        prefix + "local_position", default_local_position);
+      if (button->display_name.empty() || button->joint_name.empty() ||
+        button->joint_state_topic.empty() || button->pressed_topic.empty())
+      {
+        throw std::invalid_argument(
+                "Cabinet button '" + button_id +
+                "' has an empty catalog field.");
+      }
+      if (local_position.size() != 3U ||
+        !std::all_of(
+          local_position.begin(), local_position.end(),
+          [](double value) {return std::isfinite(value);}))
+      {
+        throw std::invalid_argument(
+                "Parameter '" + prefix +
+                "local_position' must contain three finite values.");
+      }
+      button->local_x = local_position[0];
+      button->local_y = local_position[1];
+      button->local_z = local_position[2];
+      buttons_by_id_.emplace(button_id, button);
+      buttons_in_order_.push_back(std::move(button));
+    }
+  }
+
+  void subscribe_to_button_states()
+  {
+    for (const auto & button : buttons_in_order_) {
+      button_joint_state_subscriptions_.push_back(
+        create_subscription<sensor_msgs::msg::JointState>(
+          button->joint_state_topic,
+          10,
+          [this, button](
+            const sensor_msgs::msg::JointState::SharedPtr message)
+          {
+            receive_button_joint_state(*button, *message);
+          }));
+      button_pressed_subscriptions_.push_back(
+        create_subscription<std_msgs::msg::Bool>(
+          button->pressed_topic,
+          rclcpp::QoS(1).reliable().transient_local(),
+          [this, button](const std_msgs::msg::Bool::SharedPtr message) {
+            receive_button_pressed(*button, *message);
+          }));
+    }
+  }
+
+  void publish_control_catalog()
+  {
+    xczs_inspection_robot_control::msg::CabinetControlCatalog catalog;
+    catalog.controls.reserve(buttons_in_order_.size());
+    for (const auto & button : buttons_in_order_) {
+      xczs_inspection_robot_control::msg::CabinetControl control;
+      control.control_id = button->id;
+      control.display_name = button->display_name;
+      control.control_type =
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+      control.joint_name = button->joint_name;
+      control.joint_state_topic = button->joint_state_topic;
+      control.pressed_topic = button->pressed_topic;
+      catalog.controls.push_back(std::move(control));
+    }
+    control_catalog_publisher_->publish(catalog);
+  }
+
+  std::shared_ptr<ButtonSpec> find_button(
+    const std::string & button_id) const
+  {
+    const auto iterator = buttons_by_id_.find(button_id);
+    return iterator == buttons_by_id_.end() ? nullptr : iterator->second;
+  }
+
   double positive_parameter(
     const std::string & name,
     double default_value)
@@ -250,7 +428,7 @@ private:
     const rclcpp_action::GoalUUID &,
     const std::shared_ptr<const PressCabinetButton::Goal> goal)
   {
-    if (goal->button_id != supported_button_id_) {
+    if (!find_button(goal->button_id)) {
       RCLCPP_WARN(
         get_logger(), "Rejected unsupported cabinet button '%s'.",
         goal->button_id.c_str());
@@ -290,23 +468,30 @@ private:
   void execute(const std::shared_ptr<PressGoalHandle> goal_handle) noexcept
   {
     auto result = std::make_shared<PressCabinetButton::Result>();
+    const auto button = find_button(goal_handle->get_goal()->button_id);
     std::shared_ptr<MoveGroupInterface> move_group;
     OperationPoses poses;
     bool should_attempt_retreat = false;
 
     try {
-      reset_max_button_travel();
+      if (!button) {
+        throw OperationError(
+                PressCabinetButton::Result::INTERNAL_ERROR,
+                "The accepted cabinet button is no longer configured.");
+      }
+      reset_max_button_travel(*button);
       publish_feedback(
         goal_handle,
         PressCabinetButton::Feedback::WAITING_FOR_SYSTEM,
         0.02F,
         "Waiting for the cabinet button state.");
-      wait_for_fresh_button_state(goal_handle);
+      wait_for_fresh_button_state(goal_handle, *button);
       check_cancel(goal_handle);
 
       const bool should_navigate_to_staging_pose =
         goal_handle->get_goal()->navigate_to_staging_pose;
-      poses = calculate_operation_poses(should_navigate_to_staging_pose);
+      poses = calculate_operation_poses(
+        *button, should_navigate_to_staging_pose);
       if (should_navigate_to_staging_pose) {
         publish_feedback(
           goal_handle,
@@ -368,9 +553,9 @@ private:
         goal_handle,
         PressCabinetButton::Feedback::PRESSING,
         0.67F,
-        "Pressing box_10_button_1 through its physical travel.");
+        "Pressing " + button->id + " through its physical travel.");
       const auto press_transition_sequence =
-        button_snapshot().pressed_transition_sequence;
+        button_snapshot(*button).pressed_transition_sequence;
       execute_cartesian_path(
         *move_group,
         goal_handle,
@@ -385,6 +570,7 @@ private:
         "Verifying the Gazebo button press state.");
       if (!wait_for_pressed_state(
           goal_handle,
+          *button,
           true,
           press_detection_timeout_,
           press_transition_sequence))
@@ -402,7 +588,7 @@ private:
         0.88F,
         "Retracting the probe from the cabinet.");
       const auto release_transition_sequence =
-        button_snapshot().pressed_transition_sequence;
+        button_snapshot(*button).pressed_transition_sequence;
       execute_cartesian_path(
         *move_group,
         goal_handle,
@@ -418,6 +604,7 @@ private:
         "Verifying that the button spring returned to its released state.");
       if (!wait_for_pressed_state(
           goal_handle,
+          *button,
           false,
           release_detection_timeout_,
           release_transition_sequence))
@@ -431,12 +618,13 @@ private:
       result->success = true;
       result->error_code = PressCabinetButton::Result::SUCCESS;
       result->message =
-        "Pressed and released box_10_button_1 successfully.";
-      result->max_travel = button_snapshot().max_position;
+        "Pressed and released " + button->id + " successfully.";
+      result->max_travel = button_snapshot(*button).max_position;
       if (finish_goal_noexcept(goal_handle, result, true)) {
         RCLCPP_INFO(
-          get_logger(), "Cabinet button operation succeeded (max %.2f mm).",
-          result->max_travel * 1000.0);
+          get_logger(), "Cabinet button %s operation succeeded "
+          "(max %.2f mm).",
+          button->id.c_str(), result->max_travel * 1000.0);
       }
     } catch (const OperationError & error) {
       if (should_attempt_retreat && move_group && rclcpp::ok()) {
@@ -445,7 +633,8 @@ private:
       result->success = false;
       result->error_code = error.error_code;
       result->message = error.what();
-      result->max_travel = button_snapshot().max_position;
+      result->max_travel = button ?
+        button_snapshot(*button).max_position : 0.0;
       const bool client_canceled = is_goal_canceling_noexcept(goal_handle);
       if (client_canceled) {
         result->error_code = PressCabinetButton::Result::CANCELED;
@@ -469,7 +658,8 @@ private:
       result->message = canceled ?
         "Cabinet button operation was canceled." :
         std::string("Cabinet operation failed: ") + error.what();
-      result->max_travel = button_snapshot().max_position;
+      result->max_travel = button ?
+        button_snapshot(*button).max_position : 0.0;
       finish_goal_noexcept(goal_handle, result, false);
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     } catch (...) {
@@ -484,7 +674,8 @@ private:
       result->message = canceled ?
         "Cabinet button operation was canceled." :
         "Cabinet operation failed with an unknown exception.";
-      result->max_travel = button_snapshot().max_position;
+      result->max_travel = button ?
+        button_snapshot(*button).max_position : 0.0;
       finish_goal_noexcept(goal_handle, result, false);
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     }
@@ -499,23 +690,12 @@ private:
     operation_active_.store(false);
   }
 
-  struct ButtonSnapshot
-  {
-    bool received{false};
-    bool pressed_received{false};
-    bool pressed{false};
-    std::uint64_t pressed_transition_sequence{0};
-    double position{0.0};
-    double max_position{0.0};
-    std::chrono::steady_clock::time_point received_at{};
-    std::chrono::steady_clock::time_point pressed_received_at{};
-  };
-
   void receive_button_joint_state(
+    const ButtonSpec & button,
     const sensor_msgs::msg::JointState & message)
   {
     const auto iterator = std::find(
-      message.name.begin(), message.name.end(), button_joint_name_);
+      message.name.begin(), message.name.end(), button.joint_name);
     if (iterator == message.name.end()) {
       return;
     }
@@ -528,82 +708,90 @@ private:
     }
 
     {
-      std::lock_guard<std::mutex> lock(button_mutex_);
-      button_state_.received = true;
-      button_state_.position = message.position[index];
-      button_state_.max_position = std::max(
-        button_state_.max_position, button_state_.position);
-      button_state_.received_at = std::chrono::steady_clock::now();
+      std::lock_guard<std::mutex> lock(button.runtime->mutex);
+      button.runtime->state.received = true;
+      button.runtime->state.position = message.position[index];
+      button.runtime->state.max_position = std::max(
+        button.runtime->state.max_position,
+        button.runtime->state.position);
+      button.runtime->state.received_at = std::chrono::steady_clock::now();
     }
-    button_condition_.notify_all();
+    button.runtime->condition.notify_all();
   }
 
-  void receive_button_pressed(const std_msgs::msg::Bool & message)
+  void receive_button_pressed(
+    const ButtonSpec & button,
+    const std_msgs::msg::Bool & message)
   {
     {
-      std::lock_guard<std::mutex> lock(button_mutex_);
-      if (!button_state_.pressed_received ||
-        button_state_.pressed != message.data)
+      std::lock_guard<std::mutex> lock(button.runtime->mutex);
+      if (!button.runtime->state.pressed_received ||
+        button.runtime->state.pressed != message.data)
       {
-        ++button_state_.pressed_transition_sequence;
+        ++button.runtime->state.pressed_transition_sequence;
       }
-      button_state_.pressed_received = true;
-      button_state_.pressed = message.data;
-      button_state_.pressed_received_at = std::chrono::steady_clock::now();
+      button.runtime->state.pressed_received = true;
+      button.runtime->state.pressed = message.data;
+      button.runtime->state.pressed_received_at =
+        std::chrono::steady_clock::now();
     }
-    button_condition_.notify_all();
+    button.runtime->condition.notify_all();
   }
 
-  ButtonSnapshot button_snapshot() const
+  ButtonSnapshot button_snapshot(const ButtonSpec & button) const
   {
-    std::lock_guard<std::mutex> lock(button_mutex_);
-    return button_state_;
+    std::lock_guard<std::mutex> lock(button.runtime->mutex);
+    return button.runtime->state;
   }
 
-  void reset_max_button_travel()
+  void reset_max_button_travel(const ButtonSpec & button)
   {
-    std::lock_guard<std::mutex> lock(button_mutex_);
-    button_state_.max_position = std::max(0.0, button_state_.position);
+    std::lock_guard<std::mutex> lock(button.runtime->mutex);
+    button.runtime->state.max_position = std::max(
+      0.0, button.runtime->state.position);
   }
 
   void wait_for_fresh_button_state(
-    const std::shared_ptr<PressGoalHandle> & goal_handle)
+    const std::shared_ptr<PressGoalHandle> & goal_handle,
+    const ButtonSpec & button)
   {
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(system_wait_timeout_);
     while (std::chrono::steady_clock::now() < deadline) {
       check_cancel(goal_handle);
       {
-        std::unique_lock<std::mutex> lock(button_mutex_);
+        std::unique_lock<std::mutex> lock(button.runtime->mutex);
         const auto now = std::chrono::steady_clock::now();
-        const bool joint_state_fresh = button_state_.received &&
+        const bool joint_state_fresh = button.runtime->state.received &&
           std::chrono::duration<double>(
-          now - button_state_.received_at).count() <=
+          now - button.runtime->state.received_at).count() <=
           button_state_timeout_;
-        const bool pressed_state_fresh = button_state_.pressed_received &&
+        const bool pressed_state_fresh =
+          button.runtime->state.pressed_received &&
           std::chrono::duration<double>(
-          now - button_state_.pressed_received_at).count() <=
+          now - button.runtime->state.pressed_received_at).count() <=
           button_state_timeout_;
         if (joint_state_fresh && pressed_state_fresh) {
-          if (button_state_.pressed) {
+          if (button.runtime->state.pressed) {
             throw OperationError(
                     PressCabinetButton::Result::NOT_READY,
-                    "box_10_button_1 is already pressed; release it before "
+                    button.id + " is already pressed; release it before " +
                     "starting an operation.");
           }
           return;
         }
-        button_condition_.wait_for(lock, 100ms);
+        button.runtime->condition.wait_for(lock, 100ms);
       }
     }
     throw OperationError(
             PressCabinetButton::Result::NOT_READY,
-            "No fresh state was received from box_10_button_1. Check the "
-            "cabinet model plugin and joint-state topic.");
+            "No fresh state was received from " + button.id +
+            ". Check the cabinet model plugin and joint-state topic.");
   }
 
   bool wait_for_pressed_state(
     const std::shared_ptr<PressGoalHandle> & goal_handle,
+    const ButtonSpec & button,
     bool expected_pressed,
     double timeout_seconds,
     std::uint64_t previous_transition_sequence)
@@ -613,21 +801,23 @@ private:
     while (std::chrono::steady_clock::now() < deadline) {
       check_cancel(goal_handle);
       {
-        std::unique_lock<std::mutex> lock(button_mutex_);
-        if (button_state_.received &&
-          button_state_.pressed == expected_pressed &&
-          button_state_.pressed_transition_sequence >
+        std::unique_lock<std::mutex> lock(button.runtime->mutex);
+        if (button.runtime->state.pressed_received &&
+          button.runtime->state.pressed == expected_pressed &&
+          button.runtime->state.pressed_transition_sequence >
           previous_transition_sequence)
         {
           return true;
         }
-        button_condition_.wait_for(lock, 50ms);
+        button.runtime->condition.wait_for(lock, 50ms);
       }
     }
     return false;
   }
 
-  OperationPoses calculate_operation_poses(bool include_staging_pose)
+  OperationPoses calculate_operation_poses(
+    const ButtonSpec & button,
+    bool include_staging_pose)
   {
     tf2::Quaternion cabinet_rotation;
     cabinet_rotation.setRPY(
@@ -637,7 +827,7 @@ private:
       cabinet_rotation,
       tf2::Vector3(cabinet_x_, cabinet_y_, cabinet_z_));
     const tf2::Vector3 button_face = cabinet_transform * tf2::Vector3(
-      button_local_x_, button_local_y_, button_local_z_);
+      button.local_x, button.local_y, button.local_z);
     tf2::Vector3 inward = tf2::quatRotate(
       cabinet_rotation, tf2::Vector3(0.0, 0.0, -1.0));
     inward.normalize();
@@ -1289,7 +1479,8 @@ private:
     if (!goal_handle->is_active()) {
       return;
     }
-    const auto state = button_snapshot();
+    const auto button = find_button(goal_handle->get_goal()->button_id);
+    const auto state = button ? button_snapshot(*button) : ButtonSnapshot{};
     auto feedback = std::make_shared<PressCabinetButton::Feedback>();
     feedback->phase = phase;
     feedback->progress = progress;
@@ -1354,16 +1545,18 @@ private:
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr navigation_mode_client_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr
     manual_base_publisher_;
-  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr
-    button_joint_state_subscription_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
-    button_pressed_subscription_;
+  rclcpp::Publisher<
+    xczs_inspection_robot_control::msg::CabinetControlCatalog>::SharedPtr
+    control_catalog_publisher_;
+  std::vector<rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr>
+  button_joint_state_subscriptions_;
+  std::vector<rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr>
+  button_pressed_subscriptions_;
   std::unique_ptr<tf2_ros::Buffer> transform_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> transform_listener_;
 
-  mutable std::mutex button_mutex_;
-  std::condition_variable button_condition_;
-  ButtonSnapshot button_state_;
+  std::unordered_map<std::string, std::shared_ptr<ButtonSpec>> buttons_by_id_;
+  std::vector<std::shared_ptr<ButtonSpec>> buttons_in_order_;
   std::mutex motion_mutex_;
   std::shared_ptr<MoveGroupInterface> active_move_group_;
   std::mutex navigation_mutex_;
@@ -1375,19 +1568,14 @@ private:
   std::atomic<bool> operation_active_{false};
   std::atomic<bool> cancel_requested_{false};
 
-  std::string supported_button_id_;
   std::string planning_frame_;
   std::string navigation_frame_;
-  std::string button_joint_name_;
   double cabinet_x_{2.0};
   double cabinet_y_{0.33};
   double cabinet_z_{0.0};
   double cabinet_roll_{1.57079632679};
   double cabinet_pitch_{0.0};
   double cabinet_yaw_{-1.57079632679};
-  double button_local_x_{0.492};
-  double button_local_y_{0.574};
-  double button_local_z_{0.011494};
   double tool_tip_offset_{0.370};
   double staging_distance_{1.040};
   double prepress_distance_{0.060};

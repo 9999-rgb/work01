@@ -195,7 +195,7 @@
       knob_mesh="knob_standard"
       body_xyz="0.005 0.519 0"
       knob_xyz="0.13047 0.11194 0.0295" />
-    <!-- box_10_button_1 is movable; button 2 remains a visual control. -->
+    <!-- Module 10 exposes both push buttons as physically interactive controls. -->
     <xacro:control_cabinet_interactive_button
       link_name="box_10_button_1"
       joint_name="box_10_box_10_button_1"
@@ -204,16 +204,14 @@
       xyz="0.492 0.574 0.011"
       urdf_material="cabinet_red"
       gazebo_material="Gazebo/Red" />
-    <xacro:control_cabinet_visual_link
+    <xacro:control_cabinet_interactive_button
       link_name="box_10_button_2"
+      joint_name="box_10_box_10_button_2"
       mesh_name="box_10_button_2"
+      parent_link="cabinet_body"
+      xyz="0.527 0.574 0.011"
       urdf_material="cabinet_green"
       gazebo_material="Gazebo/Green" />
-    <xacro:control_cabinet_fixed_joint
-      joint_name="box_10_box_10_button_2"
-      parent_link="box_10"
-      child_link="box_10_button_2"
-      xyz="0.522 0.055 0.011" />
 
     <xacro:control_cabinet_module
       index="11"

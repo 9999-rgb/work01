@@ -34,6 +34,7 @@ from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 from xczs_inspection_robot_control.action import PressCabinetButton
+from xczs_inspection_robot_control.msg import CabinetControlCatalog
 
 from .velocity_profile import VelocityProfile
 
@@ -51,6 +52,17 @@ class RosControlNode(Node):
 
     CABINET_BUTTON_ID = "box_10_button_1"
     CABINET_BUTTON_JOINT_NAME = "box_10_box_10_button_1"
+    CABINET_CONTROL_TYPE_BUTTON = 0
+    DEFAULT_CABINET_CONTROL = {
+        "control_id": CABINET_BUTTON_ID,
+        "display_name": "10 号模块红色按钮",
+        "control_type": CABINET_CONTROL_TYPE_BUTTON,
+        "joint_name": CABINET_BUTTON_JOINT_NAME,
+        "joint_state_topic": (
+            "/xczs/cabinet/box_10_button_1/joint_states"
+        ),
+        "pressed_topic": "/xczs/cabinet/box_10_button_1/pressed",
+    }
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     JOINT_NAMES = [
@@ -145,6 +157,16 @@ class RosControlNode(Node):
         self._last_update_time = time.monotonic()
         self._pending_trajectory: Optional[JointTrajectory] = None
         self._pending_trajectory_repeats = 0
+        self._cabinet_catalog_received = False
+        self._cabinet_controls: Dict[str, Dict[str, Any]] = {
+            self.CABINET_BUTTON_ID: dict(self.DEFAULT_CABINET_CONTROL)
+        }
+        self._cabinet_control_states: Dict[str, Dict[str, Any]] = {
+            self.CABINET_BUTTON_ID: self._new_cabinet_control_state()
+        }
+        self._cabinet_control_subscriptions: Dict[
+            str, Dict[str, Any]
+        ] = {}
 
         self._navigation_client = ActionClient(
             self,
@@ -212,15 +234,13 @@ class RosControlNode(Node):
             10,
         )
         self.create_subscription(
-            JointState,
-            "/xczs/cabinet/box_10_button_1/joint_states",
-            self._cabinet_button_joint_state_callback,
-            10,
+            CabinetControlCatalog,
+            "/xczs/cabinet/control_catalog",
+            self._cabinet_control_catalog_callback,
+            transient_qos,
         )
-        self.create_subscription(
-            Bool,
-            "/xczs/cabinet/box_10_button_1/pressed",
-            self._cabinet_button_pressed_callback,
+        self._ensure_cabinet_control_subscriptions(
+            self.DEFAULT_CABINET_CONTROL,
             transient_qos,
         )
 
@@ -409,6 +429,11 @@ class RosControlNode(Node):
         """Return cabinet action availability, feedback and button state."""
         with self._lock:
             snapshot = dict(self._cabinet_state)
+            control_state = self._cabinet_control_states.get(
+                str(snapshot.get("button_id", ""))
+            )
+            if control_state is not None:
+                snapshot.update(control_state)
             snapshot.update(
                 {
                     "available": self._action_server_ready(
@@ -419,21 +444,55 @@ class RosControlNode(Node):
             )
         return snapshot
 
+    def cabinet_controls_snapshot(self) -> Dict[str, Any]:
+        """Return the current operator-provided cabinet control catalog."""
+        with self._lock:
+            controls = []
+            for control_id, control in self._cabinet_controls.items():
+                snapshot = dict(control)
+                state = self._cabinet_control_states.get(control_id)
+                if state is not None:
+                    snapshot.update(state)
+                controls.append(snapshot)
+            selected_control_id = str(
+                self._cabinet_state.get(
+                    "button_id",
+                    self.CABINET_BUTTON_ID,
+                )
+            )
+            catalog_received = self._cabinet_catalog_received
+            available = self._action_server_ready(
+                self._cabinet_button_client
+            )
+        return {
+            "available": available,
+            "catalog_received": catalog_received,
+            "source": (
+                "operator_catalog"
+                if catalog_received
+                else "compatibility_default"
+            ),
+            "selected_control_id": selected_control_id,
+            "controls": controls,
+        }
+
     def press_cabinet_button(
         self,
         button_id: str,
         navigate_to_staging_pose: bool,
     ) -> Dict[str, Any]:
         """Submit one complete cabinet button operation."""
-        if button_id != self.CABINET_BUTTON_ID:
+        if not isinstance(button_id, str) or not button_id.strip():
             raise ControlRequestError(
-                f"Unsupported cabinet button: {button_id}."
+                "button_id must be a non-empty string."
             )
+        button_id = button_id.strip()
         if not isinstance(navigate_to_staging_pose, bool):
             raise ControlRequestError(
                 "navigate_to_staging_pose must be a boolean."
             )
         with self._lock:
+            self._validate_cabinet_button_locked(button_id)
             self._reject_cabinet_start_conflicts_locked()
         if not self._action_server_ready(self._cabinet_button_client):
             raise ControlRequestError(
@@ -442,6 +501,7 @@ class RosControlNode(Node):
             )
 
         with self._lock:
+            self._validate_cabinet_button_locked(button_id)
             self._reject_cabinet_start_conflicts_locked()
 
             self._cabinet_generation += 1
@@ -2153,35 +2213,228 @@ class RosControlNode(Node):
             # can never acknowledge a newer command.
             self._navigation_mode = bool(message.data)
 
+    @staticmethod
+    def _new_cabinet_control_state() -> Dict[str, Any]:
+        return {
+            "button_pressed": None,
+            "button_travel": None,
+            "button_state_updated_at": None,
+        }
+
+    def _cabinet_control_catalog_callback(
+        self,
+        message: CabinetControlCatalog,
+    ) -> None:
+        controls: Dict[str, Dict[str, Any]] = {}
+        for entry in message.controls:
+            control_id = str(entry.control_id).strip()
+            if not control_id or control_id in controls:
+                continue
+            joint_name = str(entry.joint_name).strip()
+            joint_state_topic = str(entry.joint_state_topic).strip()
+            pressed_topic = str(entry.pressed_topic).strip()
+            control_type = int(entry.control_type)
+            if (
+                control_type != self.CABINET_CONTROL_TYPE_BUTTON
+                or not joint_name
+                or not joint_state_topic
+                or not pressed_topic
+            ):
+                continue
+            controls[control_id] = {
+                "control_id": control_id,
+                "display_name": (
+                    str(entry.display_name).strip() or control_id
+                ),
+                "control_type": control_type,
+                "joint_name": joint_name,
+                "joint_state_topic": joint_state_topic,
+                "pressed_topic": pressed_topic,
+            }
+
+        if not controls:
+            self.get_logger().warning(
+                "Ignored an empty or invalid cabinet control catalog."
+            )
+            return
+
+        with self._lock:
+            previous_controls = self._cabinet_controls
+            previous_states = self._cabinet_control_states
+            self._cabinet_controls = controls
+            self._cabinet_control_states = {
+                control_id: (
+                    dict(previous_states[control_id])
+                    if (
+                        control_id in previous_states
+                        and self._cabinet_control_signature(
+                            previous_controls.get(control_id)
+                        ) == self._cabinet_control_signature(control)
+                    )
+                    else self._new_cabinet_control_state()
+                )
+                for control_id, control in controls.items()
+            }
+            removed_control_ids = set(previous_controls) - set(controls)
+            self._cabinet_catalog_received = True
+
+        for control_id in removed_control_ids:
+            self._remove_cabinet_control_subscriptions(control_id)
+
+        transient_qos = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        for control in controls.values():
+            self._ensure_cabinet_control_subscriptions(
+                control,
+                transient_qos,
+            )
+
+    @staticmethod
+    def _cabinet_control_signature(
+        control: Optional[Dict[str, Any]],
+    ) -> Optional[Tuple[str, str, str]]:
+        if control is None:
+            return None
+        return (
+            str(control.get("joint_name", "")),
+            str(control.get("joint_state_topic", "")),
+            str(control.get("pressed_topic", "")),
+        )
+
+    def _remove_cabinet_control_subscriptions(
+        self,
+        control_id: str,
+    ) -> None:
+        subscriptions = self._cabinet_control_subscriptions.pop(
+            control_id,
+            None,
+        )
+        if subscriptions is None:
+            return
+        for subscription_name in ("joint", "pressed"):
+            subscription = subscriptions.get(subscription_name)
+            if subscription is not None:
+                self.destroy_subscription(subscription)
+
+    def _ensure_cabinet_control_subscriptions(
+        self,
+        control: Dict[str, Any],
+        transient_qos: QoSProfile,
+    ) -> None:
+        control_id = str(control["control_id"])
+        joint_name = str(control["joint_name"])
+        joint_state_topic = str(control["joint_state_topic"])
+        pressed_topic = str(control["pressed_topic"])
+
+        signature = (joint_name, joint_state_topic, pressed_topic)
+        existing = self._cabinet_control_subscriptions.get(control_id)
+        if existing is not None and existing.get("signature") == signature:
+            return
+
+        joint_subscription = self.create_subscription(
+            JointState,
+            joint_state_topic,
+            lambda message, selected_id=control_id, selected_joint=(
+                joint_name
+            ), selected_topic=(
+                joint_state_topic
+            ): self._cabinet_button_joint_state_callback(
+                selected_id,
+                selected_joint,
+                selected_topic,
+                message,
+            ),
+            10,
+        )
+        try:
+            pressed_subscription = self.create_subscription(
+                Bool,
+                pressed_topic,
+                lambda message, selected_id=control_id, selected_topic=(
+                    pressed_topic
+                ): (
+                    self._cabinet_button_pressed_callback(
+                        selected_id,
+                        selected_topic,
+                        message,
+                    )
+                ),
+                transient_qos,
+            )
+        except Exception:
+            self.destroy_subscription(joint_subscription)
+            raise
+
+        self._remove_cabinet_control_subscriptions(control_id)
+        self._cabinet_control_subscriptions[control_id] = {
+            "signature": signature,
+            "joint": joint_subscription,
+            "pressed": pressed_subscription,
+        }
+
     def _cabinet_button_joint_state_callback(
         self,
+        control_id: str,
+        joint_name: str,
+        joint_state_topic: str,
         message: JointState,
     ) -> None:
         try:
-            joint_index = message.name.index(
-                self.CABINET_BUTTON_JOINT_NAME
-            )
+            joint_index = message.name.index(joint_name)
             travel = float(message.position[joint_index])
         except (ValueError, IndexError, TypeError):
             return
         if not math.isfinite(travel):
             return
         with self._lock:
-            self._cabinet_state.update(
+            control = self._cabinet_controls.get(control_id)
+            if (
+                control is None
+                or control.get("joint_name") != joint_name
+                or control.get("joint_state_topic") != joint_state_topic
+            ):
+                return
+            state = self._cabinet_control_states.setdefault(
+                control_id,
+                self._new_cabinet_control_state(),
+            )
+            state.update(
                 {
                     "button_travel": max(0.0, travel),
                     "button_state_updated_at": time.time(),
                 }
             )
+            if self._cabinet_state.get("button_id") == control_id:
+                self._cabinet_state.update(state)
 
-    def _cabinet_button_pressed_callback(self, message: Bool) -> None:
+    def _cabinet_button_pressed_callback(
+        self,
+        control_id: str,
+        pressed_topic: str,
+        message: Bool,
+    ) -> None:
         with self._lock:
-            self._cabinet_state.update(
+            control = self._cabinet_controls.get(control_id)
+            if (
+                control is None
+                or control.get("pressed_topic") != pressed_topic
+            ):
+                return
+            state = self._cabinet_control_states.setdefault(
+                control_id,
+                self._new_cabinet_control_state(),
+            )
+            state.update(
                 {
                     "button_pressed": bool(message.data),
                     "button_state_updated_at": time.time(),
                 }
             )
+            if self._cabinet_state.get("button_id") == control_id:
+                self._cabinet_state.update(state)
 
     def _map_callback(self, message: OccupancyGrid) -> None:
         with self._lock:
@@ -2280,6 +2533,17 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "A cabinet button operation is active.",
                 409,
+            )
+
+    def _validate_cabinet_button_locked(self, button_id: str) -> None:
+        control = self._cabinet_controls.get(button_id)
+        if (
+            control is None
+            or int(control.get("control_type", -1))
+            != self.CABINET_CONTROL_TYPE_BUTTON
+        ):
+            raise ControlRequestError(
+                f"Unsupported cabinet button: {button_id}."
             )
 
     def _reject_cabinet_start_conflicts_locked(self) -> None:

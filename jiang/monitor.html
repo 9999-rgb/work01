@@ -473,10 +473,24 @@
   padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px;
   background: rgba(255,255,255,0.035); font-size: 12px;
 }
+.cabinet-target label {
+  display: block; margin-bottom: 6px; color: var(--text-dim);
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.3px;
+}
+.cabinet-target select {
+  width: 100%; background: #0d1117; border: 1px solid var(--border);
+  border-radius: 5px; padding: 7px 8px; color: var(--text);
+  font-size: 12px;
+}
+.cabinet-target select:focus { outline: none; border-color: var(--accent); }
 .cabinet-target strong {
   display: block; margin-top: 4px;
   font-family: 'SF Mono', 'Fira Code', monospace;
   color: var(--text); font-weight: 500;
+}
+.cabinet-target small {
+  display: block; margin-top: 6px; color: var(--text-dim);
+  line-height: 1.5;
 }
 .cabinet-option {
   display: flex; align-items: center; gap: 8px; margin-top: 12px;
@@ -699,8 +713,12 @@
       <div class="cabinet-operation-grid">
         <div>
           <div class="cabinet-target">
-            固定目标：10 号模块红色按钮（绿色按钮左侧）
-            <strong>box_10_button_1</strong>
+            <label for="cabinetTarget">操作目标</label>
+            <select id="cabinetTarget">
+              <option value="box_10_button_1">10 号模块红色按钮</option>
+            </select>
+            <strong id="cabinetTargetId">box_10_button_1</strong>
+            <small id="cabinetCatalogHint">等待控制柜目录，当前使用红色按钮兼容目标。</small>
           </div>
           <label class="cabinet-option" for="cabinetNavigate">
             <input id="cabinetNavigate" type="checkbox" checked>
@@ -708,7 +726,7 @@
           </label>
           <div class="command-row">
             <button class="btn btn-primary" id="btnCabinetPress" disabled>
-              按下红色按钮
+              按下所选按钮
             </button>
             <button class="btn btn-danger" id="btnCabinetCancel" disabled>
               取消操作
@@ -847,6 +865,16 @@ let navigationMapImage = null;
 let navigationStatus = null;
 let moveitStatus = null;
 let cabinetStatus = null;
+const fallbackCabinetControls = [{
+  control_id: 'box_10_button_1',
+  display_name: '10 号模块红色按钮',
+  control_type: 0,
+  button_pressed: null,
+  button_travel: null,
+  button_state_updated_at: null
+}];
+let cabinetControls = fallbackCabinetControls.map(control => ({...control}));
+let cabinetCatalogReceived = false;
 let cabinetAvailableFromHealth = false;
 let cabinetActiveFromHealth = false;
 let cabinetStatusCurrent = false;
@@ -876,6 +904,7 @@ const navDetail = $('navDetail');
 const baseControlHint = $('baseControlHint');
 const cabinetState = $('cabinetState');
 const cabinetDetail = $('cabinetDetail');
+const cabinetTarget = $('cabinetTarget');
 
 function defaultServiceUrl(port) {
   const host = window.location.hostname || 'localhost';
@@ -1442,6 +1471,17 @@ async function testControlConnection() {
       // Read current state without changing the base routing mode.  Reloading
       // the page must never cancel navigation or interrupt a cabinet action.
       try {
+        applyCabinetControls(
+          await controlRequestWithTimeout('/cabinet/controls')
+        );
+      } catch (_) {
+        applyCabinetControls({
+          available: cabinetAvailableFromHealth,
+          catalog_received: false,
+          controls: fallbackCabinetControls
+        });
+      }
+      try {
         cabinetStatus = await controlRequestWithTimeout('/cabinet/status');
         cabinetStatusCurrent = true;
         renderCabinetStatus();
@@ -1698,6 +1738,93 @@ function formatMetric(value, digits = 2, suffix = '') {
     : '-';
 }
 
+function cabinetControlById(controlId) {
+  return cabinetControls.find(control => control.control_id === controlId) || null;
+}
+
+function selectedCabinetControl() {
+  return cabinetControlById(cabinetTarget.value) || cabinetControls[0] || null;
+}
+
+function applyCabinetControls(payload) {
+  const receivedControls = Array.isArray(payload && payload.controls)
+    ? payload.controls
+    : [];
+  const seen = new Set();
+  const validControls = receivedControls
+    .filter(control => {
+      const controlId = typeof control.control_id === 'string'
+        ? control.control_id.trim()
+        : '';
+      const controlType = Number(control.control_type);
+      if (!controlId || controlType !== 0 || seen.has(controlId)) return false;
+      seen.add(controlId);
+      return true;
+    })
+    .map(control => ({
+      ...control,
+      control_id: control.control_id.trim(),
+      display_name: (
+        typeof control.display_name === 'string' && control.display_name.trim()
+          ? control.display_name.trim()
+          : control.control_id.trim()
+      ),
+      control_type: 0
+    }));
+
+  const nextControls = validControls.length
+    ? validControls
+    : fallbackCabinetControls.map(control => ({...control}));
+  const previousSelection = cabinetTarget.value;
+  const activeTarget = isCabinetOperationActive() && cabinetStatus
+    ? cabinetStatus.button_id
+    : null;
+  const advertisedSelection = payload && payload.selected_control_id;
+  const preferredSelection = [
+    activeTarget,
+    previousSelection,
+    advertisedSelection,
+    nextControls[0].control_id
+  ].find(controlId => nextControls.some(control => (
+    control.control_id === controlId
+  )));
+  const oldSignature = cabinetControls
+    .map(control => `${control.control_id}\u0000${control.display_name}`)
+    .join('\u0001');
+  const newSignature = nextControls
+    .map(control => `${control.control_id}\u0000${control.display_name}`)
+    .join('\u0001');
+
+  cabinetControls = nextControls;
+  cabinetCatalogReceived = Boolean(
+    payload && payload.catalog_received && validControls.length
+  );
+  if (oldSignature !== newSignature) {
+    cabinetTarget.replaceChildren(...cabinetControls.map(control => {
+      const option = document.createElement('option');
+      option.value = control.control_id;
+      option.textContent = control.display_name;
+      return option;
+    }));
+  }
+  cabinetTarget.value = preferredSelection || cabinetControls[0].control_id;
+  if (typeof (payload && payload.available) === 'boolean') {
+    cabinetAvailableFromHealth = payload.available;
+  }
+  renderCabinetTarget();
+}
+
+function renderCabinetTarget() {
+  const control = selectedCabinetControl();
+  $('cabinetTargetId').textContent = control ? control.control_id : '-';
+  $('cabinetCatalogHint').textContent = cabinetCatalogReceived
+    ? `已从控制节点载入 ${cabinetControls.length} 个可操作按钮。`
+    : '控制柜目录尚未到达，当前仅允许红色按钮兼容目标。';
+  $('btnCabinetPress').textContent = control
+    ? `按下：${control.display_name}`
+    : '按下所选按钮';
+}
+
 function startAutonomyPolling() {
   stopAutonomyPolling();
   const generation = autonomyStatusPollGeneration;
@@ -1781,6 +1908,14 @@ async function refreshAutonomyStatus(
       },
       () => {
         cabinetStatusCurrent = false;
+        renderCabinetStatus();
+      }
+    ),
+    pollAutonomyEndpoint(
+      '/cabinet/controls',
+      generation,
+      catalog => {
+        applyCabinetControls(catalog);
         renderCabinetStatus();
       }
     ),
@@ -2144,11 +2279,27 @@ function formatCabinetTravel(value) {
   return Number.isFinite(travel) ? `${(travel * 1000).toFixed(2)} mm` : '- mm';
 }
 
+function cabinetPhysicalValue(name) {
+  const activeTarget = isCabinetOperationActive() && cabinetStatus
+    ? cabinetStatus.button_id
+    : cabinetTarget.value;
+  const control = cabinetControlById(activeTarget);
+  if (control && control[name] !== undefined && control[name] !== null) {
+    return control[name];
+  }
+  return cabinetFeedbackValue(name);
+}
+
 function renderCabinetStatus() {
   const available = isCabinetAvailable();
   const statusCurrent = Boolean(cabinetStatusCurrent && cabinetStatus);
   const lastState = cabinetStatus ? cabinetStatus.state || 'idle' : 'idle';
   const active = isCabinetOperationActive();
+  const actionTargetId = cabinetStatus && cabinetStatus.button_id;
+  if (active && cabinetControlById(actionTargetId)) {
+    cabinetTarget.value = actionTargetId;
+  }
+  renderCabinetTarget();
   let stateClass = '';
   let stateText = '';
   if (!ctrlConnected) {
@@ -2204,11 +2355,8 @@ function renderCabinetStatus() {
     `${progressPercent}%${!statusCurrent && cabinetStatus ? '（上次）' : ''}`;
   $('cabinetProgressFill').style.width = `${progressPercent}%`;
 
-  const pressed = cabinetFeedbackValue(
-    'button_pressed',
-    'pressed',
-    'is_pressed'
-  );
+  const pressed = cabinetPhysicalValue('button_pressed') ??
+    cabinetFeedbackValue('pressed', 'is_pressed');
   const pressedElement = $('cabinetPressed');
   pressedElement.className = '';
   if (typeof pressed === 'boolean') {
@@ -2218,7 +2366,8 @@ function renderCabinetStatus() {
   } else {
     pressedElement.textContent = '未知';
   }
-  const travel = cabinetFeedbackValue('button_travel', 'current_travel');
+  const travel = cabinetPhysicalValue('button_travel') ??
+    cabinetFeedbackValue('current_travel');
   const maxTravel = cabinetFeedbackValue('max_travel', 'maximum_travel');
   const staleSuffix = !statusCurrent && cabinetStatus ? '（上次）' : '';
   $('cabinetTravel').textContent =
@@ -2252,9 +2401,21 @@ function renderCabinetStatus() {
         ? '未成功'
         : '等待结果';
     const errorCode = cabinetStatus.error_code;
+    const selectedControl = selectedCabinetControl();
+    const statusTargetId = cabinetStatus.button_id ||
+      (selectedControl && selectedControl.control_id) || '-';
+    const statusTarget = cabinetControlById(statusTargetId);
+    const targetText = statusTarget
+      ? `${statusTarget.display_name} (${statusTarget.control_id})`
+      : statusTargetId;
+    const selectionText = selectedControl &&
+      selectedControl.control_id !== statusTargetId && !active
+      ? `当前选择: ${selectedControl.display_name} (${selectedControl.control_id})`
+      : '';
     cabinetDetail.textContent = [
       cabinetStatus.message || '',
-      '目标: box_10_button_1',
+      `动作目标: ${targetText}`,
+      selectionText,
       `导航到工位: ${
         cabinetStatus.navigate_to_staging_pose === false ? '否' : '是'
       }`,
@@ -2330,12 +2491,14 @@ function updateControlInterlocks() {
   $('btnCabinetPress').disabled =
     !ctrlConnected ||
     !isCabinetAvailable() ||
+    !selectedCabinetControl() ||
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
     motionActive ||
     takingOver;
   $('btnCabinetCancel').disabled = !ctrlConnected || !cabinetActive;
+  cabinetTarget.disabled = cabinetActive;
   $('cabinetNavigate').disabled = cabinetActive;
   renderBaseControlStatus();
 }
@@ -2524,6 +2687,12 @@ async function sendCabinetOperation() {
     toast('请先结束当前导航或机械臂任务', 'err');
     return;
   }
+  const target = selectedCabinetControl();
+  if (!target || Number(target.control_type) !== 0) {
+    toast('请选择一个可用的控制柜按钮', 'err');
+    return;
+  }
+  const buttonId = target.control_id;
   const previousStatus = cabinetStatus;
   const previousStatusCurrent = cabinetStatusCurrent;
   const navigateToStagingPose = $('cabinetNavigate').checked;
@@ -2532,7 +2701,7 @@ async function sendCabinetOperation() {
     available: true,
     state: 'sending',
     message: '正在提交控制柜按钮操作。',
-    button_id: 'box_10_button_1',
+    button_id: buttonId,
     navigate_to_staging_pose: navigateToStagingPose,
     progress: 0,
     success: null,
@@ -2545,11 +2714,11 @@ async function sendCabinetOperation() {
       '/cabinet/press',
       'POST',
       {
-        button_id: 'box_10_button_1',
+        button_id: buttonId,
         navigate_to_staging_pose: navigateToStagingPose
       }
     );
-    toast('控制柜按钮操作已提交', 'ok');
+    toast(`已提交：${target.display_name}`, 'ok');
     refreshAutonomyStatus();
   } catch (error) {
     cabinetStatus = previousStatus;
@@ -2918,6 +3087,10 @@ $('btnNavSend').addEventListener('click', sendNavigationGoal);
 $('btnNavCancel').addEventListener('click', cancelNavigation);
 $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
+cabinetTarget.addEventListener('change', () => {
+  renderCabinetTarget();
+  renderCabinetStatus();
+});
 $('spdLinear').addEventListener('input', function() {
   $('spdLinVal').textContent = parseFloat(this.value).toFixed(2);
 });
@@ -2927,6 +3100,7 @@ $('spdAngular').addEventListener('input', function() {
 
 // Build sliders on load
 buildJointSliders();
+renderCabinetTarget();
 renderCabinetStatus();
 
 // Auto-connect monitoring, sensors and control on page load.

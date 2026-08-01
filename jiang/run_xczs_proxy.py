@@ -136,6 +136,7 @@ def main() -> None:
         print("  POST /cmd_vel")
         print("  POST /joint_trajectory")
         print("  POST /cabinet/press")
+        print("  GET  /cabinet/controls")
         print("  GET  /cabinet/status")
         print("  GET  /health")
 

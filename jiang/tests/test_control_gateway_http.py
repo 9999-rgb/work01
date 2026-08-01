@@ -54,12 +54,55 @@ class _FakeControlServer:
             "button_state_updated_at": 1.0,
         }
 
+    def cabinet_controls(self) -> Dict[str, Any]:
+        return {
+            "available": True,
+            "catalog_received": True,
+            "source": "operator_catalog",
+            "selected_control_id": "box_10_button_1",
+            "controls": [
+                {
+                    "control_id": "box_10_button_1",
+                    "display_name": "10 号模块红色按钮",
+                    "control_type": 0,
+                    "joint_name": "box_10_box_10_button_1",
+                    "joint_state_topic": (
+                        "/xczs/cabinet/box_10_button_1/joint_states"
+                    ),
+                    "pressed_topic": (
+                        "/xczs/cabinet/box_10_button_1/pressed"
+                    ),
+                    "button_pressed": False,
+                    "button_travel": 0.0,
+                    "button_state_updated_at": 1.0,
+                },
+                {
+                    "control_id": "box_10_button_2",
+                    "display_name": "10 号模块绿色按钮",
+                    "control_type": 0,
+                    "joint_name": "box_10_box_10_button_2",
+                    "joint_state_topic": (
+                        "/xczs/cabinet/box_10_button_2/joint_states"
+                    ),
+                    "pressed_topic": (
+                        "/xczs/cabinet/box_10_button_2/pressed"
+                    ),
+                    "button_pressed": True,
+                    "button_travel": 0.006,
+                    "button_state_updated_at": 2.0,
+                },
+            ],
+        }
+
     def press_cabinet_button(
         self,
         button_id: str,
         navigate_to_staging_pose: bool,
     ) -> Dict[str, Any]:
-        if button_id != "box_10_button_1":
+        if button_id not in {
+            "box_10_button_1",
+            "box_10_button_2",
+        }:
             raise ControlRequestError("Unsupported cabinet button.")
         self.press_request = (button_id, navigate_to_staging_pose)
         return {
@@ -163,6 +206,19 @@ class ControlGatewayHttpTest(unittest.TestCase):
         }
         self.assertTrue(expected_fields.issubset(cabinet))
 
+    def test_cabinet_controls_lists_both_buttons_and_states(self) -> None:
+        status, catalog, _ = self.request("/cabinet/controls")
+
+        self.assertEqual(200, status)
+        self.assertTrue(catalog["catalog_received"])
+        self.assertEqual("operator_catalog", catalog["source"])
+        self.assertEqual(
+            ["box_10_button_1", "box_10_button_2"],
+            [control["control_id"] for control in catalog["controls"]],
+        )
+        self.assertFalse(catalog["controls"][0]["button_pressed"])
+        self.assertTrue(catalog["controls"][1]["button_pressed"])
+
     def test_press_and_cancel(self) -> None:
         status, response, _ = self.request(
             "/cabinet/press",
@@ -197,6 +253,23 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.assertEqual(202, status)
         self.assertEqual(
             ("box_10_button_1", True),
+            self.control_server.press_request,
+        )
+
+    def test_press_accepts_second_catalog_button(self) -> None:
+        status, response, _ = self.request(
+            "/cabinet/press",
+            "POST",
+            {
+                "button_id": "box_10_button_2",
+                "navigate_to_staging_pose": False,
+            },
+        )
+
+        self.assertEqual(202, status)
+        self.assertEqual("box_10_button_2", response["button_id"])
+        self.assertEqual(
+            ("box_10_button_2", False),
             self.control_server.press_request,
         )
 

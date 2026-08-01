@@ -43,6 +43,9 @@ def generate_launch_description() -> LaunchDescription:
         get_package_share_directory(NAV2_CONFIG_PACKAGE)
     )
     control_config = control_share / "config" / "robot_control.yaml"
+    cabinet_controls_config = (
+        control_share / "config" / "cabinet_controls.yaml"
+    )
     xacro_file = description_share / "urdf" / XACRO_FILENAME
     cabinet_urdf = (
         description_share / "urdf" / CABINET_URDF_FILENAME
@@ -337,6 +340,7 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         remappings=[("joint_states", "/xczs/joint_states")],
         parameters=[
+            str(cabinet_controls_config),
             {
                 "use_sim_time": True,
                 "planning_frame": "odom",

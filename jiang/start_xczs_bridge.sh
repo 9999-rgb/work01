@@ -138,7 +138,7 @@ if [ "$NAV2_ENABLED" = "true" ] &&
     exit 1
 fi
 if ! "$PYTHON_BIN" -c \
-    "import aiohttp, rclpy, zenoh; from PIL import Image; from xczs_inspection_robot_control.action import PressCabinetButton" \
+    "import aiohttp, rclpy, zenoh; from PIL import Image; from xczs_inspection_robot_control.action import PressCabinetButton; from xczs_inspection_robot_control.msg import CabinetControlCatalog" \
     2>/dev/null; then
     echo "ERROR: Python dependencies are incomplete."
     echo "Run colcon build, source install/setup.bash, then install:"

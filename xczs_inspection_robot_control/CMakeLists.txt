@@ -31,6 +31,8 @@ find_package(trajectory_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PressCabinetButton.action"
+  "msg/CabinetControl.msg"
+  "msg/CabinetControlCatalog.msg"
 )
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)

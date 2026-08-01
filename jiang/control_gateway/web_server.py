@@ -46,6 +46,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                     200,
                     self.control_server.cabinet_status(),
                 )
+            elif path == "/cabinet/controls":
+                self._send_json(
+                    200,
+                    self.control_server.cabinet_controls(),
+                )
             else:
                 self._send_json(404, {"error": "not found"})
         except ControlRequestError as error:

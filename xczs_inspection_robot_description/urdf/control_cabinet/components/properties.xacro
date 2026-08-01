@@ -16,7 +16,7 @@
     name="cabinet_collision_size"
     value="0.662 2.230 0.608" />
 
-  <!-- box_10_button_1 is the first physically interactive control. -->
+  <!-- Shared physical parameters for the interactive module 10 buttons. -->
   <xacro:property name="cabinet_button_travel" value="0.008" />
   <xacro:property name="cabinet_button_radius" value="0.015" />
   <xacro:property name="cabinet_button_collision_length" value="0.012" />

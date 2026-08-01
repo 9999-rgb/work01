@@ -1,0 +1,20 @@
+xczs_cabinet_button_operator:
+  ros__parameters:
+    button_ids:
+      - box_10_button_1
+      - box_10_button_2
+
+    # local_position 是按钮表面的操作标定点；Z 比关节原点高 0.494 mm。
+    buttons:
+      box_10_button_1:
+        display_name: "10号模块红色按钮"
+        joint_name: box_10_box_10_button_1
+        joint_state_topic: /xczs/cabinet/box_10_button_1/joint_states
+        pressed_topic: /xczs/cabinet/box_10_button_1/pressed
+        local_position: [0.492, 0.574, 0.011494]
+      box_10_button_2:
+        display_name: "10号模块绿色按钮"
+        joint_name: box_10_box_10_button_2
+        joint_state_topic: /xczs/cabinet/box_10_button_2/joint_states
+        pressed_topic: /xczs/cabinet/box_10_button_2/pressed
+        local_position: [0.527, 0.574, 0.011494]

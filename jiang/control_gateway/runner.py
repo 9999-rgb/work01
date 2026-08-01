@@ -228,6 +228,11 @@ class ControlServer:
         with self._request_scope():
             return self._node.cabinet_snapshot()
 
+    def cabinet_controls(self) -> Dict[str, Any]:
+        """Return supported cabinet controls and their physical states."""
+        with self._request_scope():
+            return self._node.cabinet_controls_snapshot()
+
     def press_cabinet_button(
         self,
         button_id: str,
