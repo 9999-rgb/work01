@@ -1,0 +1,53 @@
+# Goal
+uint8 COMMAND_PRESS=0
+uint8 COMMAND_SET_STATE=1
+uint8 COMMAND_SET_POSITION=2
+uint8 COMMAND_TOGGLE=3
+
+string control_id
+uint8 command
+string target_state
+float64 target_position
+bool use_target_position
+bool navigate_to_staging_pose
+---
+# Result
+uint8 SUCCESS=0
+uint8 INVALID_CONTROL=1
+uint8 UNSUPPORTED_COMMAND=2
+uint8 NOT_READY=3
+uint8 NAVIGATION_FAILED=4
+uint8 PLANNING_FAILED=5
+uint8 EXECUTION_FAILED=6
+uint8 GRASP_FAILED=7
+uint8 TARGET_NOT_REACHED=8
+uint8 RELEASE_FAILED=9
+uint8 CANCELED=10
+uint8 INTERNAL_ERROR=11
+
+bool success
+uint8 error_code
+string message
+float64 initial_position
+float64 final_position
+float64 peak_position
+string final_state
+---
+# Feedback
+uint8 WAITING_FOR_SYSTEM=0
+uint8 NAVIGATING=1
+uint8 DOCKING=2
+uint8 MOVING_TO_READY=3
+uint8 APPROACHING=4
+uint8 GRASPING=5
+uint8 MANIPULATING=6
+uint8 VERIFYING=7
+uint8 RELEASING=8
+uint8 RETREATING=9
+
+uint8 phase
+float32 progress
+float64 current_position
+float64 target_position
+string current_state
+string message

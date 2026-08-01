@@ -17,23 +17,122 @@
   </xacro:macro>
 
   <xacro:macro
-    name="control_cabinet_button_plugin"
-    params="button_id joint_name">
-    <plugin
-      name="xczs_cabinet_${button_id}_state"
-      filename="libxczs_cabinet_button.so">
-      <ros>
-        <namespace>/xczs/cabinet/${button_id}</namespace>
-      </ros>
+    name="control_cabinet_button_state"
+    params="control_id joint_name">
+    <control>
+      <control_id>${control_id}</control_id>
+      <control_type>button</control_type>
       <joint_name>${joint_name}</joint_name>
-      <!-- Absolute names avoid Gazebo model-load-order namespace leakage. -->
-      <joint_state_topic>/xczs/cabinet/${button_id}/joint_states</joint_state_topic>
-      <pressed_topic>/xczs/cabinet/${button_id}/pressed</pressed_topic>
+      <joint_state_topic>/xczs/cabinet/${control_id}/joint_states</joint_state_topic>
+      <pressed_topic>/xczs/cabinet/${control_id}/pressed</pressed_topic>
+      <state_topic>/xczs/cabinet/${control_id}/state</state_topic>
+      <state_ids>released pressed</state_ids>
       <spring_stiffness>800.0</spring_stiffness>
       <spring_damping>8.0</spring_damping>
       <press_threshold>0.006</press_threshold>
       <release_threshold>0.003</release_threshold>
+      <reset_position>0.0</reset_position>
+      <graspable>false</graspable>
+    </control>
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_knob_state"
+    params="control_id joint_name">
+    <control>
+      <control_id>${control_id}</control_id>
+      <control_type>knob</control_type>
+      <joint_name>${joint_name}</joint_name>
+      <joint_state_topic>/xczs/cabinet/${control_id}/joint_states</joint_state_topic>
+      <pressed_topic>/xczs/cabinet/${control_id}/pressed</pressed_topic>
+      <state_topic>/xczs/cabinet/${control_id}/state</state_topic>
+      <detents>-${cabinet_knob_limit} 0 ${cabinet_knob_limit}</detents>
+      <state_ids>left center right</state_ids>
+      <detent_stiffness>0.60</detent_stiffness>
+      <spring_damping>0.08</spring_damping>
+      <motion_tolerance>0.025</motion_tolerance>
+      <reset_position>0.0</reset_position>
+      <graspable>true</graspable>
+      <grasp_point>0 0 0.03</grasp_point>
+    </control>
+  </xacro:macro>
+
+  <xacro:macro name="control_cabinet_state_plugin" params="">
+    <plugin name="xczs_cabinet_state" filename="libxczs_cabinet_state.so">
+      <ros>
+        <namespace>/xczs/cabinet</namespace>
+      </ros>
       <state_publish_rate>50.0</state_publish_rate>
+      <reset_service>/xczs/cabinet/reset_physics</reset_service>
+      <grasp_service>/xczs/cabinet/grasp</grasp_service>
+      <grasp_distance_threshold>0.12</grasp_distance_threshold>
+
+      <xacro:control_cabinet_button_state control_id="box_1_button_1" joint_name="box_1_box_1_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_1_button_2" joint_name="box_1_box_1_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_2_button_1" joint_name="box_2_box_2_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_2_button_2" joint_name="box_2_box_2_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_3_button_1" joint_name="box_3_box_3_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_3_button_2" joint_name="box_3_box_3_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_4_button_1" joint_name="box_4_box_4_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_4_button_2" joint_name="box_4_box_4_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_5_button_1" joint_name="box_5_box_5_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_5_button_2" joint_name="box_5_box_5_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_6_button_1" joint_name="box_6_box_6_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_6_button_2" joint_name="box_6_box_6_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_7_button_1" joint_name="box_7_box_7_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_7_button_2" joint_name="box_7_box_7_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_8_button_1" joint_name="box_8_box_8_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_8_button_2" joint_name="box_8_box_8_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_10_button_1" joint_name="box_10_box_10_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_10_button_2" joint_name="box_10_box_10_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_11_button_1" joint_name="box_11_box_11_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_11_button_2" joint_name="box_11_box_11_button_2" />
+
+      <xacro:control_cabinet_knob_state control_id="box_1_knob" joint_name="box_1_box_1_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_2_knob" joint_name="box_2_box_2_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_3_knob" joint_name="box_3_box_3_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_4_knob" joint_name="box_4_box_4_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_5_knob" joint_name="box_5_box_5_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_6_knob" joint_name="box_6_box_6_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_7_knob" joint_name="box_7_box_7_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_8_knob" joint_name="box_8_box_8_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_9_knob" joint_name="box_9_box_9_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_10_knob" joint_name="box_10_box_10_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_11_knob" joint_name="box_11_box_11_knob" />
+
+      <control>
+        <control_id>cabinet_main_switch</control_id>
+        <control_type>switch</control_type>
+        <joint_name>cabinet_switch_base_cabinet_switch_handle</joint_name>
+        <joint_state_topic>/xczs/cabinet/cabinet_main_switch/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/cabinet_main_switch/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/cabinet_main_switch/state</state_topic>
+        <detents>0 ${cabinet_switch_limit}</detents>
+        <state_ids>off on</state_ids>
+        <detent_stiffness>0.80</detent_stiffness>
+        <spring_damping>0.10</spring_damping>
+        <motion_tolerance>0.035</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+
+      <control>
+        <control_id>cabinet_rear_door</control_id>
+        <control_type>door</control_type>
+        <joint_name>cabinet_body_cabinet_rear_door</joint_name>
+        <joint_state_topic>/xczs/cabinet/cabinet_rear_door/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/cabinet_rear_door/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/cabinet_rear_door/state</state_topic>
+        <detents>0 ${cabinet_door_limit}</detents>
+        <state_ids>closed open</state_ids>
+        <detent_stiffness>1.50</detent_stiffness>
+        <spring_damping>0.60</spring_damping>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0.600 1.105 -0.080</grasp_point>
+      </control>
     </plugin>
   </xacro:macro>
 
@@ -42,12 +141,7 @@
       <!-- The body is fixed to world; interactive controls remain dynamic. -->
       <static>false</static>
       <selfCollide>false</selfCollide>
-      <xacro:control_cabinet_button_plugin
-        button_id="box_10_button_1"
-        joint_name="box_10_box_10_button_1" />
-      <xacro:control_cabinet_button_plugin
-        button_id="box_10_button_2"
-        joint_name="box_10_box_10_button_2" />
+      <xacro:control_cabinet_state_plugin />
     </gazebo>
   </xacro:macro>
 </robot>

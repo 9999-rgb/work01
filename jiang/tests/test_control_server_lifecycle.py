@@ -20,7 +20,10 @@ class _BlockingNode:
     def __init__(self) -> None:
         self.press_started = threading.Event()
         self.release_press = threading.Event()
+        self.operation_started = threading.Event()
+        self.release_operation = threading.Event()
         self.press_count = 0
+        self.operation_count = 0
         self.cabinet_cancel_count = 0
         self.destroyed = False
 
@@ -46,6 +49,33 @@ class _BlockingNode:
         del allow_idle
         self.cabinet_cancel_count += 1
         return {"status": "idle"}
+
+    def operate_cabinet_control(
+        self,
+        control_id: str,
+        command: Any,
+        target_state: Any,
+        target_position: Any,
+        navigate_to_staging_pose: bool,
+    ) -> Dict[str, Any]:
+        self.operation_count += 1
+        self.operation_started.set()
+        if not self.release_operation.wait(timeout=2.0):
+            raise RuntimeError("test did not release cabinet operation")
+        return {
+            "status": "accepted",
+            "control_id": control_id,
+            "command": command,
+            "target_state": target_state,
+            "target_position": target_position,
+            "navigate_to_staging_pose": navigate_to_staging_pose,
+        }
+
+    def cancel_cabinet_operation(
+        self,
+        allow_idle: bool = False,
+    ) -> Dict[str, str]:
+        return self.cancel_cabinet_button(allow_idle=allow_idle)
 
     def cancel_navigation(self, allow_idle: bool = False) -> Dict[str, str]:
         del allow_idle
@@ -155,6 +185,68 @@ class ControlServerLifecycleTest(unittest.TestCase):
         self.assertTrue(server._executor.shutdown_called)
         self.assertTrue(node.destroyed)
         self.assertTrue(server._context.shutdown_called)
+
+    def test_stop_drains_generic_operation_and_rejects_later_work(self) -> None:
+        node = _BlockingNode()
+        server = _make_server(node)
+        operation_results: List[Dict[str, Any]] = []
+        thread_errors: List[BaseException] = []
+
+        def operate() -> None:
+            try:
+                operation_results.append(
+                    server.operate_cabinet_control(
+                        "box_03_knob_1",
+                        "set_position",
+                        None,
+                        1.0,
+                        False,
+                    )
+                )
+            except BaseException as error:  # noqa: BLE001
+                thread_errors.append(error)
+
+        def stop() -> None:
+            try:
+                server.stop()
+            except BaseException as error:  # noqa: BLE001
+                thread_errors.append(error)
+
+        operation_thread = threading.Thread(target=operate)
+        operation_thread.start()
+        self.assertTrue(node.operation_started.wait(timeout=1.0))
+        stop_thread = threading.Thread(target=stop)
+        stop_thread.start()
+        with server._request_condition:
+            self.assertTrue(
+                server._request_condition.wait_for(
+                    lambda: server._stopping,
+                    timeout=1.0,
+                )
+            )
+
+        with self.assertRaises(ControlRequestError) as raised:
+            server.operate_cabinet_control(
+                "cabinet_door",
+                "toggle",
+                None,
+                None,
+                True,
+            )
+        self.assertEqual(503, raised.exception.status)
+        self.assertTrue(stop_thread.is_alive())
+        self.assertEqual(1, node.operation_count)
+
+        node.release_operation.set()
+        operation_thread.join(timeout=2.0)
+        stop_thread.join(timeout=2.0)
+
+        self.assertFalse(operation_thread.is_alive())
+        self.assertFalse(stop_thread.is_alive())
+        self.assertFalse(thread_errors)
+        self.assertEqual("accepted", operation_results[0]["status"])
+        self.assertEqual(1, node.cabinet_cancel_count)
+        self.assertTrue(node.destroyed)
 
 
 if __name__ == "__main__":

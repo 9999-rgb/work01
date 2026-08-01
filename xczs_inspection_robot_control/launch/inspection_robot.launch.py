@@ -231,6 +231,31 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration("cabinet_yaw"),
         ],
     )
+    cabinet_truth_transform = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="control_cabinet_truth_transform",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("spawn_cabinet")),
+        arguments=[
+            "--x",
+            LaunchConfiguration("cabinet_x"),
+            "--y",
+            LaunchConfiguration("cabinet_y"),
+            "--z",
+            LaunchConfiguration("cabinet_z"),
+            "--roll",
+            CABINET_EXPORT_ROLL,
+            "--pitch",
+            "0.0",
+            "--yaw",
+            LaunchConfiguration("cabinet_yaw"),
+            "--frame-id",
+            "odom",
+            "--child-frame-id",
+            "control_cabinet_frame",
+        ],
+    )
 
     keyboard_teleop = Node(
         package=CONTROL_PACKAGE,
@@ -421,6 +446,7 @@ def generate_launch_description() -> LaunchDescription:
             robot_state_publisher,
             spawn_robot,
             spawn_cabinet,
+            cabinet_truth_transform,
             start_controllers_after_spawn,
             start_control_interfaces_after_ros2_control,
         ]

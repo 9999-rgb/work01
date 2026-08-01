@@ -1,0 +1,8 @@
+string control_id
+string robot_model
+string robot_link
+bool attach
+---
+bool success
+string message
+float64 distance

@@ -1,20 +1,265 @@
 xczs_cabinet_button_operator:
   ros__parameters:
-    button_ids:
+    # 本目录是控制柜自动操作的唯一标定源。坐标均位于
+    # control_cabinet_frame；位置单位为 m，转角单位为 rad。
+    control_ids:
+      - box_1_button_1
+      - box_1_button_2
+      - box_2_button_1
+      - box_2_button_2
+      - box_3_button_1
+      - box_3_button_2
+      - box_4_button_1
+      - box_4_button_2
+      - box_5_button_1
+      - box_5_button_2
+      - box_6_button_1
+      - box_6_button_2
+      - box_7_button_1
+      - box_7_button_2
+      - box_8_button_1
+      - box_8_button_2
       - box_10_button_1
       - box_10_button_2
+      - box_11_button_1
+      - box_11_button_2
+      - box_1_knob
+      - box_2_knob
+      - box_3_knob
+      - box_4_knob
+      - box_5_knob
+      - box_6_knob
+      - box_7_knob
+      - box_8_knob
+      - box_9_knob
+      - box_10_knob
+      - box_11_knob
+      - cabinet_main_switch
+      - cabinet_rear_door
 
-    # local_position 是按钮表面的操作标定点；Z 比关节原点高 0.494 mm。
-    buttons:
+    controls:
+      box_1_button_1:
+        type: button
+        display_name: "1号模块红色按钮"
+        joint_name: box_1_box_1_button_1
+        local_position: [0.120, 1.876, 0.011494]
+      box_1_button_2:
+        type: button
+        display_name: "1号模块绿色按钮"
+        joint_name: box_1_box_1_button_2
+        local_position: [0.170, 1.876, 0.011494]
+      box_2_button_1:
+        type: button
+        display_name: "2号模块红色按钮"
+        joint_name: box_2_box_2_button_1
+        local_position: [0.449, 1.876, 0.011494]
+      box_2_button_2:
+        type: button
+        display_name: "2号模块绿色按钮"
+        joint_name: box_2_box_2_button_2
+        local_position: [0.499, 1.876, 0.011494]
+      box_3_button_1:
+        type: button
+        display_name: "3号模块红色按钮"
+        joint_name: box_3_box_3_button_1
+        local_position: [0.120, 1.547, 0.011494]
+      box_3_button_2:
+        type: button
+        display_name: "3号模块绿色按钮"
+        joint_name: box_3_box_3_button_2
+        local_position: [0.170, 1.547, 0.011494]
+      box_4_button_1:
+        type: button
+        display_name: "4号模块红色按钮"
+        joint_name: box_4_box_4_button_1
+        local_position: [0.449, 1.547, 0.011494]
+      box_4_button_2:
+        type: button
+        display_name: "4号模块绿色按钮"
+        joint_name: box_4_box_4_button_2
+        local_position: [0.499, 1.547, 0.011494]
+      box_5_button_1:
+        type: button
+        display_name: "5号模块红色按钮"
+        joint_name: box_5_box_5_button_1
+        local_position: [0.120, 1.218, 0.011494]
+      box_5_button_2:
+        type: button
+        display_name: "5号模块绿色按钮"
+        joint_name: box_5_box_5_button_2
+        local_position: [0.170, 1.218, 0.011494]
+      box_6_button_1:
+        type: button
+        display_name: "6号模块红色按钮"
+        joint_name: box_6_box_6_button_1
+        local_position: [0.449, 1.218, 0.011494]
+      box_6_button_2:
+        type: button
+        display_name: "6号模块绿色按钮"
+        joint_name: box_6_box_6_button_2
+        local_position: [0.499, 1.218, 0.011494]
+      box_7_button_1:
+        type: button
+        display_name: "7号模块红色按钮"
+        joint_name: box_7_box_7_button_1
+        local_position: [0.120, 0.889, 0.011494]
+      box_7_button_2:
+        type: button
+        display_name: "7号模块绿色按钮"
+        joint_name: box_7_box_7_button_2
+        local_position: [0.170, 0.889, 0.011494]
+      box_8_button_1:
+        type: button
+        display_name: "8号模块红色按钮"
+        joint_name: box_8_box_8_button_1
+        local_position: [0.449, 0.889, 0.011494]
+      box_8_button_2:
+        type: button
+        display_name: "8号模块绿色按钮"
+        joint_name: box_8_box_8_button_2
+        local_position: [0.499, 0.889, 0.011494]
       box_10_button_1:
+        type: button
         display_name: "10号模块红色按钮"
         joint_name: box_10_box_10_button_1
-        joint_state_topic: /xczs/cabinet/box_10_button_1/joint_states
-        pressed_topic: /xczs/cabinet/box_10_button_1/pressed
         local_position: [0.492, 0.574, 0.011494]
       box_10_button_2:
+        type: button
         display_name: "10号模块绿色按钮"
         joint_name: box_10_box_10_button_2
-        joint_state_topic: /xczs/cabinet/box_10_button_2/joint_states
-        pressed_topic: /xczs/cabinet/box_10_button_2/pressed
         local_position: [0.527, 0.574, 0.011494]
+      box_11_button_1:
+        type: button
+        display_name: "11号模块红色按钮"
+        joint_name: box_11_box_11_button_1
+        local_position: [0.492, 0.377, 0.011494]
+      box_11_button_2:
+        type: button
+        display_name: "11号模块绿色按钮"
+        joint_name: box_11_box_11_button_2
+        local_position: [0.527, 0.377, 0.011494]
+
+      box_1_knob:
+        type: knob
+        display_name: "1号模块旋钮"
+        joint_name: box_1_box_1_knob
+        pivot_position: [0.16747, 2.05094, 0.0295]
+        local_position: [0.16747, 2.06444, 0.0475]
+      box_2_knob:
+        type: knob
+        display_name: "2号模块旋钮"
+        joint_name: box_2_box_2_knob
+        pivot_position: [0.49647, 2.05094, 0.0295]
+        local_position: [0.49647, 2.06444, 0.0475]
+      box_3_knob:
+        type: knob
+        display_name: "3号模块旋钮"
+        joint_name: box_3_box_3_knob
+        pivot_position: [0.16747, 1.72194, 0.0295]
+        local_position: [0.16747, 1.73544, 0.0475]
+      box_4_knob:
+        type: knob
+        display_name: "4号模块旋钮"
+        joint_name: box_4_box_4_knob
+        pivot_position: [0.49647, 1.72194, 0.0295]
+        local_position: [0.49647, 1.73544, 0.0475]
+      box_5_knob:
+        type: knob
+        display_name: "5号模块旋钮"
+        joint_name: box_5_box_5_knob
+        pivot_position: [0.16747, 1.39294, 0.0295]
+        local_position: [0.16747, 1.40644, 0.0475]
+      box_6_knob:
+        type: knob
+        display_name: "6号模块旋钮"
+        joint_name: box_6_box_6_knob
+        pivot_position: [0.49647, 1.39294, 0.0295]
+        local_position: [0.49647, 1.40644, 0.0475]
+      box_7_knob:
+        type: knob
+        display_name: "7号模块旋钮"
+        joint_name: box_7_box_7_knob
+        pivot_position: [0.16747, 1.06394, 0.0295]
+        local_position: [0.16747, 1.07744, 0.0475]
+      box_8_knob:
+        type: knob
+        display_name: "8号模块旋钮"
+        joint_name: box_8_box_8_knob
+        pivot_position: [0.49647, 1.06394, 0.0295]
+        local_position: [0.49647, 1.07744, 0.0475]
+      box_9_knob:
+        type: knob
+        display_name: "9号模块旋钮"
+        joint_name: box_9_box_9_knob
+        pivot_position: [0.12494, 0.774526, 0.0295]
+        local_position: [0.13844, 0.774526, 0.0475]
+      box_10_knob:
+        type: knob
+        display_name: "10号模块旋钮"
+        joint_name: box_10_box_10_knob
+        pivot_position: [0.13547, 0.63094, 0.0295]
+        local_position: [0.13547, 0.64444, 0.0475]
+      box_11_knob:
+        type: knob
+        display_name: "11号模块旋钮"
+        joint_name: box_11_box_11_knob
+        pivot_position: [0.13547, 0.43394, 0.0295]
+        local_position: [0.13547, 0.44744, 0.0475]
+
+      cabinet_main_switch:
+        type: switch
+        display_name: "柜体总开关"
+        parent_control_id: cabinet_rear_door
+        joint_name: cabinet_switch_base_cabinet_switch_handle
+        pivot_position: [0.352, 1.690, -0.618]
+        local_position: [0.352, 1.690, -0.608]
+        axis: [0.0, 0.0, 1.0]
+        approach_normal: [0.0, 0.0, -1.0]
+        min_position: 0.0
+        max_position: 1.57079632679
+        state_ids: ["off", "on"]
+        state_labels: ["关闭", "开启"]
+        state_positions: [0.0, 1.57079632679]
+
+      cabinet_rear_door:
+        type: door
+        display_name: "控制柜后门"
+        joint_name: cabinet_body_cabinet_rear_door
+        pivot_position: [0.010, 0.010, -0.600]
+        local_position: [0.610, 1.115, -0.680]
+        axis: [0.0, 1.0, 0.0]
+        approach_normal: [0.0, 0.0, -1.0]
+        min_position: 0.0
+        max_position: 1.57079632679
+        state_ids: ["closed", "open"]
+        state_labels: ["关闭", "打开"]
+        state_positions: [0.0, 1.57079632679]
+
+    # 类型默认值。单个控件需要特殊标定时可在对应 controls.<id> 下覆盖。
+    button_defaults:
+      axis: [0.0, 0.0, -1.0]
+      approach_normal: [0.0, 0.0, 1.0]
+      min_position: 0.0
+      max_position: 0.008
+      state_ids: ["released", "pressed"]
+      state_labels: ["释放", "按下"]
+      state_positions: [0.0, 0.006]
+    knob_defaults:
+      axis: [0.0, 0.0, 1.0]
+      approach_normal: [0.0, 0.0, 1.0]
+      min_position: -0.78539816339
+      max_position: 0.78539816339
+      state_ids: ["left", "center", "right"]
+      state_labels: ["左档", "中档", "右档"]
+      state_positions: [-0.78539816339, 0.0, 0.78539816339]
+
+    # 操作与闭环容差。
+    cabinet_frame: control_cabinet_frame
+    state_timeout: 1.0
+    target_tolerance: 0.035
+    stable_velocity_tolerance: 0.03
+    stable_state_duration: 0.30
+    planning_scene_settle_seconds: 0.50
+    rotation_waypoint_step: 0.03490658504
+    grasp_service: /xczs/cabinet/grasp
+    reset_physics_service: /xczs/cabinet/reset_physics

@@ -4,22 +4,29 @@
     name="cabinet_mesh_directory"
     value="package://xczs_inspection_robot_description/meshes/control_cabinet" />
 
-  <!--
-    One convex enclosure replaces the exported concave cabinet-body mesh.
-    Its front face ends at the CAD panel plane (local Z = 0), leaving the
-    controls in front of the panel available for physical interaction.
-  -->
-  <xacro:property
-    name="cabinet_collision_origin"
-    value="0.331 1.115 -0.304" />
-  <xacro:property
-    name="cabinet_collision_size"
-    value="0.662 2.230 0.608" />
+  <!-- Cabinet dimensions in the original CAD frame. -->
+  <xacro:property name="cabinet_width" value="0.662" />
+  <xacro:property name="cabinet_height" value="2.230" />
+  <xacro:property name="cabinet_depth" value="0.600" />
+  <xacro:property name="cabinet_frame_thickness" value="0.010" />
+  <xacro:property name="cabinet_front_panel_thickness" value="0.010" />
+  <xacro:property name="cabinet_door_width" value="0.642" />
+  <xacro:property name="cabinet_door_height" value="2.210" />
+  <xacro:property name="cabinet_door_thickness" value="0.010" />
+  <xacro:property name="cabinet_door_mass" value="20.0" />
 
-  <!-- Shared physical parameters for the interactive module 10 buttons. -->
+  <!-- Shared physical parameters for all interactive controls. -->
   <xacro:property name="cabinet_button_travel" value="0.008" />
   <xacro:property name="cabinet_button_radius" value="0.015" />
   <xacro:property name="cabinet_button_collision_length" value="0.012" />
+
+  <xacro:property name="cabinet_knob_limit" value="0.7853981633974483" />
+  <xacro:property name="cabinet_knob_mass" value="0.08" />
+  <xacro:property name="cabinet_knob_base_radius" value="0.0175" />
+  <xacro:property name="cabinet_knob_base_length" value="0.020" />
+
+  <xacro:property name="cabinet_switch_limit" value="1.5707963267948966" />
+  <xacro:property name="cabinet_door_limit" value="1.5707963267948966" />
 
   <xacro:property name="cabinet_contact_friction" value="1.0" />
   <xacro:property name="cabinet_contact_kp" value="1000000" />

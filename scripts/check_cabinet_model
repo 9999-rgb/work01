@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Statically verify cabinet Xacro, physical joints, plugin and catalog config."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from collections import Counter
+from pathlib import Path
+from typing import Dict
+from xml.etree import ElementTree
+
+import yaml
+
+
+ROOT = Path(__file__).resolve().parents[1]
+XACRO = (
+    ROOT
+    / "xczs_inspection_robot_description"
+    / "urdf"
+    / "control_cabinet.urdf.xacro"
+)
+CONFIG = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "config"
+    / "cabinet_controls.yaml"
+)
+TYPE_TO_JOINT = {
+    "button": "prismatic",
+    "knob": "revolute",
+    "switch": "revolute",
+    "door": "revolute",
+}
+EXPECTED_COUNTS = {
+    "button": 20,
+    "knob": 11,
+    "switch": 1,
+    "door": 1,
+}
+
+
+def fail(message: str) -> None:
+    raise RuntimeError(message)
+
+
+def text(element: ElementTree.Element, name: str) -> str:
+    child = element.find(name)
+    if child is None or not (child.text or "").strip():
+        fail(f"Plugin control is missing <{name}>.")
+    return (child.text or "").strip()
+
+
+def load_config() -> Dict[str, object]:
+    with CONFIG.open("r", encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    try:
+        parameters = document["xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]
+    except (KeyError, TypeError) as error:
+        fail(f"Invalid cabinet parameter file: {error}")
+    if not isinstance(parameters, dict):
+        fail("Cabinet ros__parameters must be a mapping.")
+    return parameters
+
+
+def expand_xacro() -> ElementTree.Element:
+    try:
+        result = subprocess.run(
+            ["xacro", str(XACRO)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError as error:
+        fail("xacro is unavailable; source /opt/ros/humble/setup.bash first.")
+    except subprocess.CalledProcessError as error:
+        fail(f"xacro failed:\n{error.stderr}")
+    return ElementTree.fromstring(result.stdout)
+
+
+def main() -> int:
+    try:
+        parameters = load_config()
+        root = expand_xacro()
+
+        control_ids = parameters.get("control_ids")
+        controls = parameters.get("controls")
+        if not isinstance(control_ids, list) or not isinstance(controls, dict):
+            fail("control_ids and controls mappings are required.")
+        if len(control_ids) != 33 or len(set(control_ids)) != 33:
+            fail(f"Expected 33 unique control_ids, got {len(control_ids)}.")
+        if set(control_ids) != set(controls):
+            fail("control_ids and controls keys differ.")
+
+        type_counts = Counter()
+        joints = {joint.attrib["name"]: joint for joint in root.findall("joint")}
+        links = {link.attrib["name"]: link for link in root.findall("link")}
+        for control_id in control_ids:
+            spec = controls[control_id]
+            if not isinstance(spec, dict):
+                fail(f"{control_id} configuration is not a mapping.")
+            control_type = str(spec.get("type", ""))
+            joint_name = str(spec.get("joint_name", ""))
+            expected_joint_type = TYPE_TO_JOINT.get(control_type)
+            if expected_joint_type is None:
+                fail(f"{control_id} has invalid type '{control_type}'.")
+            type_counts[control_type] += 1
+            joint = joints.get(joint_name)
+            if joint is None:
+                fail(f"{control_id} joint '{joint_name}' is absent from URDF.")
+            if joint.attrib.get("type") != expected_joint_type:
+                fail(
+                    f"{control_id} expected {expected_joint_type}, got "
+                    f"{joint.attrib.get('type')}."
+                )
+            child = joint.find("child")
+            child_name = child.attrib.get("link", "") if child is not None else ""
+            link = links.get(child_name)
+            if link is None or link.find("inertial") is None:
+                fail(f"{control_id} dynamic child has no inertial element.")
+            if link.find("collision") is None:
+                fail(f"{control_id} dynamic child has no collision element.")
+        if dict(type_counts) != EXPECTED_COUNTS:
+            fail(
+                f"Expected type counts {EXPECTED_COUNTS}, got "
+                f"{dict(type_counts)}."
+            )
+
+        plugin = next(
+            (
+                candidate
+                for candidate in root.findall(".//plugin")
+                if candidate.attrib.get("filename")
+                == "libxczs_cabinet_state.so"
+            ),
+            None,
+        )
+        if plugin is None:
+            fail("libxczs_cabinet_state.so is absent from expanded URDF.")
+        plugin_controls = plugin.findall("control")
+        if len(plugin_controls) != 33:
+            fail(f"Expected 33 plugin controls, got {len(plugin_controls)}.")
+
+        plugin_ids = []
+        state_topics = []
+        joint_topics = []
+        for entry in plugin_controls:
+            control_id = text(entry, "control_id")
+            plugin_ids.append(control_id)
+            if text(entry, "joint_name") != controls[control_id]["joint_name"]:
+                fail(f"{control_id} plugin/config joint names differ.")
+            state_topics.append(text(entry, "state_topic"))
+            joint_topics.append(text(entry, "joint_state_topic"))
+        if set(plugin_ids) != set(control_ids) or len(set(plugin_ids)) != 33:
+            fail("Plugin and catalog control IDs differ or contain duplicates.")
+        if len(set(state_topics)) != 33 or len(set(joint_topics)) != 33:
+            fail("Cabinet state or joint-state topics are not unique.")
+
+        prismatic_count = sum(
+            joint.attrib.get("type") == "prismatic" for joint in joints.values()
+        )
+        revolute_count = sum(
+            joint.attrib.get("type") == "revolute" for joint in joints.values()
+        )
+        if prismatic_count != 20 or revolute_count != 13:
+            fail(
+                "Expanded cabinet must contain 20 prismatic and 13 revolute "
+                f"joints; got {prismatic_count} and {revolute_count}."
+            )
+        print(
+            "Cabinet model valid: 33 controls, 20 prismatic buttons, "
+            "11 knobs, 1 switch, 1 articulated rear door, unique state topics."
+        )
+        return 0
+    except Exception as error:  # noqa: BLE001
+        print(f"Cabinet model validation failed: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

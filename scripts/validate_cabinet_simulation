@@ -1,0 +1,336 @@
+#!/usr/bin/env python3
+"""Run deterministic end-to-end checks for every simulated cabinet control."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional
+
+import rclpy
+from rclpy.action import ActionClient
+from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import ReliabilityPolicy
+from xczs_inspection_robot_control.action import OperateCabinetControl
+from xczs_inspection_robot_control.msg import CabinetControl
+from xczs_inspection_robot_control.msg import CabinetControlCatalog
+from xczs_inspection_robot_control.msg import CabinetControlState
+
+
+EXPECTED_TYPE_COUNTS = {
+    CabinetControl.TYPE_BUTTON: 20,
+    CabinetControl.TYPE_KNOB: 11,
+    CabinetControl.TYPE_SWITCH: 1,
+    CabinetControl.TYPE_DOOR: 1,
+}
+
+
+@dataclass(frozen=True)
+class Operation:
+    control_id: str
+    command: int
+    target_state: str = ""
+
+
+class CabinetValidator(Node):
+    """Discover the catalog, execute actions and retain physical states."""
+
+    def __init__(self) -> None:
+        super().__init__("xczs_cabinet_simulation_validator")
+        retained = QoSProfile(
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.catalog: Optional[CabinetControlCatalog] = None
+        self.states: Dict[str, CabinetControlState] = {}
+        self._state_subscriptions = []
+        self.create_subscription(
+            CabinetControlCatalog,
+            "/xczs/cabinet/control_catalog",
+            self._catalog_callback,
+            retained,
+        )
+        self.client = ActionClient(
+            self,
+            OperateCabinetControl,
+            "/xczs/operate_cabinet_control",
+        )
+        self._retained_qos = retained
+
+    def _catalog_callback(self, message: CabinetControlCatalog) -> None:
+        if self.catalog is not None:
+            return
+        self.catalog = message
+        for control in message.controls:
+            subscription = self.create_subscription(
+                CabinetControlState,
+                control.state_topic,
+                lambda state, selected_id=control.control_id: (
+                    self._state_callback(selected_id, state)
+                ),
+                self._retained_qos,
+            )
+            self._state_subscriptions.append(subscription)
+
+    def _state_callback(
+        self,
+        control_id: str,
+        state: CabinetControlState,
+    ) -> None:
+        if state.control_id == control_id and state.valid:
+            self.states[control_id] = state
+
+    def wait_for_catalog(self, timeout: float) -> CabinetControlCatalog:
+        deadline = time.monotonic() + timeout
+        while self.catalog is None and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        if self.catalog is None:
+            raise RuntimeError("Timed out waiting for the cabinet catalog.")
+        return self.catalog
+
+    def wait_for_all_states(self, timeout: float) -> None:
+        assert self.catalog is not None
+        expected = {entry.control_id for entry in self.catalog.controls}
+        deadline = time.monotonic() + timeout
+        while not expected.issubset(self.states) and time.monotonic() < deadline:
+            rclpy.spin_once(self, timeout_sec=0.1)
+        missing = sorted(expected - set(self.states))
+        if missing:
+            raise RuntimeError(
+                "No valid physical state for: " + ", ".join(missing)
+            )
+
+    def execute(
+        self,
+        operation: Operation,
+        navigate: bool,
+        timeout: float,
+    ) -> str:
+        if not self.client.wait_for_server(timeout_sec=min(timeout, 15.0)):
+            raise RuntimeError("Cabinet action server is unavailable.")
+
+        goal = OperateCabinetControl.Goal()
+        goal.control_id = operation.control_id
+        goal.command = operation.command
+        goal.target_state = operation.target_state
+        goal.use_target_position = False
+        goal.target_position = 0.0
+        goal.navigate_to_staging_pose = navigate
+
+        last_feedback = {"at": 0.0}
+
+        def feedback_callback(message: object) -> None:
+            feedback = message.feedback
+            now = time.monotonic()
+            if now - last_feedback["at"] < 0.5:
+                return
+            last_feedback["at"] = now
+            print(
+                f"  phase={int(feedback.phase)} "
+                f"progress={float(feedback.progress):.0%} "
+                f"state={feedback.current_state or '-'} "
+                f"position={float(feedback.current_position):.4f}"
+            )
+
+        send_future = self.client.send_goal_async(
+            goal,
+            feedback_callback=feedback_callback,
+        )
+        rclpy.spin_until_future_complete(self, send_future, timeout_sec=timeout)
+        if not send_future.done():
+            raise RuntimeError("Timed out while sending the action goal.")
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            raise RuntimeError("Cabinet operator rejected the action goal.")
+
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(
+            self,
+            result_future,
+            timeout_sec=timeout,
+        )
+        if not result_future.done():
+            goal_handle.cancel_goal_async()
+            raise RuntimeError("Cabinet operation timed out and was canceled.")
+        wrapped = result_future.result()
+        result = wrapped.result
+        if not result.success or result.error_code != result.SUCCESS:
+            raise RuntimeError(
+                f"error={int(result.error_code)}: {result.message}"
+            )
+        return str(result.message)
+
+
+def validate_catalog(catalog: CabinetControlCatalog) -> None:
+    controls = list(catalog.controls)
+    ids = [entry.control_id for entry in controls]
+    if len(ids) != 33 or len(set(ids)) != 33:
+        raise RuntimeError(
+            f"Expected 33 unique controls, received {len(ids)} entries."
+        )
+    for control_type, expected_count in EXPECTED_TYPE_COUNTS.items():
+        actual = sum(
+            entry.control_type == control_type for entry in controls
+        )
+        if actual != expected_count:
+            raise RuntimeError(
+                f"Control type {control_type}: expected {expected_count}, "
+                f"received {actual}."
+            )
+    for entry in controls:
+        if not entry.operable:
+            raise RuntimeError(
+                f"{entry.control_id} is not operable: "
+                f"{entry.unavailable_reason}"
+            )
+        if not entry.joint_name or not entry.state_topic:
+            raise RuntimeError(
+                f"{entry.control_id} has incomplete physical metadata."
+            )
+        if entry.control_type != CabinetControl.TYPE_BUTTON:
+            if not entry.state_ids:
+                raise RuntimeError(
+                    f"{entry.control_id} has no discrete state catalog."
+                )
+            if len(entry.state_ids) != len(entry.state_positions):
+                raise RuntimeError(
+                    f"{entry.control_id} state IDs and positions differ."
+                )
+
+
+def selected_controls(
+    catalog: CabinetControlCatalog,
+    requested_ids: Iterable[str],
+) -> List[CabinetControl]:
+    by_id = {entry.control_id: entry for entry in catalog.controls}
+    requested = list(requested_ids)
+    if not requested:
+        return list(catalog.controls)
+    missing = [control_id for control_id in requested if control_id not in by_id]
+    if missing:
+        raise RuntimeError("Unknown controls: " + ", ".join(missing))
+    return [by_id[control_id] for control_id in requested]
+
+
+def operations_for(control: CabinetControl, exhaustive: bool) -> List[Operation]:
+    if control.control_type == CabinetControl.TYPE_BUTTON:
+        return [Operation(control.control_id, OperateCabinetControl.Goal.COMMAND_PRESS)]
+
+    states = list(control.state_ids)
+    if control.control_type == CabinetControl.TYPE_KNOB:
+        desired = ["right", "left", "center"] if exhaustive else ["right"]
+    elif control.control_type == CabinetControl.TYPE_SWITCH:
+        desired = ["on", "off"] if exhaustive else ["on"]
+    elif control.control_type == CabinetControl.TYPE_DOOR:
+        desired = ["open", "closed"] if exhaustive else ["open"]
+    else:
+        raise RuntimeError(f"Unsupported type for {control.control_id}.")
+    for state in desired:
+        if state not in states:
+            raise RuntimeError(
+                f"{control.control_id} does not advertise state '{state}'."
+            )
+    return [
+        Operation(
+            control.control_id,
+            OperateCabinetControl.Goal.COMMAND_SET_STATE,
+            state,
+        )
+        for state in desired
+    ]
+
+
+def parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--navigate",
+        action="store_true",
+        help="Run Nav2 staging before every operation.",
+    )
+    parser.add_argument(
+        "--exhaustive",
+        action="store_true",
+        help="Exercise all knob/switch/door states, returning to defaults.",
+    )
+    parser.add_argument(
+        "--inventory-only",
+        action="store_true",
+        help="Validate catalog and physical state topics without moving.",
+    )
+    parser.add_argument(
+        "--control",
+        action="append",
+        default=[],
+        help="Limit execution to one control ID; repeat for multiple IDs.",
+    )
+    parser.add_argument("--cycles", type=int, default=1)
+    parser.add_argument("--timeout", type=float, default=180.0)
+    args = parser.parse_args()
+    if args.cycles < 1:
+        parser.error("--cycles must be at least 1")
+    if args.timeout <= 0.0:
+        parser.error("--timeout must be positive")
+    return args
+
+
+def main() -> int:
+    args = parse_arguments()
+    rclpy.init()
+    node = CabinetValidator()
+    failures: List[str] = []
+    completed = 0
+    try:
+        catalog = node.wait_for_catalog(args.timeout)
+        validate_catalog(catalog)
+        node.wait_for_all_states(min(args.timeout, 30.0))
+        controls = selected_controls(catalog, args.control)
+        print(
+            f"Cabinet inventory valid: {len(catalog.controls)} controls; "
+            f"{len(node.states)} live physical states."
+        )
+        if args.inventory_only:
+            return 0
+
+        for cycle in range(1, args.cycles + 1):
+            for control in controls:
+                for operation in operations_for(control, args.exhaustive):
+                    label = operation.target_state or "press"
+                    print(
+                        f"[{cycle}/{args.cycles}] "
+                        f"{operation.control_id} -> {label}"
+                    )
+                    try:
+                        message = node.execute(
+                            operation,
+                            args.navigate,
+                            args.timeout,
+                        )
+                        completed += 1
+                        print(f"  PASS: {message}")
+                    except Exception as error:  # noqa: BLE001
+                        failure = (
+                            f"{operation.control_id}->{label}: {error}"
+                        )
+                        failures.append(failure)
+                        print(f"  FAIL: {failure}", file=sys.stderr)
+        print(f"Completed {completed} operations; failures={len(failures)}.")
+        if failures:
+            for failure in failures:
+                print(f"- {failure}", file=sys.stderr)
+            return 1
+        return 0
+    except Exception as error:  # noqa: BLE001
+        print(f"Cabinet validation failed: {error}", file=sys.stderr)
+        return 2
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

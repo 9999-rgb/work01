@@ -72,8 +72,10 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/motion/named": self._handle_motion_named,
                 "/motion/pose": self._handle_motion_pose,
                 "/motion/cancel": self._handle_motion_cancel,
+                "/cabinet/operate": self._handle_cabinet_operate,
                 "/cabinet/press": self._handle_cabinet_press,
                 "/cabinet/cancel": self._handle_cabinet_cancel,
+                "/cabinet/reset": self._handle_cabinet_reset,
             }
             handler = routes.get(path)
             if handler is None:
@@ -220,11 +222,71 @@ class ControlHandler(BaseHTTPRequestHandler):
             ),
         )
 
-    def _handle_cabinet_cancel(self) -> None:
-        self._optional_body()
+    def _handle_cabinet_operate(self) -> None:
+        body = self._required_body()
+        control_id = body.get("control_id")
+        command = body.get("command")
+        target_state = body.get("target_state")
+        target_position = (
+            self._finite_number(body, "target_position")
+            if "target_position" in body
+            else None
+        )
+        navigate_to_staging_pose = body.get(
+            "navigate_to_staging_pose",
+            True,
+        )
+        if not isinstance(control_id, str) or not control_id.strip():
+            raise ControlRequestError(
+                "control_id must be a non-empty string."
+            )
+        if not (
+            isinstance(command, str)
+            or (isinstance(command, int) and not isinstance(command, bool))
+        ):
+            raise ControlRequestError(
+                "command must be a string or integer command code."
+            )
+        if target_state is not None:
+            if not isinstance(target_state, str) or not target_state.strip():
+                raise ControlRequestError(
+                    "target_state must be a non-empty string when provided."
+                )
+            target_state = target_state.strip()
+        if not isinstance(navigate_to_staging_pose, bool):
+            raise ControlRequestError(
+                "navigate_to_staging_pose must be a boolean."
+            )
         self._send_json(
             202,
-            self.control_server.cancel_cabinet_button(),
+            self.control_server.operate_cabinet_control(
+                control_id.strip(),
+                command,
+                target_state,
+                target_position,
+                navigate_to_staging_pose,
+            ),
+        )
+
+    def _handle_cabinet_cancel(self) -> None:
+        self._optional_body()
+        cancel = getattr(
+            self.control_server,
+            "cancel_cabinet_operation",
+            self.control_server.cancel_cabinet_button,
+        )
+        self._send_json(
+            202,
+            cancel(),
+        )
+
+    def _handle_cabinet_reset(self) -> None:
+        body = self._optional_body()
+        if body:
+            raise ControlRequestError("cabinet reset does not accept options.")
+        self._send_json(
+            200,
+            self.control_server.reset_cabinet_controls(),
         )
 
     def _required_body(self) -> Dict[str, Any]:
@@ -265,6 +327,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         value = body.get(name, default)
         if value is None:
             raise ControlRequestError(f"{name} is required.")
+        if isinstance(value, bool):
+            raise ControlRequestError(f"{name} must be a number.")
         try:
             value = float(value)
         except (TypeError, ValueError) as error:

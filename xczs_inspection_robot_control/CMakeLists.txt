@@ -30,9 +30,13 @@ find_package(tf2_ros REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
+  "action/OperateCabinetControl.action"
   "action/PressCabinetButton.action"
   "msg/CabinetControl.msg"
   "msg/CabinetControlCatalog.msg"
+  "msg/CabinetControlState.msg"
+  "srv/SetCabinetGrasp.srv"
+  DEPENDENCIES std_msgs
 )
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
@@ -57,6 +61,11 @@ add_library(
   xczs_cabinet_button
   SHARED
   src/gazebo/cabinet_button_plugin.cpp
+)
+add_library(
+  xczs_cabinet_state
+  SHARED
+  src/gazebo/cabinet_state_plugin.cpp
 )
 
 foreach(target keyboard_teleop inspection_robot_gui)
@@ -93,7 +102,17 @@ ament_target_dependencies(
   moveit_ros_planning_interface
   rclcpp
   shape_msgs
+  std_msgs
   tf2
+)
+rosidl_get_typesupport_target(
+  cabinet_planning_scene_typesupport
+  ${PROJECT_NAME}
+  "rosidl_typesupport_cpp"
+)
+target_link_libraries(
+  cabinet_planning_scene
+  "${cabinet_planning_scene_typesupport}"
 )
 
 target_compile_features(moveit_planner PUBLIC cxx_std_17)
@@ -153,6 +172,26 @@ ament_target_dependencies(
   std_msgs
 )
 
+target_compile_features(xczs_cabinet_state PUBLIC cxx_std_17)
+ament_target_dependencies(
+  xczs_cabinet_state
+  gazebo_dev
+  gazebo_ros
+  rclcpp
+  sensor_msgs
+  std_msgs
+  std_srvs
+)
+rosidl_get_typesupport_target(
+  cabinet_state_plugin_typesupport
+  ${PROJECT_NAME}
+  "rosidl_typesupport_cpp"
+)
+target_link_libraries(
+  xczs_cabinet_state
+  "${cabinet_state_plugin_typesupport}"
+)
+
 install(
   TARGETS
     keyboard_teleop
@@ -166,7 +205,10 @@ install(
 )
 
 install(
-  TARGETS xczs_planar_stabilizer xczs_cabinet_button
+  TARGETS
+    xczs_planar_stabilizer
+    xczs_cabinet_button
+    xczs_cabinet_state
   LIBRARY DESTINATION lib
 )
 
@@ -180,6 +222,7 @@ install(
 ament_export_include_directories(include)
 ament_export_libraries(xczs_planar_stabilizer)
 ament_export_libraries(xczs_cabinet_button)
+ament_export_libraries(xczs_cabinet_state)
 ament_export_dependencies(gazebo_dev)
 ament_export_dependencies(rosidl_default_runtime)
 ament_package()

@@ -27,25 +27,138 @@
           izz="757.514081227971" />
       </inertial>
 
-      <visual>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <mesh filename="${cabinet_mesh_directory}/cabinet_body.stl" />
-        </geometry>
+      <!--
+        The exported STL baked the rear panel into the enclosure, so it could
+        never open.  Convex native primitives form an open-backed frame while
+        the module meshes remain the detailed front appearance.
+      -->
+      <visual name="cabinet_front_panel_visual">
+        <origin xyz="0.331 1.115 -0.005" rpy="0 0 0" />
+        <geometry><box size="0.642 2.210 0.010" /></geometry>
+        <material name="cabinet_light_gray" />
+      </visual>
+      <collision name="cabinet_front_panel_collision">
+        <!--
+          Keep the structural collision behind the control travel envelope.
+          A coplanar full-panel collision lets a robot finger contact the
+          panel and bypass the short-stroke buttons before they latch.
+        -->
+        <origin xyz="0.331 1.115 -0.025" rpy="0 0 0" />
+        <geometry><box size="0.642 2.210 0.010" /></geometry>
+      </collision>
+
+      <visual name="cabinet_left_frame_visual">
+        <origin xyz="0.005 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
         <material name="cabinet_dark_gray" />
       </visual>
+      <collision name="cabinet_left_frame_collision">
+        <origin xyz="0.005 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+      </collision>
 
-      <!-- A convex primitive gives Gazebo stable, watertight contact. -->
-      <collision>
-        <origin xyz="${cabinet_collision_origin}" rpy="0 0 0" />
-        <geometry>
-          <box size="${cabinet_collision_size}" />
-        </geometry>
+      <visual name="cabinet_right_frame_visual">
+        <origin xyz="0.657 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_right_frame_collision">
+        <origin xyz="0.657 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+      </collision>
+
+      <visual name="cabinet_bottom_frame_visual">
+        <origin xyz="0.331 0.005 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_bottom_frame_collision">
+        <origin xyz="0.331 0.005 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+      </collision>
+
+      <visual name="cabinet_top_frame_visual">
+        <origin xyz="0.331 2.225 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_top_frame_collision">
+        <origin xyz="0.331 2.225 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
       </collision>
     </link>
     <xacro:control_cabinet_gazebo_link
       link_name="cabinet_body"
       gazebo_material="Gazebo/DarkGrey"
       has_collision="true" />
+
+    <link name="cabinet_rear_door">
+      <inertial>
+        <origin xyz="0.321 1.105 -0.005" rpy="0 0 0" />
+        <mass value="${cabinet_door_mass}" />
+        <inertia
+          ixx="8.1403" ixy="0" ixz="0"
+          iyy="0.6871" iyz="0" izz="8.8271" />
+      </inertial>
+      <visual name="cabinet_rear_door_visual">
+        <origin xyz="0.321 1.105 -0.005" rpy="0 0 0" />
+        <geometry>
+          <box size="${cabinet_door_width} ${cabinet_door_height} ${cabinet_door_thickness}" />
+        </geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_rear_door_collision">
+        <origin xyz="0.321 1.105 -0.005" rpy="0 0 0" />
+        <geometry>
+          <box size="${cabinet_door_width} ${cabinet_door_height} ${cabinet_door_thickness}" />
+        </geometry>
+      </collision>
+
+      <!-- Native U-shaped handle on the free edge of the rear door. -->
+      <visual name="cabinet_door_handle_lower_visual">
+        <origin xyz="0.600 1.035 -0.045" rpy="0 0 0" />
+        <geometry><box size="0.025 0.025 0.070" /></geometry>
+        <material name="cabinet_black" />
+      </visual>
+      <collision name="cabinet_door_handle_lower_collision">
+        <origin xyz="0.600 1.035 -0.045" rpy="0 0 0" />
+        <geometry><box size="0.025 0.025 0.070" /></geometry>
+      </collision>
+      <visual name="cabinet_door_handle_upper_visual">
+        <origin xyz="0.600 1.175 -0.045" rpy="0 0 0" />
+        <geometry><box size="0.025 0.025 0.070" /></geometry>
+        <material name="cabinet_black" />
+      </visual>
+      <collision name="cabinet_door_handle_upper_collision">
+        <origin xyz="0.600 1.175 -0.045" rpy="0 0 0" />
+        <geometry><box size="0.025 0.025 0.070" /></geometry>
+      </collision>
+      <visual name="cabinet_door_handle_grip_visual">
+        <origin xyz="0.600 1.105 -0.080" rpy="0 0 0" />
+        <geometry><box size="0.025 0.165 0.025" /></geometry>
+        <material name="cabinet_black" />
+      </visual>
+      <collision name="cabinet_door_handle_grip_collision">
+        <origin xyz="0.600 1.105 -0.080" rpy="0 0 0" />
+        <geometry><box size="0.025 0.165 0.025" /></geometry>
+      </collision>
+    </link>
+    <joint name="cabinet_body_cabinet_rear_door" type="revolute">
+      <origin xyz="0.010 0.010 -0.600" rpy="0 0 0" />
+      <parent link="cabinet_body" />
+      <child link="cabinet_rear_door" />
+      <!-- Local Y is vertical after the exported cabinet roll. -->
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="${cabinet_door_limit}" effort="200" velocity="0.5" />
+      <dynamics damping="1.0" friction="0.5" />
+    </joint>
+    <xacro:control_cabinet_gazebo_link
+      link_name="cabinet_rear_door"
+      gazebo_material="Gazebo/DarkGrey"
+      has_collision="true" />
+    <gazebo reference="cabinet_body_cabinet_rear_door">
+      <implicitSpringDamper>true</implicitSpringDamper>
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
   </xacro:macro>
 </robot>

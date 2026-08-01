@@ -31,10 +31,13 @@ from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
+from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
+from xczs_inspection_robot_control.action import OperateCabinetControl
 from xczs_inspection_robot_control.action import PressCabinetButton
 from xczs_inspection_robot_control.msg import CabinetControlCatalog
+from xczs_inspection_robot_control.msg import CabinetControlState
 
 from .velocity_profile import VelocityProfile
 
@@ -53,6 +56,30 @@ class RosControlNode(Node):
     CABINET_BUTTON_ID = "box_10_button_1"
     CABINET_BUTTON_JOINT_NAME = "box_10_box_10_button_1"
     CABINET_CONTROL_TYPE_BUTTON = 0
+    CABINET_CONTROL_TYPE_KNOB = 1
+    CABINET_CONTROL_TYPE_SWITCH = 2
+    CABINET_CONTROL_TYPE_DOOR = 3
+    CABINET_CONTROL_TYPES = {
+        CABINET_CONTROL_TYPE_BUTTON,
+        CABINET_CONTROL_TYPE_KNOB,
+        CABINET_CONTROL_TYPE_SWITCH,
+        CABINET_CONTROL_TYPE_DOOR,
+    }
+    CABINET_COMMANDS = {
+        "press": OperateCabinetControl.Goal.COMMAND_PRESS,
+        "set_state": OperateCabinetControl.Goal.COMMAND_SET_STATE,
+        "set_position": OperateCabinetControl.Goal.COMMAND_SET_POSITION,
+        "toggle": OperateCabinetControl.Goal.COMMAND_TOGGLE,
+    }
+    CABINET_COMMAND_NAMES = {
+        value: name for name, value in CABINET_COMMANDS.items()
+    }
+    CABINET_COMMAND_SUPPORT = {
+        OperateCabinetControl.Goal.COMMAND_PRESS: 1,
+        OperateCabinetControl.Goal.COMMAND_SET_STATE: 2,
+        OperateCabinetControl.Goal.COMMAND_SET_POSITION: 4,
+        OperateCabinetControl.Goal.COMMAND_TOGGLE: 8,
+    }
     DEFAULT_CABINET_CONTROL = {
         "control_id": CABINET_BUTTON_ID,
         "display_name": "10 号模块红色按钮",
@@ -62,6 +89,17 @@ class RosControlNode(Node):
             "/xczs/cabinet/box_10_button_1/joint_states"
         ),
         "pressed_topic": "/xczs/cabinet/box_10_button_1/pressed",
+        "state_topic": "/xczs/cabinet/box_10_button_1/state",
+        "supported_commands": 1,
+        "unit": "m",
+        "min_position": 0.0,
+        "max_position": 0.008,
+        "state_ids": ["released", "pressed"],
+        "state_labels": ["已释放", "已按下"],
+        "state_positions": [0.0, 0.006],
+        "requires_grasp": False,
+        "operable": True,
+        "unavailable_reason": "",
     }
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
@@ -164,6 +202,9 @@ class RosControlNode(Node):
         self._cabinet_control_states: Dict[str, Dict[str, Any]] = {
             self.CABINET_BUTTON_ID: self._new_cabinet_control_state()
         }
+        self._cabinet_control_states[self.CABINET_BUTTON_ID][
+            "control_type"
+        ] = self.CABINET_CONTROL_TYPE_BUTTON
         self._cabinet_control_subscriptions: Dict[
             str, Dict[str, Any]
         ] = {}
@@ -186,6 +227,15 @@ class RosControlNode(Node):
             self,
             PressCabinetButton,
             "/xczs/press_cabinet_button",
+        )
+        self._cabinet_operation_client = ActionClient(
+            self,
+            OperateCabinetControl,
+            "/xczs/operate_cabinet_control",
+        )
+        self._cabinet_reset_client = self.create_client(
+            Trigger,
+            "/xczs/cabinet/reset_controls",
         )
         self._controller_cancel_clients = [
             self.create_client(
@@ -293,7 +343,16 @@ class RosControlNode(Node):
         self._cabinet_terminal_event.set()
         self._cabinet_state: Dict[str, Any] = {
             "state": "idle",
-            "message": "No cabinet button operation has been sent.",
+            "message": "No cabinet operation has been sent.",
+            "control_id": self.CABINET_BUTTON_ID,
+            "control_type": self.CABINET_CONTROL_TYPE_BUTTON,
+            "type": self.CABINET_CONTROL_TYPE_BUTTON,
+            "command": None,
+            "command_code": None,
+            "target_state": None,
+            "target_position": None,
+            "target": {"state": None, "position": None},
+            "action_interface": None,
             "button_id": self.CABINET_BUTTON_ID,
             "navigate_to_staging_pose": True,
             "phase": None,
@@ -301,6 +360,10 @@ class RosControlNode(Node):
             "button_pressed": None,
             "button_travel": None,
             "max_travel": None,
+            "initial_position": None,
+            "final_position": None,
+            "peak_position": None,
+            "final_state": None,
             "success": None,
             "error_code": None,
             "updated_at": time.time(),
@@ -426,18 +489,41 @@ class RosControlNode(Node):
         return snapshot
 
     def cabinet_snapshot(self) -> Dict[str, Any]:
-        """Return cabinet action availability, feedback and button state."""
+        """Return cabinet action availability, feedback and control state."""
         with self._lock:
             snapshot = dict(self._cabinet_state)
+            selected_control_id = str(
+                snapshot.get("control_id")
+                or snapshot.get("button_id")
+                or self.CABINET_BUTTON_ID
+            )
             control_state = self._cabinet_control_states.get(
-                str(snapshot.get("button_id", ""))
+                selected_control_id
             )
             if control_state is not None:
-                snapshot.update(control_state)
+                snapshot.update(
+                    {
+                        key: value
+                        for key, value in control_state.items()
+                        if value is not None
+                        and not (key == "current_state" and value == "")
+                    }
+                )
+            operation_available = self._action_server_ready(
+                getattr(self, "_cabinet_operation_client", None)
+            )
+            legacy_button_available = self._action_server_ready(
+                getattr(self, "_cabinet_button_client", None)
+            )
             snapshot.update(
                 {
-                    "available": self._action_server_ready(
-                        self._cabinet_button_client
+                    "available": (
+                        operation_available or legacy_button_available
+                    ),
+                    "operation_available": operation_available,
+                    "legacy_button_available": legacy_button_available,
+                    "reset_available": self._service_ready(
+                        getattr(self, "_cabinet_reset_client", None)
                     ),
                     "active": self._cabinet_active_locked(),
                 }
@@ -456,16 +542,27 @@ class RosControlNode(Node):
                 controls.append(snapshot)
             selected_control_id = str(
                 self._cabinet_state.get(
-                    "button_id",
-                    self.CABINET_BUTTON_ID,
+                    "control_id",
+                    self._cabinet_state.get(
+                        "button_id",
+                        self.CABINET_BUTTON_ID,
+                    ),
                 )
             )
             catalog_received = self._cabinet_catalog_received
-            available = self._action_server_ready(
-                self._cabinet_button_client
+            operation_available = self._action_server_ready(
+                getattr(self, "_cabinet_operation_client", None)
+            )
+            legacy_button_available = self._action_server_ready(
+                getattr(self, "_cabinet_button_client", None)
             )
         return {
-            "available": available,
+            "available": operation_available or legacy_button_available,
+            "operation_available": operation_available,
+            "legacy_button_available": legacy_button_available,
+            "reset_available": self._service_ready(
+                getattr(self, "_cabinet_reset_client", None)
+            ),
             "catalog_received": catalog_received,
             "source": (
                 "operator_catalog"
@@ -476,12 +573,166 @@ class RosControlNode(Node):
             "controls": controls,
         }
 
+    def operate_cabinet_control(
+        self,
+        control_id: str,
+        command: Any,
+        target_state: Optional[str] = None,
+        target_position: Optional[float] = None,
+        navigate_to_staging_pose: bool = True,
+    ) -> Dict[str, Any]:
+        """Submit one generic, physically verified cabinet operation."""
+        if not isinstance(control_id, str) or not control_id.strip():
+            raise ControlRequestError(
+                "control_id must be a non-empty string."
+            )
+        control_id = control_id.strip()
+        command_code, command_name = self._normalize_cabinet_command(command)
+        if not isinstance(navigate_to_staging_pose, bool):
+            raise ControlRequestError(
+                "navigate_to_staging_pose must be a boolean."
+            )
+        if target_state is not None:
+            if not isinstance(target_state, str) or not target_state.strip():
+                raise ControlRequestError(
+                    "target_state must be a non-empty string when provided."
+                )
+            target_state = target_state.strip()
+        if target_position is not None:
+            if isinstance(target_position, bool):
+                raise ControlRequestError("target_position must be a number.")
+            try:
+                target_position = float(target_position)
+            except (TypeError, ValueError) as error:
+                raise ControlRequestError(
+                    "target_position must be a number."
+                ) from error
+            if not math.isfinite(target_position):
+                raise ControlRequestError("target_position must be finite.")
+
+        with self._lock:
+            control = self._validate_cabinet_operation_locked(
+                control_id,
+                command_code,
+                target_state,
+                target_position,
+            )
+            self._reject_cabinet_start_conflicts_locked()
+        operation_client = getattr(
+            self,
+            "_cabinet_operation_client",
+            None,
+        )
+        if not self._action_server_ready(operation_client):
+            raise ControlRequestError(
+                "Generic cabinet operation action server is unavailable.",
+                503,
+            )
+
+        with self._lock:
+            control = self._validate_cabinet_operation_locked(
+                control_id,
+                command_code,
+                target_state,
+                target_position,
+            )
+            self._reject_cabinet_start_conflicts_locked()
+            self._cabinet_generation += 1
+            generation = self._cabinet_generation
+            self._cabinet_cancel_requested = False
+            self._cabinet_goal_handle = None
+            self._cabinet_terminal_event.clear()
+            physical_state = self._cabinet_control_states.get(control_id, {})
+            current_position = physical_state.get("current_position")
+            self._cabinet_state.update(
+                {
+                    "state": "sending",
+                    "message": "Sending the cabinet operation goal.",
+                    "control_id": control_id,
+                    "control_type": int(control["control_type"]),
+                    "type": int(control["control_type"]),
+                    "command": command_name,
+                    "command_code": command_code,
+                    "target_state": target_state,
+                    "target_position": target_position,
+                    "target": {
+                        "state": target_state,
+                        "position": target_position,
+                    },
+                    "action_interface": "generic",
+                    # Compatibility aliases used by existing clients.
+                    "button_id": control_id,
+                    "navigate_to_staging_pose": navigate_to_staging_pose,
+                    "phase": None,
+                    "progress": 0.0,
+                    "max_travel": 0.0,
+                    "initial_position": current_position,
+                    "final_position": None,
+                    "peak_position": current_position,
+                    "final_state": None,
+                    "success": None,
+                    "error_code": None,
+                    "updated_at": time.time(),
+                }
+            )
+            self._prepare_for_cabinet_operation_locked()
+
+        goal = OperateCabinetControl.Goal()
+        goal.control_id = control_id
+        goal.command = command_code
+        goal.target_state = target_state or ""
+        goal.use_target_position = target_position is not None
+        goal.target_position = (
+            target_position if target_position is not None else 0.0
+        )
+        goal.navigate_to_staging_pose = navigate_to_staging_pose
+        try:
+            future = operation_client.send_goal_async(
+                goal,
+                feedback_callback=(
+                    lambda feedback_message: (
+                        self._cabinet_operation_feedback_callback(
+                            feedback_message,
+                            generation,
+                        )
+                    )
+                ),
+            )
+            future.add_done_callback(
+                lambda goal_future: self._cabinet_goal_response_callback(
+                    goal_future,
+                    generation,
+                    generic=True,
+                )
+            )
+        except Exception as error:  # noqa: BLE001
+            self._set_cabinet_terminal(
+                "failed",
+                f"Failed to send cabinet operation goal: {error}",
+                False,
+                None,
+                generation=generation,
+            )
+            raise ControlRequestError(
+                f"Failed to send cabinet operation goal: {error}",
+                503,
+            ) from error
+
+        return {
+            "status": "accepted",
+            "control_id": control_id,
+            "command": command_name,
+            "target_state": target_state,
+            "target_position": target_position,
+            "navigate_to_staging_pose": navigate_to_staging_pose,
+        }
+
     def press_cabinet_button(
         self,
         button_id: str,
         navigate_to_staging_pose: bool,
     ) -> Dict[str, Any]:
-        """Submit one complete cabinet button operation."""
+        """Submit a button press through the generic API, with legacy fallback."""
         if not isinstance(button_id, str) or not button_id.strip():
             raise ControlRequestError(
                 "button_id must be a non-empty string."
@@ -491,6 +742,29 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "navigate_to_staging_pose must be a boolean."
             )
+        with self._lock:
+            self._validate_cabinet_button_locked(button_id)
+        if self._action_server_ready(
+            getattr(self, "_cabinet_operation_client", None)
+        ):
+            result = self.operate_cabinet_control(
+                button_id,
+                "press",
+                navigate_to_staging_pose=navigate_to_staging_pose,
+            )
+            return {**result, "button_id": button_id}
+
+        return self._press_cabinet_button_legacy(
+            button_id,
+            navigate_to_staging_pose,
+        )
+
+    def _press_cabinet_button_legacy(
+        self,
+        button_id: str,
+        navigate_to_staging_pose: bool,
+    ) -> Dict[str, Any]:
+        """Use the retained PressCabinetButton action for old operators."""
         with self._lock:
             self._validate_cabinet_button_locked(button_id)
             self._reject_cabinet_start_conflicts_locked()
@@ -513,6 +787,17 @@ class RosControlNode(Node):
                 {
                     "state": "sending",
                     "message": "Sending the cabinet button goal.",
+                    "control_id": button_id,
+                    "control_type": self.CABINET_CONTROL_TYPE_BUTTON,
+                    "type": self.CABINET_CONTROL_TYPE_BUTTON,
+                    "command": "press",
+                    "command_code": (
+                        OperateCabinetControl.Goal.COMMAND_PRESS
+                    ),
+                    "target_state": None,
+                    "target_position": None,
+                    "target": {"state": None, "position": None},
+                    "action_interface": "legacy",
                     "button_id": button_id,
                     "navigate_to_staging_pose": navigate_to_staging_pose,
                     "phase": None,
@@ -524,16 +809,7 @@ class RosControlNode(Node):
                 }
             )
 
-            # The cabinet operator shares the manual base topic during
-            # precision docking.  Stop once, then suppress this gateway's
-            # periodic publishers until the cabinet action is terminal.
-            self._target_linear_y = 0.0
-            self._target_angular_z = 0.0
-            self._linear_profile.reset()
-            self._angular_profile.reset()
-            self._pending_trajectory = None
-            self._pending_trajectory_repeats = 0
-            self._cmd_vel_publisher.publish(Twist())
+            self._prepare_for_cabinet_operation_locked()
 
         goal = PressCabinetButton.Goal()
         goal.button_id = button_id
@@ -569,8 +845,66 @@ class RosControlNode(Node):
 
         return {
             "status": "accepted",
+            "control_id": button_id,
+            "command": "press",
             "button_id": button_id,
             "navigate_to_staging_pose": navigate_to_staging_pose,
+        }
+
+    def reset_cabinet_controls(self, timeout_sec: float = 5.0) -> Dict[str, Any]:
+        """Reset all simulated cabinet controls while the operator is idle."""
+        with self._lock:
+            self._reject_cabinet_start_conflicts_locked()
+        reset_client = getattr(self, "_cabinet_reset_client", None)
+        if not self._service_ready(reset_client):
+            raise ControlRequestError(
+                "Cabinet reset service is unavailable.",
+                503,
+            )
+
+        try:
+            future = reset_client.call_async(Trigger.Request())
+        except Exception as error:  # noqa: BLE001
+            raise ControlRequestError(
+                f"Failed to request cabinet reset: {error}",
+                503,
+            ) from error
+        completed = threading.Event()
+        future.add_done_callback(lambda _: completed.set())
+        if not completed.wait(timeout=max(0.1, float(timeout_sec))):
+            raise ControlRequestError("Cabinet reset request timed out.", 503)
+        try:
+            response = future.result()
+        except Exception as error:  # noqa: BLE001
+            raise ControlRequestError(
+                f"Cabinet reset failed: {error}",
+                503,
+            ) from error
+        if not bool(response.success):
+            raise ControlRequestError(
+                str(response.message) or "Cabinet reset was rejected.",
+                409,
+            )
+        with self._lock:
+            self._cabinet_state.update(
+                {
+                    "state": "idle",
+                    "message": str(response.message) or "Cabinet controls reset.",
+                    "command": None,
+                    "command_code": None,
+                    "target_state": None,
+                    "target_position": None,
+                    "target": {"state": None, "position": None},
+                    "phase": None,
+                    "progress": 0.0,
+                    "success": None,
+                    "error_code": None,
+                    "updated_at": time.time(),
+                }
+            )
+        return {
+            "status": "reset",
+            "message": str(response.message) or "Cabinet controls reset.",
         }
 
     def cancel_cabinet_button(
@@ -631,6 +965,13 @@ class RosControlNode(Node):
                 503,
             ) from error
         return {"status": "canceling"}
+
+    def cancel_cabinet_operation(
+        self,
+        allow_idle: bool = False,
+    ) -> Dict[str, Any]:
+        """Generic name for canceling either cabinet action interface."""
+        return self.cancel_cabinet_button(allow_idle=allow_idle)
 
     def wait_for_cabinet_idle(self, timeout_sec: float) -> bool:
         """Wait for an in-flight cabinet goal to reach a terminal state."""
@@ -1910,6 +2251,7 @@ class RosControlNode(Node):
         self,
         future: Any,
         generation: int,
+        generic: bool = False,
     ) -> None:
         try:
             goal_handle = future.result()
@@ -1923,14 +2265,18 @@ class RosControlNode(Node):
             self._set_cabinet_terminal(
                 "canceled" if canceled_before_acceptance else "failed",
                 (
-                    "Cabinet button operation was canceled before "
+                    "Cabinet operation was canceled before "
                     "goal acceptance."
                     if canceled_before_acceptance
-                    else f"Failed to send cabinet button goal: {error}"
+                    else f"Failed to send cabinet operation goal: {error}"
                 ),
                 False,
                 (
-                    PressCabinetButton.Result.CANCELED
+                    (
+                        OperateCabinetControl.Result.CANCELED
+                        if generic
+                        else PressCabinetButton.Result.CANCELED
+                    )
                     if canceled_before_acceptance
                     else None
                 ),
@@ -1941,7 +2287,7 @@ class RosControlNode(Node):
         if not goal_handle.accepted:
             self._set_cabinet_terminal(
                 "rejected",
-                "Cabinet button action server rejected the goal.",
+                "Cabinet operation action server rejected the goal.",
                 False,
                 None,
                 generation=generation,
@@ -1961,9 +2307,9 @@ class RosControlNode(Node):
                         else "operating"
                     ),
                     "message": (
-                        "Canceling the accepted cabinet button goal."
+                        "Canceling the accepted cabinet operation goal."
                         if canceled_before_acceptance
-                        else "Cabinet button operation is running."
+                        else "Cabinet operation is running."
                     ),
                     "updated_at": time.time(),
                 }
@@ -1971,10 +2317,20 @@ class RosControlNode(Node):
 
         result_future = goal_handle.get_result_async()
         result_future.add_done_callback(
-            lambda result: self._cabinet_result_callback(
-                result,
-                generation,
-                goal_handle,
+            (
+                lambda result: self._cabinet_operation_result_callback(
+                    result,
+                    generation,
+                    goal_handle,
+                )
+            )
+            if generic
+            else (
+                lambda result: self._cabinet_result_callback(
+                    result,
+                    generation,
+                    goal_handle,
+                )
             )
         )
         if canceled_before_acceptance:
@@ -2006,6 +2362,57 @@ class RosControlNode(Node):
                             }
                         )
 
+    def _cabinet_operation_feedback_callback(
+        self,
+        feedback_message: Any,
+        generation: int,
+    ) -> None:
+        """Store generic operation feedback without crossing generations."""
+        feedback = feedback_message.feedback
+        current_position = float(feedback.current_position)
+        target_position = float(feedback.target_position)
+        if not math.isfinite(current_position):
+            current_position = None
+        if not math.isfinite(target_position):
+            target_position = None
+        with self._lock:
+            if (
+                generation != self._cabinet_generation
+                or not self._cabinet_active_locked()
+            ):
+                return
+            previous_peak = self._cabinet_state.get("peak_position")
+            peak_position = current_position
+            if current_position is not None and previous_peak is not None:
+                peak_position = max(
+                    float(previous_peak),
+                    current_position,
+                )
+            update = {
+                "phase": int(feedback.phase),
+                "progress": float(feedback.progress),
+                "current_position": current_position,
+                "current_state": str(feedback.current_state),
+                "target_position": target_position,
+                "peak_position": peak_position,
+                "updated_at": time.time(),
+            }
+            if (
+                self._cabinet_state.get("control_type")
+                == self.CABINET_CONTROL_TYPE_BUTTON
+                and current_position is not None
+            ):
+                previous_max = self._cabinet_state.get("max_travel")
+                update["max_travel"] = max(
+                    float(previous_max)
+                    if previous_max is not None
+                    else 0.0,
+                    max(0.0, current_position),
+                )
+            if self._cabinet_state["state"] != "canceling":
+                update["message"] = str(feedback.message)
+            self._cabinet_state.update(update)
+
     def _cabinet_feedback_callback(
         self,
         feedback_message: Any,
@@ -2033,6 +2440,77 @@ class RosControlNode(Node):
             if self._cabinet_state["state"] != "canceling":
                 update["message"] = str(feedback.message)
             self._cabinet_state.update(update)
+
+    def _cabinet_operation_result_callback(
+        self,
+        future: Any,
+        generation: int,
+        goal_handle: Any,
+    ) -> None:
+        """Finish a generic cabinet goal from its physical result."""
+        result_updates: Dict[str, Any] = {}
+        max_travel: Optional[float] = None
+        try:
+            wrapped_result = future.result()
+            result = wrapped_result.result
+            action_status = int(wrapped_result.status)
+            error_code = int(result.error_code)
+            result_message = str(result.message)
+            result_updates = {
+                "initial_position": float(result.initial_position),
+                "final_position": float(result.final_position),
+                "peak_position": float(result.peak_position),
+                "final_state": str(result.final_state),
+                "current_position": float(result.final_position),
+                "current_state": str(result.final_state),
+            }
+            with self._lock:
+                if (
+                    self._cabinet_state.get("control_type")
+                    == self.CABINET_CONTROL_TYPE_BUTTON
+                ):
+                    max_travel = max(0.0, float(result.peak_position))
+
+            if (
+                action_status == GoalStatus.STATUS_CANCELED
+                or error_code == OperateCabinetControl.Result.CANCELED
+            ):
+                state = "canceled"
+                success = False
+                message = result_message or "Cabinet operation was canceled."
+            elif (
+                action_status == GoalStatus.STATUS_SUCCEEDED
+                and bool(result.success)
+                and error_code == OperateCabinetControl.Result.SUCCESS
+            ):
+                state = "succeeded"
+                success = True
+                message = result_message or "Cabinet operation succeeded."
+            else:
+                state = "failed"
+                success = False
+                _, fallback_message = self._goal_status(
+                    action_status,
+                    "Cabinet operation",
+                )
+                message = result_message or fallback_message
+        except Exception as error:  # noqa: BLE001
+            state = "failed"
+            success = False
+            message = f"Cabinet operation result failed: {error}"
+            error_code = None
+            result_updates = {}
+
+        self._set_cabinet_terminal(
+            state,
+            message,
+            success,
+            error_code,
+            max_travel,
+            generation=generation,
+            expected_goal_handle=goal_handle,
+            result_updates=result_updates,
+        )
 
     def _cabinet_result_callback(
         self,
@@ -2151,6 +2629,7 @@ class RosControlNode(Node):
         max_travel: Optional[float] = None,
         generation: Optional[int] = None,
         expected_goal_handle: Any = None,
+        result_updates: Optional[Dict[str, Any]] = None,
     ) -> None:
         with self._lock:
             if (
@@ -2188,6 +2667,8 @@ class RosControlNode(Node):
                     "updated_at": time.time(),
                 }
             )
+            if result_updates:
+                self._cabinet_state.update(result_updates)
             self._cabinet_terminal_event.set()
 
     def _enforce_motion_cancel(self, now: float) -> None:
@@ -2216,6 +2697,19 @@ class RosControlNode(Node):
     @staticmethod
     def _new_cabinet_control_state() -> Dict[str, Any]:
         return {
+            "control_type": None,
+            "type": None,
+            "valid": None,
+            "current_position": None,
+            "current_state": "",
+            "velocity": None,
+            "effort": None,
+            "normalized_position": None,
+            "activated": None,
+            "in_motion": None,
+            "transition_sequence": None,
+            "state_updated_at": None,
+            # Compatibility aliases retained for the original button UI/API.
             "button_pressed": None,
             "button_travel": None,
             "button_state_updated_at": None,
@@ -2233,14 +2727,50 @@ class RosControlNode(Node):
             joint_name = str(entry.joint_name).strip()
             joint_state_topic = str(entry.joint_state_topic).strip()
             pressed_topic = str(entry.pressed_topic).strip()
+            state_topic = str(getattr(entry, "state_topic", "")).strip()
             control_type = int(entry.control_type)
+            operable = bool(getattr(entry, "operable", True))
             if (
-                control_type != self.CABINET_CONTROL_TYPE_BUTTON
-                or not joint_name
-                or not joint_state_topic
-                or not pressed_topic
+                control_type not in self.CABINET_CONTROL_TYPES
+                or (
+                    operable
+                    and not state_topic
+                    and not (joint_name and joint_state_topic)
+                )
             ):
                 continue
+            min_position = float(getattr(entry, "min_position", 0.0))
+            max_position = float(getattr(entry, "max_position", 0.0))
+            if (
+                not math.isfinite(min_position)
+                or not math.isfinite(max_position)
+                or min_position > max_position
+            ):
+                continue
+            state_ids = [str(value) for value in getattr(entry, "state_ids", [])]
+            state_labels = [
+                str(value) for value in getattr(entry, "state_labels", [])
+            ]
+            state_positions = [
+                float(value)
+                for value in getattr(entry, "state_positions", [])
+            ]
+            if (
+                len(state_labels) not in {0, len(state_ids)}
+                or len(state_positions) not in {0, len(state_ids)}
+                or not all(math.isfinite(value) for value in state_positions)
+            ):
+                continue
+            supported_commands = int(
+                getattr(entry, "supported_commands", 0)
+            )
+            if (
+                supported_commands == 0
+                and control_type == self.CABINET_CONTROL_TYPE_BUTTON
+            ):
+                supported_commands = self.CABINET_COMMAND_SUPPORT[
+                    OperateCabinetControl.Goal.COMMAND_PRESS
+                ]
             controls[control_id] = {
                 "control_id": control_id,
                 "display_name": (
@@ -2250,6 +2780,21 @@ class RosControlNode(Node):
                 "joint_name": joint_name,
                 "joint_state_topic": joint_state_topic,
                 "pressed_topic": pressed_topic,
+                "state_topic": state_topic,
+                "supported_commands": supported_commands,
+                "unit": str(getattr(entry, "unit", "")),
+                "min_position": min_position,
+                "max_position": max_position,
+                "state_ids": state_ids,
+                "state_labels": state_labels,
+                "state_positions": state_positions,
+                "requires_grasp": bool(
+                    getattr(entry, "requires_grasp", False)
+                ),
+                "operable": operable,
+                "unavailable_reason": str(
+                    getattr(entry, "unavailable_reason", "")
+                ),
             }
 
         if not controls:
@@ -2275,6 +2820,14 @@ class RosControlNode(Node):
                 )
                 for control_id, control in controls.items()
             }
+            for control_id, control in controls.items():
+                control_type = int(control["control_type"])
+                self._cabinet_control_states[control_id].update(
+                    {
+                        "control_type": control_type,
+                        "type": control_type,
+                    }
+                )
             removed_control_ids = set(previous_controls) - set(controls)
             self._cabinet_catalog_received = True
 
@@ -2295,13 +2848,15 @@ class RosControlNode(Node):
     @staticmethod
     def _cabinet_control_signature(
         control: Optional[Dict[str, Any]],
-    ) -> Optional[Tuple[str, str, str]]:
+    ) -> Optional[Tuple[str, str, str, str, int]]:
         if control is None:
             return None
         return (
             str(control.get("joint_name", "")),
             str(control.get("joint_state_topic", "")),
             str(control.get("pressed_topic", "")),
+            str(control.get("state_topic", "")),
+            int(control.get("control_type", -1)),
         )
 
     def _remove_cabinet_control_subscriptions(
@@ -2314,7 +2869,7 @@ class RosControlNode(Node):
         )
         if subscriptions is None:
             return
-        for subscription_name in ("joint", "pressed"):
+        for subscription_name in ("state", "joint", "pressed"):
             subscription = subscriptions.get(subscription_name)
             if subscription is not None:
                 self.destroy_subscription(subscription)
@@ -2328,52 +2883,134 @@ class RosControlNode(Node):
         joint_name = str(control["joint_name"])
         joint_state_topic = str(control["joint_state_topic"])
         pressed_topic = str(control["pressed_topic"])
+        state_topic = str(control.get("state_topic", ""))
+        control_type = int(control.get("control_type", -1))
 
-        signature = (joint_name, joint_state_topic, pressed_topic)
+        signature = (
+            joint_name,
+            joint_state_topic,
+            pressed_topic,
+            state_topic,
+            control_type,
+        )
         existing = self._cabinet_control_subscriptions.get(control_id)
         if existing is not None and existing.get("signature") == signature:
             return
 
-        joint_subscription = self.create_subscription(
-            JointState,
-            joint_state_topic,
-            lambda message, selected_id=control_id, selected_joint=(
-                joint_name
-            ), selected_topic=(
-                joint_state_topic
-            ): self._cabinet_button_joint_state_callback(
-                selected_id,
-                selected_joint,
-                selected_topic,
-                message,
-            ),
-            10,
-        )
+        subscriptions: Dict[str, Any] = {"signature": signature}
         try:
-            pressed_subscription = self.create_subscription(
-                Bool,
-                pressed_topic,
-                lambda message, selected_id=control_id, selected_topic=(
-                    pressed_topic
-                ): (
-                    self._cabinet_button_pressed_callback(
+            if state_topic:
+                subscriptions["state"] = self.create_subscription(
+                    CabinetControlState,
+                    state_topic,
+                    lambda message, selected_id=control_id, selected_topic=(
+                        state_topic
+                    ): self._cabinet_control_state_callback(
                         selected_id,
                         selected_topic,
                         message,
-                    )
-                ),
-                transient_qos,
-            )
+                    ),
+                    transient_qos,
+                )
+            if joint_name and joint_state_topic:
+                subscriptions["joint"] = self.create_subscription(
+                    JointState,
+                    joint_state_topic,
+                    lambda message, selected_id=control_id, selected_joint=(
+                        joint_name
+                    ), selected_topic=(
+                        joint_state_topic
+                    ): self._cabinet_button_joint_state_callback(
+                        selected_id,
+                        selected_joint,
+                        selected_topic,
+                        message,
+                    ),
+                    10,
+                )
+            if pressed_topic:
+                subscriptions["pressed"] = self.create_subscription(
+                    Bool,
+                    pressed_topic,
+                    lambda message, selected_id=control_id, selected_topic=(
+                        pressed_topic
+                    ): self._cabinet_button_pressed_callback(
+                        selected_id,
+                        selected_topic,
+                        message,
+                    ),
+                    transient_qos,
+                )
         except Exception:
-            self.destroy_subscription(joint_subscription)
+            for name in ("state", "joint", "pressed"):
+                subscription = subscriptions.get(name)
+                if subscription is not None:
+                    self.destroy_subscription(subscription)
             raise
 
         self._remove_cabinet_control_subscriptions(control_id)
-        self._cabinet_control_subscriptions[control_id] = {
-            "signature": signature,
-            "joint": joint_subscription,
-            "pressed": pressed_subscription,
-        }
+        self._cabinet_control_subscriptions[control_id] = subscriptions
+
+    def _cabinet_control_state_callback(
+        self,
+        control_id: str,
+        state_topic: str,
+        message: CabinetControlState,
+    ) -> None:
+        """Store the authoritative generic state for one catalog control."""
+        message_control_id = str(message.control_id).strip()
+        if message_control_id and message_control_id != control_id:
+            return
+        position = float(message.position)
+        velocity = float(message.velocity)
+        effort = float(message.effort)
+        normalized_position = float(message.normalized_position)
+        if not all(
+            math.isfinite(value)
+            for value in (position, velocity, effort, normalized_position)
+        ):
+            return
+        with self._lock:
+            control = self._cabinet_controls.get(control_id)
+            if (
+                control is None
+                or control.get("state_topic") != state_topic
+                or int(message.control_type) != int(control["control_type"])
+            ):
+                return
+            state = self._cabinet_control_states.setdefault(
+                control_id,
+                self._new_cabinet_control_state(),
+            )
+            now = time.time()
+            state.update(
+                {
+                    "control_type": int(message.control_type),
+                    "type": int(message.control_type),
+                    "valid": bool(message.valid),
+                    "current_position": position,
+                    "current_state": str(message.state_id),
+                    "velocity": velocity,
+                    "effort": effort,
+                    "normalized_position": normalized_position,
+                    "activated": bool(message.activated),
+                    "in_motion": bool(message.in_motion),
+                    "transition_sequence": int(
+                        message.transition_sequence
+                    ),
+                    "state_updated_at": now,
+                }
+            )
+            if int(message.control_type) == self.CABINET_CONTROL_TYPE_BUTTON:
+                state.update(
+                    {
+                        "button_pressed": bool(message.activated),
+                        "button_travel": max(0.0, position),
+                        "button_state_updated_at": now,
+                    }
+                )
+            if self._selected_cabinet_control_id_locked() == control_id:
+                self._cabinet_state.update(state)
 
     def _cabinet_button_joint_state_callback(
         self,
@@ -2401,13 +3038,16 @@ class RosControlNode(Node):
                 control_id,
                 self._new_cabinet_control_state(),
             )
+            now = time.time()
             state.update(
                 {
+                    "current_position": travel,
+                    "state_updated_at": now,
                     "button_travel": max(0.0, travel),
-                    "button_state_updated_at": time.time(),
+                    "button_state_updated_at": now,
                 }
             )
-            if self._cabinet_state.get("button_id") == control_id:
+            if self._selected_cabinet_control_id_locked() == control_id:
                 self._cabinet_state.update(state)
 
     def _cabinet_button_pressed_callback(
@@ -2427,13 +3067,16 @@ class RosControlNode(Node):
                 control_id,
                 self._new_cabinet_control_state(),
             )
+            now = time.time()
             state.update(
                 {
+                    "activated": bool(message.data),
                     "button_pressed": bool(message.data),
-                    "button_state_updated_at": time.time(),
+                    "state_updated_at": now,
+                    "button_state_updated_at": now,
                 }
             )
-            if self._cabinet_state.get("button_id") == control_id:
+            if self._selected_cabinet_control_id_locked() == control_id:
                 self._cabinet_state.update(state)
 
     def _map_callback(self, message: OccupancyGrid) -> None:
@@ -2531,9 +3174,103 @@ class RosControlNode(Node):
     def _reject_if_cabinet_active_locked(self) -> None:
         if self._cabinet_active_locked():
             raise ControlRequestError(
-                "A cabinet button operation is active.",
+                "A cabinet operation is active.",
                 409,
             )
+
+    def _selected_cabinet_control_id_locked(self) -> str:
+        return str(
+            self._cabinet_state.get("control_id")
+            or self._cabinet_state.get("button_id")
+            or self.CABINET_BUTTON_ID
+        )
+
+    def _prepare_for_cabinet_operation_locked(self) -> None:
+        """Stop local publishers before the operator assumes base/arm control."""
+        self._target_linear_y = 0.0
+        self._target_angular_z = 0.0
+        self._linear_profile.reset()
+        self._angular_profile.reset()
+        self._pending_trajectory = None
+        self._pending_trajectory_repeats = 0
+        self._cmd_vel_publisher.publish(Twist())
+
+    @classmethod
+    def _normalize_cabinet_command(cls, command: Any) -> Tuple[int, str]:
+        if isinstance(command, str):
+            command_name = command.strip().lower().replace("-", "_")
+            if command_name in cls.CABINET_COMMANDS:
+                return cls.CABINET_COMMANDS[command_name], command_name
+        elif isinstance(command, int) and not isinstance(command, bool):
+            if command in cls.CABINET_COMMAND_NAMES:
+                return command, cls.CABINET_COMMAND_NAMES[command]
+        raise ControlRequestError(
+            "command must be one of: press, set_state, set_position, toggle."
+        )
+
+    def _validate_cabinet_operation_locked(
+        self,
+        control_id: str,
+        command_code: int,
+        target_state: Optional[str],
+        target_position: Optional[float],
+    ) -> Dict[str, Any]:
+        control = self._cabinet_controls.get(control_id)
+        if control is None:
+            raise ControlRequestError(
+                f"Unsupported cabinet control: {control_id}."
+            )
+        if not bool(control.get("operable", True)):
+            reason = str(control.get("unavailable_reason", "")).strip()
+            raise ControlRequestError(
+                reason or f"Cabinet control {control_id} is not operable.",
+                409,
+            )
+        default_support = (
+            self.CABINET_COMMAND_SUPPORT[
+                OperateCabinetControl.Goal.COMMAND_PRESS
+            ]
+            if int(control.get("control_type", -1))
+            == self.CABINET_CONTROL_TYPE_BUTTON
+            else 0
+        )
+        supported_commands = int(
+            control.get("supported_commands", default_support)
+        )
+        required_support = self.CABINET_COMMAND_SUPPORT[command_code]
+        if supported_commands & required_support == 0:
+            raise ControlRequestError(
+                f"Control {control_id} does not support command "
+                f"{self.CABINET_COMMAND_NAMES[command_code]}."
+            )
+        if (
+            command_code == OperateCabinetControl.Goal.COMMAND_SET_STATE
+            and target_state is None
+        ):
+            raise ControlRequestError(
+                "target_state is required for set_state."
+            )
+        if (
+            command_code == OperateCabinetControl.Goal.COMMAND_SET_POSITION
+            and target_position is None
+        ):
+            raise ControlRequestError(
+                "target_position is required for set_position."
+            )
+        state_ids = [str(value) for value in control.get("state_ids", [])]
+        if target_state is not None and state_ids and target_state not in state_ids:
+            raise ControlRequestError(
+                f"target_state must be one of: {', '.join(state_ids)}."
+            )
+        if target_position is not None:
+            min_position = float(control.get("min_position", target_position))
+            max_position = float(control.get("max_position", target_position))
+            if not min_position <= target_position <= max_position:
+                raise ControlRequestError(
+                    "target_position is outside the control range "
+                    f"[{min_position}, {max_position}]."
+                )
+        return control
 
     def _validate_cabinet_button_locked(self, button_id: str) -> None:
         control = self._cabinet_controls.get(button_id)
@@ -2549,7 +3286,7 @@ class RosControlNode(Node):
     def _reject_cabinet_start_conflicts_locked(self) -> None:
         if self._cabinet_active_locked():
             raise ControlRequestError(
-                "A cabinet button operation is already active.",
+                "A cabinet operation is already active.",
                 409,
             )
         if self._navigation_state["state"] in self.ACTIVE_NAVIGATION_STATES:
@@ -2580,6 +3317,13 @@ class RosControlNode(Node):
     def _action_server_ready(client: Any) -> bool:
         try:
             return bool(client.server_is_ready())
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _service_ready(client: Any) -> bool:
+        try:
+            return bool(client.service_is_ready())
         except Exception:  # noqa: BLE001
             return False
 

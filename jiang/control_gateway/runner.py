@@ -102,7 +102,12 @@ class ControlServer:
             while self._active_requests > 0:
                 self._request_condition.wait()
 
-        cabinet_cancel = self._node.cancel_cabinet_button(allow_idle=True)
+        cancel_cabinet = getattr(
+            self._node,
+            "cancel_cabinet_operation",
+            self._node.cancel_cabinet_button,
+        )
+        cabinet_cancel = cancel_cabinet(allow_idle=True)
         if (
             cabinet_cancel["status"] == "canceling"
             and not self._node.wait_for_cabinet_idle(
@@ -224,7 +229,7 @@ class ControlServer:
             return self._node.cancel_motion()
 
     def cabinet_status(self) -> Dict[str, Any]:
-        """Return cabinet-button action and physical button state."""
+        """Return generic cabinet action and physical control state."""
         with self._request_scope():
             return self._node.cabinet_snapshot()
 
@@ -245,10 +250,42 @@ class ControlServer:
                 navigate_to_staging_pose,
             )
 
-    def cancel_cabinet_button(self) -> Dict[str, Any]:
-        """Cancel the active cabinet-button operation."""
+    def operate_cabinet_control(
+        self,
+        control_id: str,
+        command: Any,
+        target_state: Optional[str],
+        target_position: Optional[float],
+        navigate_to_staging_pose: bool,
+    ) -> Dict[str, Any]:
+        """Start one generic, collision-checked cabinet operation."""
         with self._request_scope():
-            return self._node.cancel_cabinet_button()
+            return self._node.operate_cabinet_control(
+                control_id,
+                command,
+                target_state,
+                target_position,
+                navigate_to_staging_pose,
+            )
+
+    def reset_cabinet_controls(self) -> Dict[str, Any]:
+        """Reset all cabinet controls through the operator's idle interlock."""
+        with self._request_scope():
+            return self._node.reset_cabinet_controls()
+
+    def cancel_cabinet_operation(self) -> Dict[str, Any]:
+        """Cancel the active generic or legacy cabinet operation."""
+        with self._request_scope():
+            cancel = getattr(
+                self._node,
+                "cancel_cabinet_operation",
+                self._node.cancel_cabinet_button,
+            )
+            return cancel()
+
+    def cancel_cabinet_button(self) -> Dict[str, Any]:
+        """Compatibility alias for cancel_cabinet_operation."""
+        return self.cancel_cabinet_operation()
 
     @contextmanager
     def _request_scope(self) -> Iterator[None]:
