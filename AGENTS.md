@@ -26,8 +26,7 @@
 
 - 项目说明文档使用中文，命令、话题名称、文件名和代码标识符使用英文。
 - ROS 2 启动文件统一使用 Python launch，不再新增 ROS 1 XML launch。
-- 项目统一启动入口为
-  `xczs_inspection_robot_control/launch/inspection_robot.launch.py`。
+- 项目统一启动入口为 run_all.sh
 - 修改源码后必须重新编译，并验证统一启动入口能够正常运行。
 
 ## 版本管理
