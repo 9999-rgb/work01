@@ -182,6 +182,11 @@ class ControlServer:
         with self._request_scope():
             return self._node.cancel_navigation()
 
+    def takeover_navigation(self) -> Dict[str, Any]:
+        """Cancel Nav2 and switch the base router to zero-speed manual mode."""
+        with self._request_scope():
+            return self._node.takeover_navigation()
+
     def motion_status(self) -> Dict[str, Any]:
         """Return MoveIt action state."""
         with self._request_scope():

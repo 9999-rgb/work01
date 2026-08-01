@@ -24,6 +24,7 @@ class _FakeControlServer:
     def __init__(self) -> None:
         self.press_request: Optional[Tuple[str, bool]] = None
         self.cancel_count = 0
+        self.takeover_count = 0
 
     def health(self) -> Dict[str, Any]:
         return {
@@ -71,6 +72,10 @@ class _FakeControlServer:
         self.cancel_count += 1
         return {"status": "canceling"}
 
+    def takeover_navigation(self) -> Dict[str, Any]:
+        self.takeover_count += 1
+        return {"status": "taking_over", "mode": True}
+
 
 class ControlGatewayHttpTest(unittest.TestCase):
     """Exercise cabinet routes through a real local HTTP listener."""
@@ -102,6 +107,7 @@ class ControlGatewayHttpTest(unittest.TestCase):
     def setUp(self) -> None:
         self.control_server.press_request = None
         self.control_server.cancel_count = 0
+        self.control_server.takeover_count = 0
 
     def request(
         self,
@@ -217,6 +223,29 @@ class ControlGatewayHttpTest(unittest.TestCase):
         )
         self.assertEqual(400, status)
         self.assertIn("Unsupported", response["error"])
+
+    def test_navigation_takeover_accepts_an_empty_request(self) -> None:
+        status, response, _ = self.request(
+            "/navigation/takeover",
+            "POST",
+            {},
+        )
+
+        self.assertEqual(202, status)
+        self.assertEqual("taking_over", response["status"])
+        self.assertTrue(response["mode"])
+        self.assertEqual(1, self.control_server.takeover_count)
+
+    def test_navigation_takeover_rejects_a_velocity_payload(self) -> None:
+        status, response, _ = self.request(
+            "/navigation/takeover",
+            "POST",
+            {"linear_y": 0.2, "angular_z": 0.0},
+        )
+
+        self.assertEqual(400, status)
+        self.assertIn("does not accept a velocity", response["error"])
+        self.assertEqual(0, self.control_server.takeover_count)
 
 
 if __name__ == "__main__":

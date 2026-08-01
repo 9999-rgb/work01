@@ -63,6 +63,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/navigation/mode": self._handle_navigation_mode,
                 "/navigation/goal": self._handle_navigation_goal,
                 "/navigation/cancel": self._handle_navigation_cancel,
+                "/navigation/takeover": self._handle_navigation_takeover,
                 "/motion/named": self._handle_motion_named,
                 "/motion/pose": self._handle_motion_pose,
                 "/motion/cancel": self._handle_motion_cancel,
@@ -130,6 +131,18 @@ class ControlHandler(BaseHTTPRequestHandler):
         self._send_json(
             202,
             self.control_server.cancel_navigation(),
+        )
+
+    def _handle_navigation_takeover(self) -> None:
+        body = self._optional_body()
+        if body:
+            raise ControlRequestError(
+                "navigation takeover does not accept a velocity; wait for "
+                "manual_control_ready, then use /cmd_vel."
+            )
+        self._send_json(
+            202,
+            self.control_server.takeover_navigation(),
         )
 
     def _handle_motion_named(self) -> None:

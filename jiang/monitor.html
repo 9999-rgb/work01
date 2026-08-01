@@ -321,10 +321,18 @@
   color: var(--text); font-size: 20px;
   cursor: pointer; transition: all 0.1s;
   user-select: none; -webkit-user-select: none;
+  touch-action: none;
   display: flex; align-items: center; justify-content: center;
 }
 .dpad-btn:active, .dpad-btn.pressed {
   background: var(--accent); border-color: var(--accent); color: #fff;
+}
+.dpad.takeover-ready .dpad-btn:not(.empty) {
+  border-color: var(--yellow);
+}
+.dpad.taking-over .dpad-btn:not(.empty) {
+  border-color: var(--yellow); color: var(--yellow);
+  animation: blink 0.8s infinite;
 }
 .dpad-btn.empty { background: transparent; border: none; cursor: default; }
 
@@ -375,7 +383,7 @@
 .ctrl-status.ok { color: var(--green); border: 1px solid var(--green); }
 .ctrl-status.err { color: var(--red); border: 1px solid var(--red); }
 
-/* ── Nav2 and MoveIt ─────────────────────── */
+/* ── Autonomous tasks ────────────────────── */
 .autonomy-grid {
   display: grid; grid-template-columns: minmax(420px, 1.2fr) minmax(380px, 1fr);
   gap: 16px; margin-bottom: 16px;
@@ -387,6 +395,7 @@
   background: var(--card-bg); border: 1px solid var(--border);
   border-radius: 10px; overflow: hidden;
 }
+.navigation-card { grid-column: 1 / -1; }
 .cabinet-card { grid-column: 1 / -1; }
 .autonomy-header {
   display: flex; align-items: center; justify-content: space-between;
@@ -519,7 +528,7 @@
 <header class="header">
   <h1>
     ⚡ XCZS 巡操机器人
-    <small>统一监控、Nav2 导航与 MoveIt 2 规划</small>
+    <small>统一监控、Nav2 导航与控制柜自动操作</small>
   </h1>
   <div class="status-badge">
     <span class="status-dot" id="statusDot"></span>
@@ -604,12 +613,13 @@
     </div>
     <div class="status-detail" style="min-height:0">
       底盘模式：<strong id="baseModeState">等待状态</strong>
+      <div id="baseControlHint" style="margin-top:4px">连接后可使用方向键控制</div>
     </div>
   </div>
 
   <!-- Arm Sliders -->
   <div class="control-section" style="flex:2">
-    <h4>🦾 机械臂手动调试（不经过 MoveIt）</h4>
+    <h4>🦾 机械臂手动调试</h4>
     <div class="joint-sliders" id="jointSliders">
       <!-- Populated by JS -->
     </div>
@@ -639,9 +649,9 @@
   </div>
 </div>
 
-<!-- ─── Nav2 and MoveIt 2 ─── -->
+<!-- ─── Nav2 and autonomous cabinet operation ─── -->
 <div class="autonomy-grid">
-  <section class="autonomy-card">
+  <section class="autonomy-card navigation-card">
     <div class="autonomy-header">
       <h3>🧭 Nav2 地图导航</h3>
       <span class="autonomy-state" id="navState">等待服务</span>
@@ -672,82 +682,10 @@
       <div class="command-row">
         <button class="btn btn-outline" id="btnManualMode">切换手动模式</button>
         <button class="btn btn-primary" id="btnNavSend">开始导航</button>
-        <button class="btn btn-danger" id="btnNavCancel">取消导航</button>
+        <button class="btn btn-danger" id="btnNavCancel">停止导航并转手动</button>
       </div>
       <div class="status-detail" id="navDetail">
         启动时使用 <strong>./run_all.sh --web</strong>
-      </div>
-    </div>
-  </section>
-
-  <section class="autonomy-card">
-    <div class="autonomy-header">
-      <h3>🦾 MoveIt 2 机械臂规划</h3>
-      <span class="autonomy-state" id="moveitState">等待服务</span>
-    </div>
-    <div class="autonomy-body">
-      <div class="command-row" style="margin-top:0">
-        <button class="btn btn-primary moveit-command" id="btnMoveitHome">
-          机械臂回零
-        </button>
-        <button class="btn btn-outline moveit-command" id="btnMoveitOpen">
-          规划打开夹爪
-        </button>
-        <button class="btn btn-outline moveit-command" id="btnMoveitClose">
-          规划关闭夹爪
-        </button>
-      </div>
-
-      <div class="section-label">末端 end 目标位姿</div>
-      <div class="field-grid">
-        <div class="form-field">
-          <label for="moveitX">X / m</label>
-          <input id="moveitX" type="number" step="0.01" value="-0.226">
-        </div>
-        <div class="form-field">
-          <label for="moveitY">Y / m</label>
-          <input id="moveitY" type="number" step="0.01" value="0.787">
-        </div>
-        <div class="form-field">
-          <label for="moveitZ">Z / m</label>
-          <input id="moveitZ" type="number" step="0.01" value="0.318">
-        </div>
-      </div>
-      <div class="field-grid quaternion-grid">
-        <div class="form-field">
-          <label for="moveitRoll">Roll / deg</label>
-          <input id="moveitRoll" type="number" step="1" value="67.83">
-        </div>
-        <div class="form-field">
-          <label for="moveitPitch">Pitch / deg</label>
-          <input id="moveitPitch" type="number" step="1" value="-74.40">
-        </div>
-        <div class="form-field">
-          <label for="moveitYaw">Yaw / deg</label>
-          <input id="moveitYaw" type="number" step="1" value="123.14">
-        </div>
-      </div>
-      <div class="field-grid" style="grid-template-columns:1fr">
-        <div class="form-field">
-          <label for="moveitFrame">参考坐标系</label>
-          <select id="moveitFrame">
-            <option value="body">body（跟随车身）</option>
-            <option value="odom">odom（仿真世界）</option>
-            <option value="map">map（导航地图）</option>
-          </select>
-        </div>
-      </div>
-      <div class="command-row">
-        <button class="btn btn-outline moveit-command" id="btnMoveitPlan">
-          仅规划
-        </button>
-        <button class="btn btn-primary moveit-command" id="btnMoveitExecute">
-          规划并执行
-        </button>
-        <button class="btn btn-danger" id="btnMoveitCancel">取消动作</button>
-      </div>
-      <div class="status-detail" id="moveitDetail">
-        MoveIt 会检查关节限位、自碰撞和控制柜碰撞。
       </div>
     </div>
   </section>
@@ -935,8 +873,7 @@ const lidarCanvas = $('lidarCanvas');
 const navMapCanvas = $('navMapCanvas');
 const navState = $('navState');
 const navDetail = $('navDetail');
-const moveitState = $('moveitState');
-const moveitDetail = $('moveitDetail');
+const baseControlHint = $('baseControlHint');
 const cabinetState = $('cabinetState');
 const cabinetDetail = $('cabinetDetail');
 
@@ -1476,6 +1413,11 @@ let gripperPositions = [0.0, -0.0];
 let baseActive = false;
 let activeMotion = null;
 let controlInterval = null;
+let pendingManualMotion = null;
+let manualIntentSource = null;
+let manualIntentGeneration = 0;
+let manualTakeoverState = 'idle';
+let manualTakeoverPromise = null;
 
 // ─── Control Connection ──────────────────────────────────────
 async function testControlConnection() {
@@ -1497,14 +1439,11 @@ async function testControlConnection() {
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
 
-      // Confirm that no cabinet operation is active before changing the
-      // base routing mode.  Reloading the page must not interrupt an action
-      // that is already navigating or manipulating the cabinet.
-      let cabinetStatusKnown = false;
+      // Read current state without changing the base routing mode.  Reloading
+      // the page must never cancel navigation or interrupt a cabinet action.
       try {
         cabinetStatus = await controlRequestWithTimeout('/cabinet/status');
         cabinetStatusCurrent = true;
-        cabinetStatusKnown = true;
         renderCabinetStatus();
       } catch (_) {
         cabinetStatus = null;
@@ -1514,22 +1453,14 @@ async function testControlConnection() {
       startAutonomyPolling();
       if (!health.navigation_available) {
         log('info', 'Nav2 未启动；使用 --web 可启用网页地图导航');
-      } else if (
-        (cabinetStatusKnown || typeof health.cabinet_active === 'boolean') &&
-        !isCabinetOperationActive(cabinetStatus)
-      ) {
-        // When Nav2 is running alongside the web UI, default to
-        // manual base mode so the D-pad and WASD work immediately.
-        // The operator can re-enable Nav2 through the UI.
-        switchToManualMode();
-        log('info', '已自动切换到手动底盘模式（可通过 Nav2 面板启用导航）');
-      } else if (isCabinetOperationActive(cabinetStatus)) {
-        log('info', '控制柜操作正在进行，保持当前底盘模式');
       } else {
-        log('info', '未能确认控制柜动作状态，不自动切换底盘模式');
+        log('info', '已保留当前底盘模式；方向输入可随时手动接管');
+      }
+      if (isCabinetOperationActive(cabinetStatus)) {
+        log('info', '控制柜操作正在进行，保持当前底盘模式');
       }
       if (!health.moveit_available) {
-        log('info', 'MoveIt 2 尚未就绪');
+        log('info', '机械臂自动规划服务尚未就绪');
       }
       if (!cabinetAvailableFromHealth) {
         log('info', '控制柜按钮操作服务尚未就绪');
@@ -1648,8 +1579,14 @@ async function controlRequestWithTimeout(
   }
 }
 
-// ─── Nav2 and MoveIt 2 unified control ─────────────────────
-const navActiveStates = new Set(['enabling', 'sending', 'navigating', 'canceling']);
+// ─── Autonomous task control ────────────────────────────────
+const navActiveStates = new Set([
+  'enabling',
+  'sending',
+  'navigating',
+  'canceling',
+  'taking_over'
+]);
 const moveitActiveStates = new Set(['sending', 'planning', 'executing', 'canceling']);
 const cabinetActiveStates = new Set([
   'accepted',
@@ -1706,6 +1643,7 @@ const stateLabels = {
   retracting: '撤回中',
   verifying_release: '验证释放',
   canceling: '正在取消',
+  taking_over: '正在手动接管',
   succeeded: '已完成',
   canceled: '已取消',
   rejected: '已拒绝',
@@ -1722,6 +1660,12 @@ function isCabinetOperationActive(status = cabinetStatus) {
 function isNavigationActive() {
   return Boolean(
     navigationStatus && navActiveStates.has(navigationStatus.state)
+  );
+}
+
+function hasRetiringNavigationGoals() {
+  return Boolean(
+    navigationStatus && Number(navigationStatus.retiring_goals) > 0
   );
 }
 
@@ -1824,7 +1768,7 @@ async function refreshAutonomyStatus(
       generation,
       status => {
         moveitStatus = status;
-        renderMoveitStatus();
+        updateControlInterlocks();
       }
     ),
     pollAutonomyEndpoint(
@@ -2083,6 +2027,10 @@ function renderNavigationStatus() {
   );
 
   const pose = navigationStatus.current_pose;
+  const retiringGoals = Number(navigationStatus.retiring_goals) || 0;
+  const retirementErrors = Array.isArray(navigationStatus.retirement_errors)
+    ? navigationStatus.retirement_errors.filter(Boolean)
+    : [];
   const detail = [
     navigationStatus.message || '',
     `模式: ${navigationStatus.mode === true ? 'Nav2' :
@@ -2092,44 +2040,87 @@ function renderNavigationStatus() {
       `yaw=${formatMetric(pose.yaw * 180 / Math.PI, 1, '°')}` : '-'}`,
     `剩余: ${formatMetric(navigationStatus.distance_remaining, 2, ' m')}  ` +
       `ETA: ${formatMetric(navigationStatus.eta_seconds, 1, ' s')}  ` +
-      `恢复: ${navigationStatus.recoveries || 0}`
+      `恢复: ${navigationStatus.recoveries || 0}`,
+    retiringGoals > 0
+      ? `待确认停止的旧导航: ${retiringGoals}（自动任务暂时锁定）`
+      : '',
+    ...retirementErrors.map(error => `停止确认异常: ${error}`)
   ];
-  navDetail.textContent = detail.join('\n');
+  navDetail.textContent = detail.filter(Boolean).join('\n');
   navDetail.style.whiteSpace = 'pre-line';
-  $('baseModeState').textContent = navigationStatus.mode === true
-    ? 'Nav2 自动导航'
-    : navigationStatus.mode === false
-      ? '网页手动'
-      : '等待路由器状态';
-
+  renderBaseControlStatus();
   updateControlInterlocks();
   drawNavigationMap();
 }
 
-function renderMoveitStatus() {
-  if (!moveitStatus) return;
-  const available = Boolean(moveitStatus.available);
-  const state = moveitStatus.state || 'idle';
-  const active = moveitActiveStates.has(state);
-  let stateClass = '';
-  if (!available || ['failed', 'rejected'].includes(state)) stateClass = 'err';
-  else if (active) stateClass = 'busy';
-  else if (state === 'succeeded') stateClass = 'ok';
-  setAutonomyState(
-    moveitState,
-    available ? (stateLabels[state] || state) : 'MoveIt 未启动',
-    stateClass
+function renderBaseControlStatus() {
+  const navigationActive = isNavigationActive();
+  const navigationMode = navigationStatus && navigationStatus.mode;
+  const cabinetActive = isCabinetOperationActive();
+  const dpad = $('dpad');
+  const takeoverReady = Boolean(
+    ctrlConnected &&
+    !cabinetActive &&
+    manualTakeoverState !== 'taking_over' &&
+    manualTakeoverRequired()
   );
-  const detail = [
-    moveitStatus.message || '',
-    `反馈: ${moveitStatus.feedback || '-'}`,
-    `规划耗时: ${formatMetric(moveitStatus.planning_time, 3, ' s')}  ` +
-      `错误码: ${moveitStatus.error_code === null ||
-        moveitStatus.error_code === undefined ? '-' : moveitStatus.error_code}`
-  ];
-  moveitDetail.textContent = detail.join('\n');
-  moveitDetail.style.whiteSpace = 'pre-line';
-  updateControlInterlocks();
+  dpad.classList.toggle('takeover-ready', takeoverReady);
+  dpad.classList.toggle(
+    'taking-over',
+    manualTakeoverState === 'taking_over'
+  );
+
+  let modeText = '等待路由器状态';
+  let hintText = '连接后可使用方向键控制';
+  if (!ctrlConnected) {
+    modeText = '控制服务未连接';
+    hintText = '等待 Web 控制服务';
+  } else if (cabinetActive) {
+    modeText = '控制柜操作锁定';
+    hintText = '自动操作完成前不可手动接管';
+  } else if (manualTakeoverState === 'taking_over') {
+    modeText = '正在手动接管';
+    hintText = '正在停止 Nav2 并切换底盘路由…';
+  } else if (manualTakeoverState === 'failed') {
+    modeText = '手动接管失败';
+    hintText = '机器人保持停止，可再次按方向键重试';
+  } else if (hasRetiringNavigationGoals() && isManualControlReady()) {
+    modeText = '网页手动 · 旧导航待确认';
+    hintText = '手动控制可用；新导航和柜体任务暂时锁定，可重试停止';
+  } else if (navigationMode === true || navigationActive) {
+    modeText = navigationActive ? 'Nav2 自动导航' : 'Nav2 模式待命';
+    hintText = navigationActive
+      ? '按 D-Pad 或 W/A/S/D 将停止导航并手动接管'
+      : '按 D-Pad 或 W/A/S/D 可切换到手动控制';
+  } else if (!isManualControlReady()) {
+    modeText = '手动路由准备中';
+    hintText = '按 D-Pad 或 W/A/S/D 可完成手动接管';
+  } else if (baseActive && activeMotion) {
+    const motionLabels = {
+      forward: '前进',
+      backward: '后退',
+      left: '左转',
+      right: '右转'
+    };
+    modeText = `网页手动 · ${motionLabels[activeMotion] || activeMotion}`;
+    hintText = '松开方向键即停止';
+  } else {
+    modeText = '网页手动';
+    hintText = '按住 D-Pad 或 W/A/S/D 移动，松开即停';
+  }
+  $('baseModeState').textContent = modeText;
+  baseControlHint.textContent = hintText;
+
+  const manualButton = $('btnManualMode');
+  if (manualTakeoverState === 'taking_over') {
+    manualButton.textContent = '正在接管…';
+  } else if (hasRetiringNavigationGoals()) {
+    manualButton.textContent = '重试停止旧导航';
+  } else if (isManualControlReady() && !navigationActive) {
+    manualButton.textContent = '当前：手动控制';
+  } else {
+    manualButton.textContent = '手动接管（将停止导航）';
+  }
 }
 
 function cabinetFeedbackValue(...names) {
@@ -2278,54 +2269,57 @@ function renderCabinetStatus() {
 
 function updateControlInterlocks() {
   const navigationActive = isNavigationActive();
+  const navigationRetiring = hasRetiringNavigationGoals();
   const motionActive = isMoveitActive();
   const cabinetActive = isCabinetOperationActive();
+  const takingOver = manualTakeoverState === 'taking_over';
   const navigationAvailable = Boolean(
     navigationStatus && navigationStatus.available
   );
-  const moveitAvailable = Boolean(moveitStatus && moveitStatus.available);
 
   if (cabinetActive && !cabinetInterlockWasActive) {
-    stopBase();
-    keysPressed.clear();
+    clearDirectionInputs();
   }
   cabinetInterlockWasActive = cabinetActive;
 
   $('btnNavSend').disabled =
-    !ctrlConnected || !navigationAvailable || navigationActive || cabinetActive;
-  $('btnNavCancel').disabled = !ctrlConnected || !navigationActive;
+    !ctrlConnected ||
+    !navigationAvailable ||
+    navigationActive ||
+    navigationRetiring ||
+    cabinetActive ||
+    takingOver;
+  $('btnNavCancel').disabled =
+    !ctrlConnected ||
+    cabinetActive ||
+    takingOver ||
+    !(
+      navigationActive ||
+      navigationRetiring ||
+      Boolean(navigationStatus && navigationStatus.mode === true)
+    );
   $('btnManualMode').disabled =
     !ctrlConnected ||
     cabinetActive ||
+    takingOver ||
     Boolean(
-      navigationStatus &&
-      navigationStatus.mode === false &&
-      !navigationActive
+      isManualControlReady() &&
+      !navigationActive &&
+      !navigationRetiring
     );
   ['navGoalX', 'navGoalY', 'navGoalYaw'].forEach(id => {
-    $(id).disabled = cabinetActive;
+    $(id).disabled = cabinetActive || takingOver;
   });
 
   const manualBlocked =
     !ctrlConnected ||
-    cabinetActive ||
-    Boolean(navigationStatus && navigationStatus.mode === true);
+    cabinetActive;
   document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
     button.disabled = manualBlocked;
   });
   $('spdLinear').disabled = manualBlocked;
   $('spdAngular').disabled = manualBlocked;
 
-  document.querySelectorAll('.moveit-command').forEach(button => {
-    button.disabled =
-      !ctrlConnected || !moveitAvailable || motionActive || cabinetActive;
-  });
-  $('btnMoveitCancel').disabled = !ctrlConnected || !motionActive;
-  document.querySelectorAll(
-    '#moveitX, #moveitY, #moveitZ, #moveitRoll, #moveitPitch, #moveitYaw, #moveitFrame'
-  ).forEach(input => {
-    input.disabled = cabinetActive;
-  });
   document.querySelectorAll('#jointSliders input').forEach(input => {
     input.disabled = !ctrlConnected || motionActive || cabinetActive;
   });
@@ -2338,33 +2332,150 @@ function updateControlInterlocks() {
     !isCabinetAvailable() ||
     cabinetActive ||
     navigationActive ||
-    motionActive;
+    navigationRetiring ||
+    motionActive ||
+    takingOver;
   $('btnCabinetCancel').disabled = !ctrlConnected || !cabinetActive;
   $('cabinetNavigate').disabled = cabinetActive;
+  renderBaseControlStatus();
+}
+
+const manualTakeoverRequestTimeoutMs = 2500;
+const manualTakeoverConfirmTimeoutMs = 5000;
+
+function waitForControlDelay(delayMs) {
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+function isManualControlReady(status = navigationStatus) {
+  if (!status || status.mode !== false) return false;
+  if (
+    Object.prototype.hasOwnProperty.call(status, 'manual_control_ready')
+  ) {
+    return status.manual_control_ready === true;
+  }
+  // Compatibility with gateways that predate manual_control_ready.
+  return true;
+}
+
+function manualTakeoverRequired() {
+  return !isManualControlReady() || isNavigationActive();
+}
+
+async function postManualTakeoverRequest() {
+  const controller = new AbortController();
+  const timer = setTimeout(
+    () => controller.abort(),
+    manualTakeoverRequestTimeoutMs
+  );
+  try {
+    return await controlRequest(
+      '/navigation/takeover',
+      'POST',
+      {},
+      controller.signal
+    );
+  } catch (error) {
+    if (error && error.name === 'AbortError') {
+      throw new Error('接管请求超时');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function waitForManualMode() {
+  const deadline = Date.now() + manualTakeoverConfirmTimeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    if (!ctrlConnected) throw new Error('控制服务器已断开');
+    if (isCabinetOperationActive()) {
+      throw new Error('控制柜操作已锁定底盘');
+    }
+    try {
+      const status = await controlRequestWithTimeout(
+        '/navigation/status',
+        900
+      );
+      navigationStatus = status;
+      renderNavigationStatus();
+      if (isManualControlReady(status)) return true;
+      lastError = null;
+    } catch (error) {
+      lastError = error;
+    }
+    await waitForControlDelay(120);
+  }
+  if (lastError && lastError.name !== 'AbortError') {
+    throw new Error(`等待手动模式超时: ${lastError.message}`);
+  }
+  throw new Error('等待手动模式超时');
+}
+
+async function ensureManualControl(forceTakeover = false) {
+  if (!ctrlConnected) {
+    toast('控制服务器未连接', 'err');
+    return false;
+  }
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，手动底盘已锁定', 'err');
+    return false;
+  }
+  if (!forceTakeover && !manualTakeoverRequired()) {
+    manualTakeoverState = 'idle';
+    renderBaseControlStatus();
+    updateControlInterlocks();
+    return true;
+  }
+  if (manualTakeoverPromise) return manualTakeoverPromise;
+
+  manualTakeoverState = 'taking_over';
+  haltBaseOutput();
+  renderBaseControlStatus();
+  updateControlInterlocks();
+
+  manualTakeoverPromise = (async () => {
+    try {
+      // The takeover request only cancels Nav2, switches routing to manual and
+      // keeps the commanded velocity at zero.  Direction velocity is sent via
+      // /cmd_vel only after /navigation/status confirms mode=false.
+      await postManualTakeoverRequest();
+      await waitForManualMode();
+      manualTakeoverState = 'idle';
+      toast(
+        hasRetiringNavigationGoals()
+          ? '手动路由已确认，正在等待旧导航停止'
+          : '手动接管成功，Nav2 已停止',
+        'ok'
+      );
+      return true;
+    } catch (error) {
+      manualTakeoverState = 'failed';
+      haltBaseOutput();
+      toast(`手动接管失败，机器人保持停止: ${error.message}`, 'err');
+      return false;
+    } finally {
+      manualTakeoverPromise = null;
+      renderBaseControlStatus();
+      updateControlInterlocks();
+      refreshAutonomyStatus();
+    }
+  })();
+  return manualTakeoverPromise;
 }
 
 async function switchToManualMode() {
-  if (isCabinetOperationActive()) {
-    toast('控制柜操作进行中，不能切换底盘模式', 'err');
-    return;
-  }
-  try {
-    stopBase();
-    await controlRequest(
-      '/navigation/mode',
-      'POST',
-      {enabled: false}
-    );
-    toast('已请求切换到手动底盘模式', 'ok');
-    refreshAutonomyStatus();
-  } catch (error) {
-    toast(`模式切换失败: ${error.message}`, 'err');
-  }
+  await requestStopAndManualTakeover(true);
 }
 
 async function sendNavigationGoal() {
   if (isCabinetOperationActive()) {
     toast('控制柜操作进行中，不能发送 Nav2 目标', 'err');
+    return;
+  }
+  if (manualTakeoverState === 'taking_over') {
+    toast('手动接管尚未完成，请稍后再启动导航', 'err');
     return;
   }
   const x = Number($('navGoalX').value);
@@ -2379,6 +2490,13 @@ async function sendNavigationGoal() {
     y,
     yaw: yawDegrees * Math.PI / 180
   };
+  // Navigation always starts from a stopped base with no retained local
+  // direction intent.  A key/pointer release from the previous manual command
+  // therefore cannot affect the new navigation session.
+  await clearDirectionInputs();
+  manualTakeoverState = 'idle';
+  renderBaseControlStatus();
+  updateControlInterlocks();
   try {
     await controlRequest(
       '/navigation/goal',
@@ -2393,100 +2511,17 @@ async function sendNavigationGoal() {
 }
 
 async function cancelNavigation() {
-  try {
-    await controlRequest('/navigation/cancel', 'POST', {});
-    toast('正在取消 Nav2 导航', 'ok');
-    refreshAutonomyStatus();
-  } catch (error) {
-    toast(`取消导航失败: ${error.message}`, 'err');
-  }
-}
-
-async function sendNamedMoveit(group, target) {
-  if (isCabinetOperationActive()) {
-    toast('控制柜操作进行中，不能发送 MoveIt 目标', 'err');
-    return;
-  }
-  try {
-    await controlRequest(
-      '/motion/named',
-      'POST',
-      {group, target, execute: true}
-    );
-    toast(`MoveIt 目标 ${target} 已提交`, 'ok');
-    refreshAutonomyStatus();
-  } catch (error) {
-    toast(`MoveIt 目标失败: ${error.message}`, 'err');
-  }
-}
-
-function quaternionFromEuler(roll, pitch, yaw) {
-  const cr = Math.cos(roll / 2);
-  const sr = Math.sin(roll / 2);
-  const cp = Math.cos(pitch / 2);
-  const sp = Math.sin(pitch / 2);
-  const cy = Math.cos(yaw / 2);
-  const sy = Math.sin(yaw / 2);
-  return [
-    sr * cp * cy - cr * sp * sy,
-    cr * sp * cy + sr * cp * sy,
-    cr * cp * sy - sr * sp * cy,
-    cr * cp * cy + sr * sp * sy
-  ];
-}
-
-async function sendMoveitPose(execute) {
-  if (isCabinetOperationActive()) {
-    toast('控制柜操作进行中，不能发送 MoveIt 目标', 'err');
-    return;
-  }
-  const position = [
-    Number($('moveitX').value),
-    Number($('moveitY').value),
-    Number($('moveitZ').value)
-  ];
-  const euler = [
-    Number($('moveitRoll').value),
-    Number($('moveitPitch').value),
-    Number($('moveitYaw').value)
-  ];
-  if (![...position, ...euler].every(Number.isFinite)) {
-    toast('MoveIt 位姿必须是有效数字', 'err');
-    return;
-  }
-  const radians = euler.map(value => value * Math.PI / 180);
-  try {
-    await controlRequest(
-      '/motion/pose',
-      'POST',
-      {
-        frame_id: $('moveitFrame').value,
-        position,
-        orientation: quaternionFromEuler(...radians),
-        execute
-      }
-    );
-    toast(execute ? 'MoveIt 正在规划并执行' : 'MoveIt 正在规划', 'ok');
-    refreshAutonomyStatus();
-  } catch (error) {
-    toast(`MoveIt 位姿失败: ${error.message}`, 'err');
-  }
-}
-
-async function cancelMoveit() {
-  try {
-    await controlRequest('/motion/cancel', 'POST', {});
-    toast('正在取消 MoveIt 动作', 'ok');
-    refreshAutonomyStatus();
-  } catch (error) {
-    toast(`取消 MoveIt 失败: ${error.message}`, 'err');
-  }
+  await requestStopAndManualTakeover(true);
 }
 
 async function sendCabinetOperation() {
   if (isCabinetOperationActive()) return;
-  if (isNavigationActive() || isMoveitActive()) {
-    toast('请先结束当前 Nav2 或 MoveIt 动作', 'err');
+  if (
+    isNavigationActive() ||
+    hasRetiringNavigationGoals() ||
+    isMoveitActive()
+  ) {
+    toast('请先结束当前导航或机械臂任务', 'err');
     return;
   }
   const previousStatus = cabinetStatus;
@@ -2554,80 +2589,275 @@ showNavigationMapMessage('等待控制服务器');
 function getLinSpeed() { return parseFloat($('spdLinear').value) || 0.25; }
 function getAngSpeed() { return parseFloat($('spdAngular').value) || 0.60; }
 
-function startBaseMotion(motion) {
-  if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
-  if (isCabinetOperationActive()) {
-    toast('控制柜操作进行中，手动底盘已锁定', 'err');
-    return;
+function baseCommandForMotion(motion) {
+  let linearY = 0;
+  let angularZ = 0;
+  switch (motion) {
+    case 'forward':  linearY =  getLinSpeed(); break;
+    case 'backward': linearY = -getLinSpeed(); break;
+    case 'left':     angularZ =  getAngSpeed(); break;
+    case 'right':    angularZ = -getAngSpeed(); break;
   }
-  if (navigationStatus && navigationStatus.mode === true) {
-    toast('请先切换到手动底盘模式', 'err');
-    return;
+  return {linearY, angularZ};
+}
+
+function haltBaseOutput() {
+  baseActive = false;
+  activeMotion = null;
+  if (controlInterval) {
+    clearInterval(controlInterval);
+    controlInterval = null;
   }
+  const zeroRequest = postCmdVel(0, 0);
+  renderBaseControlStatus();
+  return zeroRequest;
+}
+
+function stopBase(source = null) {
+  if (source !== null && manualIntentSource !== source) {
+    return Promise.resolve(false);
+  }
+  manualIntentGeneration += 1;
+  pendingManualMotion = null;
+  manualIntentSource = null;
+  return haltBaseOutput();
+}
+
+function beginBaseMotion(motion) {
   activeMotion = motion;
   baseActive = true;
   sendBaseCommand();
   if (controlInterval) clearInterval(controlInterval);
   controlInterval = setInterval(sendBaseCommand, 100);
+  renderBaseControlStatus();
+}
+
+async function startBaseMotion(motion, source) {
+  if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，手动底盘已锁定', 'err');
+    return;
+  }
+
+  const intentGeneration = ++manualIntentGeneration;
+  pendingManualMotion = motion;
+  manualIntentSource = source;
+
+  const ready = manualTakeoverRequired()
+    ? await ensureManualControl()
+    : true;
+  if (!ready) {
+    if (
+      manualIntentGeneration === intentGeneration &&
+      manualIntentSource === source
+    ) {
+      pendingManualMotion = null;
+      manualIntentSource = null;
+    }
+    return;
+  }
+
+  // Releasing an input increments this generation and clears its source.  An
+  // older takeover await can therefore never start a delayed nonzero command.
+  if (
+    manualIntentGeneration !== intentGeneration ||
+    pendingManualMotion !== motion ||
+    manualIntentSource !== source ||
+    !ctrlConnected ||
+    isCabinetOperationActive() ||
+    !isManualControlReady()
+  ) {
+    return;
+  }
+  manualTakeoverState = 'idle';
+  beginBaseMotion(motion);
 }
 
 function sendBaseCommand() {
   if (!baseActive || !activeMotion) return;
-  let ly = 0, az = 0;
-  switch (activeMotion) {
-    case 'forward':  ly =  getLinSpeed(); break;
-    case 'backward': ly = -getLinSpeed(); break;
-    case 'left':     az =  getAngSpeed(); break;
-    case 'right':    az = -getAngSpeed(); break;
+  if (
+    !ctrlConnected ||
+    isCabinetOperationActive() ||
+    !isManualControlReady()
+  ) {
+    haltBaseOutput();
+    return;
   }
-  postCmdVel(ly, az);
+  const command = baseCommandForMotion(activeMotion);
+  postCmdVel(command.linearY, command.angularZ);
 }
 
-function stopBase() {
-  baseActive = false;
-  activeMotion = null;
-  if (controlInterval) { clearInterval(controlInterval); controlInterval = null; }
-  postCmdVel(0, 0);
+async function requestStopAndManualTakeover(showStoppedToast = false) {
+  clearDirectionInputs();
+  if (!ctrlConnected) {
+    toast('控制服务器未连接', 'err');
+    return false;
+  }
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，不能手动接管', 'err');
+    return false;
+  }
+  const forceTakeover = hasRetiringNavigationGoals();
+  if (!forceTakeover && !manualTakeoverRequired()) {
+    manualTakeoverState = 'idle';
+    renderBaseControlStatus();
+    updateControlInterlocks();
+    if (showStoppedToast) toast('底盘已停止，当前为手动模式', 'ok');
+    return true;
+  }
+  return ensureManualControl(forceTakeover);
 }
 
 // ─── D-Pad button wiring ────────────────────────────────────
 function wireDpad(id, motion) {
-  const btn = $(id); if (!btn) return;
-  btn.addEventListener('mousedown', e => { e.preventDefault(); startBaseMotion(motion); });
-  btn.addEventListener('mouseup', e => { e.preventDefault(); stopBase(); });
-  btn.addEventListener('mouseleave', () => stopBase());
-  btn.addEventListener('touchstart', e => { e.preventDefault(); startBaseMotion(motion); });
-  btn.addEventListener('touchend', e => { e.preventDefault(); stopBase(); });
-  btn.addEventListener('touchcancel', () => stopBase());
+  const btn = $(id);
+  if (!btn) return;
+
+  btn.addEventListener('pointerdown', event => {
+    if (
+      btn.disabled ||
+      (event.pointerType === 'mouse' && event.button !== 0)
+    ) return;
+    event.preventDefault();
+    const pointerId = String(event.pointerId);
+    const source = `pointer:${pointerId}:${id}`;
+    btn.dataset.activePointer = pointerId;
+    btn.dataset.intentSource = source;
+    btn.classList.add('pressed');
+    try { btn.setPointerCapture(event.pointerId); } catch (_) {}
+    startBaseMotion(motion, source);
+  });
+
+  const releasePointer = event => {
+    const pointerId = String(event.pointerId);
+    if (btn.dataset.activePointer !== pointerId) return;
+    const source = btn.dataset.intentSource;
+    delete btn.dataset.activePointer;
+    delete btn.dataset.intentSource;
+    btn.classList.remove('pressed');
+    if (event.type !== 'lostpointercapture') {
+      try {
+        if (btn.hasPointerCapture(event.pointerId)) {
+          btn.releasePointerCapture(event.pointerId);
+        }
+      } catch (_) {}
+    }
+    stopBase(source);
+  };
+  btn.addEventListener('pointerup', releasePointer);
+  btn.addEventListener('pointercancel', releasePointer);
+  btn.addEventListener('lostpointercapture', releasePointer);
 }
 wireDpad('btnForward', 'forward');
 wireDpad('btnBackward', 'backward');
 wireDpad('btnLeft', 'left');
 wireDpad('btnRight', 'right');
-$('btnStop').addEventListener('click', () => { stopBase(); stopBase(); });
 
 // ─── Keyboard control ───────────────────────────────────────
 const keysPressed = new Set();
-document.addEventListener('keydown', e => {
-  if (e.target.tagName === 'INPUT') return;
-  if (keysPressed.has(e.key)) return;
-  keysPressed.add(e.key);
-  switch (e.key.toLowerCase()) {
-    case 'w': e.preventDefault(); startBaseMotion('forward'); break;
-    case 's': e.preventDefault(); startBaseMotion('backward'); break;
-    case 'a': e.preventDefault(); startBaseMotion('left'); break;
-    case 'd': e.preventDefault(); startBaseMotion('right'); break;
-    case ' ': e.preventDefault(); stopBase(); break;
+const keyboardKeyOrder = [];
+const keyboardMotionMap = {
+  w: 'forward',
+  s: 'backward',
+  a: 'left',
+  d: 'right'
+};
+const keyboardButtonMap = {
+  w: 'btnForward',
+  s: 'btnBackward',
+  a: 'btnLeft',
+  d: 'btnRight'
+};
+
+function isTextEntryTarget(target) {
+  return Boolean(
+    target &&
+    (
+      ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName) ||
+      target.isContentEditable
+    )
+  );
+}
+
+function clearDirectionInputs() {
+  keysPressed.clear();
+  keyboardKeyOrder.length = 0;
+  document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
+    const pointerId = Number(button.dataset.activePointer);
+    delete button.dataset.activePointer;
+    delete button.dataset.intentSource;
+    button.classList.remove('pressed');
+    if (Number.isFinite(pointerId)) {
+      try {
+        if (button.hasPointerCapture(pointerId)) {
+          button.releasePointerCapture(pointerId);
+        }
+      } catch (_) {}
+    }
+  });
+  return stopBase();
+}
+
+document.addEventListener('keydown', event => {
+  if (
+    isTextEntryTarget(event.target) ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey
+  ) return;
+  const key = event.key.toLowerCase();
+  if (keyboardMotionMap[key]) {
+    event.preventDefault();
+    if (keysPressed.has(key)) return;
+    keysPressed.add(key);
+    keyboardKeyOrder.push(key);
+    $(keyboardButtonMap[key]).classList.add('pressed');
+    startBaseMotion(keyboardMotionMap[key], `keyboard:${key}`);
+    return;
+  }
+  if (event.key === ' ' && !event.repeat) {
+    event.preventDefault();
+    requestStopAndManualTakeover(false);
   }
 });
-document.addEventListener('keyup', e => {
-  keysPressed.delete(e.key);
-  if (!keysPressed.has('w') && !keysPressed.has('s') &&
-      !keysPressed.has('a') && !keysPressed.has('d') &&
-      !keysPressed.has('W') && !keysPressed.has('S') &&
-      !keysPressed.has('A') && !keysPressed.has('D')) {
-    stopBase();
+document.addEventListener('keyup', event => {
+  const key = event.key.toLowerCase();
+  if (!keyboardMotionMap[key]) return;
+  keysPressed.delete(key);
+  const keyIndex = keyboardKeyOrder.indexOf(key);
+  if (keyIndex >= 0) keyboardKeyOrder.splice(keyIndex, 1);
+  $(keyboardButtonMap[key]).classList.remove('pressed');
+
+  const releasedSource = `keyboard:${key}`;
+  if (manualIntentSource !== releasedSource) return;
+  const fallbackKey = keyboardKeyOrder.length
+    ? keyboardKeyOrder[keyboardKeyOrder.length - 1]
+    : null;
+  if (fallbackKey && keysPressed.has(fallbackKey)) {
+    startBaseMotion(
+      keyboardMotionMap[fallbackKey],
+      `keyboard:${fallbackKey}`
+    );
+  } else {
+    stopBase(releasedSource);
   }
+});
+
+window.addEventListener('blur', clearDirectionInputs);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) clearDirectionInputs();
+});
+
+const stopButton = $('btnStop');
+stopButton.addEventListener('pointerdown', event => {
+  if (stopButton.disabled) return;
+  event.preventDefault();
+  requestStopAndManualTakeover(false);
+});
+stopButton.addEventListener('click', event => {
+  // Pointer clicks already stop on pointerdown; detail=0 covers keyboard
+  // activation without submitting a duplicate takeover request.
+  if (event.detail === 0) requestStopAndManualTakeover(false);
 });
 
 // ─── Arm Joint Sliders ──────────────────────────────────────
@@ -2686,21 +2916,6 @@ $('btnGripperClose').addEventListener('click', closeGripper);
 $('btnManualMode').addEventListener('click', switchToManualMode);
 $('btnNavSend').addEventListener('click', sendNavigationGoal);
 $('btnNavCancel').addEventListener('click', cancelNavigation);
-$('btnMoveitHome').addEventListener(
-  'click',
-  () => sendNamedMoveit('manipulator', 'home')
-);
-$('btnMoveitOpen').addEventListener(
-  'click',
-  () => sendNamedMoveit('gripper', 'open')
-);
-$('btnMoveitClose').addEventListener(
-  'click',
-  () => sendNamedMoveit('gripper', 'closed')
-);
-$('btnMoveitPlan').addEventListener('click', () => sendMoveitPose(false));
-$('btnMoveitExecute').addEventListener('click', () => sendMoveitPose(true));
-$('btnMoveitCancel').addEventListener('click', cancelMoveit);
 $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
 $('spdLinear').addEventListener('input', function() {

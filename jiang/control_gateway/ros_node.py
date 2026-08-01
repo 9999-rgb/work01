@@ -51,6 +51,7 @@ class RosControlNode(Node):
 
     CABINET_BUTTON_ID = "box_10_button_1"
     CABINET_BUTTON_JOINT_NAME = "box_10_box_10_button_1"
+    NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     JOINT_NAMES = [
         "body_arm1",
@@ -85,6 +86,7 @@ class RosControlNode(Node):
         "sending",
         "navigating",
         "canceling",
+        "taking_over",
     }
     ACTIVE_MOTION_STATES = {
         "sending",
@@ -223,7 +225,19 @@ class RosControlNode(Node):
         )
 
         self._navigation_mode: Optional[bool] = None
+        self._navigation_mode_acknowledged: Optional[bool] = None
+        self._navigation_generation = 0
         self._navigation_goal_handle: Any = None
+        self._navigation_goal_token: Any = None
+        self._navigation_cancel_requested = False
+        self._manual_takeover_generation: Optional[int] = None
+        self._navigation_mode_desired: Optional[Tuple[bool, int]] = None
+        self._navigation_mode_request: Optional[Tuple[bool, int, int]] = None
+        self._navigation_mode_request_sequence = 0
+        self._navigation_mode_attempt = 0
+        self._navigation_retirements: Dict[
+            Tuple[int, Any], Dict[str, Any]
+        ] = {}
         self._navigation_state: Dict[str, Any] = {
             "state": "idle",
             "message": "No navigation goal has been sent.",
@@ -290,6 +304,12 @@ class RosControlNode(Node):
         )
         with self._lock:
             self._reject_if_cabinet_active_locked()
+            if not self._manual_control_ready_locked():
+                raise ControlRequestError(
+                    "Manual base control is unavailable until Nav2 "
+                    "takeover reaches manual mode.",
+                    409,
+                )
             self._target_linear_y = linear_y
             self._target_angular_z = angular_z
             self._last_command_time = time.monotonic()
@@ -336,12 +356,23 @@ class RosControlNode(Node):
         """Return current Nav2 availability, feedback and display overlays."""
         with self._lock:
             snapshot = dict(self._navigation_state)
+            manual_control_ready = self._manual_control_ready_locked()
             snapshot.update(
                 {
                     "available": self._action_server_ready(
                         self._navigation_client
                     ),
                     "mode": self._navigation_mode,
+                    "mode_acknowledged": (
+                        self._navigation_mode_acknowledged
+                    ),
+                    "retiring_goals": len(self._navigation_retirements),
+                    "retirement_errors": [
+                        retirement["error"]
+                        for retirement in self._navigation_retirements.values()
+                        if retirement.get("error")
+                    ],
+                    "manual_control_ready": manual_control_ready,
                     "current_pose": (
                         dict(self._robot_pose)
                         if self._robot_pose is not None
@@ -549,20 +580,154 @@ class RosControlNode(Node):
 
     def set_navigation_mode(self, enabled: bool) -> Dict[str, Any]:
         """Switch the base command router through its ROS 2 service."""
+        if not enabled:
+            result = self.takeover_navigation()
+            return {
+                **result,
+                "enabled": False,
+            }
+
         with self._lock:
             self._reject_if_cabinet_active_locked()
+            if self._navigation_state["state"] == "taking_over":
+                raise ControlRequestError(
+                    "Manual takeover is still in progress.",
+                    409,
+                )
+            if self._navigation_retirements:
+                raise ControlRequestError(
+                    "A previous Nav2 goal is still retiring.",
+                    409,
+                )
             if not self._navigation_mode_client.service_is_ready():
                 raise ControlRequestError(
                     "Base navigation mode service is unavailable.",
                     503,
                 )
-            if not enabled:
-                self.cancel_navigation(allow_idle=True)
-                self.emergency_stop()
-            self._request_navigation_mode(enabled)
+            generation = self._navigation_generation
+            self._request_navigation_mode_locked(True, generation)
         return {
             "status": "accepted",
-            "enabled": enabled,
+            "enabled": True,
+        }
+
+    def takeover_navigation(self) -> Dict[str, Any]:
+        """Cancel Nav2 and switch to manual mode while holding zero speed.
+
+        This is deliberately a two-phase interface.  It never stores a
+        manual motion command: callers must wait until the reported router
+        mode is ``False`` and then send a fresh command through ``/cmd_vel``.
+        """
+        with self._lock:
+            self._reject_if_cabinet_active_locked()
+            service_ready = self._navigation_mode_client.service_is_ready()
+            takeover_in_progress = (
+                self._manual_takeover_generation
+                == self._navigation_generation
+                and self._navigation_state["state"] == "taking_over"
+            )
+            cancel_targets: List[Tuple[Any, int, Any]] = []
+            if not takeover_in_progress:
+                old_generation = self._navigation_generation
+                old_goal_handle = self._navigation_goal_handle
+                old_goal_token = self._navigation_goal_token
+                if old_goal_token is not None:
+                    retirement_key = (old_generation, old_goal_token)
+                    self._navigation_retirements[retirement_key] = {
+                        "handle": old_goal_handle,
+                        "state": (
+                            "canceling"
+                            if old_goal_handle is not None
+                            else "awaiting_acceptance"
+                        ),
+                        "error": None,
+                        "result_channel_failed": False,
+                    }
+                    if old_goal_handle is not None:
+                        cancel_targets.append(
+                            (
+                                old_goal_handle,
+                                old_generation,
+                                old_goal_token,
+                            )
+                        )
+
+                self._navigation_generation += 1
+                generation = self._navigation_generation
+                self._manual_takeover_generation = generation
+                self._navigation_cancel_requested = True
+                self._navigation_goal_handle = None
+                self._navigation_goal_token = None
+                self._navigation_state.update(
+                    {
+                        "state": "taking_over",
+                        "message": (
+                            "Canceling Nav2 and switching to manual mode."
+                        ),
+                        "updated_at": time.time(),
+                    }
+                )
+                # Queue the manual request even when discovery currently says
+                # the service is unavailable.  This invalidates any older
+                # enable transaction before the HTTP caller receives 503.
+                self._request_navigation_mode_locked(False, generation)
+
+            for (retirement_generation, retirement_token), retirement in (
+                self._navigation_retirements.items()
+            ):
+                if (
+                    retirement.get("handle") is not None
+                    and retirement["state"] == "failed"
+                ):
+                    retirement["state"] = "canceling"
+                    if not retirement.get("result_channel_failed", False):
+                        retirement["error"] = None
+                    cancel_targets.append(
+                        (
+                            retirement["handle"],
+                            retirement_generation,
+                            retirement_token,
+                        )
+                    )
+
+            self._target_linear_y = 0.0
+            self._target_angular_z = 0.0
+            self._linear_profile.reset()
+            self._angular_profile.reset()
+            self._last_command_time = time.monotonic()
+
+        # A zero command is harmless in navigation mode and prevents an old
+        # manual profile from surviving until the router changes ownership.
+        self._cmd_vel_publisher.publish(Twist())
+        canceled_handles = set()
+        for goal_handle, goal_generation, goal_token in cancel_targets:
+            if id(goal_handle) in canceled_handles:
+                continue
+            canceled_handles.add(id(goal_handle))
+            self._cancel_navigation_goal(
+                goal_handle,
+                goal_generation,
+                goal_token,
+            )
+        if not service_ready:
+            raise ControlRequestError(
+                "Base navigation mode service is unavailable; Nav2 was "
+                "invalidated and cancellation was requested, but manual "
+                "mode is not yet confirmed.",
+                503,
+            )
+        with self._lock:
+            status = (
+                "manual"
+                if self._manual_takeover_generation is None
+                and self._navigation_mode is False
+                and self._navigation_mode_acknowledged is False
+                else "taking_over"
+            )
+            mode = self._navigation_mode
+        return {
+            "status": status,
+            "mode": mode,
         }
 
     def send_navigation_goal(
@@ -592,6 +757,11 @@ class RosControlNode(Node):
         }
         with self._lock:
             self._reject_if_cabinet_active_locked()
+            if self._navigation_retirements:
+                raise ControlRequestError(
+                    "A previous Nav2 goal is still retiring.",
+                    409,
+                )
             if (
                 self._navigation_state["state"]
                 in self.ACTIVE_NAVIGATION_STATES
@@ -600,6 +770,12 @@ class RosControlNode(Node):
                     "A navigation goal is already active.",
                     409,
                 )
+            self._navigation_generation += 1
+            generation = self._navigation_generation
+            self._navigation_cancel_requested = False
+            self._manual_takeover_generation = None
+            self._navigation_goal_handle = None
+            self._navigation_goal_token = None
             self._navigation_state.update(
                 {
                     "state": "enabling",
@@ -612,16 +788,7 @@ class RosControlNode(Node):
                     "updated_at": time.time(),
                 }
             )
-
-        request = SetBool.Request()
-        request.data = True
-        future = self._navigation_mode_client.call_async(request)
-        future.add_done_callback(
-            lambda result_future: self._navigation_mode_for_goal_callback(
-                result_future,
-                goal_description,
-            )
-        )
+            self._request_navigation_mode_locked(True, generation)
         return {
             "status": "accepted",
             "goal": goal_description,
@@ -630,33 +797,36 @@ class RosControlNode(Node):
     def cancel_navigation(self, allow_idle: bool = False) -> Dict[str, Any]:
         """Cancel the currently accepted Nav2 goal."""
         with self._lock:
+            generation = self._navigation_generation
             goal_handle = self._navigation_goal_handle
+            goal_token = self._navigation_goal_token
             active = (
                 self._navigation_state["state"]
                 in self.ACTIVE_NAVIGATION_STATES
+                or goal_handle is not None
             )
-            if goal_handle is None:
-                if allow_idle or not active:
-                    return {"status": "idle"}
-                self._navigation_state.update(
-                    {
-                        "state": "canceled",
-                        "message": (
-                            "Navigation canceled before goal acceptance."
-                        ),
-                        "updated_at": time.time(),
-                    }
-                )
-                return {"status": "canceling"}
+            if not active:
+                return {"status": "idle"}
+            if self._navigation_state["state"] == "taking_over":
+                return {"status": "taking_over"}
+            self._navigation_cancel_requested = True
             self._navigation_state.update(
                 {
                     "state": "canceling",
-                    "message": "Canceling the active navigation goal.",
+                    "message": (
+                        "Canceling the active navigation goal."
+                        if goal_handle is not None
+                        else "Canceling navigation before goal acceptance."
+                    ),
                     "updated_at": time.time(),
                 }
             )
-        future = goal_handle.cancel_goal_async()
-        future.add_done_callback(self._navigation_cancel_callback)
+        if goal_handle is not None:
+            self._cancel_navigation_goal(
+                goal_handle,
+                generation,
+                goal_token,
+            )
         return {"status": "canceling"}
 
     def send_named_motion(
@@ -838,67 +1008,221 @@ class RosControlNode(Node):
                     self._trajectory_publisher.publish(trajectory)
         self._enforce_motion_cancel(now)
 
-    def _request_navigation_mode(self, enabled: bool) -> None:
+    def _request_navigation_mode_locked(
+        self,
+        enabled: bool,
+        generation: int,
+    ) -> None:
+        """Record the latest desired mode and serialize service calls."""
+        desired = (enabled, generation)
+        if self._navigation_mode_desired != desired:
+            self._navigation_mode_attempt = 0
+        self._navigation_mode_desired = desired
+        self._drive_navigation_mode_request_locked()
+
+    def _drive_navigation_mode_request_locked(self) -> None:
+        if (
+            self._navigation_mode_request is not None
+            or self._navigation_mode_desired is None
+        ):
+            return
+        enabled, generation = self._navigation_mode_desired
+        self._navigation_mode_request_sequence += 1
+        self._navigation_mode_attempt += 1
+        sequence = self._navigation_mode_request_sequence
+        request_identity = (enabled, generation, sequence)
+        self._navigation_mode_request = request_identity
         request = SetBool.Request()
         request.data = enabled
-        future = self._navigation_mode_client.call_async(request)
+        try:
+            future = self._navigation_mode_client.call_async(request)
+        except Exception as error:  # noqa: BLE001
+            self._navigation_mode_request = None
+            if self._navigation_mode_desired == (enabled, generation):
+                if (
+                    self._navigation_mode_attempt
+                    >= self.NAVIGATION_MODE_MAX_ATTEMPTS
+                ):
+                    self._navigation_mode_desired = None
+                    self._navigation_mode_failed_locked(
+                        enabled,
+                        generation,
+                        error,
+                    )
+            self._drive_navigation_mode_request_locked()
+            return
         future.add_done_callback(
-            lambda result_future: self._navigation_mode_callback_result(
+            lambda result_future: self._navigation_mode_request_callback(
                 result_future,
                 enabled,
+                generation,
+                sequence,
             )
         )
 
-    def _navigation_mode_callback_result(
+    def _navigation_mode_request_callback(
         self,
         future: Any,
         enabled: bool,
+        generation: int,
+        sequence: int,
     ) -> None:
+        error: Optional[Exception] = None
         try:
             response = future.result()
             if not response.success:
                 raise RuntimeError(response.message)
-            with self._lock:
-                self._navigation_mode = enabled
-        except Exception as error:  # noqa: BLE001
-            self.get_logger().error(
-                f"Failed to switch base command mode: {error}"
-            )
+        except Exception as caught_error:  # noqa: BLE001
+            error = caught_error
 
-    def _navigation_mode_for_goal_callback(
+        with self._lock:
+            request_identity = (enabled, generation, sequence)
+            if self._navigation_mode_request != request_identity:
+                return
+            self._navigation_mode_request = None
+            desired_is_request = self._navigation_mode_desired == (
+                enabled,
+                generation,
+            )
+            if error is None:
+                self._navigation_mode_acknowledged = enabled
+                if desired_is_request:
+                    self._navigation_mode_desired = None
+                    self._navigation_mode_attempt = 0
+                    self._navigation_mode_reached_locked(
+                        enabled,
+                        generation,
+                    )
+            elif desired_is_request:
+                if (
+                    self._navigation_mode_attempt
+                    >= self.NAVIGATION_MODE_MAX_ATTEMPTS
+                ):
+                    self._navigation_mode_desired = None
+                    self._navigation_mode_failed_locked(
+                        enabled,
+                        generation,
+                        error,
+                    )
+            self._drive_navigation_mode_request_locked()
+
+    def _navigation_mode_reached_locked(
         self,
-        future: Any,
-        goal_description: Dict[str, float],
+        enabled: bool,
+        generation: int,
     ) -> None:
-        try:
-            response = future.result()
-            if not response.success:
-                raise RuntimeError(response.message)
-        except Exception as error:  # noqa: BLE001
-            with self._lock:
+        if generation != self._navigation_generation:
+            return
+        if not enabled:
+            if self._manual_takeover_generation != generation:
+                return
+            self._target_linear_y = 0.0
+            self._target_angular_z = 0.0
+            self._linear_profile.reset()
+            self._angular_profile.reset()
+            self._last_command_time = time.monotonic()
+            self._manual_takeover_generation = None
+            self._navigation_cancel_requested = False
+            self._navigation_state.update(
+                {
+                    "state": "canceled",
+                    "message": (
+                        "Manual takeover complete; base speed remains zero."
+                        if not self._navigation_retirements
+                        else (
+                            "Manual routing is active at zero speed; waiting "
+                            "for the previous Nav2 goal to terminate."
+                        )
+                    ),
+                    "updated_at": time.time(),
+                }
+            )
+            return
+
+        if self._navigation_state["state"] == "enabling":
+            if self._navigation_cancel_requested:
                 self._navigation_state.update(
                     {
-                        "state": "failed",
+                        "state": "canceled",
                         "message": (
-                            "Failed to enable navigation mode: "
-                            f"{error}"
+                            "Navigation canceled before goal submission."
                         ),
                         "updated_at": time.time(),
                     }
                 )
-            return
-
-        with self._lock:
-            self._navigation_mode = True
-            if self._navigation_state["state"] == "canceled":
                 return
+            self._send_navigation_goal_locked(generation)
+        elif (
+            self._navigation_state["state"] == "canceling"
+            and self._navigation_goal_token is None
+        ):
             self._navigation_state.update(
                 {
-                    "state": "sending",
-                    "message": "Sending the Nav2 goal.",
+                    "state": "canceled",
+                    "message": "Navigation canceled before goal submission.",
                     "updated_at": time.time(),
                 }
             )
+
+    def _navigation_mode_failed_locked(
+        self,
+        enabled: bool,
+        generation: int,
+        error: Exception,
+    ) -> None:
+        if generation != self._navigation_generation:
+            return
+        if not enabled and self._manual_takeover_generation == generation:
+            self._manual_takeover_generation = None
+            self._navigation_cancel_requested = False
+            message = f"Failed to switch to manual mode: {error}"
+        elif (
+            enabled
+            and self._navigation_state["state"] == "canceling"
+            and self._navigation_goal_token is None
+        ):
+            self._navigation_cancel_requested = False
+            self._navigation_state.update(
+                {
+                    "state": "canceled",
+                    "message": "Navigation canceled before goal submission.",
+                    "updated_at": time.time(),
+                }
+            )
+            return
+        elif enabled and self._navigation_state["state"] == "enabling":
+            message = f"Failed to enable navigation mode: {error}"
+        else:
+            self.get_logger().error(
+                f"Failed to switch base command mode: {error}"
+            )
+            return
+        self._navigation_state.update(
+            {
+                "state": "failed",
+                "message": message,
+                "updated_at": time.time(),
+            }
+        )
+
+    def _send_navigation_goal_locked(self, generation: int) -> None:
+        if (
+            generation != self._navigation_generation
+            or self._navigation_state["state"] != "enabling"
+        ):
+            return
+        goal_description = self._navigation_state["goal"]
+        if goal_description is None:
+            return
+        goal_token = object()
+        self._navigation_goal_token = goal_token
+        self._navigation_state.update(
+            {
+                "state": "sending",
+                "message": "Sending the Nav2 goal.",
+                "updated_at": time.time(),
+            }
+        )
 
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = "map"
@@ -911,58 +1235,136 @@ class RosControlNode(Node):
         goal.pose.pose.orientation.w = math.cos(
             goal_description["yaw"] / 2.0
         )
-        future = self._navigation_client.send_goal_async(
-            goal,
-            feedback_callback=self._navigation_feedback_callback,
+        try:
+            future = self._navigation_client.send_goal_async(
+                goal,
+                feedback_callback=lambda feedback: (
+                    self._navigation_feedback_callback(
+                        feedback,
+                        generation,
+                        goal_token,
+                    )
+                ),
+            )
+        except Exception as error:  # noqa: BLE001
+            self._set_navigation_terminal_locked(
+                "failed",
+                f"Failed to send Nav2 goal: {error}",
+                generation,
+                goal_token,
+            )
+            return
+        future.add_done_callback(
+            lambda result_future: self._navigation_goal_response_callback(
+                result_future,
+                generation,
+                goal_token,
+            )
         )
-        future.add_done_callback(self._navigation_goal_response_callback)
 
-    def _navigation_goal_response_callback(self, future: Any) -> None:
+    def _navigation_goal_response_callback(
+        self,
+        future: Any,
+        generation: int,
+        goal_token: Any,
+    ) -> None:
         try:
             goal_handle = future.result()
         except Exception as error:  # noqa: BLE001
+            self._finish_navigation_retirement(generation, goal_token)
             self._set_navigation_terminal(
                 "failed",
                 f"Failed to send Nav2 goal: {error}",
+                generation,
+                goal_token,
             )
             return
         if not goal_handle.accepted:
+            self._finish_navigation_retirement(generation, goal_token)
             self._set_navigation_terminal(
                 "rejected",
                 "Nav2 rejected the navigation goal.",
+                generation,
+                goal_token,
             )
             return
-        with self._lock:
-            canceled_before_acceptance = (
-                self._navigation_state["state"] == "canceled"
-            )
-            self._navigation_goal_handle = goal_handle
-            self._navigation_state.update(
-                {
-                    "state": (
-                        "canceling"
-                        if canceled_before_acceptance
-                        else "navigating"
-                    ),
-                    "message": (
-                        "Canceling the accepted navigation goal."
-                        if canceled_before_acceptance
-                        else "Nav2 is driving to the selected goal."
-                    ),
-                    "updated_at": time.time(),
-                }
-            )
-        if canceled_before_acceptance:
-            cancel_future = goal_handle.cancel_goal_async()
-            cancel_future.add_done_callback(
-                self._navigation_cancel_callback
-            )
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._navigation_result_callback)
 
-    def _navigation_feedback_callback(self, feedback_message: Any) -> None:
+        with self._lock:
+            is_current = (
+                generation == self._navigation_generation
+                and goal_token is self._navigation_goal_token
+            )
+            should_cancel = (
+                not is_current or self._navigation_cancel_requested
+            )
+            if is_current:
+                self._navigation_goal_handle = goal_handle
+                self._navigation_state.update(
+                    {
+                        "state": (
+                            "canceling" if should_cancel else "navigating"
+                        ),
+                        "message": (
+                            "Canceling the accepted navigation goal."
+                            if should_cancel
+                            else "Nav2 is driving to the selected goal."
+                        ),
+                        "updated_at": time.time(),
+                    }
+                )
+            else:
+                retirement_key = (generation, goal_token)
+                retirement = self._navigation_retirements.setdefault(
+                    retirement_key,
+                    {},
+                )
+                retirement.update(
+                    {
+                        "handle": goal_handle,
+                        "state": "canceling",
+                        "error": None,
+                        "result_channel_failed": False,
+                    }
+                )
+
+        if should_cancel:
+            self._cancel_navigation_goal(
+                goal_handle,
+                generation,
+                goal_token,
+            )
+        try:
+            result_future = goal_handle.get_result_async()
+        except Exception as error:  # noqa: BLE001
+            self._set_navigation_result_channel_failed(
+                error,
+                generation,
+                goal_handle,
+                goal_token,
+            )
+            return
+        result_future.add_done_callback(
+            lambda completed_future: self._navigation_result_callback(
+                completed_future,
+                generation,
+                goal_handle,
+                goal_token,
+            )
+        )
+
+    def _navigation_feedback_callback(
+        self,
+        feedback_message: Any,
+        generation: int,
+        goal_token: Any,
+    ) -> None:
         feedback = feedback_message.feedback
         with self._lock:
+            if (
+                generation != self._navigation_generation
+                or goal_token is not self._navigation_goal_token
+            ):
+                return
             self._navigation_state.update(
                 {
                     "distance_remaining": float(
@@ -979,7 +1381,13 @@ class RosControlNode(Node):
                 }
             )
 
-    def _navigation_result_callback(self, future: Any) -> None:
+    def _navigation_result_callback(
+        self,
+        future: Any,
+        generation: int,
+        goal_handle: Any,
+        goal_token: Any,
+    ) -> None:
         try:
             wrapped_result = future.result()
             state, message = self._goal_status(
@@ -987,39 +1395,257 @@ class RosControlNode(Node):
                 "Navigation",
             )
         except Exception as error:  # noqa: BLE001
-            state = "failed"
-            message = f"Navigation result failed: {error}"
-        self._set_navigation_terminal(state, message)
+            self._set_navigation_result_channel_failed(
+                error,
+                generation,
+                goal_handle,
+                goal_token,
+            )
+            return
+        self._finish_navigation_retirement(
+            generation,
+            goal_token,
+            goal_handle,
+        )
+        self._set_navigation_terminal(
+            state,
+            message,
+            generation,
+            goal_token,
+            goal_handle,
+        )
 
-    def _navigation_cancel_callback(self, future: Any) -> None:
+    def _set_navigation_result_channel_failed(
+        self,
+        error: Exception,
+        generation: int,
+        goal_handle: Any,
+        goal_token: Any,
+    ) -> None:
+        """Keep an unconfirmed goal blocking after result-channel failure."""
+        with self._lock:
+            is_current = (
+                generation == self._navigation_generation
+                and goal_handle is self._navigation_goal_handle
+                and goal_token is self._navigation_goal_token
+            )
+            retirement_key = (generation, goal_token)
+            retirement = self._navigation_retirements.get(retirement_key)
+            if not is_current and retirement is None:
+                # A stale accepted goal is still unsafe even if its earlier
+                # bookkeeping was lost; reconstruct the retirement guard.
+                retirement = {}
+                self._navigation_retirements[retirement_key] = retirement
+            elif is_current and retirement is None:
+                retirement = {}
+                self._navigation_retirements[retirement_key] = retirement
+            if retirement is None:
+                return
+            retirement.update(
+                {
+                    "handle": goal_handle,
+                    "state": "failed",
+                    "error": f"Navigation result channel failed: {error}",
+                    "result_channel_failed": True,
+                }
+            )
+            if not is_current:
+                return
+            self._navigation_goal_handle = None
+            self._navigation_goal_token = None
+            self._navigation_cancel_requested = False
+            self._navigation_state.update(
+                {
+                    "state": "failed",
+                    "message": (
+                        "Navigation result channel failed; goal termination "
+                        f"is unconfirmed: {error}"
+                    ),
+                    "updated_at": time.time(),
+                }
+            )
+
+    def _cancel_navigation_goal(
+        self,
+        goal_handle: Any,
+        generation: int,
+        goal_token: Any,
+    ) -> None:
+        try:
+            future = goal_handle.cancel_goal_async()
+        except Exception as error:  # noqa: BLE001
+            self._set_navigation_cancel_failed(
+                error,
+                generation,
+                goal_handle,
+                goal_token,
+            )
+            return
+        future.add_done_callback(
+            lambda result_future: self._navigation_cancel_callback(
+                result_future,
+                generation,
+                goal_handle,
+                goal_token,
+            )
+        )
+
+    def _navigation_cancel_callback(
+        self,
+        future: Any,
+        generation: int,
+        goal_handle: Any,
+        goal_token: Any,
+    ) -> None:
         try:
             response = future.result()
             if not response.goals_canceling:
                 raise RuntimeError("Nav2 did not accept the cancel request.")
         except Exception as error:  # noqa: BLE001
-            with self._lock:
-                self._navigation_state.update(
-                    {
-                        "state": "failed",
-                        "message": f"Navigation cancel failed: {error}",
-                        "updated_at": time.time(),
-                    }
-                )
+            self._set_navigation_cancel_failed(
+                error,
+                generation,
+                goal_handle,
+                goal_token,
+            )
+            return
+        with self._lock:
+            retirement = self._navigation_retirements.get(
+                (generation, goal_token)
+            )
+            if (
+                retirement is not None
+                and retirement.get("handle") is goal_handle
+            ):
+                if not retirement.get("result_channel_failed", False):
+                    retirement["state"] = "cancel_accepted"
+                    retirement["error"] = None
+
+    def _set_navigation_cancel_failed(
+        self,
+        error: Exception,
+        generation: int,
+        goal_handle: Any,
+        goal_token: Any,
+    ) -> None:
+        with self._lock:
+            retirement = self._navigation_retirements.get(
+                (generation, goal_token)
+            )
+            if (
+                retirement is not None
+                and retirement.get("handle") is goal_handle
+            ):
+                retirement["state"] = "failed"
+                if retirement.get("result_channel_failed", False):
+                    retirement["error"] = (
+                        f"{retirement['error']}; cancellation also failed: "
+                        f"{error}"
+                    )
+                else:
+                    retirement["error"] = str(error)
+                if self._navigation_state["state"] in {
+                    "taking_over",
+                    "canceled",
+                }:
+                    self._navigation_state.update(
+                        {
+                            "message": (
+                                "Manual routing is safe, but the previous "
+                                "Nav2 goal did not accept cancellation: "
+                                f"{error}"
+                            ),
+                            "updated_at": time.time(),
+                        }
+                    )
+                return
+            if (
+                generation != self._navigation_generation
+                or goal_handle is not self._navigation_goal_handle
+                or goal_token is not self._navigation_goal_token
+            ):
+                return
+            self._navigation_retirements[(generation, goal_token)] = {
+                "handle": goal_handle,
+                "state": "failed",
+                "error": str(error),
+                "result_channel_failed": False,
+            }
+            self._navigation_state.update(
+                {
+                    "state": "failed",
+                    "message": f"Navigation cancel failed: {error}",
+                    "updated_at": time.time(),
+                }
+            )
+
+    def _finish_navigation_retirement(
+        self,
+        generation: int,
+        goal_token: Any,
+        goal_handle: Any = None,
+    ) -> None:
+        with self._lock:
+            retirement = self._navigation_retirements.get(
+                (generation, goal_token)
+            )
+            if retirement is None:
+                return
+            if (
+                goal_handle is not None
+                and retirement.get("handle") is not None
+                and retirement.get("handle") is not goal_handle
+            ):
+                return
+            self._navigation_retirements.pop(
+                (generation, goal_token),
+                None,
+            )
 
     def _set_navigation_terminal(
         self,
         state: str,
         message: str,
+        generation: int,
+        goal_token: Any,
+        goal_handle: Any = None,
     ) -> None:
         with self._lock:
-            self._navigation_goal_handle = None
-            self._navigation_state.update(
-                {
-                    "state": state,
-                    "message": message,
-                    "updated_at": time.time(),
-                }
+            self._set_navigation_terminal_locked(
+                state,
+                message,
+                generation,
+                goal_token,
+                goal_handle,
             )
+
+    def _set_navigation_terminal_locked(
+        self,
+        state: str,
+        message: str,
+        generation: int,
+        goal_token: Any,
+        goal_handle: Any = None,
+    ) -> None:
+        if (
+            generation != self._navigation_generation
+            or goal_token is not self._navigation_goal_token
+            or (
+                goal_handle is not None
+                and goal_handle is not self._navigation_goal_handle
+            )
+        ):
+            return
+        self._navigation_goal_handle = None
+        self._navigation_goal_token = None
+        self._navigation_cancel_requested = False
+        self._navigation_state.update(
+            {
+                "state": state,
+                "message": message,
+                "updated_at": time.time(),
+            }
+        )
 
     def _send_move_group_goal(
         self,
@@ -1522,6 +2148,9 @@ class RosControlNode(Node):
 
     def _navigation_mode_callback(self, message: Bool) -> None:
         with self._lock:
+            # This topic is observation only.  Transaction progress is driven
+            # by the matching SetBool response so a delayed retained sample
+            # can never acknowledge a newer command.
             self._navigation_mode = bool(message.data)
 
     def _cabinet_button_joint_state_callback(
@@ -1629,6 +2258,23 @@ class RosControlNode(Node):
     def _cabinet_active_locked(self) -> bool:
         return self._cabinet_state["state"] in self.ACTIVE_CABINET_STATES
 
+    def _manual_control_ready_locked(self) -> bool:
+        return (
+            self._navigation_mode is False
+            and self._navigation_mode_acknowledged is False
+            and self._manual_takeover_generation is None
+            and not self._navigation_mode_transition_pending_locked()
+            and self._navigation_state["state"]
+            not in self.ACTIVE_NAVIGATION_STATES
+            and not self._cabinet_active_locked()
+        )
+
+    def _navigation_mode_transition_pending_locked(self) -> bool:
+        return (
+            self._navigation_mode_request is not None
+            or self._navigation_mode_desired is not None
+        )
+
     def _reject_if_cabinet_active_locked(self) -> None:
         if self._cabinet_active_locked():
             raise ControlRequestError(
@@ -1646,6 +2292,18 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "Navigation is active; cancel it before operating "
                 "the cabinet.",
+                409,
+            )
+        if self._navigation_mode_transition_pending_locked():
+            raise ControlRequestError(
+                "A base mode transition is pending; wait before operating "
+                "the cabinet.",
+                409,
+            )
+        if self._navigation_retirements:
+            raise ControlRequestError(
+                "A previous Nav2 goal is still retiring; wait before "
+                "operating the cabinet.",
                 409,
             )
         if self._motion_state["state"] in self.ACTIVE_MOTION_STATES:
