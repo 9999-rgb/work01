@@ -27,11 +27,13 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
+from xczs_inspection_robot_control.action import PressCabinetButton
 
 from .velocity_profile import VelocityProfile
 
@@ -46,6 +48,9 @@ class ControlRequestError(RuntimeError):
 
 class RosControlNode(Node):
     """Own manual publishers and autonomous ROS 2 clients."""
+
+    CABINET_BUTTON_ID = "box_10_button_1"
+    CABINET_BUTTON_JOINT_NAME = "box_10_box_10_button_1"
 
     JOINT_NAMES = [
         "body_arm1",
@@ -85,6 +90,11 @@ class RosControlNode(Node):
         "sending",
         "planning",
         "executing",
+        "canceling",
+    }
+    ACTIVE_CABINET_STATES = {
+        "sending",
+        "operating",
         "canceling",
     }
 
@@ -148,6 +158,11 @@ class RosControlNode(Node):
             MoveGroup,
             "/move_action",
         )
+        self._cabinet_button_client = ActionClient(
+            self,
+            PressCabinetButton,
+            "/xczs/press_cabinet_button",
+        )
         self._controller_cancel_clients = [
             self.create_client(
                 CancelGoal,
@@ -194,6 +209,18 @@ class RosControlNode(Node):
             self._plan_callback,
             10,
         )
+        self.create_subscription(
+            JointState,
+            "/xczs/cabinet/box_10_button_1/joint_states",
+            self._cabinet_button_joint_state_callback,
+            10,
+        )
+        self.create_subscription(
+            Bool,
+            "/xczs/cabinet/box_10_button_1/pressed",
+            self._cabinet_button_pressed_callback,
+            transient_qos,
+        )
 
         self._navigation_mode: Optional[bool] = None
         self._navigation_goal_handle: Any = None
@@ -224,6 +251,27 @@ class RosControlNode(Node):
             "error_code": None,
             "updated_at": time.time(),
         }
+
+        self._cabinet_goal_handle: Any = None
+        self._cabinet_cancel_requested = False
+        self._cabinet_generation = 0
+        self._cabinet_terminal_event = threading.Event()
+        self._cabinet_terminal_event.set()
+        self._cabinet_state: Dict[str, Any] = {
+            "state": "idle",
+            "message": "No cabinet button operation has been sent.",
+            "button_id": self.CABINET_BUTTON_ID,
+            "navigate_to_staging_pose": True,
+            "phase": None,
+            "progress": 0.0,
+            "button_pressed": None,
+            "button_travel": None,
+            "max_travel": None,
+            "success": None,
+            "error_code": None,
+            "updated_at": time.time(),
+            "button_state_updated_at": None,
+        }
         self.create_timer(0.02, self._update_manual_control)
 
     def set_base_target(
@@ -241,6 +289,7 @@ class RosControlNode(Node):
             min(self._max_angular_speed, angular_z),
         )
         with self._lock:
+            self._reject_if_cabinet_active_locked()
             self._target_linear_y = linear_y
             self._target_angular_z = angular_z
             self._last_command_time = time.monotonic()
@@ -269,6 +318,7 @@ class RosControlNode(Node):
         trajectory.points.append(point)
 
         with self._lock:
+            self._reject_if_cabinet_active_locked()
             self._pending_trajectory = trajectory
             self._pending_trajectory_repeats = 6
         return safe_positions
@@ -324,17 +374,192 @@ class RosControlNode(Node):
             )
         return snapshot
 
-    def set_navigation_mode(self, enabled: bool) -> Dict[str, Any]:
-        """Switch the base command router through its ROS 2 service."""
-        if not self._navigation_mode_client.service_is_ready():
+    def cabinet_snapshot(self) -> Dict[str, Any]:
+        """Return cabinet action availability, feedback and button state."""
+        with self._lock:
+            snapshot = dict(self._cabinet_state)
+            snapshot.update(
+                {
+                    "available": self._action_server_ready(
+                        self._cabinet_button_client
+                    ),
+                    "active": self._cabinet_active_locked(),
+                }
+            )
+        return snapshot
+
+    def press_cabinet_button(
+        self,
+        button_id: str,
+        navigate_to_staging_pose: bool,
+    ) -> Dict[str, Any]:
+        """Submit one complete cabinet button operation."""
+        if button_id != self.CABINET_BUTTON_ID:
             raise ControlRequestError(
-                "Base navigation mode service is unavailable.",
+                f"Unsupported cabinet button: {button_id}."
+            )
+        if not isinstance(navigate_to_staging_pose, bool):
+            raise ControlRequestError(
+                "navigate_to_staging_pose must be a boolean."
+            )
+        with self._lock:
+            self._reject_cabinet_start_conflicts_locked()
+        if not self._action_server_ready(self._cabinet_button_client):
+            raise ControlRequestError(
+                "Cabinet button action server is unavailable.",
                 503,
             )
-        if not enabled:
-            self.cancel_navigation(allow_idle=True)
-            self.emergency_stop()
-        self._request_navigation_mode(enabled)
+
+        with self._lock:
+            self._reject_cabinet_start_conflicts_locked()
+
+            self._cabinet_generation += 1
+            generation = self._cabinet_generation
+            self._cabinet_cancel_requested = False
+            self._cabinet_goal_handle = None
+            self._cabinet_terminal_event.clear()
+            self._cabinet_state.update(
+                {
+                    "state": "sending",
+                    "message": "Sending the cabinet button goal.",
+                    "button_id": button_id,
+                    "navigate_to_staging_pose": navigate_to_staging_pose,
+                    "phase": None,
+                    "progress": 0.0,
+                    "max_travel": 0.0,
+                    "success": None,
+                    "error_code": None,
+                    "updated_at": time.time(),
+                }
+            )
+
+            # The cabinet operator shares the manual base topic during
+            # precision docking.  Stop once, then suppress this gateway's
+            # periodic publishers until the cabinet action is terminal.
+            self._target_linear_y = 0.0
+            self._target_angular_z = 0.0
+            self._linear_profile.reset()
+            self._angular_profile.reset()
+            self._pending_trajectory = None
+            self._pending_trajectory_repeats = 0
+            self._cmd_vel_publisher.publish(Twist())
+
+        goal = PressCabinetButton.Goal()
+        goal.button_id = button_id
+        goal.navigate_to_staging_pose = navigate_to_staging_pose
+        try:
+            future = self._cabinet_button_client.send_goal_async(
+                goal,
+                feedback_callback=(
+                    lambda feedback_message: self._cabinet_feedback_callback(
+                        feedback_message,
+                        generation,
+                    )
+                ),
+            )
+            future.add_done_callback(
+                lambda goal_future: self._cabinet_goal_response_callback(
+                    goal_future,
+                    generation,
+                )
+            )
+        except Exception as error:  # noqa: BLE001
+            self._set_cabinet_terminal(
+                "failed",
+                f"Failed to send cabinet button goal: {error}",
+                False,
+                None,
+                generation=generation,
+            )
+            raise ControlRequestError(
+                f"Failed to send cabinet button goal: {error}",
+                503,
+            ) from error
+
+        return {
+            "status": "accepted",
+            "button_id": button_id,
+            "navigate_to_staging_pose": navigate_to_staging_pose,
+        }
+
+    def cancel_cabinet_button(
+        self,
+        allow_idle: bool = False,
+    ) -> Dict[str, Any]:
+        """Cancel the active cabinet operation, including pre-acceptance."""
+        with self._lock:
+            if not self._cabinet_active_locked():
+                if allow_idle:
+                    return {"status": "idle"}
+                return {"status": "idle"}
+            if self._cabinet_state["state"] == "canceling":
+                return {"status": "canceling"}
+
+            self._cabinet_cancel_requested = True
+            self._cabinet_state.update(
+                {
+                    "state": "canceling",
+                    "message": "Canceling the cabinet button operation.",
+                    "updated_at": time.time(),
+                }
+            )
+            goal_handle = self._cabinet_goal_handle
+            generation = self._cabinet_generation
+            if goal_handle is None:
+                return {"status": "canceling"}
+
+        try:
+            future = goal_handle.cancel_goal_async()
+            future.add_done_callback(
+                lambda cancel_future: self._cabinet_cancel_callback(
+                    cancel_future,
+                    generation,
+                    goal_handle,
+                )
+            )
+        except Exception as error:  # noqa: BLE001
+            with self._lock:
+                if (
+                    generation == self._cabinet_generation
+                    and self._cabinet_goal_handle is goal_handle
+                    and self._cabinet_active_locked()
+                ):
+                    self._cabinet_cancel_requested = False
+                    self._cabinet_state.update(
+                        {
+                            "state": "operating",
+                            "message": (
+                                "Cabinet operation cancellation failed: "
+                                f"{error}"
+                            ),
+                            "updated_at": time.time(),
+                        }
+                    )
+            raise ControlRequestError(
+                f"Cabinet operation cancellation failed: {error}",
+                503,
+            ) from error
+        return {"status": "canceling"}
+
+    def wait_for_cabinet_idle(self, timeout_sec: float) -> bool:
+        """Wait for an in-flight cabinet goal to reach a terminal state."""
+        return self._cabinet_terminal_event.wait(
+            timeout=max(0.0, timeout_sec)
+        )
+
+    def set_navigation_mode(self, enabled: bool) -> Dict[str, Any]:
+        """Switch the base command router through its ROS 2 service."""
+        with self._lock:
+            self._reject_if_cabinet_active_locked()
+            if not self._navigation_mode_client.service_is_ready():
+                raise ControlRequestError(
+                    "Base navigation mode service is unavailable.",
+                    503,
+                )
+            if not enabled:
+                self.cancel_navigation(allow_idle=True)
+                self.emergency_stop()
+            self._request_navigation_mode(enabled)
         return {
             "status": "accepted",
             "enabled": enabled,
@@ -347,6 +572,8 @@ class RosControlNode(Node):
         yaw: float,
     ) -> Dict[str, Any]:
         """Enable navigation mode and submit one NavigateToPose goal."""
+        with self._lock:
+            self._reject_if_cabinet_active_locked()
         if not self._action_server_ready(self._navigation_client):
             raise ControlRequestError(
                 "Nav2 NavigateToPose action server is unavailable.",
@@ -364,6 +591,7 @@ class RosControlNode(Node):
             "yaw": yaw,
         }
         with self._lock:
+            self._reject_if_cabinet_active_locked()
             if (
                 self._navigation_state["state"]
                 in self.ACTIVE_NAVIGATION_STATES
@@ -413,7 +641,9 @@ class RosControlNode(Node):
                 self._navigation_state.update(
                     {
                         "state": "canceled",
-                        "message": "Navigation canceled before goal acceptance.",
+                        "message": (
+                            "Navigation canceled before goal acceptance."
+                        ),
                         "updated_at": time.time(),
                     }
                 )
@@ -579,30 +809,33 @@ class RosControlNode(Node):
         self._last_update_time = now
 
         with self._lock:
-            if now - self._last_command_time >= self._command_timeout:
-                self._target_linear_y = 0.0
-                self._target_angular_z = 0.0
-            linear_y = self._linear_profile.update(
-                self._target_linear_y,
-                period,
-            )
-            angular_z = self._angular_profile.update(
-                self._target_angular_z,
-                period,
-            )
-            trajectory = self._pending_trajectory
-            if self._pending_trajectory_repeats > 0:
-                self._pending_trajectory_repeats -= 1
-            else:
-                trajectory = None
-                self._pending_trajectory = None
+            if not self._cabinet_active_locked():
+                if now - self._last_command_time >= self._command_timeout:
+                    self._target_linear_y = 0.0
+                    self._target_angular_z = 0.0
+                linear_y = self._linear_profile.update(
+                    self._target_linear_y,
+                    period,
+                )
+                angular_z = self._angular_profile.update(
+                    self._target_angular_z,
+                    period,
+                )
+                trajectory = self._pending_trajectory
+                if self._pending_trajectory_repeats > 0:
+                    self._pending_trajectory_repeats -= 1
+                else:
+                    trajectory = None
+                    self._pending_trajectory = None
 
-        command = Twist()
-        command.linear.y = linear_y
-        command.angular.z = angular_z
-        self._cmd_vel_publisher.publish(command)
-        if trajectory is not None:
-            self._trajectory_publisher.publish(trajectory)
+                # Publish while holding the state lock so a cabinet goal
+                # cannot become active between the active check and send.
+                command = Twist()
+                command.linear.y = linear_y
+                command.angular.z = angular_z
+                self._cmd_vel_publisher.publish(command)
+                if trajectory is not None:
+                    self._trajectory_publisher.publish(trajectory)
         self._enforce_motion_cancel(now)
 
     def _request_navigation_mode(self, enabled: bool) -> None:
@@ -795,12 +1028,15 @@ class RosControlNode(Node):
         description: Dict[str, Any],
         execute: bool,
     ) -> Dict[str, Any]:
+        with self._lock:
+            self._reject_if_cabinet_active_locked()
         if not self._action_server_ready(self._move_group_client):
             raise ControlRequestError(
                 "MoveIt MoveGroup action server is unavailable.",
                 503,
             )
         with self._lock:
+            self._reject_if_cabinet_active_locked()
             if self._motion_state["state"] in self.ACTIVE_MOTION_STATES:
                 raise ControlRequestError(
                     "A MoveIt goal is already active.",
@@ -984,6 +1220,290 @@ class RosControlNode(Node):
                 }
             )
 
+    def _cabinet_goal_response_callback(
+        self,
+        future: Any,
+        generation: int,
+    ) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as error:  # noqa: BLE001
+            with self._lock:
+                if generation != self._cabinet_generation:
+                    return
+                canceled_before_acceptance = (
+                    self._cabinet_cancel_requested
+                )
+            self._set_cabinet_terminal(
+                "canceled" if canceled_before_acceptance else "failed",
+                (
+                    "Cabinet button operation was canceled before "
+                    "goal acceptance."
+                    if canceled_before_acceptance
+                    else f"Failed to send cabinet button goal: {error}"
+                ),
+                False,
+                (
+                    PressCabinetButton.Result.CANCELED
+                    if canceled_before_acceptance
+                    else None
+                ),
+                generation=generation,
+            )
+            return
+
+        if not goal_handle.accepted:
+            self._set_cabinet_terminal(
+                "rejected",
+                "Cabinet button action server rejected the goal.",
+                False,
+                None,
+                generation=generation,
+            )
+            return
+
+        with self._lock:
+            if generation != self._cabinet_generation:
+                return
+            canceled_before_acceptance = self._cabinet_cancel_requested
+            self._cabinet_goal_handle = goal_handle
+            self._cabinet_state.update(
+                {
+                    "state": (
+                        "canceling"
+                        if canceled_before_acceptance
+                        else "operating"
+                    ),
+                    "message": (
+                        "Canceling the accepted cabinet button goal."
+                        if canceled_before_acceptance
+                        else "Cabinet button operation is running."
+                    ),
+                    "updated_at": time.time(),
+                }
+            )
+
+        result_future = goal_handle.get_result_async()
+        result_future.add_done_callback(
+            lambda result: self._cabinet_result_callback(
+                result,
+                generation,
+                goal_handle,
+            )
+        )
+        if canceled_before_acceptance:
+            try:
+                cancel_future = goal_handle.cancel_goal_async()
+                cancel_future.add_done_callback(
+                    lambda result: self._cabinet_cancel_callback(
+                        result,
+                        generation,
+                        goal_handle,
+                    )
+                )
+            except Exception as error:  # noqa: BLE001
+                with self._lock:
+                    if (
+                        generation == self._cabinet_generation
+                        and self._cabinet_goal_handle is goal_handle
+                        and self._cabinet_active_locked()
+                    ):
+                        self._cabinet_cancel_requested = False
+                        self._cabinet_state.update(
+                            {
+                                "state": "operating",
+                                "message": (
+                                    "Cabinet operation cancellation "
+                                    f"failed: {error}"
+                                ),
+                                "updated_at": time.time(),
+                            }
+                        )
+
+    def _cabinet_feedback_callback(
+        self,
+        feedback_message: Any,
+        generation: int,
+    ) -> None:
+        feedback = feedback_message.feedback
+        travel = max(0.0, float(feedback.button_travel))
+        with self._lock:
+            if (
+                generation != self._cabinet_generation
+                or not self._cabinet_active_locked()
+            ):
+                return
+            previous_max = self._cabinet_state["max_travel"]
+            max_travel = max(
+                float(previous_max) if previous_max is not None else 0.0,
+                travel,
+            )
+            update = {
+                "phase": int(feedback.phase),
+                "progress": float(feedback.progress),
+                "max_travel": max_travel,
+                "updated_at": time.time(),
+            }
+            if self._cabinet_state["state"] != "canceling":
+                update["message"] = str(feedback.message)
+            self._cabinet_state.update(update)
+
+    def _cabinet_result_callback(
+        self,
+        future: Any,
+        generation: int,
+        goal_handle: Any,
+    ) -> None:
+        try:
+            wrapped_result = future.result()
+            result = wrapped_result.result
+            action_status = int(wrapped_result.status)
+            error_code = int(result.error_code)
+            max_travel = max(0.0, float(result.max_travel))
+            result_message = str(result.message)
+
+            if (
+                action_status == GoalStatus.STATUS_CANCELED
+                or error_code == PressCabinetButton.Result.CANCELED
+            ):
+                state = "canceled"
+                success = False
+                message = (
+                    result_message
+                    or "Cabinet button operation was canceled."
+                )
+            elif (
+                action_status == GoalStatus.STATUS_SUCCEEDED
+                and bool(result.success)
+                and error_code == PressCabinetButton.Result.SUCCESS
+            ):
+                state = "succeeded"
+                success = True
+                message = (
+                    result_message
+                    or "Cabinet button operation succeeded."
+                )
+            else:
+                state = "failed"
+                success = False
+                _, fallback_message = self._goal_status(
+                    action_status,
+                    "Cabinet button operation",
+                )
+                message = result_message or fallback_message
+        except Exception as error:  # noqa: BLE001
+            state = "failed"
+            success = False
+            message = f"Cabinet button result failed: {error}"
+            error_code = None
+            max_travel = None
+
+        self._set_cabinet_terminal(
+            state,
+            message,
+            success,
+            error_code,
+            max_travel,
+            generation=generation,
+            expected_goal_handle=goal_handle,
+        )
+
+    def _cabinet_cancel_callback(
+        self,
+        future: Any,
+        generation: int,
+        goal_handle: Any,
+    ) -> None:
+        try:
+            response = future.result()
+            cancellation_accepted = bool(response.goals_canceling)
+            error_message = ""
+        except Exception as error:  # noqa: BLE001
+            cancellation_accepted = False
+            error_message = str(error)
+
+        with self._lock:
+            if (
+                generation != self._cabinet_generation
+                or self._cabinet_goal_handle is not goal_handle
+                or not self._cabinet_active_locked()
+            ):
+                return
+            if cancellation_accepted:
+                self._cabinet_state.update(
+                    {
+                        "message": (
+                            "Cabinet button cancellation was accepted."
+                        ),
+                        "updated_at": time.time(),
+                    }
+                )
+                return
+
+            self._cabinet_cancel_requested = False
+            self._cabinet_state.update(
+                {
+                    "state": "operating",
+                    "message": (
+                        "Cabinet action server did not accept cancellation."
+                        if not error_message
+                        else (
+                            "Cabinet operation cancellation failed: "
+                            f"{error_message}"
+                        )
+                    ),
+                    "updated_at": time.time(),
+                }
+            )
+
+    def _set_cabinet_terminal(
+        self,
+        state: str,
+        message: str,
+        success: bool,
+        error_code: Optional[int],
+        max_travel: Optional[float] = None,
+        generation: Optional[int] = None,
+        expected_goal_handle: Any = None,
+    ) -> None:
+        with self._lock:
+            if (
+                generation is not None
+                and generation != self._cabinet_generation
+            ):
+                return
+            if (
+                expected_goal_handle is not None
+                and self._cabinet_goal_handle is not expected_goal_handle
+            ):
+                return
+            observed_max = self._cabinet_state["max_travel"]
+            if max_travel is not None:
+                observed_max = max(
+                    float(observed_max)
+                    if observed_max is not None
+                    else 0.0,
+                    max_travel,
+                )
+            self._cabinet_goal_handle = None
+            self._cabinet_cancel_requested = False
+            self._cabinet_state.update(
+                {
+                    "state": state,
+                    "message": message,
+                    "progress": (
+                        1.0
+                        if state == "succeeded"
+                        else self._cabinet_state["progress"]
+                    ),
+                    "max_travel": observed_max,
+                    "success": success,
+                    "error_code": error_code,
+                    "updated_at": time.time(),
+                }
+            )
+            self._cabinet_terminal_event.set()
+
     def _enforce_motion_cancel(self, now: float) -> None:
         with self._lock:
             should_cancel = (
@@ -1003,6 +1523,36 @@ class RosControlNode(Node):
     def _navigation_mode_callback(self, message: Bool) -> None:
         with self._lock:
             self._navigation_mode = bool(message.data)
+
+    def _cabinet_button_joint_state_callback(
+        self,
+        message: JointState,
+    ) -> None:
+        try:
+            joint_index = message.name.index(
+                self.CABINET_BUTTON_JOINT_NAME
+            )
+            travel = float(message.position[joint_index])
+        except (ValueError, IndexError, TypeError):
+            return
+        if not math.isfinite(travel):
+            return
+        with self._lock:
+            self._cabinet_state.update(
+                {
+                    "button_travel": max(0.0, travel),
+                    "button_state_updated_at": time.time(),
+                }
+            )
+
+    def _cabinet_button_pressed_callback(self, message: Bool) -> None:
+        with self._lock:
+            self._cabinet_state.update(
+                {
+                    "button_pressed": bool(message.data),
+                    "button_state_updated_at": time.time(),
+                }
+            )
 
     def _map_callback(self, message: OccupancyGrid) -> None:
         with self._lock:
@@ -1074,6 +1624,34 @@ class RosControlNode(Node):
         if occupancy >= 65:
             raise ControlRequestError(
                 "Navigation goal is inside an occupied map cell."
+            )
+
+    def _cabinet_active_locked(self) -> bool:
+        return self._cabinet_state["state"] in self.ACTIVE_CABINET_STATES
+
+    def _reject_if_cabinet_active_locked(self) -> None:
+        if self._cabinet_active_locked():
+            raise ControlRequestError(
+                "A cabinet button operation is active.",
+                409,
+            )
+
+    def _reject_cabinet_start_conflicts_locked(self) -> None:
+        if self._cabinet_active_locked():
+            raise ControlRequestError(
+                "A cabinet button operation is already active.",
+                409,
+            )
+        if self._navigation_state["state"] in self.ACTIVE_NAVIGATION_STATES:
+            raise ControlRequestError(
+                "Navigation is active; cancel it before operating "
+                "the cabinet.",
+                409,
+            )
+        if self._motion_state["state"] in self.ACTIVE_MOTION_STATES:
+            raise ControlRequestError(
+                "MoveIt is active; cancel it before operating the cabinet.",
+                409,
             )
 
     @staticmethod

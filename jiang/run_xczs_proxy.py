@@ -61,7 +61,10 @@ def register_xczs_topics() -> None:
     @registry.register_topic(
         "xczs/joint_states",
         JointState,
-        description="XCZS joint states (flattened positions/velocities/efforts)",
+        description=(
+            "XCZS joint states "
+            "(flattened positions/velocities/efforts)"
+        ),
     )
     def handle_xczs_joint_states(topic: str, data: dict) -> dict:
         data = flatten_joint_state(topic, data)
@@ -132,6 +135,8 @@ def main() -> None:
         print(f"Control server: http://127.0.0.1:{ctrl_port}")
         print("  POST /cmd_vel")
         print("  POST /joint_trajectory")
+        print("  POST /cabinet/press")
+        print("  GET  /cabinet/status")
         print("  GET  /health")
 
     # -- Connect and run -------------------------------------------------

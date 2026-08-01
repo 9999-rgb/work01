@@ -387,6 +387,7 @@
   background: var(--card-bg); border: 1px solid var(--border);
   border-radius: 10px; overflow: hidden;
 }
+.cabinet-card { grid-column: 1 / -1; }
 .autonomy-header {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; padding: 11px 14px;
@@ -452,6 +453,58 @@
   margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border);
   color: var(--text-dim); font-size: 11px; font-weight: 600;
 }
+.cabinet-operation-grid {
+  display: grid; grid-template-columns: minmax(280px, 0.8fr) minmax(360px, 1.2fr);
+  gap: 18px; align-items: start;
+}
+@media (max-width: 900px) {
+  .cabinet-operation-grid { grid-template-columns: 1fr; }
+}
+.cabinet-target {
+  padding: 10px 12px; border: 1px solid var(--border); border-radius: 7px;
+  background: rgba(255,255,255,0.035); font-size: 12px;
+}
+.cabinet-target strong {
+  display: block; margin-top: 4px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text); font-weight: 500;
+}
+.cabinet-option {
+  display: flex; align-items: center; gap: 8px; margin-top: 12px;
+  color: var(--text-dim); font-size: 12px; cursor: pointer;
+}
+.cabinet-option input { accent-color: var(--accent); }
+.cabinet-progress-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-bottom: 6px; color: var(--text-dim); font-size: 11px;
+}
+.cabinet-progress-track {
+  height: 10px; overflow: hidden; border-radius: 5px;
+  background: rgba(255,255,255,0.06);
+}
+.cabinet-progress-fill {
+  width: 0; height: 100%; border-radius: 5px;
+  background: linear-gradient(90deg, var(--accent), var(--cyan));
+  transition: width 0.25s ease;
+}
+.cabinet-metrics {
+  display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr));
+  gap: 8px; margin-top: 10px;
+}
+@media (max-width: 620px) {
+  .cabinet-metrics { grid-template-columns: 1fr; }
+}
+.cabinet-metric {
+  padding: 8px 10px; border-radius: 6px;
+  background: rgba(255,255,255,0.035);
+  color: var(--text-dim); font-size: 10px;
+}
+.cabinet-metric strong {
+  display: block; margin-top: 3px; color: var(--text); font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', monospace; font-weight: 500;
+}
+.cabinet-metric strong.ok { color: var(--green); }
+.cabinet-metric strong.busy { color: var(--yellow); }
 .dpad-btn:disabled, .joint-slider-row input:disabled {
   opacity: 0.35; cursor: not-allowed;
 }
@@ -698,6 +751,61 @@
       </div>
     </div>
   </section>
+
+  <section class="autonomy-card cabinet-card">
+    <div class="autonomy-header">
+      <h3>🗄️ 控制柜自动操作</h3>
+      <span class="autonomy-state" id="cabinetState">等待服务</span>
+    </div>
+    <div class="autonomy-body">
+      <div class="cabinet-operation-grid">
+        <div>
+          <div class="cabinet-target">
+            固定目标：10 号模块红色按钮（绿色按钮左侧）
+            <strong>box_10_button_1</strong>
+          </div>
+          <label class="cabinet-option" for="cabinetNavigate">
+            <input id="cabinetNavigate" type="checkbox" checked>
+            先导航到控制柜操作工位
+          </label>
+          <div class="command-row">
+            <button class="btn btn-primary" id="btnCabinetPress" disabled>
+              按下红色按钮
+            </button>
+            <button class="btn btn-danger" id="btnCabinetCancel" disabled>
+              取消操作
+            </button>
+          </div>
+        </div>
+        <div>
+          <div class="cabinet-progress-header">
+            <span id="cabinetPhase">尚未开始</span>
+            <span id="cabinetProgressText">0%</span>
+          </div>
+          <div class="cabinet-progress-track">
+            <div class="cabinet-progress-fill" id="cabinetProgressFill"></div>
+          </div>
+          <div class="cabinet-metrics">
+            <div class="cabinet-metric">
+              当前按下状态
+              <strong id="cabinetPressed">未知</strong>
+            </div>
+            <div class="cabinet-metric">
+              当前行程
+              <strong id="cabinetTravel">- mm</strong>
+            </div>
+            <div class="cabinet-metric">
+              最大行程
+              <strong id="cabinetMaxTravel">- mm</strong>
+            </div>
+          </div>
+          <div class="status-detail" id="cabinetDetail">
+            连接控制服务器后可执行按钮操作。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <!-- ─── Dashboard ─── -->
@@ -794,10 +902,17 @@ let lidarReconnectTimer = null;
 let sensorHealthTimer = null;
 let autonomyStatusTimer = null;
 let autonomyMapTimer = null;
+let autonomyStatusPollInFlight = false;
+let autonomyStatusPollGeneration = 0;
 let navigationMap = null;
 let navigationMapImage = null;
 let navigationStatus = null;
 let moveitStatus = null;
+let cabinetStatus = null;
+let cabinetAvailableFromHealth = false;
+let cabinetActiveFromHealth = false;
+let cabinetStatusCurrent = false;
+let cabinetInterlockWasActive = false;
 let selectedNavigationGoal = null;
 
 // ─── DOM refs ────────────────────────────────────────────────
@@ -822,6 +937,8 @@ const navState = $('navState');
 const navDetail = $('navDetail');
 const moveitState = $('moveitState');
 const moveitDetail = $('moveitDetail');
+const cabinetState = $('cabinetState');
+const cabinetDetail = $('cabinetDetail');
 
 function defaultServiceUrl(port) {
   const host = window.location.hostname || 'localhost';
@@ -1372,31 +1489,65 @@ async function testControlConnection() {
     if (r.ok) {
       const health = await r.json();
       ctrlConnected = true;
+      cabinetAvailableFromHealth = Boolean(
+        health.cabinet_available ?? health.cabinet_operation_available
+      );
+      cabinetActiveFromHealth = Boolean(health.cabinet_active);
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
+
+      // Confirm that no cabinet operation is active before changing the
+      // base routing mode.  Reloading the page must not interrupt an action
+      // that is already navigating or manipulating the cabinet.
+      let cabinetStatusKnown = false;
+      try {
+        cabinetStatus = await controlRequestWithTimeout('/cabinet/status');
+        cabinetStatusCurrent = true;
+        cabinetStatusKnown = true;
+        renderCabinetStatus();
+      } catch (_) {
+        cabinetStatus = null;
+        cabinetStatusCurrent = false;
+        renderCabinetStatus();
+      }
       startAutonomyPolling();
       if (!health.navigation_available) {
         log('info', 'Nav2 未启动；使用 --web 可启用网页地图导航');
-      } else {
+      } else if (
+        (cabinetStatusKnown || typeof health.cabinet_active === 'boolean') &&
+        !isCabinetOperationActive(cabinetStatus)
+      ) {
         // When Nav2 is running alongside the web UI, default to
         // manual base mode so the D-pad and WASD work immediately.
         // The operator can re-enable Nav2 through the UI.
         switchToManualMode();
         log('info', '已自动切换到手动底盘模式（可通过 Nav2 面板启用导航）');
+      } else if (isCabinetOperationActive(cabinetStatus)) {
+        log('info', '控制柜操作正在进行，保持当前底盘模式');
+      } else {
+        log('info', '未能确认控制柜动作状态，不自动切换底盘模式');
       }
       if (!health.moveit_available) {
         log('info', 'MoveIt 2 尚未就绪');
+      }
+      if (!cabinetAvailableFromHealth) {
+        log('info', '控制柜按钮操作服务尚未就绪');
       }
     } else {
       throw new Error('HTTP ' + r.status);
     }
   } catch (e) {
     ctrlConnected = false;
+    cabinetAvailableFromHealth = false;
+    cabinetActiveFromHealth = false;
+    cabinetStatus = null;
+    cabinetStatusCurrent = false;
     st.textContent = '连接失败';
     st.className = 'ctrl-status err';
     log('err', '控制服务器连接失败: ' + e.message);
     stopAutonomyPolling();
+    renderCabinetStatus();
   }
 }
 
@@ -1406,12 +1557,23 @@ setInterval(async () => {
   try {
     const r = await fetch(ctrlBaseUrl + '/health');
     if (!r.ok) throw new Error();
+    const health = await r.json();
+    cabinetAvailableFromHealth = Boolean(
+      health.cabinet_available ?? health.cabinet_operation_available
+    );
+    cabinetActiveFromHealth = Boolean(health.cabinet_active);
+    renderCabinetStatus();
   } catch (_) {
     ctrlConnected = false;
+    cabinetAvailableFromHealth = false;
+    cabinetActiveFromHealth = false;
+    cabinetStatus = null;
+    cabinetStatusCurrent = false;
     $('ctrlStatus').textContent = '连接断开';
     $('ctrlStatus').className = 'ctrl-status err';
     stopBase();
     stopAutonomyPolling();
+    renderCabinetStatus();
   }
 }, 5000);
 
@@ -1433,6 +1595,10 @@ async function postCmdVel(ly, az) {
 
 async function postJointTrajectory(positions) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return false; }
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，手动关节控制已锁定', 'err');
+    return false;
+  }
   try {
     const r = await fetch(ctrlBaseUrl + '/joint_trajectory', {
       method: 'POST',
@@ -1444,9 +1610,15 @@ async function postJointTrajectory(positions) {
   } catch (e) { ctrlConnected = false; toast('控制服务器连接失败', 'err'); return false; }
 }
 
-async function controlRequest(path, method = 'GET', payload = null) {
+async function controlRequest(
+  path,
+  method = 'GET',
+  payload = null,
+  signal = null
+) {
   if (!ctrlConnected) throw new Error('控制服务器未连接');
   const options = {method, cache: 'no-store'};
+  if (signal) options.signal = signal;
   if (payload !== null) {
     options.headers = {'Content-Type': 'application/json'};
     options.body = JSON.stringify(payload);
@@ -1460,22 +1632,115 @@ async function controlRequest(path, method = 'GET', payload = null) {
   return body;
 }
 
+const autonomyPollIntervalMs = 750;
+const autonomyRequestTimeoutMs = 2000;
+
+async function controlRequestWithTimeout(
+  path,
+  timeoutMs = autonomyRequestTimeoutMs
+) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await controlRequest(path, 'GET', null, controller.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ─── Nav2 and MoveIt 2 unified control ─────────────────────
 const navActiveStates = new Set(['enabling', 'sending', 'navigating', 'canceling']);
 const moveitActiveStates = new Set(['sending', 'planning', 'executing', 'canceling']);
+const cabinetActiveStates = new Set([
+  'accepted',
+  'sending',
+  'waiting',
+  'waiting_for_system',
+  'running',
+  'active',
+  'operating',
+  'navigating',
+  'moving_to_prepress',
+  'approaching',
+  'pressing',
+  'verifying_press',
+  'retracting',
+  'verifying_release',
+  'canceling'
+]);
+const cabinetPhaseLabels = {
+  0: '等待系统',
+  1: '导航到操作工位',
+  2: '移动到按压前位姿',
+  3: '接近按钮',
+  4: '按压按钮',
+  5: '验证按下状态',
+  6: '撤回机械臂',
+  7: '验证按钮释放',
+  waiting_for_system: '等待系统',
+  navigating: '导航到操作工位',
+  moving_to_prepress: '移动到按压前位姿',
+  approaching: '接近按钮',
+  pressing: '按压按钮',
+  verifying_press: '验证按下状态',
+  retracting: '撤回机械臂',
+  verifying_release: '验证按钮释放'
+};
 const stateLabels = {
   idle: '空闲',
+  accepted: '已接受',
   enabling: '正在切换模式',
   sending: '正在发送',
+  waiting: '正在等待',
+  waiting_for_system: '等待系统',
+  running: '执行中',
+  active: '执行中',
+  operating: '操作中',
   navigating: '导航中',
   planning: '规划中',
   executing: '执行中',
+  moving_to_prepress: '移动到预按压位',
+  approaching: '接近按钮',
+  pressing: '按压中',
+  verifying_press: '验证按下',
+  retracting: '撤回中',
+  verifying_release: '验证释放',
   canceling: '正在取消',
   succeeded: '已完成',
   canceled: '已取消',
   rejected: '已拒绝',
   failed: '失败'
 };
+
+function isCabinetOperationActive(status = cabinetStatus) {
+  if (!cabinetStatusCurrent) return cabinetActiveFromHealth;
+  if (!status) return cabinetActiveFromHealth;
+  if (status.active === true) return true;
+  return cabinetActiveStates.has(String(status.state || '').toLowerCase());
+}
+
+function isNavigationActive() {
+  return Boolean(
+    navigationStatus && navActiveStates.has(navigationStatus.state)
+  );
+}
+
+function isMoveitActive() {
+  return Boolean(
+    moveitStatus && moveitActiveStates.has(moveitStatus.state)
+  );
+}
+
+function isCabinetAvailable() {
+  if (
+    cabinetStatusCurrent &&
+    cabinetStatus &&
+    typeof cabinetStatus.available === 'boolean'
+  ) {
+    return cabinetStatus.available;
+  }
+  return cabinetAvailableFromHealth;
+}
 
 function setAutonomyState(element, text, stateClass = '') {
   element.textContent = text;
@@ -1491,9 +1756,13 @@ function formatMetric(value, digits = 2, suffix = '') {
 
 function startAutonomyPolling() {
   stopAutonomyPolling();
-  refreshAutonomyStatus();
+  const generation = autonomyStatusPollGeneration;
+  refreshAutonomyStatus(generation);
   loadNavigationMap();
-  autonomyStatusTimer = setInterval(refreshAutonomyStatus, 750);
+  autonomyStatusTimer = setInterval(
+    () => refreshAutonomyStatus(generation),
+    autonomyPollIntervalMs
+  );
   autonomyMapTimer = setInterval(loadNavigationMap, 10000);
 }
 
@@ -1502,21 +1771,97 @@ function stopAutonomyPolling() {
   if (autonomyMapTimer) clearInterval(autonomyMapTimer);
   autonomyStatusTimer = null;
   autonomyMapTimer = null;
+  autonomyStatusPollGeneration += 1;
+  autonomyStatusPollInFlight = false;
 }
 
-async function refreshAutonomyStatus() {
-  if (!ctrlConnected) return;
-  const results = await Promise.allSettled([
-    controlRequest('/navigation/status'),
-    controlRequest('/motion/status')
-  ]);
-  if (results[0].status === 'fulfilled') {
-    navigationStatus = results[0].value;
-    renderNavigationStatus();
+async function pollAutonomyEndpoint(
+  path,
+  generation,
+  onSuccess,
+  onFailure = null
+) {
+  try {
+    const value = await controlRequestWithTimeout(path);
+    if (
+      ctrlConnected &&
+      generation === autonomyStatusPollGeneration
+    ) {
+      onSuccess(value);
+    }
+  } catch (error) {
+    if (
+      onFailure &&
+      ctrlConnected &&
+      generation === autonomyStatusPollGeneration
+    ) {
+      onFailure(error);
+    }
   }
-  if (results[1].status === 'fulfilled') {
-    moveitStatus = results[1].value;
-    renderMoveitStatus();
+}
+
+async function refreshAutonomyStatus(
+  generation = autonomyStatusPollGeneration
+) {
+  if (
+    !ctrlConnected ||
+    generation !== autonomyStatusPollGeneration ||
+    autonomyStatusPollInFlight
+  ) return;
+
+  autonomyStatusPollInFlight = true;
+  const requests = [
+    pollAutonomyEndpoint(
+      '/navigation/status',
+      generation,
+      status => {
+        navigationStatus = status;
+        renderNavigationStatus();
+      }
+    ),
+    pollAutonomyEndpoint(
+      '/motion/status',
+      generation,
+      status => {
+        moveitStatus = status;
+        renderMoveitStatus();
+      }
+    ),
+    pollAutonomyEndpoint(
+      '/cabinet/status',
+      generation,
+      status => {
+        cabinetStatus = status;
+        cabinetStatusCurrent = true;
+        renderCabinetStatus();
+      },
+      () => {
+        cabinetStatusCurrent = false;
+        renderCabinetStatus();
+      }
+    ),
+    pollAutonomyEndpoint(
+      '/health',
+      generation,
+      health => {
+        cabinetAvailableFromHealth = Boolean(
+          health.cabinet_available ??
+          health.cabinet_operation_available
+        );
+        cabinetActiveFromHealth = Boolean(health.cabinet_active);
+        renderCabinetStatus();
+      }
+    )
+  ];
+
+  try {
+    // Each endpoint applies its result as soon as it settles.  Waiting here
+    // only keeps the next interval from starting an overlapping poll.
+    await Promise.allSettled(requests);
+  } finally {
+    if (generation === autonomyStatusPollGeneration) {
+      autonomyStatusPollInFlight = false;
+    }
   }
 }
 
@@ -1671,6 +2016,10 @@ function showNavigationMapMessage(message) {
 }
 
 navMapCanvas.addEventListener('click', event => {
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，暂不能修改导航目标', 'err');
+    return;
+  }
   if (!navigationMap) {
     toast('Nav2 地图尚未加载', 'err');
     return;
@@ -1753,13 +2102,7 @@ function renderNavigationStatus() {
       ? '网页手动'
       : '等待路由器状态';
 
-  $('btnNavSend').disabled = !available || active;
-  $('btnNavCancel').disabled = !active;
-  $('btnManualMode').disabled = navigationStatus.mode === false && !active;
-  const manualBlocked = navigationStatus.mode === true;
-  document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
-    button.disabled = manualBlocked;
-  });
+  updateControlInterlocks();
   drawNavigationMap();
 }
 
@@ -1786,19 +2129,225 @@ function renderMoveitStatus() {
   ];
   moveitDetail.textContent = detail.join('\n');
   moveitDetail.style.whiteSpace = 'pre-line';
+  updateControlInterlocks();
+}
+
+function cabinetFeedbackValue(...names) {
+  if (!cabinetStatus) return undefined;
+  const feedback = (
+    cabinetStatus.feedback && typeof cabinetStatus.feedback === 'object'
+  ) ? cabinetStatus.feedback : {};
+  for (const name of names) {
+    if (cabinetStatus[name] !== undefined && cabinetStatus[name] !== null) {
+      return cabinetStatus[name];
+    }
+    if (feedback[name] !== undefined && feedback[name] !== null) {
+      return feedback[name];
+    }
+  }
+  return undefined;
+}
+
+function formatCabinetTravel(value) {
+  const travel = Number(value);
+  return Number.isFinite(travel) ? `${(travel * 1000).toFixed(2)} mm` : '- mm';
+}
+
+function renderCabinetStatus() {
+  const available = isCabinetAvailable();
+  const statusCurrent = Boolean(cabinetStatusCurrent && cabinetStatus);
+  const lastState = cabinetStatus ? cabinetStatus.state || 'idle' : 'idle';
+  const active = isCabinetOperationActive();
+  let stateClass = '';
+  let stateText = '';
+  if (!ctrlConnected) {
+    stateClass = 'err';
+    stateText = '控制服务未连接';
+  } else if (!statusCurrent) {
+    stateClass = active ? 'busy' : available ? 'busy' : 'err';
+    stateText = active
+      ? '状态同步中 · 操作中'
+      : available
+        ? '状态同步中'
+        : '按钮操作未就绪';
+  } else {
+    if (!available || ['failed', 'rejected'].includes(lastState)) {
+      stateClass = 'err';
+    } else if (active) {
+      stateClass = 'busy';
+    } else if (lastState === 'succeeded') {
+      stateClass = 'ok';
+    }
+    stateText = available
+      ? (stateLabels[lastState] || lastState)
+      : '按钮操作未就绪';
+  }
+  setAutonomyState(cabinetState, stateText, stateClass);
+
+  const phase = cabinetFeedbackValue('phase', 'feedback_phase');
+  const phaseLabel = cabinetFeedbackValue('phase_label');
+  let lastPhaseText = phaseLabel || cabinetPhaseLabels[phase];
+  if (!lastPhaseText) {
+    if (lastState === 'succeeded') lastPhaseText = '操作已完成';
+    else if (lastState === 'canceled') lastPhaseText = '操作已取消';
+    else if (['failed', 'rejected'].includes(lastState)) {
+      lastPhaseText = '操作失败';
+    } else {
+      lastPhaseText = active ? '执行中' : '尚未开始';
+    }
+  }
+  const phaseText = statusCurrent
+    ? lastPhaseText
+    : cabinetStatus
+      ? `状态同步中 · 上次：${lastPhaseText}`
+      : '状态同步中';
+  $('cabinetPhase').textContent = phaseText;
+
+  const rawProgress = Number(cabinetFeedbackValue('progress'));
+  let progress = Number.isFinite(rawProgress) ? rawProgress : 0;
+  if (progress > 1) progress /= 100;
+  if (statusCurrent && lastState === 'succeeded') progress = 1;
+  progress = Math.max(0, Math.min(1, progress));
+  const progressPercent = Math.round(progress * 100);
+  $('cabinetProgressText').textContent =
+    `${progressPercent}%${!statusCurrent && cabinetStatus ? '（上次）' : ''}`;
+  $('cabinetProgressFill').style.width = `${progressPercent}%`;
+
+  const pressed = cabinetFeedbackValue(
+    'button_pressed',
+    'pressed',
+    'is_pressed'
+  );
+  const pressedElement = $('cabinetPressed');
+  pressedElement.className = '';
+  if (typeof pressed === 'boolean') {
+    pressedElement.textContent =
+      `${pressed ? '已按下' : '已释放'}${statusCurrent ? '' : '（上次）'}`;
+    if (statusCurrent) pressedElement.classList.add(pressed ? 'busy' : 'ok');
+  } else {
+    pressedElement.textContent = '未知';
+  }
+  const travel = cabinetFeedbackValue('button_travel', 'current_travel');
+  const maxTravel = cabinetFeedbackValue('max_travel', 'maximum_travel');
+  const staleSuffix = !statusCurrent && cabinetStatus ? '（上次）' : '';
+  $('cabinetTravel').textContent =
+    `${formatCabinetTravel(travel)}${
+      Number.isFinite(Number(travel)) ? staleSuffix : ''
+    }`;
+  $('cabinetMaxTravel').textContent =
+    `${formatCabinetTravel(maxTravel)}${
+      Number.isFinite(Number(maxTravel)) ? staleSuffix : ''
+    }`;
+
+  if (!ctrlConnected) {
+    cabinetDetail.textContent = '连接控制服务器后可执行按钮操作。';
+  } else if (!statusCurrent) {
+    cabinetDetail.textContent = [
+      '实时动作状态暂不可用，当前互锁依据控制服务健康状态。',
+      `健康状态: ${active ? '检测到活动操作' : '未检测到活动操作'}`,
+      cabinetStatus && cabinetStatus.message
+        ? `上次消息: ${cabinetStatus.message}`
+        : ''
+    ].filter(Boolean).join('\n');
+  } else if (!cabinetStatus) {
+    cabinetDetail.textContent = ctrlConnected
+      ? '等待控制柜动作状态。'
+      : '连接控制服务器后可执行按钮操作。';
+  } else {
+    const success = cabinetStatus.success;
+    const resultText = success === true
+      ? '成功'
+      : success === false
+        ? '未成功'
+        : '等待结果';
+    const errorCode = cabinetStatus.error_code;
+    cabinetDetail.textContent = [
+      cabinetStatus.message || '',
+      '目标: box_10_button_1',
+      `导航到工位: ${
+        cabinetStatus.navigate_to_staging_pose === false ? '否' : '是'
+      }`,
+      `结果: ${resultText}  错误码: ${
+        errorCode === null || errorCode === undefined ? '-' : errorCode
+      }`
+    ].filter(Boolean).join('\n');
+  }
+  cabinetDetail.style.whiteSpace = 'pre-line';
+  updateControlInterlocks();
+}
+
+function updateControlInterlocks() {
+  const navigationActive = isNavigationActive();
+  const motionActive = isMoveitActive();
+  const cabinetActive = isCabinetOperationActive();
+  const navigationAvailable = Boolean(
+    navigationStatus && navigationStatus.available
+  );
+  const moveitAvailable = Boolean(moveitStatus && moveitStatus.available);
+
+  if (cabinetActive && !cabinetInterlockWasActive) {
+    stopBase();
+    keysPressed.clear();
+  }
+  cabinetInterlockWasActive = cabinetActive;
+
+  $('btnNavSend').disabled =
+    !ctrlConnected || !navigationAvailable || navigationActive || cabinetActive;
+  $('btnNavCancel').disabled = !ctrlConnected || !navigationActive;
+  $('btnManualMode').disabled =
+    !ctrlConnected ||
+    cabinetActive ||
+    Boolean(
+      navigationStatus &&
+      navigationStatus.mode === false &&
+      !navigationActive
+    );
+  ['navGoalX', 'navGoalY', 'navGoalYaw'].forEach(id => {
+    $(id).disabled = cabinetActive;
+  });
+
+  const manualBlocked =
+    !ctrlConnected ||
+    cabinetActive ||
+    Boolean(navigationStatus && navigationStatus.mode === true);
+  document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
+    button.disabled = manualBlocked;
+  });
+  $('spdLinear').disabled = manualBlocked;
+  $('spdAngular').disabled = manualBlocked;
+
   document.querySelectorAll('.moveit-command').forEach(button => {
-    button.disabled = !available || active;
+    button.disabled =
+      !ctrlConnected || !moveitAvailable || motionActive || cabinetActive;
   });
-  $('btnMoveitCancel').disabled = !active;
+  $('btnMoveitCancel').disabled = !ctrlConnected || !motionActive;
+  document.querySelectorAll(
+    '#moveitX, #moveitY, #moveitZ, #moveitRoll, #moveitPitch, #moveitYaw, #moveitFrame'
+  ).forEach(input => {
+    input.disabled = cabinetActive;
+  });
   document.querySelectorAll('#jointSliders input').forEach(input => {
-    input.disabled = active;
+    input.disabled = !ctrlConnected || motionActive || cabinetActive;
   });
-  $('btnArmZero').disabled = active;
-  $('btnGripperOpen').disabled = active;
-  $('btnGripperClose').disabled = active;
+  $('btnArmZero').disabled = !ctrlConnected || motionActive || cabinetActive;
+  $('btnGripperOpen').disabled = !ctrlConnected || motionActive || cabinetActive;
+  $('btnGripperClose').disabled = !ctrlConnected || motionActive || cabinetActive;
+
+  $('btnCabinetPress').disabled =
+    !ctrlConnected ||
+    !isCabinetAvailable() ||
+    cabinetActive ||
+    navigationActive ||
+    motionActive;
+  $('btnCabinetCancel').disabled = !ctrlConnected || !cabinetActive;
+  $('cabinetNavigate').disabled = cabinetActive;
 }
 
 async function switchToManualMode() {
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，不能切换底盘模式', 'err');
+    return;
+  }
   try {
     stopBase();
     await controlRequest(
@@ -1814,6 +2363,10 @@ async function switchToManualMode() {
 }
 
 async function sendNavigationGoal() {
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，不能发送 Nav2 目标', 'err');
+    return;
+  }
   const x = Number($('navGoalX').value);
   const y = Number($('navGoalY').value);
   const yawDegrees = Number($('navGoalYaw').value);
@@ -1850,6 +2403,10 @@ async function cancelNavigation() {
 }
 
 async function sendNamedMoveit(group, target) {
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，不能发送 MoveIt 目标', 'err');
+    return;
+  }
   try {
     await controlRequest(
       '/motion/named',
@@ -1879,6 +2436,10 @@ function quaternionFromEuler(roll, pitch, yaw) {
 }
 
 async function sendMoveitPose(execute) {
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，不能发送 MoveIt 目标', 'err');
+    return;
+  }
   const position = [
     Number($('moveitX').value),
     Number($('moveitY').value),
@@ -1922,6 +2483,71 @@ async function cancelMoveit() {
   }
 }
 
+async function sendCabinetOperation() {
+  if (isCabinetOperationActive()) return;
+  if (isNavigationActive() || isMoveitActive()) {
+    toast('请先结束当前 Nav2 或 MoveIt 动作', 'err');
+    return;
+  }
+  const previousStatus = cabinetStatus;
+  const previousStatusCurrent = cabinetStatusCurrent;
+  const navigateToStagingPose = $('cabinetNavigate').checked;
+  cabinetStatus = {
+    ...(cabinetStatus || {}),
+    available: true,
+    state: 'sending',
+    message: '正在提交控制柜按钮操作。',
+    button_id: 'box_10_button_1',
+    navigate_to_staging_pose: navigateToStagingPose,
+    progress: 0,
+    success: null,
+    error_code: null
+  };
+  cabinetStatusCurrent = true;
+  renderCabinetStatus();
+  try {
+    await controlRequest(
+      '/cabinet/press',
+      'POST',
+      {
+        button_id: 'box_10_button_1',
+        navigate_to_staging_pose: navigateToStagingPose
+      }
+    );
+    toast('控制柜按钮操作已提交', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    cabinetStatus = previousStatus;
+    cabinetStatusCurrent = previousStatusCurrent;
+    renderCabinetStatus();
+    toast(`控制柜操作提交失败: ${error.message}`, 'err');
+  }
+}
+
+async function cancelCabinetOperation() {
+  if (!isCabinetOperationActive()) return;
+  const previousStatus = cabinetStatus;
+  const previousStatusCurrent = cabinetStatusCurrent;
+  cabinetStatus = {
+    ...(cabinetStatus || {}),
+    available: isCabinetAvailable(),
+    state: 'canceling',
+    message: '正在取消控制柜按钮操作。'
+  };
+  cabinetStatusCurrent = true;
+  renderCabinetStatus();
+  try {
+    await controlRequest('/cabinet/cancel', 'POST', {});
+    toast('正在取消控制柜按钮操作', 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    cabinetStatus = previousStatus;
+    cabinetStatusCurrent = previousStatusCurrent;
+    renderCabinetStatus();
+    toast(`取消控制柜操作失败: ${error.message}`, 'err');
+  }
+}
+
 showNavigationMapMessage('等待控制服务器');
 
 // ─── Chassis Control ────────────────────────────────────────
@@ -1930,6 +2556,10 @@ function getAngSpeed() { return parseFloat($('spdAngular').value) || 0.60; }
 
 function startBaseMotion(motion) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，手动底盘已锁定', 'err');
+    return;
+  }
   if (navigationStatus && navigationStatus.mode === true) {
     toast('请先切换到手动底盘模式', 'err');
     return;
@@ -2014,6 +2644,7 @@ function buildJointSliders() {
 }
 
 function onArmSlider(idx, val) {
+  if (isCabinetOperationActive()) return;
   armPositions[idx] = parseFloat(val) || 0.0;
   const ve = document.getElementById('armSliderVal' + idx);
   if (ve) ve.textContent = armPositions[idx].toFixed(2);
@@ -2021,6 +2652,10 @@ function onArmSlider(idx, val) {
 }
 
 function resetArmToZero() {
+  if (isCabinetOperationActive()) {
+    toast('控制柜操作进行中，手动关节控制已锁定', 'err');
+    return;
+  }
   armPositions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
   armJointNames.forEach((_, i) => {
     const s = document.getElementById('armSlider' + i);
@@ -2033,10 +2668,12 @@ function resetArmToZero() {
 
 // ─── Gripper Control ────────────────────────────────────────
 function openGripper() {
+  if (isCabinetOperationActive()) return;
   gripperPositions = [gripperOpenVal, -gripperOpenVal];
   postJointTrajectory([...armPositions, ...gripperPositions]);
 }
 function closeGripper() {
+  if (isCabinetOperationActive()) return;
   gripperPositions = [0.0, -0.0];
   postJointTrajectory([...armPositions, ...gripperPositions]);
 }
@@ -2064,6 +2701,8 @@ $('btnMoveitClose').addEventListener(
 $('btnMoveitPlan').addEventListener('click', () => sendMoveitPose(false));
 $('btnMoveitExecute').addEventListener('click', () => sendMoveitPose(true));
 $('btnMoveitCancel').addEventListener('click', cancelMoveit);
+$('btnCabinetPress').addEventListener('click', sendCabinetOperation);
+$('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
 $('spdLinear').addEventListener('input', function() {
   $('spdLinVal').textContent = parseFloat(this.value).toFixed(2);
 });
@@ -2073,6 +2712,7 @@ $('spdAngular').addEventListener('input', function() {
 
 // Build sliders on load
 buildJointSliders();
+renderCabinetStatus();
 
 // Auto-connect monitoring, sensors and control on page load.
 doConnect();

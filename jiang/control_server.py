@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Start the XCZS HTTP-to-ROS 2 control gateway."""
+"""Start the XCZS HTTP-to-ROS 2 control and cabinet-operation gateway."""
 
 import argparse
 import signal
@@ -11,7 +11,7 @@ from control_gateway import ControlServer
 def main() -> None:
     """Parse options and run until SIGINT or SIGTERM."""
     parser = argparse.ArgumentParser(
-        description="XCZS HTTP-to-ROS 2 control gateway",
+        description="XCZS HTTP-to-ROS 2 autonomous control gateway",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8090)

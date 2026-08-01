@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import threading
+from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import rclpy
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 
+from .ros_node import ControlRequestError
 from .ros_node import RosControlNode
 from .web_server import ControlHandler
+
+
+CABINET_SHUTDOWN_TIMEOUT_SEC = 15.0
 
 
 class ControlServer:
@@ -48,6 +53,9 @@ class ControlServer:
         )
         self._http_server: Optional[ThreadingHTTPServer] = None
         self._http_thread: Optional[threading.Thread] = None
+        self._request_condition = threading.Condition()
+        self._active_requests = 0
+        self._stopping = False
 
     def start(self) -> "ControlServer":
         """Start the ROS executor and threaded HTTP listener."""
@@ -72,6 +80,12 @@ class ControlServer:
 
     def stop(self) -> None:
         """Stop HTTP, autonomous goals and the ROS executor."""
+        with self._request_condition:
+            if self._stopping:
+                return
+            self._stopping = True
+            self._request_condition.notify_all()
+
         if self._http_server is not None:
             self._http_server.shutdown()
             self._http_server.server_close()
@@ -80,6 +94,25 @@ class ControlServer:
             self._http_thread.join(timeout=3.0)
             self._http_thread = None
 
+        # Request handlers are daemon threads, so server_close() does not
+        # join them.  Wait until every handler that entered the ROS gateway
+        # before the stopping gate has left it.  Later handlers receive 503
+        # without touching a node that is being torn down.
+        with self._request_condition:
+            while self._active_requests > 0:
+                self._request_condition.wait()
+
+        cabinet_cancel = self._node.cancel_cabinet_button(allow_idle=True)
+        if (
+            cabinet_cancel["status"] == "canceling"
+            and not self._node.wait_for_cabinet_idle(
+                timeout_sec=CABINET_SHUTDOWN_TIMEOUT_SEC
+            )
+        ):
+            self._node.get_logger().warning(
+                "Timed out waiting for the cabinet operation to cancel "
+                "during Web gateway shutdown."
+            )
         self._node.cancel_navigation(allow_idle=True)
         self._node.cancel_motion(allow_idle=True)
         self._node.emergency_stop()
@@ -90,13 +123,17 @@ class ControlServer:
 
     def health(self) -> Dict[str, Any]:
         """Return gateway and ROS action availability."""
-        navigation = self._node.navigation_snapshot()
-        motion = self._node.motion_snapshot()
-        return {
-            "status": "ok",
-            "navigation_available": navigation["available"],
-            "moveit_available": motion["available"],
-        }
+        with self._request_scope():
+            navigation = self._node.navigation_snapshot()
+            motion = self._node.motion_snapshot()
+            cabinet = self._node.cabinet_snapshot()
+            return {
+                "status": "ok",
+                "navigation_available": navigation["available"],
+                "moveit_available": motion["available"],
+                "cabinet_available": cabinet["available"],
+                "cabinet_active": cabinet["active"],
+            }
 
     def publish_cmd_vel(
         self,
@@ -104,26 +141,31 @@ class ControlServer:
         angular_z: float,
     ) -> Tuple[float, float]:
         """Forward one manual base target."""
-        return self._node.set_base_target(linear_y, angular_z)
+        with self._request_scope():
+            return self._node.set_base_target(linear_y, angular_z)
 
     def publish_joint_trajectory(
         self,
         positions: List[float],
     ) -> List[float]:
         """Forward one manual joint target."""
-        return self._node.set_joint_target(positions)
+        with self._request_scope():
+            return self._node.set_joint_target(positions)
 
     def navigation_status(self) -> Dict[str, Any]:
         """Return Nav2 state and overlays."""
-        return self._node.navigation_snapshot()
+        with self._request_scope():
+            return self._node.navigation_snapshot()
 
     def navigation_map(self) -> Dict[str, Any]:
         """Return the latest occupancy map."""
-        return self._node.map_snapshot()
+        with self._request_scope():
+            return self._node.map_snapshot()
 
     def set_navigation_mode(self, enabled: bool) -> Dict[str, Any]:
         """Switch manual/Nav2 base routing."""
-        return self._node.set_navigation_mode(enabled)
+        with self._request_scope():
+            return self._node.set_navigation_mode(enabled)
 
     def send_navigation_goal(
         self,
@@ -132,15 +174,18 @@ class ControlServer:
         yaw: float,
     ) -> Dict[str, Any]:
         """Send one map-frame Nav2 goal."""
-        return self._node.send_navigation_goal(x, y, yaw)
+        with self._request_scope():
+            return self._node.send_navigation_goal(x, y, yaw)
 
     def cancel_navigation(self) -> Dict[str, Any]:
         """Cancel active Nav2 navigation."""
-        return self._node.cancel_navigation()
+        with self._request_scope():
+            return self._node.cancel_navigation()
 
     def motion_status(self) -> Dict[str, Any]:
         """Return MoveIt action state."""
-        return self._node.motion_snapshot()
+        with self._request_scope():
+            return self._node.motion_snapshot()
 
     def send_named_motion(
         self,
@@ -149,7 +194,8 @@ class ControlServer:
         execute: bool,
     ) -> Dict[str, Any]:
         """Send a named MoveIt goal."""
-        return self._node.send_named_motion(group, target, execute)
+        with self._request_scope():
+            return self._node.send_named_motion(group, target, execute)
 
     def send_pose_motion(
         self,
@@ -159,13 +205,55 @@ class ControlServer:
         execute: bool,
     ) -> Dict[str, Any]:
         """Send an end-effector MoveIt goal."""
-        return self._node.send_pose_motion(
-            frame_id,
-            position,
-            orientation,
-            execute,
-        )
+        with self._request_scope():
+            return self._node.send_pose_motion(
+                frame_id,
+                position,
+                orientation,
+                execute,
+            )
 
     def cancel_motion(self) -> Dict[str, Any]:
         """Cancel active MoveIt planning or execution."""
-        return self._node.cancel_motion()
+        with self._request_scope():
+            return self._node.cancel_motion()
+
+    def cabinet_status(self) -> Dict[str, Any]:
+        """Return cabinet-button action and physical button state."""
+        with self._request_scope():
+            return self._node.cabinet_snapshot()
+
+    def press_cabinet_button(
+        self,
+        button_id: str,
+        navigate_to_staging_pose: bool,
+    ) -> Dict[str, Any]:
+        """Start one collision-checked cabinet-button operation."""
+        with self._request_scope():
+            return self._node.press_cabinet_button(
+                button_id,
+                navigate_to_staging_pose,
+            )
+
+    def cancel_cabinet_button(self) -> Dict[str, Any]:
+        """Cancel the active cabinet-button operation."""
+        with self._request_scope():
+            return self._node.cancel_cabinet_button()
+
+    @contextmanager
+    def _request_scope(self) -> Iterator[None]:
+        """Reject new API work during shutdown and drain entered calls."""
+        with self._request_condition:
+            if self._stopping:
+                raise ControlRequestError(
+                    "Web control server is stopping.",
+                    503,
+                )
+            self._active_requests += 1
+        try:
+            yield
+        finally:
+            with self._request_condition:
+                self._active_requests -= 1
+                if self._active_requests == 0:
+                    self._request_condition.notify_all()

@@ -1,4 +1,4 @@
-"""Threaded HTTP API for manual, Nav2 and MoveIt browser controls."""
+"""Threaded HTTP API for manual and autonomous browser controls."""
 
 from __future__ import annotations
 
@@ -41,6 +41,11 @@ class ControlHandler(BaseHTTPRequestHandler):
                     200,
                     self.control_server.motion_status(),
                 )
+            elif path == "/cabinet/status":
+                self._send_json(
+                    200,
+                    self.control_server.cabinet_status(),
+                )
             else:
                 self._send_json(404, {"error": "not found"})
         except ControlRequestError as error:
@@ -61,6 +66,8 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/motion/named": self._handle_motion_named,
                 "/motion/pose": self._handle_motion_pose,
                 "/motion/cancel": self._handle_motion_cancel,
+                "/cabinet/press": self._handle_cabinet_press,
+                "/cabinet/cancel": self._handle_cabinet_cancel,
             }
             handler = routes.get(path)
             if handler is None:
@@ -170,6 +177,36 @@ class ControlHandler(BaseHTTPRequestHandler):
         self._send_json(
             202,
             self.control_server.cancel_motion(),
+        )
+
+    def _handle_cabinet_press(self) -> None:
+        body = self._required_body()
+        button_id = body.get("button_id")
+        navigate_to_staging_pose = body.get(
+            "navigate_to_staging_pose",
+            True,
+        )
+        if not isinstance(button_id, str) or not button_id.strip():
+            raise ControlRequestError(
+                "button_id must be a non-empty string."
+            )
+        if not isinstance(navigate_to_staging_pose, bool):
+            raise ControlRequestError(
+                "navigate_to_staging_pose must be a boolean."
+            )
+        self._send_json(
+            202,
+            self.control_server.press_cabinet_button(
+                button_id.strip(),
+                navigate_to_staging_pose,
+            ),
+        )
+
+    def _handle_cabinet_cancel(self) -> None:
+        self._optional_body()
+        self._send_json(
+            202,
+            self.control_server.cancel_cabinet_button(),
         )
 
     def _required_body(self) -> Dict[str, Any]:
