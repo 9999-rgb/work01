@@ -13,6 +13,8 @@
   <xacro:property name="cabinet_door_width" value="0.642" />
   <xacro:property name="cabinet_door_height" value="2.210" />
   <xacro:property name="cabinet_door_thickness" value="0.010" />
+  <xacro:property name="cabinet_door_collision_clearance" value="0.010" />
+  <xacro:property name="cabinet_door_collision_depth_clearance" value="0.010" />
   <xacro:property name="cabinet_door_mass" value="20.0" />
 
   <!-- Shared physical parameters for all interactive controls. -->

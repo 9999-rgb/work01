@@ -159,7 +159,13 @@ ament_target_dependencies(
 )
 
 target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
-ament_target_dependencies(xczs_planar_stabilizer gazebo_dev)
+ament_target_dependencies(
+  xczs_planar_stabilizer
+  gazebo_dev
+  gazebo_ros
+  rclcpp
+  std_msgs
+)
 
 target_compile_features(xczs_cabinet_button PUBLIC cxx_std_17)
 ament_target_dependencies(

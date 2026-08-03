@@ -65,7 +65,11 @@
       <state_publish_rate>20.0</state_publish_rate>
       <reset_service>/xczs/cabinet/reset_physics</reset_service>
       <grasp_service>/xczs/cabinet/grasp</grasp_service>
+      <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
       <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <grasp_robot_base_link>body</grasp_robot_base_link>
+      <grasp_constraint_erp>0.80</grasp_constraint_erp>
+      <grasp_constraint_cfm>1e-8</grasp_constraint_cfm>
 
       <xacro:control_cabinet_button_state control_id="box_1_button_1" joint_name="box_1_box_1_button_1" />
       <xacro:control_cabinet_button_state control_id="box_1_button_2" joint_name="box_1_box_1_button_2" />
@@ -127,12 +131,16 @@
         <detents>0 ${cabinet_door_limit}</detents>
         <state_ids>closed open</state_ids>
         <detent_stiffness>5.00</detent_stiffness>
-        <spring_damping>2.00</spring_damping>
-        <detent_hysteresis>0.12</detent_hysteresis>
+        <grasp_stiffness>0.50</grasp_stiffness>
+        <spring_damping>12.00</spring_damping>
+        <grasp_damping>2.00</grasp_damping>
+        <detent_hysteresis>0.02</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0.600 1.105 -0.080</grasp_point>
+        <actuation_collision>cabinet_rear_door_collision</actuation_collision>
+        <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
       </control>
     </plugin>
   </xacro:macro>

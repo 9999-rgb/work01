@@ -268,10 +268,15 @@ xczs_cabinet_button_operator:
     target_tolerance: 0.035
     stable_velocity_tolerance: 0.03
     stable_state_duration: 0.30
+    grasp_attach_settle_duration: 0.15
     grasp_release_settle_duration: 0.30
-    door_release_fraction: 0.60
+    door_release_fraction: 0.53
     door_settle_timeout: 45.0
+    door_release_position_timeout: 10.0
+    door_detent_hysteresis: 0.02
+    door_release_position_margin: 0.01
     planning_scene_settle_seconds: 0.50
     rotation_waypoint_step: 0.03490658504
+    cartesian_planning_attempts: 5
     grasp_service: /xczs/cabinet/grasp
     reset_physics_service: /xczs/cabinet/reset_physics

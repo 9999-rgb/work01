@@ -3,7 +3,9 @@
 #include <gazebo/physics/Joint.hh>
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/World.hh>
+#include <gazebo_ros/node.hpp>
 
+#include <atomic>
 #include <cmath>
 #include <condition_variable>
 #include <memory>
@@ -11,6 +13,9 @@
 #include <string>
 #include <utility>
 #include <vector>
+
+#include "rclcpp/rclcpp.hpp"
+#include "std_msgs/msg/bool.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -31,6 +36,7 @@ public:
     // A callback that already holds a lease is allowed to finish below.
     joint_snapshot_connection_.reset();
     update_connection_.reset();
+    grasp_active_subscription_.reset();
 
     if (callback_lifetime) {
       std::unique_lock<std::mutex> lock(callback_lifetime->mutex);
@@ -46,6 +52,25 @@ public:
     sdf::ElementPtr sdf) override
   {
     model_ = std::move(model);
+    ros_node_ = gazebo_ros::Node::Get(sdf);
+    if (!ros_node_) {
+      gzerr << "Planar stabilizer could not create a ROS 2 node.\n";
+      return;
+    }
+    const auto grasp_active_topic = sdf->Get<std::string>(
+      "grasp_active_topic", "/xczs/cabinet/grasp_active").first;
+    if (grasp_active_topic.empty() || grasp_active_topic.front() != '/') {
+      gzerr << "Planar stabilizer grasp_active_topic must be absolute.\n";
+      return;
+    }
+    const auto grasp_active = grasp_active_;
+    grasp_active_subscription_ =
+      ros_node_->create_subscription<std_msgs::msg::Bool>(
+      grasp_active_topic,
+      rclcpp::QoS(1).reliable().transient_local(),
+      [grasp_active](const std_msgs::msg::Bool::SharedPtr message) {
+        grasp_active->store(message->data);
+      });
     settling_duration_ =
       sdf->Get<double>("settling_duration", 0.5).first;
     load_held_joints(sdf);
@@ -229,10 +254,17 @@ private:
     // The planar mover changes the base velocity without holding child
     // joints. Restore the positions captured after trajectory processing so
     // the arm follows the chassis while explicit joint commands still work.
-    restore_joint_positions();
+    if (!grasp_active_->load()) {
+      restore_joint_positions();
+    }
   }
 
   gazebo::physics::ModelPtr model_;
+  gazebo_ros::Node::SharedPtr ros_node_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
+    grasp_active_subscription_;
+  std::shared_ptr<std::atomic<bool>> grasp_active_{
+    std::make_shared<std::atomic<bool>>(false)};
   gazebo::event::ConnectionPtr update_connection_;
   gazebo::event::ConnectionPtr joint_snapshot_connection_;
   std::shared_ptr<UpdateCallbackLifetime> callback_lifetime_;

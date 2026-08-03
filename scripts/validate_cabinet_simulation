@@ -253,7 +253,7 @@ class CabinetValidator(Node):
         rclpy.spin_until_future_complete(
             self,
             result_future,
-            timeout_sec=min(timeout, 30.0),
+            timeout_sec=timeout,
         )
         if not result_future.done() or result_future.result() is None:
             raise RuntimeError("Canceled action did not reach a terminal state.")
@@ -261,7 +261,7 @@ class CabinetValidator(Node):
         self.current_goal_handle = None
         if not self._spin_until(
             lambda: self.active_control == "",
-            min(timeout, 10.0),
+            min(timeout, 30.0),
         ):
             raise RuntimeError(
                 "Canceled action did not clear the active-control target."

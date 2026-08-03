@@ -288,6 +288,8 @@ public:
       "stable_velocity_tolerance", 0.03);
     stable_state_duration_ = positive_parameter(
       "stable_state_duration", 0.30);
+    grasp_attach_settle_duration_ = positive_parameter(
+      "grasp_attach_settle_duration", 0.15);
     grasp_release_settle_duration_ = positive_parameter(
       "grasp_release_settle_duration", 0.30);
     door_release_fraction_ = declare_parameter<double>(
@@ -299,6 +301,12 @@ public:
               "Parameter 'door_release_fraction' must be in (0.5, 0.75).");
     }
     door_settle_timeout_ = positive_parameter("door_settle_timeout", 45.0);
+    door_release_position_timeout_ = positive_parameter(
+      "door_release_position_timeout", 10.0);
+    door_detent_hysteresis_ = positive_parameter(
+      "door_detent_hysteresis", 0.02);
+    door_release_position_margin_ = positive_parameter(
+      "door_release_position_margin", 0.01);
     planning_scene_settle_seconds_ = positive_parameter(
       "planning_scene_settle_seconds", 0.50);
     rotation_waypoint_step_ = positive_parameter(
@@ -307,6 +315,12 @@ public:
       "cartesian_velocity_scale", 0.08);
     cartesian_acceleration_scale_ = unit_interval_parameter(
       "cartesian_acceleration_scale", 0.08);
+    cartesian_planning_attempts_ = declare_parameter<int>(
+      "cartesian_planning_attempts", 5);
+    if (cartesian_planning_attempts_ < 1 || cartesian_planning_attempts_ > 10) {
+      throw std::invalid_argument(
+              "Parameter 'cartesian_planning_attempts' must be in [1, 10].");
+    }
 
     configure_controls(
       legacy_button_id,
@@ -1519,6 +1533,9 @@ private:
           "Attaching the probe at the verified near-distance grasp point.");
         set_control_grasp(goal_handle, control->id, true);
         grasp_attached = true;
+        // Let the transient grasp-active notification reach the planar
+        // stabilizer before the arm starts driving the physical constraint.
+        interruptible_hold(goal_handle, grasp_attach_settle_duration_);
         double manipulation_position = target_position;
         if (control->control_type ==
           xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
@@ -1545,6 +1562,21 @@ private:
           *move_group, goal_handle, waypoints,
           cartesian_velocity_scale_ * 0.5,
           cartesian_acceleration_scale_ * 0.5);
+        if (control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
+          std::abs(target_position - initial_state.position) >
+          target_tolerance_)
+        {
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING,
+            0.71F, target_position,
+            "Verifying that the physical door crossed its safe release "
+            "position.");
+          wait_for_door_release_position(
+            goal_handle, *control, initial_state.position,
+            manipulation_position, std::chrono::steady_clock::now());
+        }
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MANIPULATING,
@@ -2134,6 +2166,48 @@ private:
   }
 
   template<typename GoalHandleT>
+  void wait_for_door_release_position(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    double initial_position,
+    double release_position,
+    std::chrono::steady_clock::time_point minimum_received_at)
+  {
+    const double direction = release_position - initial_position;
+    if (std::abs(direction) <= target_tolerance_) {
+      return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(door_release_position_timeout_);
+    const double detent_midpoint =
+      0.5 * (control.min_position + control.max_position);
+    const double safe_release_position = detent_midpoint +
+      std::copysign(
+      door_detent_hysteresis_ + door_release_position_margin_, direction);
+    while (std::chrono::steady_clock::now() < deadline) {
+      check_cancel(goal_handle);
+      std::unique_lock<std::mutex> lock(control.runtime->mutex);
+      const auto now = std::chrono::steady_clock::now();
+      const auto & state = control.runtime->state;
+      const bool fresh = state.received && state.valid &&
+        state.received_at > minimum_received_at &&
+        std::chrono::duration<double>(now - state.received_at).count() <=
+        button_state_timeout_;
+      const bool crossed_release_position = direction > 0.0 ?
+        state.position >= safe_release_position :
+        state.position <= safe_release_position;
+      if (fresh && crossed_release_position) {
+        return;
+      }
+      control.runtime->condition.wait_for(lock, 50ms);
+    }
+    throw GenericOperationError(
+            OperateCabinetControl::Result::TARGET_NOT_REACHED,
+            control.id + " did not physically cross its safe release "
+            "position while the grasp was attached.");
+  }
+
+  template<typename GoalHandleT>
   void wait_for_target_stable(
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const ButtonSpec & control,
@@ -2655,19 +2729,33 @@ private:
     double acceleration_scale)
   {
     check_cancel(goal_handle);
-    move_group.setStartStateToCurrentState();
     moveit_msgs::msg::RobotTrajectory trajectory_message;
-    const double fraction = move_group.computeCartesianPath(
-      waypoints,
-      0.002,
-      0.0,
-      trajectory_message,
-      true);
-    if (fraction < 0.99) {
+    double best_fraction = -1.0;
+    for (int attempt = 0; attempt < cartesian_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      move_group.setStartStateToCurrentState();
+      moveit_msgs::msg::RobotTrajectory candidate;
+      const double fraction = move_group.computeCartesianPath(
+        waypoints,
+        0.002,
+        0.0,
+        candidate,
+        true);
+      if (fraction > best_fraction) {
+        best_fraction = fraction;
+        trajectory_message = std::move(candidate);
+      }
+      if (best_fraction >= 0.99) {
+        break;
+      }
+    }
+    if (best_fraction < 0.99) {
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
-              "MoveIt completed only " + std::to_string(fraction * 100.0) +
-              "% of the required Cartesian button path.");
+              "MoveIt completed only " +
+              std::to_string(std::max(0.0, best_fraction) * 100.0) +
+              "% of the required Cartesian control path after " +
+              std::to_string(cartesian_planning_attempts_) + " attempts.");
     }
     retime_cartesian_trajectory(
       move_group,
@@ -2806,6 +2894,8 @@ private:
       staging_pose.pose.orientation, target_navigation_rotation);
     const double target_navigation_yaw =
       tf2::getYaw(target_navigation_rotation);
+    const double target_navigation_x = staging_pose.pose.position.x;
+    const double target_navigation_y = staging_pose.pose.position.y;
     const std::string target_navigation_frame =
       staging_pose.header.frame_id;
     options.goal_response_callback =
@@ -2836,11 +2926,15 @@ private:
       [this, weak_goal = std::weak_ptr<GoalHandleT>(goal_handle),
         navigation_started, near_distance_since_ns, takeover_requested,
         stalled_takeover_requested, target_navigation_yaw,
-        target_navigation_frame](
+        target_navigation_x, target_navigation_y, target_navigation_frame](
       NavigationGoalHandle::SharedPtr,
       const std::shared_ptr<const NavigateToPose::Feedback> feedback)
       {
         const double distance_remaining = feedback->distance_remaining;
+        const double current_navigation_x =
+          feedback->current_pose.pose.position.x;
+        const double current_navigation_y =
+          feedback->current_pose.pose.position.y;
         tf2::Quaternion current_navigation_rotation;
         tf2::fromMsg(
           feedback->current_pose.pose.orientation,
@@ -2850,9 +2944,18 @@ private:
         const bool feedback_pose_valid =
           !target_navigation_frame.empty() &&
           feedback->current_pose.header.frame_id == target_navigation_frame &&
+          std::isfinite(target_navigation_x) &&
+          std::isfinite(target_navigation_y) &&
+          std::isfinite(current_navigation_x) &&
+          std::isfinite(current_navigation_y) &&
           std::isfinite(quaternion_norm) && quaternion_norm > 1.0e-12;
+        double direct_goal_distance =
+          std::numeric_limits<double>::quiet_NaN();
         double yaw_error = std::numeric_limits<double>::quiet_NaN();
         if (feedback_pose_valid) {
+          direct_goal_distance = std::hypot(
+            target_navigation_x - current_navigation_x,
+            target_navigation_y - current_navigation_y);
           current_navigation_rotation.normalize();
           const double current_navigation_yaw =
             tf2::getYaw(current_navigation_rotation);
@@ -2861,10 +2964,12 @@ private:
             std::cos(target_navigation_yaw - current_navigation_yaw));
         }
         const auto feedback_now = std::chrono::steady_clock::now();
-        if (std::isfinite(distance_remaining) && std::isfinite(yaw_error)) {
-          if (distance_remaining > navigation_takeover_distance_) {
+        if (std::isfinite(direct_goal_distance) && std::isfinite(yaw_error)) {
+          if (direct_goal_distance > navigation_takeover_distance_) {
             navigation_started->store(true);
             near_distance_since_ns->store(0);
+            takeover_requested->store(false);
+            stalled_takeover_requested->store(false);
           } else {
             const auto now_ns = std::chrono::duration_cast<
               std::chrono::nanoseconds>(
@@ -2890,6 +2995,8 @@ private:
           }
         } else {
           near_distance_since_ns->store(0);
+          takeover_requested->store(false);
+          stalled_takeover_requested->store(false);
         }
 
         {
@@ -2905,7 +3012,12 @@ private:
             PressCabinetButton::Feedback::NAVIGATING,
             0.12F,
             "Nav2 distance remaining: " +
-            std::to_string(distance_remaining) + " m, yaw: " +
+            (std::isfinite(distance_remaining) ?
+            std::to_string(distance_remaining) : "unavailable") +
+            " m, direct goal distance: " +
+            (std::isfinite(direct_goal_distance) ?
+            std::to_string(direct_goal_distance) : "unavailable") +
+            " m, yaw: " +
             (std::isfinite(yaw_error) ?
             std::to_string(std::abs(yaw_error)) : "unavailable") +
             " rad." +
@@ -2949,12 +3061,46 @@ private:
 
     auto result_future = navigation_client_->async_get_result(
       navigation_goal_handle);
+    const auto verified_direct_goal_distance = [this, &staging_pose]() {
+        try {
+          const auto current_pose = transform_buffer_->lookupTransform(
+            staging_pose.header.frame_id, "base_link", tf2::TimePointZero,
+            200ms);
+          const double current_x =
+            current_pose.transform.translation.x;
+          const double current_y =
+            current_pose.transform.translation.y;
+          if (!std::isfinite(current_x) || !std::isfinite(current_y) ||
+            !std::isfinite(staging_pose.pose.position.x) ||
+            !std::isfinite(staging_pose.pose.position.y))
+          {
+            return std::numeric_limits<double>::quiet_NaN();
+          }
+          return std::hypot(
+            staging_pose.pose.position.x - current_x,
+            staging_pose.pose.position.y - current_y);
+        } catch (const tf2::TransformException & error) {
+          RCLCPP_WARN_THROTTLE(
+            get_logger(), *get_clock(), 2000,
+            "Could not verify the Nav2 takeover distance: %s", error.what());
+          return std::numeric_limits<double>::quiet_NaN();
+        }
+      };
     bool precision_takeover = false;
     const auto navigation_deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(navigation_timeout_);
     while (result_future.wait_for(100ms) != std::future_status::ready) {
       check_cancel(goal_handle);
       if (takeover_requested->load()) {
+        const double verified_distance = verified_direct_goal_distance();
+        if (!std::isfinite(verified_distance) ||
+          verified_distance > navigation_takeover_distance_)
+        {
+          takeover_requested->store(false);
+          stalled_takeover_requested->store(false);
+          near_distance_since_ns->store(0);
+          continue;
+        }
         precision_takeover = true;
         auto cancel_future = navigation_client_->async_cancel_goal(
           navigation_goal_handle);
@@ -2967,6 +3113,16 @@ private:
         break;
       }
       if (std::chrono::steady_clock::now() >= navigation_deadline) {
+        auto cancel_future = navigation_client_->async_cancel_goal(
+          navigation_goal_handle);
+        wait_for_future(
+          cancel_future,
+          goal_handle,
+          system_wait_timeout_,
+          PressCabinetButton::Result::NAVIGATION_FAILED,
+          "Nav2 did not acknowledge cancellation after its staging timeout.");
+        request_navigation_mode_without_wait(false);
+        publish_manual_base_stop();
         throw OperationError(
                 PressCabinetButton::Result::NAVIGATION_FAILED,
                 "Nav2 timed out while driving to the cabinet.");
@@ -2992,6 +3148,16 @@ private:
       (wrapped_result.code == rclcpp_action::ResultCode::CANCELED ||
       wrapped_result.code == rclcpp_action::ResultCode::SUCCEEDED))
     {
+      const double stopped_distance = verified_direct_goal_distance();
+      if (!std::isfinite(stopped_distance) ||
+        stopped_distance >
+        navigation_takeover_distance_ + docking_position_tolerance_)
+      {
+        throw OperationError(
+                PressCabinetButton::Result::NAVIGATION_FAILED,
+                "Nav2 stopped outside the verified precision-docking "
+                "takeover distance.");
+      }
       publish_feedback(
         goal_handle,
         PressCabinetButton::Feedback::NAVIGATING,
@@ -3442,13 +3608,18 @@ private:
   double target_tolerance_{0.035};
   double stable_velocity_tolerance_{0.03};
   double stable_state_duration_{0.30};
+  double grasp_attach_settle_duration_{0.15};
   double grasp_release_settle_duration_{0.30};
   double door_release_fraction_{0.60};
   double door_settle_timeout_{45.0};
+  double door_release_position_timeout_{10.0};
+  double door_detent_hysteresis_{0.02};
+  double door_release_position_margin_{0.01};
   double planning_scene_settle_seconds_{0.50};
   double rotation_waypoint_step_{0.03490658504};
   double cartesian_velocity_scale_{0.08};
   double cartesian_acceleration_scale_{0.08};
+  int cartesian_planning_attempts_{5};
 };
 
 }  // namespace xczs_inspection_robot_control

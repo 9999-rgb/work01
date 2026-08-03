@@ -108,9 +108,10 @@
         <material name="cabinet_dark_gray" />
       </visual>
       <collision name="cabinet_rear_door_collision">
-        <origin xyz="0.321 1.105 -0.005" rpy="0 0 0" />
+        <!-- Leave assembly clearance from the fixed frame on every edge. -->
+        <origin xyz="0.321 1.105 -${cabinet_door_thickness / 2 + cabinet_door_collision_depth_clearance}" rpy="0 0 0" />
         <geometry>
-          <box size="${cabinet_door_width} ${cabinet_door_height} ${cabinet_door_thickness}" />
+          <box size="${cabinet_door_width - 2 * cabinet_door_collision_clearance} ${cabinet_door_height - 2 * cabinet_door_collision_clearance} ${cabinet_door_thickness}" />
         </geometry>
       </collision>
 

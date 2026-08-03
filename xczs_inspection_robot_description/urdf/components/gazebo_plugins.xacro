@@ -109,6 +109,10 @@
       <plugin
         name="xczs_planar_stabilizer"
         filename="libxczs_planar_stabilizer.so">
+        <ros>
+          <namespace>/xczs</namespace>
+        </ros>
+        <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
         <settling_duration>1.5</settling_duration>
         <hold_joint>body_arm_lift</hold_joint>
         <hold_joint>body_arm1</hold_joint>
