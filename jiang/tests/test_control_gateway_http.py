@@ -27,6 +27,7 @@ class _FakeControlServer:
         self.cancel_count = 0
         self.reset_count = 0
         self.takeover_count = 0
+        self.joint_request: Optional[list[float]] = None
 
     def health(self) -> Dict[str, Any]:
         return {
@@ -36,6 +37,13 @@ class _FakeControlServer:
             "cabinet_available": True,
             "cabinet_active": False,
         }
+
+    def publish_joint_trajectory(
+        self,
+        positions: list[float],
+    ) -> list[float]:
+        self.joint_request = positions
+        return positions
 
     def cabinet_status(self) -> Dict[str, Any]:
         return {
@@ -272,6 +280,7 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.control_server.cancel_count = 0
         self.control_server.reset_count = 0
         self.control_server.takeover_count = 0
+        self.control_server.joint_request = None
 
     def request(
         self,
@@ -335,6 +344,36 @@ class ControlGatewayHttpTest(unittest.TestCase):
         }
         self.assertTrue(expected_fields.issubset(cabinet))
 
+    def test_joint_trajectory_accepts_lift_and_legacy_shapes(self) -> None:
+        lift_aware = [0.4, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.2, -0.2]
+        status, response, _ = self.request(
+            "/joint_trajectory",
+            "POST",
+            {"positions": lift_aware},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(lift_aware, response["positions"])
+        self.assertEqual(lift_aware, self.control_server.joint_request)
+
+        legacy = [0.0] * 8
+        status, response, _ = self.request(
+            "/joint_trajectory",
+            "POST",
+            {"positions": legacy},
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(legacy, response["positions"])
+
+        for invalid in ([0.0] * 7, [0.0] * 10):
+            with self.subTest(length=len(invalid)):
+                status, response, _ = self.request(
+                    "/joint_trajectory",
+                    "POST",
+                    {"positions": invalid},
+                )
+                self.assertEqual(400, status)
+                self.assertIn("8 legacy or 9", response["error"])
+
     def test_cabinet_controls_lists_all_control_types_and_states(self) -> None:
         status, catalog, _ = self.request("/cabinet/controls")
 
@@ -373,11 +412,11 @@ class ControlGatewayHttpTest(unittest.TestCase):
                 {
                     "control_id": "box_03_knob_1",
                     "command": "set_position",
-                    "target_position": 1.2,
+                    "target_position": 1.5708,
                     "navigate_to_staging_pose": False,
                 },
                 None,
-                1.2,
+                1.5708,
             ),
             (
                 {

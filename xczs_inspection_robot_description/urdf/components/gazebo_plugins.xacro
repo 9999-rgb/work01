@@ -110,6 +110,7 @@
         name="xczs_planar_stabilizer"
         filename="libxczs_planar_stabilizer.so">
         <settling_duration>1.5</settling_duration>
+        <hold_joint>body_arm_lift</hold_joint>
         <hold_joint>body_arm1</hold_joint>
         <hold_joint>arm1_arm2</hold_joint>
         <hold_joint>arm2_arm3</hold_joint>

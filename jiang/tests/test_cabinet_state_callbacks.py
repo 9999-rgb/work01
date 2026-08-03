@@ -180,6 +180,37 @@ def _add_knob(node: RosControlNode) -> None:
 class CabinetStateCallbackTest(unittest.TestCase):
     """Ensure delayed callbacks cannot mutate a newer cabinet goal."""
 
+    def test_manual_joint_target_supports_and_clamps_lift(self) -> None:
+        node = object.__new__(RosControlNode)
+        node._lock = threading.RLock()
+        node._cabinet_state = {"state": "idle"}
+        node._pending_trajectory = None
+        node._pending_trajectory_repeats = 0
+
+        result = node.set_joint_target(
+            [1.2, 3.0, -3.0, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5]
+        )
+
+        self.assertEqual(0.85, result[0])
+        self.assertEqual(2.8, result[1])
+        self.assertEqual(-2.8, result[2])
+        self.assertEqual(0.35, result[7])
+        self.assertEqual(-0.35, result[8])
+        self.assertEqual(
+            list(node.JOINT_NAMES),
+            node._pending_trajectory.joint_names,
+        )
+
+        legacy = node.set_joint_target([0.0] * 8)
+        self.assertEqual([0.0] * 8, legacy)
+        self.assertNotIn(
+            "body_arm_lift",
+            node._pending_trajectory.joint_names,
+        )
+
+        with self.assertRaisesRegex(ControlRequestError, "8 legacy or 9"):
+            node.set_joint_target([0.0] * 7)
+
     def test_changed_catalog_topics_replace_dynamic_subscriptions(
         self,
     ) -> None:
@@ -389,6 +420,12 @@ class CabinetStateCallbackTest(unittest.TestCase):
                 "box_03_knob_1",
                 "set_position",
                 target_position=4.0,
+            )
+        with self.assertRaisesRegex(ControlRequestError, "detent"):
+            node.operate_cabinet_control(
+                "box_03_knob_1",
+                "set_position",
+                target_position=1.0,
             )
         with self.assertRaisesRegex(ControlRequestError, "target_state"):
             node.operate_cabinet_control(

@@ -1414,19 +1414,27 @@ document.querySelectorAll('.topic-preset').forEach(btn => {
 });
 
 // ─── Joint Bar Rendering ──────────────────────────────────────
-const jointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
-const jointLimit = 2.80;  // rad, from robot_control.yaml
+const jointNames = ['body_arm_lift','body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const jointDisplayLimits = {
+  body_arm_lift: [0.0, 0.85]
+};
+
+function displayLimitsForJoint(name) {
+  return jointDisplayLimits[name] || [-2.80, 2.80];
+}
 
 function buildJointBars() {
   const container = document.getElementById('jointBarContainer');
   if (!container) return;
-  container.innerHTML = jointNames.map((name, i) =>
-    `<div class="joint-row">
+  container.innerHTML = jointNames.map((name, i) => {
+    const limits = displayLimitsForJoint(name);
+    const zeroPct = ((0.0 - limits[0]) / (limits[1] - limits[0])) * 100;
+    return `<div class="joint-row">
       <span class="joint-label">${name}</span>
-      <div class="joint-track"><div class="joint-fill" id="jointFill${i}" style="width:50%"></div></div>
+      <div class="joint-track"><div class="joint-fill" id="jointFill${i}" style="width:${zeroPct}%"></div></div>
       <span class="joint-val" id="jointVal${i}">0.00</span>
-    </div>`
-  ).join('');
+    </div>`;
+  }).join('');
   document.getElementById('jointBars').style.display = 'block';
 }
 
@@ -1448,11 +1456,29 @@ function updateJointBars(data) {
   jointNames.forEach((name, i) => {
     const val = positions[name];
     if (val === undefined) return;
-    const pct = Math.max(0, Math.min(100, ((val + jointLimit) / (2 * jointLimit)) * 100));
+    const limits = displayLimitsForJoint(name);
+    const pct = Math.max(0, Math.min(
+      100,
+      ((val - limits[0]) / (limits[1] - limits[0])) * 100
+    ));
     const fill = document.getElementById('jointFill' + i);
     const lbl  = document.getElementById('jointVal' + i);
     if (fill) fill.style.width = pct + '%';
     if (lbl)  lbl.textContent = val.toFixed(2);
+    const controlIndex = armJointNames.indexOf(name);
+    if (controlIndex >= 0) {
+      armPositions[controlIndex] = val;
+      const slider = document.getElementById('armSlider' + controlIndex);
+      const sliderValue = document.getElementById(
+        'armSliderVal' + controlIndex
+      );
+      if (slider && document.activeElement !== slider) {
+        slider.value = String(val);
+      }
+      if (sliderValue && document.activeElement !== slider) {
+        sliderValue.textContent = val.toFixed(2);
+      }
+    }
   });
 }
 
@@ -1480,12 +1506,16 @@ setStatus('', '未连接');
 // ─── Control State ──────────────────────────────────────────
 let ctrlConnected = false;
 let ctrlBaseUrl = 'http://localhost:8090';
-const armJointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const armJointNames = ['body_arm_lift','body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const armJointLimits = [
+  {min: 0.0, max: 0.85, step: 0.01},
+  ...Array.from({length: 6}, () => ({min: -2.80, max: 2.80, step: 0.10}))
+];
 const gripperJointNames = ['end_worklink1','end_worklink2'];
 const allJointNames = [...armJointNames, ...gripperJointNames];
 const gripperOpenVal = 0.35;
 
-let armPositions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+let armPositions = armJointNames.map(() => 0.0);
 let gripperPositions = [0.0, -0.0];
 let baseActive = false;
 let activeMotion = null;
@@ -2013,14 +2043,6 @@ function renderCabinetTarget() {
       option.textContent = stateLabelsForControl[index] || stateId;
       stateSelect.appendChild(option);
     });
-    if (canSetPosition) {
-      const custom = document.createElement('option');
-      custom.value = '__position__';
-      custom.textContent = ['rad', 'radian', 'radians'].includes(
-        String(control.unit).toLowerCase()
-      ) ? '自定义角度…' : '自定义位置…';
-      stateSelect.appendChild(custom);
-    }
     const preferredState = [
       previousStateSelection,
       control.current_state,
@@ -2032,7 +2054,10 @@ function renderCabinetTarget() {
     stateField.hidden = false;
   }
   stateSelect.dataset.controlId = control.control_id;
-  if (canSetPosition && (!canSetState || stateSelect.value === '__position__')) {
+  // The physical simulator only accepts calibrated detents.  Every current
+  // rotary/door control advertises those as states, so do not offer an
+  // arbitrary number that the action server must reject.
+  if (canSetPosition && !canSetState) {
     positionField.hidden = false;
   }
   if (canSetPosition) {
@@ -3041,10 +3066,7 @@ async function sendCabinetOperation() {
   let targetPosition = null;
   if (Number(target.control_type) === 0) {
     command = 'press';
-  } else if (
-    !$('cabinetStateField').hidden &&
-    $('cabinetTargetState').value !== '__position__'
-  ) {
+  } else if (!$('cabinetStateField').hidden) {
     command = 'set_state';
     targetState = $('cabinetTargetState').value;
   } else if (cabinetControlSupports(target, 'set_position')) {
@@ -3420,14 +3442,17 @@ stopButton.addEventListener('click', event => {
 // ─── Arm Joint Sliders ──────────────────────────────────────
 function buildJointSliders() {
   const ct = $('jointSliders'); if (!ct) return;
-  ct.innerHTML = armJointNames.map((name, i) =>
+  ct.innerHTML = armJointNames.map((name, i) => {
+    const limits = armJointLimits[i];
+    return (
     '<div class="joint-slider-row">' +
       '<span class="joint-slider-label">' + name + '</span>' +
-      '<input type="range" id="armSlider' + i + '" min="-2.80" max="2.80" value="0.00" step="0.10" ' +
+      '<input type="range" id="armSlider' + i + '" min="' + limits.min + '" max="' + limits.max + '" value="0.00" step="' + limits.step + '" ' +
         'oninput="onArmSlider(' + i + ', this.value)">' +
       '<span class="joint-slider-val" id="armSliderVal' + i + '">0.00</span>' +
     '</div>'
-  ).join('');
+    );
+  }).join('');
 }
 
 function onArmSlider(idx, val) {
@@ -3443,7 +3468,7 @@ function resetArmToZero() {
     toast('控制柜操作进行中，手动关节控制已锁定', 'err');
     return;
   }
-  armPositions = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+  armPositions = armJointNames.map(() => 0.0);
   armJointNames.forEach((_, i) => {
     const s = document.getElementById('armSlider' + i);
     const v = document.getElementById('armSliderVal' + i);

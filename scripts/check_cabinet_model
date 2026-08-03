@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import ast
+import math
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -20,12 +23,46 @@ XACRO = (
     / "urdf"
     / "control_cabinet.urdf.xacro"
 )
+ROBOT_XACRO = (
+    ROOT
+    / "xczs_inspection_robot_description"
+    / "urdf"
+    / "xczs_inspection_robot.urdf.xacro"
+)
 CONFIG = (
     ROOT
     / "xczs_inspection_robot_control"
     / "config"
     / "cabinet_controls.yaml"
 )
+PLANNING_SCENE = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "src"
+    / "cabinet_planning_scene.cpp"
+)
+ROS2_CONTROLLERS = (
+    ROOT
+    / "xczs_inspection_robot_description"
+    / "config"
+    / "ros2_controllers.yaml"
+)
+MOVEIT_CONFIG = ROOT / "xczs_inspection_robot_moveit_config" / "config"
+MOVEIT_CONTROLLERS = MOVEIT_CONFIG / "moveit_controllers.yaml"
+JOINT_LIMITS = MOVEIT_CONFIG / "joint_limits.yaml"
+SRDF = MOVEIT_CONFIG / "xczs_inspection_robot.srdf"
+NAV2_CONFIG = ROOT / "xczs_inspection_robot_nav2" / "config" / "nav2_params.yaml"
+WEB_ROS_NODE = ROOT / "jiang" / "control_gateway" / "ros_node.py"
+WEB_MONITOR = ROOT / "jiang" / "monitor.html"
+ARM_JOINTS = [
+    "body_arm_lift",
+    "body_arm1",
+    "arm1_arm2",
+    "arm2_arm3",
+    "arm3_arm4",
+    "arm4_arm5",
+    "arm5_end",
+]
 TYPE_TO_JOINT = {
     "button": "prismatic",
     "knob": "revolute",
@@ -51,6 +88,27 @@ def text(element: ElementTree.Element, name: str) -> str:
     return (child.text or "").strip()
 
 
+def numbers(value: object, field: str) -> list[float]:
+    """Parse a numeric YAML/XML list and reject non-finite values."""
+    source = value.split() if isinstance(value, str) else value
+    if not isinstance(source, (list, tuple)):
+        fail(f"{field} must be a numeric list.")
+    try:
+        result = [float(item) for item in source]
+    except (TypeError, ValueError) as error:
+        fail(f"{field} contains a non-number: {error}")
+    if not all(math.isfinite(item) for item in result):
+        fail(f"{field} contains a non-finite number.")
+    return result
+
+
+def close_lists(left: list[float], right: list[float]) -> bool:
+    return len(left) == len(right) and all(
+        math.isclose(a, b, rel_tol=0.0, abs_tol=1.0e-6)
+        for a, b in zip(left, right)
+    )
+
+
 def load_config() -> Dict[str, object]:
     with CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
@@ -65,10 +123,10 @@ def load_config() -> Dict[str, object]:
     return parameters
 
 
-def expand_xacro() -> ElementTree.Element:
+def expand_xacro(path: Path = XACRO) -> ElementTree.Element:
     try:
         result = subprocess.run(
-            ["xacro", str(XACRO)],
+            ["xacro", str(path)],
             check=True,
             capture_output=True,
             text=True,
@@ -93,10 +151,87 @@ def main() -> int:
             fail(f"Expected 33 unique control_ids, got {len(control_ids)}.")
         if set(control_ids) != set(controls):
             fail("control_ids and controls keys differ.")
+        joint_names = [str(controls[control_id].get("joint_name", ""))
+                       for control_id in control_ids]
+        if "" in joint_names or len(set(joint_names)) != len(joint_names):
+            fail("Cabinet control joint names must be non-empty and unique.")
+        staging_distance = float(parameters.get("staging_distance", 0.0))
+        if not math.isfinite(staging_distance) or staging_distance < 0.93:
+            fail("Cabinet staging distance must preserve at least 0.93 m.")
+        grasp_offset = float(parameters.get("grasp_outward_offset", 0.0))
+        if not math.isfinite(grasp_offset) or grasp_offset < 0.020:
+            fail(
+                "Rotary grasp must remain at least 0.020 m outside the "
+                "configured control center."
+            )
+        release_settle = float(
+            parameters.get("grasp_release_settle_duration", 0.0)
+        )
+        if not math.isfinite(release_settle) or release_settle < 0.30:
+            fail("Grasp release settling must last at least 0.30 seconds.")
+        door_release_fraction = float(
+            parameters.get("door_release_fraction", 0.0)
+        )
+        if (
+            not math.isfinite(door_release_fraction)
+            or not 0.55 <= door_release_fraction <= 0.70
+        ):
+            fail(
+                "Door over-center release fraction must be in [0.55, 0.70]."
+            )
+        door_settle_timeout = float(
+            parameters.get("door_settle_timeout", 0.0)
+        )
+        if not math.isfinite(door_settle_timeout) or door_settle_timeout < 30.0:
+            fail("Door physical settling timeout must be at least 30 seconds.")
+        takeover_yaw = float(
+            parameters.get("navigation_takeover_yaw_tolerance", 0.0)
+        )
+        if not math.isfinite(takeover_yaw) or not 0.1 <= takeover_yaw <= 0.5:
+            fail(
+                "Nav2 precision-takeover yaw tolerance must be in "
+                "[0.1, 0.5] rad."
+            )
+        takeover_distance = float(
+            parameters.get("navigation_takeover_distance", 0.0)
+        )
+        if (
+            not math.isfinite(takeover_distance)
+            or not 0.10 <= takeover_distance <= 0.25
+        ):
+            fail(
+                "Nav2 precision-takeover distance must be in "
+                "[0.10, 0.25] m."
+            )
+        takeover_stall_timeout = float(
+            parameters.get("navigation_takeover_stall_timeout", 0.0)
+        )
+        if (
+            not math.isfinite(takeover_stall_timeout)
+            or not 1.0 <= takeover_stall_timeout <= 10.0
+        ):
+            fail(
+                "Nav2 safe-distance stall timeout must be in [1, 10] s."
+            )
+        docking_timeout = float(parameters.get("docking_timeout", 0.0))
+        if not math.isfinite(docking_timeout) or docking_timeout < 30.0:
+            fail("Precision docking timeout must be at least 30 seconds.")
+        docking_max_angular_speed = float(
+            parameters.get("docking_max_angular_speed", 0.0)
+        )
+        if (
+            not math.isfinite(docking_max_angular_speed)
+            or not 0.2 <= docking_max_angular_speed <= 0.6
+        ):
+            fail(
+                "Precision docking angular speed must be in [0.2, 0.6] rad/s."
+            )
 
         type_counts = Counter()
         joints = {joint.attrib["name"]: joint for joint in root.findall("joint")}
         links = {link.attrib["name"]: link for link in root.findall("link")}
+        child_to_joint = {}
+        control_child_links = {}
         for control_id in control_ids:
             spec = controls[control_id]
             if not isinstance(spec, dict):
@@ -106,6 +241,23 @@ def main() -> int:
             expected_joint_type = TYPE_TO_JOINT.get(control_type)
             if expected_joint_type is None:
                 fail(f"{control_id} has invalid type '{control_type}'.")
+            if control_type != "button":
+                required_offset = {
+                    "knob": 0.020,
+                    "switch": 0.012,
+                    "door": 0.0145,
+                }[control_type]
+                configured_offset = float(
+                    spec.get("grasp_outward_offset", grasp_offset)
+                )
+                if (
+                    not math.isfinite(configured_offset)
+                    or configured_offset < required_offset
+                ):
+                    fail(
+                        f"{control_id} grasp offset does not clear its "
+                        "physical collision surface."
+                    )
             type_counts[control_type] += 1
             joint = joints.get(joint_name)
             if joint is None:
@@ -117,11 +269,16 @@ def main() -> int:
                 )
             child = joint.find("child")
             child_name = child.attrib.get("link", "") if child is not None else ""
+            control_child_links[child_name] = control_id
             link = links.get(child_name)
             if link is None or link.find("inertial") is None:
                 fail(f"{control_id} dynamic child has no inertial element.")
             if link.find("collision") is None:
                 fail(f"{control_id} dynamic child has no collision element.")
+        for joint in joints.values():
+            child = joint.find("child")
+            if child is not None:
+                child_to_joint[child.attrib.get("link", "")] = joint
         if dict(type_counts) != EXPECTED_COUNTS:
             fail(
                 f"Expected type counts {EXPECTED_COUNTS}, got "
@@ -148,15 +305,197 @@ def main() -> int:
         joint_topics = []
         for entry in plugin_controls:
             control_id = text(entry, "control_id")
+            if control_id not in controls:
+                fail(f"Plugin has unknown control ID '{control_id}'.")
             plugin_ids.append(control_id)
-            if text(entry, "joint_name") != controls[control_id]["joint_name"]:
+            spec = controls[control_id]
+            control_type = str(spec["type"])
+            defaults = parameters.get(f"{control_type}_defaults", {})
+            if not isinstance(defaults, dict):
+                defaults = {}
+            if text(entry, "control_type") != control_type:
+                fail(f"{control_id} plugin/config control types differ.")
+            if text(entry, "joint_name") != spec["joint_name"]:
                 fail(f"{control_id} plugin/config joint names differ.")
-            state_topics.append(text(entry, "state_topic"))
-            joint_topics.append(text(entry, "joint_state_topic"))
+            expected_prefix = f"/xczs/cabinet/{control_id}"
+            state_topic = text(entry, "state_topic")
+            joint_topic = text(entry, "joint_state_topic")
+            pressed_topic = text(entry, "pressed_topic")
+            if state_topic != f"{expected_prefix}/state":
+                fail(f"{control_id} has a noncanonical state topic.")
+            if joint_topic != f"{expected_prefix}/joint_states":
+                fail(f"{control_id} has a noncanonical joint-state topic.")
+            if pressed_topic != f"{expected_prefix}/pressed":
+                fail(f"{control_id} has a noncanonical activation topic.")
+            state_topics.append(state_topic)
+            joint_topics.append(joint_topic)
+
+            expected_states = list(
+                spec.get("state_ids", defaults.get("state_ids", []))
+            )
+            plugin_states = text(entry, "state_ids").split()
+            if plugin_states != expected_states:
+                fail(f"{control_id} plugin/config state IDs differ.")
+            expected_positions = numbers(
+                spec.get(
+                    "state_positions",
+                    defaults.get("state_positions", []),
+                ),
+                f"{control_id}.state_positions",
+            )
+            reset_position = float(
+                entry.findtext("reset_position", default="0.0")
+            )
+            if not any(
+                math.isclose(
+                    reset_position,
+                    position,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-6,
+                )
+                for position in expected_positions
+            ):
+                fail(f"{control_id} reset position is not a catalog state.")
+            graspable = entry.findtext("graspable", default="false").strip()
+            expected_graspable = control_type != "button"
+            if (graspable.lower() == "true") != expected_graspable:
+                fail(f"{control_id} has inconsistent graspability.")
+            if control_type == "button":
+                press_threshold = float(text(entry, "press_threshold"))
+                release_threshold = float(text(entry, "release_threshold"))
+                if not math.isclose(
+                    press_threshold,
+                    expected_positions[-1],
+                    rel_tol=0.0,
+                    abs_tol=1.0e-6,
+                ) or not 0.0 <= release_threshold < press_threshold:
+                    fail(f"{control_id} has invalid press/release thresholds.")
+            else:
+                detents = numbers(
+                    text(entry, "detents"),
+                    f"{control_id}.detents",
+                )
+                if not close_lists(detents, expected_positions):
+                    fail(f"{control_id} plugin/config detents differ.")
+                if control_type == "door":
+                    stiffness = float(text(entry, "detent_stiffness"))
+                    damping = float(text(entry, "spring_damping"))
+                    hysteresis = float(text(entry, "detent_hysteresis"))
+                    if stiffness < 5.0 or damping < 2.0:
+                        fail("Door detent must settle with sufficient damping.")
+                    if not 0.10 <= hysteresis <= 0.15:
+                        fail("Door detent hysteresis must be in [0.10, 0.15].")
         if set(plugin_ids) != set(control_ids) or len(set(plugin_ids)) != 33:
             fail("Plugin and catalog control IDs differ or contain duplicates.")
         if len(set(state_topics)) != 33 or len(set(joint_topics)) != 33:
             fail("Cabinet state or joint-state topics are not unique.")
+
+        door_link = links.get("cabinet_rear_door")
+        if door_link is None:
+            fail("Expanded cabinet is missing the articulated rear-door link.")
+        door_collision_names = {
+            collision.attrib.get("name", "")
+            for collision in door_link.findall("collision")
+        }
+        if "cabinet_rear_door_collision" not in door_collision_names:
+            fail("Rear door must retain its physical panel collision.")
+        if any("handle" in name for name in door_collision_names):
+            fail(
+                "Decorative door-handle contacts must stay disabled; the "
+                "near-distance grasp constraint provides physical coupling."
+            )
+
+        # Derive the nearest articulated parent from the URDF link tree.  This
+        # catches the rear-door switch case that otherwise plans against its
+        # closed-door coordinates after the door moves.
+        for control_id in control_ids:
+            joint = joints[str(controls[control_id]["joint_name"])]
+            parent = joint.find("parent")
+            parent_link = (
+                parent.attrib.get("link", "") if parent is not None else ""
+            )
+            derived_parent = ""
+            visited = set()
+            while parent_link and parent_link not in visited:
+                visited.add(parent_link)
+                if parent_link in control_child_links:
+                    derived_parent = control_child_links[parent_link]
+                    break
+                parent_joint = child_to_joint.get(parent_link)
+                if parent_joint is None:
+                    break
+                parent_element = parent_joint.find("parent")
+                parent_link = (
+                    parent_element.attrib.get("link", "")
+                    if parent_element is not None
+                    else ""
+                )
+            configured_parent = str(
+                controls[control_id].get("parent_control_id", "")
+            )
+            if configured_parent != derived_parent:
+                fail(
+                    f"{control_id} parent mismatch: config="
+                    f"'{configured_parent}', URDF='{derived_parent}'."
+                )
+
+        planning_source = PLANNING_SCENE.read_text(encoding="utf-8")
+        planning_entries = re.findall(
+            r'\{"([a-z0-9_]+)",\s*([-0-9.]+),\s*([-0-9.]+),'
+            r'\s*([-0-9.]+),\s*(true|false)\}',
+            planning_source,
+        )
+        if len(planning_entries) != len({entry[0] for entry in planning_entries}):
+            fail("Planning-scene front-control registry contains duplicate IDs.")
+        planning_geometry = {
+            control_id: (
+                float(x), float(y), float(z), rotary == "true"
+            )
+            for control_id, x, y, z, rotary in planning_entries
+        }
+        planning_ids = set(planning_geometry)
+        front_ids = {
+            control_id
+            for control_id in control_ids
+            if controls[control_id]["type"] in {"button", "knob"}
+        }
+        if len(planning_entries) != len(front_ids):
+            fail("Planning-scene front-control registry has the wrong size.")
+        if planning_ids != front_ids:
+            fail("Planning-scene front-control registry differs from config.")
+        for control_id in front_ids:
+            spec = controls[control_id]
+            is_knob = spec["type"] == "knob"
+            source_position = spec.get(
+                "pivot_position" if is_knob else "local_position"
+            )
+            position = numbers(source_position, f"{control_id}.geometry")
+            scene_x, scene_y, scene_z, scene_rotary = planning_geometry[
+                control_id
+            ]
+            if scene_rotary != is_knob or not close_lists(
+                [scene_x, scene_y], position[:2]
+            ) or not math.isclose(
+                scene_z,
+                position[2],
+                rel_tol=0.0,
+                abs_tol=1.0e-3,
+            ):
+                fail(f"{control_id} planning-scene geometry differs from YAML.")
+        if 'constexpr char kDoorId[] = "cabinet_rear_door"' not in planning_source:
+            fail("Planning scene does not register the articulated rear door.")
+        if 'constexpr char kSwitchId[] = "cabinet_main_switch"' not in planning_source:
+            fail("Planning scene does not register the rear-door switch.")
+        for declaration in (
+            "constexpr double kButtonCollisionLength = 0.012;",
+            "constexpr double kButtonCollisionRadius = 0.015;",
+            "constexpr double kButtonCollisionCenterOffset = -0.0055;",
+        ):
+            if declaration not in planning_source:
+                fail(
+                    "Planning-scene button primitive must match the "
+                    "physical URDF."
+                )
 
         prismatic_count = sum(
             joint.attrib.get("type") == "prismatic" for joint in joints.values()
@@ -169,9 +508,187 @@ def main() -> int:
                 "Expanded cabinet must contain 20 prismatic and 13 revolute "
                 f"joints; got {prismatic_count} and {revolute_count}."
             )
+
+        robot_root = expand_xacro(ROBOT_XACRO)
+        lift_joint = robot_root.find("./joint[@name='body_arm_lift']")
+        if lift_joint is None or lift_joint.attrib.get("type") != "prismatic":
+            fail("Robot URDF is missing the prismatic body_arm_lift joint.")
+        lift_limit = lift_joint.find("limit")
+        lift_axis = lift_joint.find("axis")
+        lift_parent = lift_joint.find("parent")
+        lift_child = lift_joint.find("child")
+        if lift_limit is None or lift_axis is None:
+            fail("body_arm_lift is missing its axis or limits.")
+        lift_lower = float(lift_limit.attrib.get("lower", "nan"))
+        lift_upper = float(lift_limit.attrib.get("upper", "nan"))
+        if not math.isclose(lift_lower, 0.0, abs_tol=1.0e-9) or not math.isclose(
+            lift_upper, 0.85, abs_tol=1.0e-9
+        ) or numbers(lift_axis.attrib.get("xyz", ""), "lift axis") != [
+            0.0,
+            0.0,
+            1.0,
+        ]:
+            fail("body_arm_lift must travel 0.0..0.85 m along +Z.")
+        if (
+            lift_parent is None
+            or lift_parent.attrib.get("link") != "body"
+            or lift_child is None
+            or lift_child.attrib.get("link") != "arm_lift"
+        ):
+            fail("body_arm_lift must connect body to arm_lift.")
+        shoulder_joint = robot_root.find("./joint[@name='body_arm1']")
+        shoulder_parent = (
+            None if shoulder_joint is None else shoulder_joint.find("parent")
+        )
+        if shoulder_parent is None or shoulder_parent.attrib.get("link") != "arm_lift":
+            fail("The manipulator shoulder is not mounted on arm_lift.")
+
+        ros2_control_entries = {
+            entry.attrib.get("name", ""): entry
+            for entry in robot_root.findall(".//ros2_control/joint")
+        }
+        lift_control = ros2_control_entries.get("body_arm_lift")
+        if lift_control is None:
+            fail("ros2_control does not expose body_arm_lift.")
+        command_interfaces = {
+            entry.attrib.get("name", "")
+            for entry in lift_control.findall("command_interface")
+        }
+        state_interfaces = {
+            entry.attrib.get("name", "")
+            for entry in lift_control.findall("state_interface")
+        }
+        if command_interfaces != {"position"} or not {
+            "position",
+            "velocity",
+            "effort",
+        }.issubset(state_interfaces):
+            fail("body_arm_lift ros2_control interfaces are incomplete.")
+        hold_joints = {
+            (entry.text or "").strip()
+            for entry in robot_root.findall(".//plugin/hold_joint")
+        }
+        if "body_arm_lift" not in hold_joints:
+            fail("Gazebo planar stabilizer does not hold body_arm_lift.")
+
+        with ROS2_CONTROLLERS.open("r", encoding="utf-8") as stream:
+            controller_config = yaml.safe_load(stream)
+        controlled_arm = controller_config["/xczs/arm_controller"][
+            "ros__parameters"
+        ]["joints"]
+        if controlled_arm != ARM_JOINTS:
+            fail("ros2_control arm joint order differs from the MoveIt chain.")
+        if controller_config["/xczs/arm_controller"]["ros__parameters"].get(
+            "allow_partial_joints_goal"
+        ) is not True:
+            fail("The arm controller must preserve six-axis legacy goals.")
+
+        with MOVEIT_CONTROLLERS.open("r", encoding="utf-8") as stream:
+            moveit_controllers = yaml.safe_load(stream)
+        moveit_arm = moveit_controllers[
+            "moveit_simple_controller_manager"
+        ]["xczs/arm_controller"]["joints"]
+        if moveit_arm != ARM_JOINTS:
+            fail("MoveIt controller joint order differs from ros2_control.")
+        with JOINT_LIMITS.open("r", encoding="utf-8") as stream:
+            moveit_limits = yaml.safe_load(stream)["joint_limits"]
+        lift_moveit_limit = moveit_limits.get("body_arm_lift", {})
+        if not math.isclose(
+            float(lift_moveit_limit.get("min_position", float("nan"))),
+            lift_lower,
+            abs_tol=1.0e-9,
+        ) or not math.isclose(
+            float(lift_moveit_limit.get("max_position", float("nan"))),
+            lift_upper,
+            abs_tol=1.0e-9,
+        ):
+            fail("MoveIt and URDF lift position limits differ.")
+
+        srdf_root = ElementTree.parse(SRDF).getroot()
+        manipulator = srdf_root.find("./group[@name='manipulator']")
+        manipulator_chain = (
+            None if manipulator is None else manipulator.find("chain")
+        )
+        if (
+            manipulator_chain is None
+            or manipulator_chain.attrib.get("base_link") != "body"
+            or manipulator_chain.attrib.get("tip_link") != "end"
+        ):
+            fail("MoveIt manipulator chain must span body through the lift to end.")
+        home = srdf_root.find("./group_state[@name='home']")
+        home_joints = {
+            entry.attrib.get("name", ""): float(entry.attrib.get("value", "nan"))
+            for entry in ([] if home is None else home.findall("joint"))
+        }
+        if set(home_joints) != set(ARM_JOINTS) or any(
+            home_joints[joint] != 0.0 for joint in ARM_JOINTS
+        ):
+            fail("MoveIt home state must stow all seven arm joints at zero.")
+        disabled_pairs = {
+            frozenset((entry.attrib.get("link1"), entry.attrib.get("link2")))
+            for entry in srdf_root.findall("disable_collisions")
+        }
+        if frozenset(("arm_lift", "arm2")) not in disabled_pairs:
+            fail("Synthetic lift/arm2 design overlap is not documented in SRDF.")
+
+        with NAV2_CONFIG.open("r", encoding="utf-8") as stream:
+            nav2_config = yaml.safe_load(stream)
+        dwb = nav2_config["controller_server"]["ros__parameters"]["FollowPath"]
+        if (
+            float(dwb.get("min_vel_x", 0.0)) >= 0.0
+            or float(dwb.get("min_vel_y", 0.0)) >= 0.0
+            or float(dwb.get("max_vel_y", 0.0)) <= 0.0
+            or float(dwb.get("acc_lim_y", 0.0)) <= 0.0
+            or float(dwb.get("decel_lim_y", 0.0)) >= 0.0
+            or int(dwb.get("vy_samples", 0)) < 10
+        ):
+            fail(
+                "Nav2 DWB must sample bidirectional X/Y motion for the "
+                "holonomic inspection base."
+            )
+        smoother = nav2_config["velocity_smoother"]["ros__parameters"]
+        if smoother.get("max_velocity") != [0.25, 0.25, 0.60] or smoother.get(
+            "min_velocity"
+        ) != [-0.25, -0.25, -0.60]:
+            fail("Nav2 velocity smoother must preserve holonomic X/Y motion.")
+
+        web_node_source = WEB_ROS_NODE.read_text(encoding="utf-8")
+        web_source = WEB_MONITOR.read_text(encoding="utf-8")
+        web_tree = ast.parse(web_node_source)
+        web_joint_names = None
+        for class_node in (
+            node for node in web_tree.body if isinstance(node, ast.ClassDef)
+        ):
+            for statement in class_node.body:
+                if (
+                    isinstance(statement, ast.Assign)
+                    and any(
+                        isinstance(target, ast.Name)
+                        and target.id == "JOINT_NAMES"
+                        for target in statement.targets
+                    )
+                ):
+                    web_joint_names = ast.literal_eval(statement.value)
+        if web_joint_names != ARM_JOINTS + ["end_worklink1", "end_worklink2"]:
+            fail("Web backend joint order does not expose the seven-axis arm.")
+        arm_names_match = re.search(
+            r"const armJointNames = \[([^;]+)\];", web_source
+        )
+        if arm_names_match is None:
+            fail("Web monitor does not define armJointNames.")
+        html_arm_joints = re.findall(r"['\"]([^'\"]+)['\"]", arm_names_match.group(1))
+        if html_arm_joints != ARM_JOINTS:
+            fail("Web monitor arm slider order differs from the controller.")
+        lift_limit_match = re.search(
+            r"body_arm_lift\s*:\s*\[\s*0(?:\.0)?\s*,\s*0\.85\s*\]",
+            web_source,
+        )
+        if lift_limit_match is None:
+            fail("Web monitor does not enforce the 0.85 m lift range.")
         print(
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
-            "11 knobs, 1 switch, 1 articulated rear door, unique state topics."
+            "11 knobs, 1 switch, 1 articulated rear door, unique state "
+            "topics, and a 0.85 m MoveIt lift."
         )
         return 0
     except Exception as error:  # noqa: BLE001

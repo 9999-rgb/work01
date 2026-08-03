@@ -49,39 +49,6 @@
   </xacro:macro>
 
   <xacro:macro name="control_cabinet_switch" params="">
-    <link name="cabinet_switch_base">
-      <inertial>
-        <origin xyz="0 0 0.01" rpy="0 0 0" />
-        <mass value="0.05" />
-        <inertia
-          ixx="2.0e-06" ixy="0" ixz="0"
-          iyy="2.0e-06" iyz="0" izz="1.0e-06" />
-      </inertial>
-      <visual>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <mesh filename="${cabinet_mesh_directory}/cabinet_switch_base.stl" />
-        </geometry>
-        <material name="cabinet_light_gray" />
-      </visual>
-      <collision>
-        <origin xyz="0 0 0.01" rpy="0 0 0" />
-        <geometry><cylinder radius="0.005" length="0.020" /></geometry>
-      </collision>
-    </link>
-    <xacro:control_cabinet_gazebo_link
-      link_name="cabinet_switch_base"
-      gazebo_material="Gazebo/Grey"
-      has_collision="true" />
-    <xacro:control_cabinet_fixed_joint
-      joint_name="cabinet_body_cabinet_switch_base"
-      parent_link="cabinet_rear_door"
-      child_link="cabinet_switch_base"
-      xyz="0.342 1.68 -0.018" />
-    <gazebo reference="cabinet_body_cabinet_switch_base">
-      <preserveFixedJoint>true</preserveFixedJoint>
-    </gazebo>
-
     <link name="cabinet_switch_handle">
       <inertial>
         <origin xyz="0 0 0.01" rpy="0 0 0" />
@@ -106,8 +73,8 @@
       </collision>
     </link>
     <joint name="cabinet_switch_base_cabinet_switch_handle" type="revolute">
-      <origin xyz="0 0 0" rpy="0 0 0" />
-      <parent link="cabinet_switch_base" />
+      <origin xyz="0.342 1.680 -0.018" rpy="0 0 0" />
+      <parent link="cabinet_rear_door" />
       <child link="cabinet_switch_handle" />
       <axis xyz="0 0 1" />
       <limit lower="0" upper="${cabinet_switch_limit}" effort="10" velocity="1" />

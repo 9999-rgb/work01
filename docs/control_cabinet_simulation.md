@@ -13,14 +13,30 @@
 
 旋钮档位、总开关角度和背门结构是现有 CAD 缺少业务定义或独立门板资产时采用的明确仿真假设，不代表真实设备的电气参数。柜壳因此使用可碰撞的程序化框体、独立背门和 U 形把手；原模块网格继续用于前面板外观。
 
+原六轴机械臂的安装高度无法覆盖 2.23 m 柜体，因此仿真模型增加了
+`body_arm_lift` 竖直滑台，行程为 0～0.85 m。该轴属于明确的仿真假设，已同时接入 URDF、Gazebo、ros2_control 和 MoveIt；自动动作会由 MoveIt 联合规划，Web 手动调试区也可查看、调节并归零此轴。合成滑台与二号臂在设计包络内允许重叠，SRDF 中对此碰撞对有显式说明。
+
 ## 各组件职责
 
 - Gazebo 保存按钮、旋钮、开关和柜门的真实关节状态，并实现按钮弹簧、旋钮档位、开关/柜门锁止、近距工具约束和复位。
-- MoveIt 2 负责机械臂的碰撞检查、到位、接近、操作和安全回撤，是自动操作的必需组件。
+- MoveIt 2 负责竖直滑台和六轴机械臂的联合碰撞检查、到位、接近、操作和安全回撤，是自动操作的必需组件。
 - Nav2 只负责把移动底盘送到控件所在柜面前的操作工位。Web 中可取消“先导航到操作工位”，此时机器人必须已经停在可达位置。
 - Web 端负责选择控件、命令和目标状态，显示物理位置、离散状态、动作阶段，提供取消与复位。
 
+MoveIt 2 是控制柜动作节点的内部执行依赖，不再提供独立的 Web
+“MoveIt 2 面板”。用户只需在控制柜面板中提交完整操作；动作节点会自动调用
+MoveIt 2，Web 端仍保留通用机械臂手动调试区，供单独调节滑台、机械臂和夹爪使用。
+
 旋钮、总开关和柜门采用仿真工具锁扣：只有 `button_press_tip` 到达配置的操作点并处于允许距离内，Gazebo 才建立临时跨模型约束。随后关节角度由机械臂执行的旋转或门把手弧线带动；操作接口不会直接写目标关节角。按钮仍由探针真实接触压下。
+
+自动导航使用距操作点 0.93 m 的工位。Nav2 先完成粗定位；进入 0.15 m
+安全接管距离且朝向误差不超过 0.35 rad 后，动作节点取消 Nav2 目标，转由里程计闭环精确停靠。若底盘已经持续处于安全距离内、但 Nav2 的末端朝向连续
+4.0 s 无法满足朝向门限，系统会主动进入同一里程计停靠流程，避免一直卡在
+Nav2 旋转阶段。精确停靠最多等待 45.0 s，角速度上限为 0.45 rad/s。该兜底只放宽粗定位的交接条件，最终位置和朝向仍必须通过里程计停靠容差，不能绕过精确停靠或 Gazebo 接触。
+
+0.93 m 工位为伸直机械臂和柜体碰撞包络保留余量。MoveIt 场景以单条可靠的规划场景差量同步柜框、33 个控件以及门/开关的动态姿态，并且只在动作期间移除当前目标碰撞体。背门总开关随背门一起运动；操作子控件时会解析并等待整条父关节链停稳，再以新的物理状态样本验收，避免把开门过程中的旧状态误判为操作成功。
+
+旋钮、总开关和后门使用 Gazebo 固定约束模拟夹持。探针沿控件表面法向分别保持 0.020 m、0.012 m 和 0.015 m 外偏置并沿关节圆弧运动，使夹持点位于各自碰撞表面外约 2 mm；到达目标档位后独立停稳 0.30 s，再释放约束、撤离并依据新的物理状态样本确认控件仍稳定在目标档位。
 
 ## 启动和 Web 验证
 
@@ -40,6 +56,14 @@ source install/setup.bash
 4. 提交后观察动作阶段、当前位置、目标位置和物理状态。
 5. 可随时取消；复位仅在没有控制柜动作、Nav2 或普通 MoveIt 动作时允许。
 
+最短验证路径可选择“10 号模块红色按钮”，其控制件 ID 是
+`box_10_button_1`，命令选择“按下”。保留“先导航到控制柜操作工位”时会验证
+Nav2、里程计精确停靠、MoveIt 2 和 Gazebo 物理按压的完整链路；取消勾选时只验证机器人已在可达工位后的机械臂与物理闭环。成功结果应显示按钮先达到
+`pressed`，释放后回到 `released`，动作阶段最终变为成功，活动目标被清空。
+
+取消会停止本次 Nav2/里程计与 MoveIt 2 运动，释放可能已经建立的 Gazebo
+工具约束，并尽力安全撤离和收回机械臂。复位会把全部控制件恢复到确定的默认档位；它与控制柜动作互斥，不应用来替代取消正在执行的动作。
+
 ## ROS 2 接口
 
 - 通用动作：`/xczs/operate_cabinet_control`，类型 `OperateCabinetControl`。
@@ -51,6 +75,10 @@ source install/setup.bash
 - Gazebo 内部复位：`/xczs/cabinet/reset_physics`。
 - Gazebo 工具约束：`/xczs/cabinet/grasp`，类型 `SetCabinetGrasp`。
 
+`SET_POSITION` 仅接受目录中的物理档位位置，不用于任意连续角度控制；Web
+界面因此直接展示档位/状态选项。需要按数值调用 API 时，数值应与
+`state_positions` 中的某一项一致。
+
 Web API 保留 `/cabinet/press`，并增加：
 
 - `POST /cabinet/operate`
@@ -58,6 +86,24 @@ Web API 保留 `/cabinet/press`，并增加：
 - `POST /cabinet/reset`
 - `GET /cabinet/controls`
 - `GET /cabinet/status`
+
+例如可直接通过 HTTP 提交并观察上述验证按钮：
+
+```bash
+curl -sS -X POST http://localhost:8090/cabinet/operate \
+  -H 'Content-Type: application/json' \
+  -d '{"control_id":"box_10_button_1","command":"press","navigate_to_staging_pose":true}'
+curl -sS http://localhost:8090/cabinet/status
+```
+
+需要中止或在终态后恢复全部默认档位时分别调用：
+
+```bash
+curl -sS -X POST http://localhost:8090/cabinet/cancel \
+  -H 'Content-Type: application/json' -d '{}'
+curl -sS -X POST http://localhost:8090/cabinet/reset \
+  -H 'Content-Type: application/json' -d '{}'
+```
 
 ## 自动验收
 
@@ -80,13 +126,29 @@ scripts/validate_cabinet_simulation
 scripts/validate_cabinet_simulation --exhaustive
 ```
 
+附加验证数值档位、切换、非法数值拒绝、抓取阶段取消、活动目标清理、
+复位互锁，以及“开门后操作随门移动的总开关”父子几何链：
+
+```bash
+scripts/validate_cabinet_simulation --contract-tests
+```
+
 让每次动作包含 Nav2 自动停靠：
 
 ```bash
-scripts/validate_cabinet_simulation --navigate --exhaustive
+scripts/validate_cabinet_simulation --navigate --exhaustive --contract-tests
 ```
 
 也可用一个或多个 `--control <control_id>` 做定点回归。
+
+例如只验证 Web 界面默认展示的 10 号模块红色按钮及完整导航链：
+
+```bash
+scripts/validate_cabinet_simulation \
+  --control box_10_button_1 --navigate --timeout 300
+```
+
+`--exhaustive` 一轮共执行 57 次物理动作：20 次按钮按下/释放、11 个旋钮各遍历右/左/中三档、总开关开/关、后门开/关。脚本在每次动作后独立核对 Gazebo 状态和活动碰撞目标，并在异常或中断时尝试取消动作与复位。
 
 ## 仿真边界
 

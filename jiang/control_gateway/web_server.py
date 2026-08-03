@@ -106,7 +106,21 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _handle_joint_trajectory(self) -> None:
         body = self._required_body()
-        positions = self._number_list(body, "positions", 8)
+        raw_positions = body.get("positions")
+        if not isinstance(raw_positions, list) or len(raw_positions) not in {
+            8,
+            9,
+        }:
+            raise ControlRequestError(
+                "positions must contain 8 legacy or 9 lift-aware numbers."
+            )
+        positions = [
+            self._finite_number(
+                {f"positions[{index}]": value},
+                f"positions[{index}]",
+            )
+            for index, value in enumerate(raw_positions)
+        ]
         positions = self.control_server.publish_joint_trajectory(positions)
         self._send_json(
             200,

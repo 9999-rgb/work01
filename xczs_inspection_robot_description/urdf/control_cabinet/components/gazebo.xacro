@@ -62,7 +62,7 @@
       <ros>
         <namespace>/xczs/cabinet</namespace>
       </ros>
-      <state_publish_rate>50.0</state_publish_rate>
+      <state_publish_rate>20.0</state_publish_rate>
       <reset_service>/xczs/cabinet/reset_physics</reset_service>
       <grasp_service>/xczs/cabinet/grasp</grasp_service>
       <grasp_distance_threshold>0.12</grasp_distance_threshold>
@@ -126,8 +126,9 @@
         <state_topic>/xczs/cabinet/cabinet_rear_door/state</state_topic>
         <detents>0 ${cabinet_door_limit}</detents>
         <state_ids>closed open</state_ids>
-        <detent_stiffness>1.50</detent_stiffness>
-        <spring_damping>0.60</spring_damping>
+        <detent_stiffness>5.00</detent_stiffness>
+        <spring_damping>2.00</spring_damping>
+        <detent_hysteresis>0.12</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>

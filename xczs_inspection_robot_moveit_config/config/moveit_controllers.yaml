@@ -12,6 +12,7 @@ moveit_simple_controller_manager:
     action_ns: follow_joint_trajectory
     default: true
     joints:
+      - body_arm_lift
       - body_arm1
       - arm1_arm2
       - arm2_arm3

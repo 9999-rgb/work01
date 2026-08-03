@@ -99,7 +99,6 @@ target_compile_features(cabinet_planning_scene PUBLIC cxx_std_17)
 ament_target_dependencies(
   cabinet_planning_scene
   moveit_msgs
-  moveit_ros_planning_interface
   rclcpp
   shape_msgs
   std_msgs

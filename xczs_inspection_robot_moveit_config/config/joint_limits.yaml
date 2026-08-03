@@ -1,4 +1,12 @@
 joint_limits:
+  body_arm_lift:
+    has_position_limits: true
+    min_position: 0.0
+    max_position: 0.85
+    has_velocity_limits: true
+    max_velocity: 0.20
+    has_acceleration_limits: true
+    max_acceleration: 0.40
   body_arm1:
     has_position_limits: true
     min_position: -2.8

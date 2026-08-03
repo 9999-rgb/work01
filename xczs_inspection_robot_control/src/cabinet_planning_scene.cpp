@@ -4,14 +4,15 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "moveit/planning_scene_interface/planning_scene_interface.h"
 #include "moveit_msgs/msg/collision_object.hpp"
+#include "moveit_msgs/msg/planning_scene.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "shape_msgs/msg/solid_primitive.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -30,6 +31,9 @@ using CabinetControlState =
 
 constexpr char kDoorId[] = "cabinet_rear_door";
 constexpr char kSwitchId[] = "cabinet_main_switch";
+constexpr double kButtonCollisionLength = 0.012;
+constexpr double kButtonCollisionRadius = 0.015;
+constexpr double kButtonCollisionCenterOffset = -0.0055;
 
 struct ControlCollision
 {
@@ -115,8 +119,7 @@ class CabinetPlanningScene final : public rclcpp::Node
 {
 public:
   CabinetPlanningScene()
-  : Node("xczs_cabinet_planning_scene"),
-    planning_scene_interface_("", false)
+  : Node("xczs_cabinet_planning_scene")
   {
     frame_id_ = declare_parameter<std::string>("frame_id", "odom");
     cabinet_x_ = declare_parameter<double>("cabinet_x", 2.0);
@@ -127,6 +130,9 @@ public:
     cabinet_pitch_ = declare_parameter<double>("cabinet_pitch", 0.0);
     cabinet_yaw_ = declare_parameter<double>(
       "cabinet_yaw", -1.57079632679);
+    planning_scene_publisher_ =
+      create_publisher<moveit_msgs::msg::PlanningScene>(
+      "/planning_scene", rclcpp::QoS(1).reliable().transient_local());
 
     active_control_subscription_ = create_subscription<std_msgs::msg::String>(
       "/xczs/cabinet/active_control",
@@ -134,7 +140,7 @@ public:
       [this](const std_msgs::msg::String::SharedPtr message) {
         std::lock_guard<std::mutex> lock(state_mutex_);
         active_control_id_ = message->data;
-        scene_dirty_ = true;
+        ++scene_revision_;
       });
     door_state_subscription_ = create_subscription<CabinetControlState>(
       "/xczs/cabinet/cabinet_rear_door/state",
@@ -144,9 +150,9 @@ public:
           return;
         }
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (std::abs(door_position_ - message->position) > 1.0e-4) {
+        if (std::abs(door_position_ - message->position) > 1.0e-3) {
           door_position_ = message->position;
-          scene_dirty_ = true;
+          ++scene_revision_;
         }
       });
     switch_state_subscription_ = create_subscription<CabinetControlState>(
@@ -157,9 +163,9 @@ public:
           return;
         }
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (std::abs(switch_position_ - message->position) > 1.0e-4) {
+        if (std::abs(switch_position_ - message->position) > 1.0e-3) {
           switch_position_ = message->position;
-          scene_dirty_ = true;
+          ++scene_revision_;
         }
       });
 
@@ -262,9 +268,14 @@ private:
       return object;
     }
     object.operation = moveit_msgs::msg::CollisionObject::ADD;
+    // The button primitive matches the physical URDF exactly.  A larger
+    // approximation makes the 35 mm-spaced buttons in modules 10 and 11
+    // artificially block the 20 mm-diameter press probe.
     object.primitives.push_back(
-      control.rotary ? cylinder(0.046, 0.050) : cylinder(0.020, 0.022));
-    const double collision_z = control.rotary ? control.z + 0.013 : control.z;
+      control.rotary ? cylinder(0.046, 0.050) :
+      cylinder(kButtonCollisionLength, kButtonCollisionRadius));
+    const double collision_z = control.rotary ? control.z + 0.013 :
+      control.z + kButtonCollisionCenterOffset;
     object.primitive_poses.push_back(to_pose(
       model_transform() * tf2::Transform(
         tf2::Quaternion::getIdentity(),
@@ -312,38 +323,65 @@ private:
     std::string active_control;
     double door_position = 0.0;
     double switch_position = 0.0;
+    std::string published_active_control;
+    std::uint64_t revision = 0U;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
-      if (scene_published_ && !scene_dirty_) {
+      if (scene_published_ && published_revision_ == scene_revision_) {
         return;
       }
       active_control = active_control_id_;
       door_position = door_position_;
       switch_position = switch_position_;
+      published_active_control = published_active_control_id_;
+      revision = scene_revision_;
     }
 
     std::vector<moveit_msgs::msg::CollisionObject> objects;
     objects.reserve(kControlCollisions.size() + 3U);
     objects.push_back(make_frame());
     for (const auto & control : kControlCollisions) {
-      objects.push_back(make_control(
-        control, active_control == control.id));
+      if (active_control == control.id) {
+        if (published_active_control != active_control) {
+          objects.push_back(make_control(control, true));
+        }
+        continue;
+      }
+      objects.push_back(make_control(control, false));
     }
-    objects.push_back(make_switch(
-      door_position, switch_position, active_control == kSwitchId));
-    objects.push_back(make_door(
-      door_position, active_control == kDoorId));
+    if (active_control == kSwitchId) {
+      if (published_active_control != active_control) {
+        objects.push_back(make_switch(door_position, switch_position, true));
+      }
+    } else {
+      objects.push_back(make_switch(door_position, switch_position, false));
+    }
+    if (active_control == kDoorId) {
+      if (published_active_control != active_control) {
+        objects.push_back(make_door(door_position, true));
+      }
+    } else {
+      objects.push_back(make_door(door_position, false));
+    }
 
-    if (!planning_scene_interface_.applyCollisionObjects(objects)) {
+    if (planning_scene_publisher_->get_subscription_count() == 0U) {
       RCLCPP_WARN_THROTTLE(
         get_logger(), *get_clock(), 5000,
-        "Waiting for the MoveIt planning-scene service.");
+        "Waiting for the MoveIt collision-object subscriber.");
       return;
     }
+    moveit_msgs::msg::PlanningScene scene;
+    scene.is_diff = true;
+    scene.robot_state.is_diff = true;
+    scene.world.collision_objects = std::move(objects);
+    planning_scene_publisher_->publish(scene);
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       scene_published_ = true;
-      scene_dirty_ = false;
+      published_active_control_id_ = active_control;
+      if (scene_revision_ == revision) {
+        published_revision_ = revision;
+      }
     }
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 5000,
@@ -352,8 +390,8 @@ private:
       frame_id_.c_str(), active_control.empty() ? "none" : active_control.c_str());
   }
 
-  moveit::planning_interface::PlanningSceneInterface
-    planning_scene_interface_;
+  rclcpp::Publisher<moveit_msgs::msg::PlanningScene>::SharedPtr
+    planning_scene_publisher_;
   rclcpp::TimerBase::SharedPtr retry_timer_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     active_control_subscription_;
@@ -364,10 +402,12 @@ private:
 
   mutable std::mutex state_mutex_;
   std::string active_control_id_;
+  std::string published_active_control_id_;
   double door_position_{0.0};
   double switch_position_{0.0};
-  bool scene_dirty_{true};
   bool scene_published_{false};
+  std::uint64_t scene_revision_{1U};
+  std::uint64_t published_revision_{0U};
 
   std::string frame_id_;
   double cabinet_x_{2.0};

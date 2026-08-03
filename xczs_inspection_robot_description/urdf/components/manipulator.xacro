@@ -1,6 +1,48 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:macro name="xczs_manipulator" params="">
+    <!--
+      The exported six-axis arm is mounted too low to reach the upper cabinet
+      modules.  A simulated vertical carriage keeps the original zero pose and
+      gives MoveIt one physical prismatic degree of freedom for full-height
+      cabinet coverage.
+    -->
+    <link name="arm_lift">
+      <inertial>
+        <origin xyz="0 0 0.10" rpy="0 0 0" />
+        <mass value="4.0" />
+        <inertia
+          ixx="0.015" ixy="0" ixz="0"
+          iyy="0.015" iyz="0" izz="0.010" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0.10" rpy="0 0 0" />
+        <geometry><box size="0.14 0.14 0.20" /></geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0.10" rpy="0 0 0" />
+        <geometry><box size="0.14 0.14 0.20" /></geometry>
+      </collision>
+    </link>
+    <joint name="body_arm_lift" type="prismatic">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="body" />
+      <child link="arm_lift" />
+      <axis xyz="0 0 1" />
+      <limit
+        lower="0.0"
+        upper="${arm_lift_travel}"
+        effort="${arm_lift_effort}"
+        velocity="${arm_lift_velocity}" />
+      <dynamics damping="20.0" friction="50.0" />
+      <safety_controller
+        soft_upper="${arm_lift_travel}"
+        soft_lower="0.0"
+        k_position="50"
+        k_velocity="10" />
+    </joint>
+
     <link name="arm1">
       <inertial>
         <origin xyz="-0.0033217 -9.9561E-07 0.078337" rpy="0 0 0" />
@@ -31,7 +73,7 @@
     </link>
     <joint name="body_arm1" type="revolute">
       <origin xyz="0 0 0.1713" rpy="0 0 0" />
-      <parent link="body" />
+      <parent link="arm_lift" />
       <child link="arm1" />
       <axis xyz="0 0 1" />
       <limit

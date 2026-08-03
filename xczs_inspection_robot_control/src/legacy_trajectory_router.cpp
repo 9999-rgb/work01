@@ -26,7 +26,17 @@ using JointTrajectoryPoint = trajectory_msgs::msg::JointTrajectoryPoint;
 using GoalStatus = action_msgs::msg::GoalStatus;
 using GoalStatusArray = action_msgs::msg::GoalStatusArray;
 
-const std::array<std::string, 6> kArmJoints = {
+const std::array<std::string, 7> kArmJoints = {
+  "body_arm_lift",
+  "body_arm1",
+  "arm1_arm2",
+  "arm2_arm3",
+  "arm3_arm4",
+  "arm4_arm5",
+  "arm5_end",
+};
+
+const std::array<std::string, 6> kLegacyArmJoints = {
   "body_arm1",
   "arm1_arm2",
   "arm2_arm3",
@@ -183,7 +193,12 @@ private:
     }
 
     try {
-      const auto arm_trajectory = extract_trajectory(input, kArmJoints);
+      auto arm_trajectory = extract_trajectory(input, kArmJoints);
+      if (!arm_trajectory) {
+        // Keep the original six-axis keyboard/GUI protocol working.  The arm
+        // controller accepts this partial goal and preserves the lift height.
+        arm_trajectory = extract_trajectory(input, kLegacyArmJoints);
+      }
       const auto gripper_trajectory = extract_trajectory(
         input, kGripperJoints);
       if (!arm_trajectory && !gripper_trajectory) {

@@ -78,6 +78,7 @@ constexpr char kControlCatalogTopic[] = "/xczs/cabinet/control_catalog";
 constexpr char kActiveControlTopic[] = "/xczs/cabinet/active_control";
 constexpr char kResetControlsService[] = "/xczs/cabinet/reset_controls";
 constexpr char kArmGroup[] = "manipulator";
+constexpr char kArmStowTarget[] = "home";
 constexpr char kArmTipLink[] = "end";
 constexpr char kContactToolLink[] = "button_press_tip";
 constexpr char kRobotModelName[] = "xczs_inspection_robot";
@@ -158,6 +159,7 @@ struct ButtonSpec
   std::string unit;
   std::uint8_t supported_commands{0};
   bool requires_grasp{false};
+  double grasp_outward_offset{0.0};
   bool operable{true};
   std::string unavailable_reason;
   std::string parent_control_id;
@@ -245,8 +247,10 @@ public:
     const double legacy_button_local_z = declare_parameter<double>(
       "button_local_z", 0.011494);
     tool_tip_offset_ = positive_parameter("tool_tip_offset", 0.370);
-    staging_distance_ = positive_parameter("staging_distance", 1.040);
+    staging_distance_ = positive_parameter("staging_distance", 0.930);
     prepress_distance_ = positive_parameter("prepress_distance", 0.060);
+    grasp_outward_offset_ = positive_parameter(
+      "grasp_outward_offset", 0.020);
     contact_clearance_ = positive_parameter("contact_clearance", 0.001);
     press_depth_ = positive_parameter("press_depth", 0.007);
     button_state_timeout_ = positive_parameter("state_timeout", 1.0);
@@ -255,7 +259,11 @@ public:
       "navigation_timeout", 120.0);
     navigation_takeover_distance_ = positive_parameter(
       "navigation_takeover_distance", 0.15);
-    docking_timeout_ = positive_parameter("docking_timeout", 20.0);
+    navigation_takeover_yaw_tolerance_ = positive_parameter(
+      "navigation_takeover_yaw_tolerance", 0.35);
+    navigation_takeover_stall_timeout_ = positive_parameter(
+      "navigation_takeover_stall_timeout", 4.0);
+    docking_timeout_ = positive_parameter("docking_timeout", 45.0);
     docking_position_tolerance_ = positive_parameter(
       "docking_position_tolerance", 0.015);
     docking_yaw_tolerance_ = positive_parameter(
@@ -263,7 +271,7 @@ public:
     docking_max_linear_speed_ = positive_parameter(
       "docking_max_linear_speed", 0.15);
     docking_max_angular_speed_ = positive_parameter(
-      "docking_max_angular_speed", 0.30);
+      "docking_max_angular_speed", 0.45);
     docking_linear_gain_ = positive_parameter(
       "docking_linear_gain", 0.8);
     docking_angular_gain_ = positive_parameter(
@@ -280,6 +288,17 @@ public:
       "stable_velocity_tolerance", 0.03);
     stable_state_duration_ = positive_parameter(
       "stable_state_duration", 0.30);
+    grasp_release_settle_duration_ = positive_parameter(
+      "grasp_release_settle_duration", 0.30);
+    door_release_fraction_ = declare_parameter<double>(
+      "door_release_fraction", 0.60);
+    if (!std::isfinite(door_release_fraction_) ||
+      door_release_fraction_ <= 0.5 || door_release_fraction_ >= 0.75)
+    {
+      throw std::invalid_argument(
+              "Parameter 'door_release_fraction' must be in (0.5, 0.75).");
+    }
+    door_settle_timeout_ = positive_parameter("door_settle_timeout", 45.0);
     planning_scene_settle_seconds_ = positive_parameter(
       "planning_scene_settle_seconds", 0.50);
     rotation_waypoint_step_ = positive_parameter(
@@ -374,7 +393,7 @@ public:
 
   ~CabinetButtonOperator() override
   {
-    cancel_requested_.store(true);
+    shutdown_requested_.store(true);
     stop_active_motion();
     cancel_active_navigation();
     std::lock_guard<std::mutex> lock(worker_mutex_);
@@ -384,6 +403,123 @@ public:
   }
 
 private:
+  enum class ActiveGoalType
+  {
+    NONE,
+    PRESS,
+    OPERATE,
+  };
+
+  void activate_goal(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id)
+  {
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    active_goal_type_ = type;
+    active_goal_id_ = goal_id;
+    cancel_requested_.store(false);
+  }
+
+  bool active_goal_matches_locked(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id) const noexcept
+  {
+    return active_goal_type_ == type && active_goal_id_ == goal_id;
+  }
+
+  bool cancel_requested_for(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id) const
+  {
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    return !active_goal_matches_locked(type, goal_id) ||
+           cancel_requested_.load();
+  }
+
+  bool cancel_requested_for(
+    const std::shared_ptr<PressGoalHandle> & goal_handle) const
+  {
+    return !goal_handle || cancel_requested_for(
+      ActiveGoalType::PRESS, goal_handle->get_goal_id());
+  }
+
+  bool cancel_requested_for(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle) const
+  {
+    return !goal_handle || cancel_requested_for(
+      ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+  }
+
+  template<typename GoalHandleT>
+  bool goal_should_stop(
+    const std::shared_ptr<GoalHandleT> & goal_handle) const noexcept
+  {
+    try {
+      return cancel_requested_for(goal_handle) ||
+             goal_handle->is_canceling() || shutdown_requested_.load() ||
+             !rclcpp::ok();
+    } catch (...) {
+      return true;
+    }
+  }
+
+  template<typename GoalHandleT>
+  bool goal_canceling_after_request(
+    const std::shared_ptr<GoalHandleT> & goal_handle) const noexcept
+  {
+    try {
+      if (!goal_handle) {
+        return false;
+      }
+      if (!cancel_requested_for(goal_handle)) {
+        return goal_handle->is_canceling();
+      }
+
+      // rclcpp_action changes the handle to CANCELING only after the user
+      // cancel callback returns ACCEPT. The worker can observe our bound flag
+      // during that small interval, so wait for the action state transition
+      // before selecting the terminal state.
+      const auto deadline = std::chrono::steady_clock::now() + 1s;
+      while (!goal_handle->is_canceling() &&
+        std::chrono::steady_clock::now() < deadline && rclcpp::ok())
+      {
+        std::this_thread::sleep_for(1ms);
+      }
+      return goal_handle->is_canceling();
+    } catch (...) {
+      return true;
+    }
+  }
+
+  void clear_active_goal(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id) noexcept
+  {
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    if (active_goal_matches_locked(type, goal_id)) {
+      active_goal_type_ = ActiveGoalType::NONE;
+      active_goal_id_ = {};
+    }
+  }
+
+  rclcpp_action::CancelResponse cancel_active_goal(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id)
+  {
+    // Keep the binding locked until all global motion resources have been
+    // stopped. This prevents a completed goal from releasing the operation
+    // slot and a new goal from becoming active midway through a late cancel.
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    if (!active_goal_matches_locked(type, goal_id)) {
+      return rclcpp_action::CancelResponse::REJECT;
+    }
+    cancel_requested_.store(true);
+    stop_active_motion();
+    cancel_active_navigation();
+    publish_manual_base_stop();
+    return rclcpp_action::CancelResponse::ACCEPT;
+  }
+
   void configure_controls(
     const std::string & legacy_button_id,
     const std::string & legacy_joint_name,
@@ -518,6 +654,8 @@ private:
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
       const bool is_knob = button->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB;
+      const bool is_switch = button->control_type ==
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_SWITCH;
       button->display_name = declare_parameter<std::string>(
         prefix + "display_name", default_display_name);
       button->joint_name = declare_parameter<std::string>(
@@ -562,6 +700,19 @@ private:
         prefix + "parent_control_id", "");
       button->requires_grasp = declare_parameter<bool>(
         prefix + "requires_grasp", !is_button);
+      if (!is_button) {
+        const double default_grasp_offset = is_knob ?
+          grasp_outward_offset_ : (is_switch ? 0.012 : 0.015);
+        button->grasp_outward_offset = declare_parameter<double>(
+          prefix + "grasp_outward_offset", default_grasp_offset);
+        if (!std::isfinite(button->grasp_outward_offset) ||
+          button->grasp_outward_offset <= 0.0)
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' has an invalid grasp outward offset.");
+        }
+      }
       button->unit = is_button ? "m" : "rad";
       button->supported_commands = is_button ?
         xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_PRESS :
@@ -656,7 +807,7 @@ private:
       button_joint_state_subscriptions_.push_back(
         create_subscription<sensor_msgs::msg::JointState>(
           button->joint_state_topic,
-          10,
+          rclcpp::SensorDataQoS(),
           [this, button](
             const sensor_msgs::msg::JointState::SharedPtr message)
           {
@@ -721,46 +872,58 @@ private:
     return iterator == buttons_by_id_.end() ? nullptr : iterator->second;
   }
 
-  void publish_active_control(const std::string & control_id)
+  void publish_active_control(const std::string & control_id) noexcept
   {
-    std_msgs::msg::String message;
-    message.data = control_id;
-    active_control_publisher_->publish(message);
+    try {
+      std_msgs::msg::String message;
+      message.data = control_id;
+      active_control_publisher_->publish(message);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to publish the active cabinet control: %s",
+        error.what());
+    } catch (...) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to publish the active cabinet control.");
+    }
   }
 
   void reset_controls(
     const std::shared_ptr<std_srvs::srv::Trigger::Response> & response)
   {
-    if (operation_active_.load()) {
+    bool expected = false;
+    if (!operation_active_.compare_exchange_strong(expected, true)) {
       response->success = false;
       response->message =
         "Cabinet controls cannot be reset during an active operation.";
       return;
     }
-    if (!reset_physics_client_->wait_for_service(2s)) {
-      response->success = false;
-      response->message = "Cabinet reset_physics service is unavailable.";
-      return;
-    }
-    auto future = reset_physics_client_->async_send_request(
-      std::make_shared<std_srvs::srv::Trigger::Request>());
-    if (future.wait_for(3s) != std::future_status::ready) {
-      response->success = false;
-      response->message = "Cabinet reset_physics service timed out.";
-      return;
-    }
+
     try {
-      const auto reset_response = future.get();
-      response->success = reset_response->success;
-      response->message = reset_response->message;
+      if (!reset_physics_client_->wait_for_service(2s)) {
+        response->success = false;
+        response->message = "Cabinet reset_physics service is unavailable.";
+      } else {
+        auto future = reset_physics_client_->async_send_request(
+          std::make_shared<std_srvs::srv::Trigger::Request>());
+        if (future.wait_for(3s) != std::future_status::ready) {
+          response->success = false;
+          response->message = "Cabinet reset_physics service timed out.";
+        } else {
+          const auto reset_response = future.get();
+          response->success = reset_response->success;
+          response->message = reset_response->message;
+        }
+      }
     } catch (const std::exception & error) {
       response->success = false;
       response->message = std::string("Cabinet reset failed: ") + error.what();
     }
+    operation_active_.store(false);
   }
 
   rclcpp_action::GoalResponse handle_operate_goal(
-    const rclcpp_action::GoalUUID &,
+    const rclcpp_action::GoalUUID & uuid,
     const std::shared_ptr<const OperateCabinetControl::Goal> goal)
   {
     const auto control = find_button(goal->control_id);
@@ -814,18 +977,17 @@ private:
     if (!operation_active_.compare_exchange_strong(expected, true)) {
       return rclcpp_action::GoalResponse::REJECT;
     }
-    cancel_requested_.store(false);
+    activate_goal(ActiveGoalType::OPERATE, uuid);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
   rclcpp_action::CancelResponse handle_operate_cancel(
-    const std::shared_ptr<OperateGoalHandle>)
+    const std::shared_ptr<OperateGoalHandle> goal_handle)
   {
-    cancel_requested_.store(true);
-    stop_active_motion();
-    cancel_active_navigation();
-    publish_manual_base_stop();
-    return rclcpp_action::CancelResponse::ACCEPT;
+    return goal_handle ?
+      cancel_active_goal(
+      ActiveGoalType::OPERATE, goal_handle->get_goal_id()) :
+      rclcpp_action::CancelResponse::REJECT;
   }
 
   void handle_operate_accepted(
@@ -867,7 +1029,7 @@ private:
   }
 
   rclcpp_action::GoalResponse handle_goal(
-    const rclcpp_action::GoalUUID &,
+    const rclcpp_action::GoalUUID & uuid,
     const std::shared_ptr<const PressCabinetButton::Goal> goal)
   {
     const auto control = find_button(goal->button_id);
@@ -885,18 +1047,16 @@ private:
       RCLCPP_WARN(get_logger(), "Rejected a concurrent cabinet operation.");
       return rclcpp_action::GoalResponse::REJECT;
     }
-    cancel_requested_.store(false);
+    activate_goal(ActiveGoalType::PRESS, uuid);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
   rclcpp_action::CancelResponse handle_cancel(
-    const std::shared_ptr<PressGoalHandle>)
+    const std::shared_ptr<PressGoalHandle> goal_handle)
   {
-    cancel_requested_.store(true);
-    stop_active_motion();
-    cancel_active_navigation();
-    publish_manual_base_stop();
-    return rclcpp_action::CancelResponse::ACCEPT;
+    return goal_handle ?
+      cancel_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id()) :
+      rclcpp_action::CancelResponse::REJECT;
   }
 
   void handle_accepted(const std::shared_ptr<PressGoalHandle> goal_handle)
@@ -914,11 +1074,13 @@ private:
 
   void execute(const std::shared_ptr<PressGoalHandle> goal_handle) noexcept
   {
+    const auto operation_started_at = std::chrono::steady_clock::now();
     auto result = std::make_shared<PressCabinetButton::Result>();
     const auto button = find_button(goal_handle->get_goal()->button_id);
     std::shared_ptr<MoveGroupInterface> move_group;
     OperationPoses poses;
     bool should_attempt_retreat = false;
+    bool request_success = false;
 
     try {
       if (!button) {
@@ -932,7 +1094,8 @@ private:
         PressCabinetButton::Feedback::WAITING_FOR_SYSTEM,
         0.02F,
         "Waiting for the cabinet button state.");
-      wait_for_fresh_button_state(goal_handle, *button);
+      wait_for_fresh_button_state(
+        goal_handle, *button, operation_started_at);
       check_cancel(goal_handle);
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
@@ -940,24 +1103,6 @@ private:
         goal_handle->get_goal()->navigate_to_staging_pose;
       poses = calculate_operation_poses(
         *button, should_navigate_to_staging_pose);
-      if (should_navigate_to_staging_pose) {
-        publish_feedback(
-          goal_handle,
-          PressCabinetButton::Feedback::NAVIGATING,
-          0.08F,
-          "Driving the base to the cabinet staging pose.");
-        navigate_to_staging_pose(goal_handle, poses.staging_pose);
-      }
-      set_navigation_mode(goal_handle, false);
-      if (should_navigate_to_staging_pose) {
-        publish_feedback(
-          goal_handle,
-          PressCabinetButton::Feedback::NAVIGATING,
-          0.20F,
-          "Refining the cabinet staging pose from Gazebo odometry.");
-        dock_to_staging_pose(
-          goal_handle, poses.staging_pose_in_planning_frame);
-      }
 
       move_group = std::make_shared<MoveGroupInterface>(
         shared_from_this(),
@@ -974,6 +1119,32 @@ private:
         throw OperationError(
                 PressCabinetButton::Result::NOT_READY,
                 "MoveIt did not receive the current robot state.");
+      }
+
+      if (should_navigate_to_staging_pose) {
+        publish_feedback(
+          goal_handle,
+          PressCabinetButton::Feedback::NAVIGATING,
+          0.05F,
+          "Returning the arm to its safe transport target.");
+        plan_and_execute_named_target(
+          *move_group, goal_handle, kArmStowTarget);
+        publish_feedback(
+          goal_handle,
+          PressCabinetButton::Feedback::NAVIGATING,
+          0.08F,
+          "Driving the base to the cabinet staging pose.");
+        navigate_to_staging_pose(goal_handle, poses.staging_pose);
+      }
+      set_navigation_mode(goal_handle, false);
+      if (should_navigate_to_staging_pose) {
+        publish_feedback(
+          goal_handle,
+          PressCabinetButton::Feedback::NAVIGATING,
+          0.20F,
+          "Refining the cabinet staging pose from Gazebo odometry.");
+        dock_to_staging_pose(
+          goal_handle, poses.staging_pose_in_planning_frame);
       }
 
       publish_feedback(
@@ -1063,20 +1234,26 @@ private:
                 "its release threshold.");
       }
 
+      publish_feedback(
+        goal_handle,
+        PressCabinetButton::Feedback::RETRACTING,
+        0.99F,
+        "Returning the arm to its safe transport target.");
+      plan_and_execute_named_target(
+        *move_group, goal_handle, kArmStowTarget);
+
       result->success = true;
       result->error_code = PressCabinetButton::Result::SUCCESS;
       result->message =
         "Pressed and released " + button->id + " successfully.";
       result->max_travel = button_snapshot(*button).max_position;
-      if (finish_goal_noexcept(goal_handle, result, true)) {
-        RCLCPP_INFO(
-          get_logger(), "Cabinet button %s operation succeeded "
-          "(max %.2f mm).",
-          button->id.c_str(), result->max_travel * 1000.0);
-      }
+      request_success = true;
     } catch (const OperationError & error) {
       if (should_attempt_retreat && move_group && rclcpp::ok()) {
         best_effort_retreat(*move_group, poses.prepress_pose);
+      }
+      if (move_group && rclcpp::ok()) {
+        best_effort_stow(*move_group);
       }
       result->success = false;
       result->error_code = error.error_code;
@@ -1092,11 +1269,13 @@ private:
         result->message =
           "Cabinet button operation stopped because ROS is shutting down.";
       }
-      finish_goal_noexcept(goal_handle, result, false);
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     } catch (const std::exception & error) {
       if (should_attempt_retreat && move_group && rclcpp::ok()) {
         best_effort_retreat(*move_group, poses.prepress_pose);
+      }
+      if (move_group && rclcpp::ok()) {
+        best_effort_stow(*move_group);
       }
       result->success = false;
       const bool canceled = is_goal_canceling_noexcept(goal_handle);
@@ -1108,11 +1287,13 @@ private:
         std::string("Cabinet operation failed: ") + error.what();
       result->max_travel = button ?
         button_snapshot(*button).max_position : 0.0;
-      finish_goal_noexcept(goal_handle, result, false);
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     } catch (...) {
       if (should_attempt_retreat && move_group && rclcpp::ok()) {
         best_effort_retreat(*move_group, poses.prepress_pose);
+      }
+      if (move_group && rclcpp::ok()) {
+        best_effort_stow(*move_group);
       }
       result->success = false;
       const bool canceled = is_goal_canceling_noexcept(goal_handle);
@@ -1124,7 +1305,6 @@ private:
         "Cabinet operation failed with an unknown exception.";
       result->max_travel = button ?
         button_snapshot(*button).max_position : 0.0;
-      finish_goal_noexcept(goal_handle, result, false);
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     }
 
@@ -1135,13 +1315,24 @@ private:
       std::lock_guard<std::mutex> lock(motion_mutex_);
       active_move_group_.reset();
     }
-    operation_active_.store(false);
     publish_active_control("");
+    const bool goal_succeeded =
+      finish_goal_noexcept(goal_handle, result, request_success);
+    clear_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id());
+    operation_active_.store(false);
+    if (goal_succeeded &&
+      request_success && button)
+    {
+      RCLCPP_INFO(
+        get_logger(), "Cabinet button %s operation succeeded (max %.2f mm).",
+        button->id.c_str(), result->max_travel * 1000.0);
+    }
   }
 
   void execute_operate(
     const std::shared_ptr<OperateGoalHandle> goal_handle) noexcept
   {
+    const auto operation_started_at = std::chrono::steady_clock::now();
     auto result = std::make_shared<OperateCabinetControl::Result>();
     const auto control = find_button(goal_handle->get_goal()->control_id);
     std::shared_ptr<MoveGroupInterface> move_group;
@@ -1149,8 +1340,10 @@ private:
     RotaryOperationPoses rotary_poses;
     bool should_attempt_retreat = false;
     bool grasp_attached = false;
+    bool request_success = false;
     double target_position = 0.0;
     std::string target_state;
+    std::unordered_map<std::string, std::string> expected_parent_states;
 
     try {
       if (!control) {
@@ -1163,10 +1356,17 @@ private:
         goal_handle,
         OperateCabinetControl::Feedback::WAITING_FOR_SYSTEM,
         0.02F, 0.0, "Waiting for a fresh physical control state.");
-      wait_for_fresh_button_state(goal_handle, *control);
+      wait_for_fresh_button_state(
+        goal_handle, *control, operation_started_at);
       check_cancel(goal_handle);
       const auto initial_state = button_snapshot(*control);
       result->initial_position = initial_state.position;
+      for (const auto * ancestor : control_ancestors(*control)) {
+        wait_for_fresh_button_state(
+          goal_handle, *ancestor, operation_started_at);
+        expected_parent_states.emplace(
+          ancestor->id, button_snapshot(*ancestor).state_id);
+      }
       std::tie(target_position, target_state) = resolve_operation_target(
         *control, *goal_handle->get_goal(), initial_state);
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
@@ -1186,7 +1386,30 @@ private:
       const auto & staging_pose_in_planning_frame = is_button ?
         button_poses.staging_pose_in_planning_frame :
         rotary_poses.staging_pose_in_planning_frame;
+
+      move_group = std::make_shared<MoveGroupInterface>(
+        shared_from_this(), kArmGroup,
+        std::shared_ptr<tf2_ros::Buffer>(),
+        rclcpp::Duration::from_seconds(system_wait_timeout_));
+      {
+        std::lock_guard<std::mutex> lock(motion_mutex_);
+        active_move_group_ = move_group;
+      }
+      configure_move_group(*move_group);
+      if (!move_group->getCurrentState(system_wait_timeout_)) {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::NOT_READY,
+                "MoveIt did not receive the current robot state.");
+      }
+
       if (navigate) {
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::NAVIGATING,
+          0.05F, target_position,
+          "Returning the arm to its safe transport target.");
+        plan_and_execute_named_target(
+          *move_group, goal_handle, kArmStowTarget);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::NAVIGATING,
@@ -1202,21 +1425,6 @@ private:
           0.18F, target_position,
           "Refining the staging pose from odometry.");
         dock_to_staging_pose(goal_handle, staging_pose_in_planning_frame);
-      }
-
-      move_group = std::make_shared<MoveGroupInterface>(
-        shared_from_this(), kArmGroup,
-        std::shared_ptr<tf2_ros::Buffer>(),
-        rclcpp::Duration::from_seconds(system_wait_timeout_));
-      {
-        std::lock_guard<std::mutex> lock(motion_mutex_);
-        active_move_group_ = move_group;
-      }
-      configure_move_group(*move_group);
-      if (!move_group->getCurrentState(system_wait_timeout_)) {
-        throw GenericOperationError(
-                OperateCabinetControl::Result::NOT_READY,
-                "MoveIt did not receive the current robot state.");
       }
 
       if (is_button) {
@@ -1311,8 +1519,23 @@ private:
           "Attaching the probe at the verified near-distance grasp point.");
         set_control_grasp(goal_handle, control->id, true);
         grasp_attached = true;
+        double manipulation_position = target_position;
+        if (control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
+          std::abs(target_position - initial_state.position) >
+          target_tolerance_)
+        {
+          // The simulated door is an over-center, two-detent mechanism.  A
+          // full 90-degree tool arc exceeds the arm's continuous Cartesian
+          // workspace, while moving safely beyond the midpoint lets the
+          // physical detent spring complete the requested travel after
+          // release, just like a real cabinet door.
+          manipulation_position = initial_state.position +
+            door_release_fraction_ *
+            (target_position - initial_state.position);
+        }
         const auto waypoints = calculate_rotation_waypoints(
-          *control, initial_state.position, target_position);
+          *control, initial_state.position, manipulation_position);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MANIPULATING,
@@ -1324,28 +1547,56 @@ private:
           cartesian_acceleration_scale_ * 0.5);
         publish_operate_feedback(
           goal_handle,
-          OperateCabinetControl::Feedback::VERIFYING,
-          0.80F, target_position,
-          "Verifying target position and low-velocity stability.");
-        wait_for_target_stable(
-          goal_handle, *control, target_position, target_state);
+          OperateCabinetControl::Feedback::MANIPULATING,
+          0.74F, target_position,
+          "Holding the target detent briefly before grasp release.");
+        interruptible_hold(goal_handle, grasp_release_settle_duration_);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::RELEASING,
-          0.88F, target_position, "Releasing the physical grasp.");
+          0.78F, target_position,
+          control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ?
+          "Releasing the door beyond its physical detent midpoint." :
+          "Releasing the physical grasp at the requested detent.");
         set_control_grasp(goal_handle, control->id, false);
         grasp_attached = false;
+        const auto released_at = std::chrono::steady_clock::now();
         const auto target_ready = calculate_rotary_tool_pose(
-          *control, target_position, prepress_distance_);
+          *control, manipulation_position, prepress_distance_, false);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::RETREATING,
-          0.94F, target_position, "Retreating from the operated control.");
+          0.84F, target_position,
+          "Retreating before verifying the released control.");
         execute_cartesian_path(
           *move_group, goal_handle, {target_ready},
           cartesian_velocity_scale_, cartesian_acceleration_scale_);
         should_attempt_retreat = false;
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::VERIFYING,
+          0.90F, target_position,
+          "Waiting for articulated parent controls to settle.");
+        wait_for_parent_controls_stable(
+          goal_handle, *control, expected_parent_states);
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::VERIFYING,
+          0.94F, target_position,
+          "Verifying target position and low-velocity stability after "
+          "release.");
+        wait_for_target_stable(
+          goal_handle, *control, target_position, target_state, released_at);
       }
+
+      publish_operate_feedback(
+        goal_handle,
+        OperateCabinetControl::Feedback::RETREATING,
+        0.98F, target_position,
+        "Returning the arm to its safe transport target.");
+      plan_and_execute_named_target(
+        *move_group, goal_handle, kArmStowTarget);
 
       const auto final_state = button_snapshot(*control);
       result->success = true;
@@ -1354,20 +1605,20 @@ private:
       result->final_position = final_state.position;
       result->peak_position = final_state.max_position;
       result->final_state = final_state.state_id;
-      finish_operate_goal_noexcept(goal_handle, result, true);
+      request_success = true;
     } catch (const GenericOperationError & error) {
       result->success = false;
       result->error_code = error.error_code;
       result->message = error.what();
-      finish_failed_operate_goal(
-        goal_handle, result, control, move_group, should_attempt_retreat,
+      recover_failed_operate_goal(
+        result, control, move_group, should_attempt_retreat,
         grasp_attached, is_operate_goal_canceling(goal_handle));
     } catch (const OperationError & error) {
       result->success = false;
       result->error_code = map_legacy_error_code(error.error_code);
       result->message = error.what();
-      finish_failed_operate_goal(
-        goal_handle, result, control, move_group, should_attempt_retreat,
+      recover_failed_operate_goal(
+        result, control, move_group, should_attempt_retreat,
         grasp_attached, is_operate_goal_canceling(goal_handle));
     } catch (const std::exception & error) {
       result->success = false;
@@ -1377,15 +1628,15 @@ private:
       result->message = is_operate_goal_canceling(goal_handle) ?
         "Cabinet operation was canceled." :
         std::string("Cabinet operation failed: ") + error.what();
-      finish_failed_operate_goal(
-        goal_handle, result, control, move_group, should_attempt_retreat,
+      recover_failed_operate_goal(
+        result, control, move_group, should_attempt_retreat,
         grasp_attached, is_operate_goal_canceling(goal_handle));
     } catch (...) {
       result->success = false;
       result->error_code = OperateCabinetControl::Result::INTERNAL_ERROR;
       result->message = "Cabinet operation failed with an unknown error.";
-      finish_failed_operate_goal(
-        goal_handle, result, control, move_group, should_attempt_retreat,
+      recover_failed_operate_goal(
+        result, control, move_group, should_attempt_retreat,
         grasp_attached, is_operate_goal_canceling(goal_handle));
     }
 
@@ -1396,8 +1647,10 @@ private:
       std::lock_guard<std::mutex> lock(motion_mutex_);
       active_move_group_.reset();
     }
-    operation_active_.store(false);
     publish_active_control("");
+    finish_operate_goal_noexcept(goal_handle, result, request_success);
+    clear_active_goal(ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+    operation_active_.store(false);
   }
 
   std::pair<double, std::string> resolve_operation_target(
@@ -1507,7 +1760,7 @@ private:
       rotation, tf2::Vector3(cabinet_x_, cabinet_y_, cabinet_z_));
   }
 
-  tf2::Transform resolve_control_parent_transform(
+  std::vector<const ButtonSpec *> control_ancestors(
     const ButtonSpec & control) const
   {
     std::vector<const ButtonSpec *> ancestors;
@@ -1524,6 +1777,14 @@ private:
       parent_id = iterator->second->parent_control_id;
     }
     std::reverse(ancestors.begin(), ancestors.end());
+    return ancestors;
+  }
+
+  tf2::Transform resolve_control_parent_transform(
+    const ButtonSpec & control,
+    bool require_stable = true) const
+  {
+    const auto ancestors = control_ancestors(control);
 
     tf2::Transform result;
     result.setIdentity();
@@ -1539,8 +1800,9 @@ private:
                 "Parent control '" + ancestor->id +
                 "' does not have a fresh valid physical state.");
       }
-      if (state.in_motion ||
-        std::abs(state.velocity) > target_velocity_tolerance_)
+      if (require_stable &&
+        (state.in_motion ||
+        std::abs(state.velocity) > stable_velocity_tolerance_))
       {
         throw GenericOperationError(
                 OperateCabinetControl::Result::NOT_READY,
@@ -1562,9 +1824,11 @@ private:
   }
 
   ResolvedControlGeometry resolve_control_geometry(
-    const ButtonSpec & control) const
+    const ButtonSpec & control,
+    bool require_stable_parent = true) const
   {
-    const tf2::Transform parent = resolve_control_parent_transform(control);
+    const tf2::Transform parent = resolve_control_parent_transform(
+      control, require_stable_parent);
     ResolvedControlGeometry geometry{
       parent * tf2::Vector3(
         control.local_x, control.local_y, control.local_z),
@@ -1603,10 +1867,12 @@ private:
   geometry_msgs::msg::Pose calculate_rotary_tool_pose(
     const ButtonSpec & control,
     double position,
-    double outward_offset)
+    double outward_offset,
+    bool require_stable_parent = true)
   {
     const tf2::Transform cabinet = resolve_cabinet_transform();
-    const auto geometry = resolve_control_geometry(control);
+    const auto geometry = resolve_control_geometry(
+      control, require_stable_parent);
     tf2::Quaternion local_rotation;
     local_rotation.setRotation(geometry.axis, position);
     local_rotation.normalize();
@@ -1645,7 +1911,8 @@ private:
     RotaryOperationPoses poses;
     poses.ready_pose = calculate_rotary_tool_pose(
       control, position, prepress_distance_);
-    poses.grasp_pose = calculate_rotary_tool_pose(control, position, 0.0);
+    poses.grasp_pose = calculate_rotary_tool_pose(
+      control, position, control.grasp_outward_offset);
     if (!include_staging_pose) {
       return poses;
     }
@@ -1712,7 +1979,8 @@ private:
       const double ratio = static_cast<double>(index) /
         static_cast<double>(count);
       waypoints.push_back(calculate_rotary_tool_pose(
-        control, initial_position + travel * ratio, 0.0));
+        control, initial_position + travel * ratio,
+        control.grasp_outward_offset));
     }
     return waypoints;
   }
@@ -1762,24 +2030,43 @@ private:
   void release_control_grasp_noexcept(const std::string & control_id) noexcept
   {
     try {
-      if (!grasp_client_->service_is_ready()) {
+      if (!grasp_client_->wait_for_service(1s)) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Emergency grasp release service is unavailable for '%s'.",
+          control_id.c_str());
         return;
       }
-      auto request = std::make_shared<
-        xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
-      request->control_id = control_id;
-      request->robot_model = kRobotModelName;
-      request->robot_link = kContactToolLink;
-      request->attach = false;
-      auto future = grasp_client_->async_send_request(request);
-      if (future.wait_for(2s) == std::future_status::ready) {
-        const auto response = future.get();
-        if (!response->success) {
+      constexpr int kReleaseAttempts = 2;
+      for (int attempt = 1; attempt <= kReleaseAttempts; ++attempt) {
+        auto request = std::make_shared<
+          xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
+        request->control_id = control_id;
+        request->robot_model = kRobotModelName;
+        request->robot_link = kContactToolLink;
+        request->attach = false;
+        auto future = grasp_client_->async_send_request(request);
+        if (future.wait_for(2s) != std::future_status::ready) {
           RCLCPP_ERROR(
-            get_logger(), "Emergency grasp release failed: %s",
-            response->message.c_str());
+            get_logger(),
+            "Emergency grasp release timed out for '%s' (attempt %d/%d).",
+            control_id.c_str(), attempt, kReleaseAttempts);
+          continue;
         }
+        const auto response = future.get();
+        if (response->success) {
+          return;
+        }
+        RCLCPP_ERROR(
+          get_logger(),
+          "Emergency grasp release failed for '%s' (attempt %d/%d): %s",
+          control_id.c_str(), attempt, kReleaseAttempts,
+          response->message.c_str());
       }
+      RCLCPP_ERROR(
+        get_logger(),
+        "Emergency grasp release exhausted all attempts for '%s'.",
+        control_id.c_str());
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
         get_logger(), "Emergency grasp release failed: %s", error.what());
@@ -1787,14 +2074,79 @@ private:
   }
 
   template<typename GoalHandleT>
+  void wait_for_parent_controls_stable(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    const std::unordered_map<std::string, std::string> & expected_states)
+  {
+    const auto ancestors = control_ancestors(control);
+    if (ancestors.empty()) {
+      return;
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    auto stable_since = std::chrono::steady_clock::time_point{};
+    while (std::chrono::steady_clock::now() < deadline) {
+      check_cancel(goal_handle);
+      const auto now = std::chrono::steady_clock::now();
+      bool all_stable = true;
+      auto oldest_sample = std::chrono::steady_clock::time_point::max();
+      for (const auto * ancestor : ancestors) {
+        const auto state = button_snapshot(*ancestor);
+        const auto expected = expected_states.find(ancestor->id);
+        const bool fresh = state.received && state.valid &&
+          std::chrono::duration<double>(now - state.received_at).count() <=
+          button_state_timeout_;
+        if (expected == expected_states.end()) {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::INTERNAL_ERROR,
+                  "Missing expected parent state for '" + ancestor->id +
+                  "'.");
+        }
+        if (!fresh || state.state_id != expected->second || state.in_motion ||
+          std::abs(state.velocity) > stable_velocity_tolerance_)
+        {
+          all_stable = false;
+          break;
+        }
+        oldest_sample = std::min(oldest_sample, state.received_at);
+      }
+      if (all_stable) {
+        if (stable_since == std::chrono::steady_clock::time_point{}) {
+          stable_since = oldest_sample;
+        }
+        if (std::chrono::duration<double>(
+            oldest_sample - stable_since).count() >=
+          stable_state_duration_)
+        {
+          return;
+        }
+      } else {
+        stable_since = std::chrono::steady_clock::time_point{};
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    throw GenericOperationError(
+            OperateCabinetControl::Result::NOT_READY,
+            "Parent controls for '" + control.id +
+            "' did not return to a stable physical detent.");
+  }
+
+  template<typename GoalHandleT>
   void wait_for_target_stable(
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const ButtonSpec & control,
     double target_position,
-    const std::string & target_state)
+    const std::string & target_state,
+    std::chrono::steady_clock::time_point minimum_received_at)
   {
+    const double settle_timeout =
+      control.control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ?
+      door_settle_timeout_ : system_wait_timeout_;
     const auto deadline = std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(system_wait_timeout_);
+      std::chrono::duration<double>(settle_timeout);
     auto stable_since = std::chrono::steady_clock::time_point{};
     while (std::chrono::steady_clock::now() < deadline) {
       check_cancel(goal_handle);
@@ -1803,19 +2155,21 @@ private:
         const auto now = std::chrono::steady_clock::now();
         const auto & state = control.runtime->state;
         const bool fresh = state.received && state.valid &&
+          state.received_at > minimum_received_at &&
           std::chrono::duration<double>(now - state.received_at).count() <=
           button_state_timeout_;
         const bool at_position = fresh &&
           std::abs(state.position - target_position) <= target_tolerance_;
         const bool state_matches = target_state.empty() ||
           state.state_id == target_state;
-        const bool stopped = std::abs(state.velocity) <=
-          stable_velocity_tolerance_;
+        const bool stopped = !state.in_motion &&
+          std::abs(state.velocity) <= stable_velocity_tolerance_;
         if (at_position && state_matches && stopped) {
           if (stable_since == std::chrono::steady_clock::time_point{}) {
-            stable_since = now;
+            stable_since = state.received_at;
           }
-          if (std::chrono::duration<double>(now - stable_since).count() >=
+          if (std::chrono::duration<double>(
+              state.received_at - stable_since).count() >=
             stable_state_duration_)
           {
             return;
@@ -1858,12 +2212,7 @@ private:
   bool is_operate_goal_canceling(
     const std::shared_ptr<OperateGoalHandle> & goal_handle) const noexcept
   {
-    try {
-      return cancel_requested_.load() ||
-        (goal_handle && goal_handle->is_canceling());
-    } catch (...) {
-      return cancel_requested_.load();
-    }
+    return goal_canceling_after_request(goal_handle);
   }
 
   bool finish_operate_goal_noexcept(
@@ -1873,9 +2222,11 @@ private:
   {
     try {
       if (!goal_handle || !goal_handle->is_active()) {
+        RCLCPP_WARN(
+          get_logger(), "Cabinet operation goal was already terminal.");
         return false;
       }
-      if (goal_handle->is_canceling()) {
+      if (is_operate_goal_canceling(goal_handle)) {
         result->success = false;
         result->error_code = OperateCabinetControl::Result::CANCELED;
         result->message = "Cabinet operation was canceled.";
@@ -1887,16 +2238,38 @@ private:
         return true;
       }
       goal_handle->abort(result);
+      return false;
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
         get_logger(), "Failed to finalize cabinet operation: %s",
         error.what());
+    } catch (...) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to finalize cabinet operation.");
+    }
+
+    // A cancel request can race the first terminal-state transition.
+    try {
+      if (goal_handle && goal_handle->is_active() &&
+        is_operate_goal_canceling(goal_handle))
+      {
+        result->success = false;
+        result->error_code = OperateCabinetControl::Result::CANCELED;
+        result->message = "Cabinet operation was canceled.";
+        goal_handle->canceled(result);
+      }
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to finalize the canceled cabinet operation: %s",
+        error.what());
+    } catch (...) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to finalize the canceled cabinet operation.");
     }
     return false;
   }
 
-  void finish_failed_operate_goal(
-    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+  void recover_failed_operate_goal(
     const std::shared_ptr<OperateCabinetControl::Result> & result,
     const std::shared_ptr<ButtonSpec> & control,
     const std::shared_ptr<MoveGroupInterface> & move_group,
@@ -1915,12 +2288,15 @@ private:
         const auto retreat_pose = is_button ?
           calculate_operation_poses(*control, false).prepress_pose :
           calculate_rotary_tool_pose(
-          *control, state.position, prepress_distance_);
+          *control, state.position, prepress_distance_, false);
         best_effort_retreat(*move_group, retreat_pose);
       } catch (const std::exception & error) {
         RCLCPP_ERROR(
           get_logger(), "Generic safety retreat failed: %s", error.what());
       }
+    }
+    if (move_group && rclcpp::ok()) {
+      best_effort_stow(*move_group);
     }
     if (control) {
       const auto final_state = button_snapshot(*control);
@@ -1933,7 +2309,6 @@ private:
       result->error_code = OperateCabinetControl::Result::CANCELED;
       result->message = "Cabinet operation was canceled.";
     }
-    finish_operate_goal_noexcept(goal_handle, result, false);
     RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
   }
 
@@ -2031,7 +2406,8 @@ private:
   template<typename GoalHandleT>
   void wait_for_fresh_button_state(
     const std::shared_ptr<GoalHandleT> & goal_handle,
-    const ButtonSpec & button)
+    const ButtonSpec & button,
+    std::chrono::steady_clock::time_point minimum_received_at)
   {
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(system_wait_timeout_);
@@ -2041,11 +2417,13 @@ private:
         std::unique_lock<std::mutex> lock(button.runtime->mutex);
         const auto now = std::chrono::steady_clock::now();
         const bool joint_state_fresh = button.runtime->state.received &&
+          button.runtime->state.received_at > minimum_received_at &&
           std::chrono::duration<double>(
           now - button.runtime->state.received_at).count() <=
           button_state_timeout_;
         const bool pressed_state_fresh =
           button.runtime->state.pressed_received &&
+          button.runtime->state.pressed_received_at > minimum_received_at &&
           std::chrono::duration<double>(
           now - button.runtime->state.pressed_received_at).count() <=
           button_state_timeout_;
@@ -2236,6 +2614,39 @@ private:
   }
 
   template<typename GoalHandleT>
+  void plan_and_execute_named_target(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const std::string & target_name)
+  {
+    check_cancel(goal_handle);
+    move_group.setStartStateToCurrentState();
+    if (!move_group.setNamedTarget(target_name)) {
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              "MoveIt does not contain the arm target '" + target_name +
+              "'.");
+    }
+
+    MoveGroupInterface::Plan plan;
+    if (move_group.plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              "MoveIt could not plan the arm to the safe '" + target_name +
+              "' target.");
+    }
+    check_cancel(goal_handle);
+    if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+      check_cancel(goal_handle);
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "MoveIt could not return the arm to the safe '" + target_name +
+              "' target.");
+    }
+    check_cancel(goal_handle);
+  }
+
+  template<typename GoalHandleT>
   void execute_cartesian_path(
     MoveGroupInterface & move_group,
     const std::shared_ptr<GoalHandleT> & goal_handle,
@@ -2339,6 +2750,30 @@ private:
     }
   }
 
+  void best_effort_stow(MoveGroupInterface & move_group) noexcept
+  {
+    try {
+      move_group.stop();
+      move_group.setStartStateToCurrentState();
+      if (!move_group.setNamedTarget(kArmStowTarget)) {
+        RCLCPP_ERROR(
+          get_logger(), "Safety target '%s' is not configured.",
+          kArmStowTarget);
+        return;
+      }
+      MoveGroupInterface::Plan plan;
+      if (move_group.plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(get_logger(), "Safety stow planning failed.");
+        return;
+      }
+      if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(get_logger(), "Safety stow execution failed.");
+      }
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(get_logger(), "Safety stow failed: %s", error.what());
+    }
+  }
+
   template<typename GoalHandleT>
   void navigate_to_staging_pose(
     const std::shared_ptr<GoalHandleT> & goal_handle,
@@ -2360,18 +2795,35 @@ private:
     const auto request_abandoned = std::make_shared<std::atomic<bool>>(false);
     const auto navigation_started =
       std::make_shared<std::atomic<bool>>(false);
+    const auto near_distance_since_ns =
+      std::make_shared<std::atomic<std::int64_t>>(0);
     const auto takeover_requested =
       std::make_shared<std::atomic<bool>>(false);
+    const auto stalled_takeover_requested =
+      std::make_shared<std::atomic<bool>>(false);
+    tf2::Quaternion target_navigation_rotation;
+    tf2::fromMsg(
+      staging_pose.pose.orientation, target_navigation_rotation);
+    const double target_navigation_yaw =
+      tf2::getYaw(target_navigation_rotation);
+    const std::string target_navigation_frame =
+      staging_pose.header.frame_id;
     options.goal_response_callback =
-      [this, request_abandoned](NavigationGoalHandle::SharedPtr goal_handle) {
+      [this, request_abandoned,
+        weak_goal = std::weak_ptr<GoalHandleT>(goal_handle)](
+        NavigationGoalHandle::SharedPtr goal_handle)
+      {
         if (!goal_handle) {
           return;
         }
-        bool must_cancel = false;
+        const auto operation_goal = weak_goal.lock();
+        const bool operation_should_stop =
+          !operation_goal || goal_should_stop(operation_goal);
+        bool must_cancel;
         {
           std::lock_guard<std::mutex> lock(navigation_mutex_);
           must_cancel = request_abandoned->load() ||
-            cancel_requested_.load();
+            operation_should_stop;
           if (!must_cancel) {
             active_navigation_goal_ = goal_handle;
           }
@@ -2382,26 +2834,70 @@ private:
       };
     options.feedback_callback =
       [this, weak_goal = std::weak_ptr<GoalHandleT>(goal_handle),
-        navigation_started, takeover_requested](
+        navigation_started, near_distance_since_ns, takeover_requested,
+        stalled_takeover_requested, target_navigation_yaw,
+        target_navigation_frame](
       NavigationGoalHandle::SharedPtr,
       const std::shared_ptr<const NavigateToPose::Feedback> feedback)
       {
         const double distance_remaining = feedback->distance_remaining;
-        if (std::isfinite(distance_remaining)) {
+        tf2::Quaternion current_navigation_rotation;
+        tf2::fromMsg(
+          feedback->current_pose.pose.orientation,
+          current_navigation_rotation);
+        const double quaternion_norm =
+          current_navigation_rotation.length2();
+        const bool feedback_pose_valid =
+          !target_navigation_frame.empty() &&
+          feedback->current_pose.header.frame_id == target_navigation_frame &&
+          std::isfinite(quaternion_norm) && quaternion_norm > 1.0e-12;
+        double yaw_error = std::numeric_limits<double>::quiet_NaN();
+        if (feedback_pose_valid) {
+          current_navigation_rotation.normalize();
+          const double current_navigation_yaw =
+            tf2::getYaw(current_navigation_rotation);
+          yaw_error = std::atan2(
+            std::sin(target_navigation_yaw - current_navigation_yaw),
+            std::cos(target_navigation_yaw - current_navigation_yaw));
+        }
+        const auto feedback_now = std::chrono::steady_clock::now();
+        if (std::isfinite(distance_remaining) && std::isfinite(yaw_error)) {
           if (distance_remaining > navigation_takeover_distance_) {
             navigation_started->store(true);
-          } else if (navigation_started->load()) {
-            takeover_requested->store(true);
+            near_distance_since_ns->store(0);
+          } else {
+            const auto now_ns = std::chrono::duration_cast<
+              std::chrono::nanoseconds>(
+              feedback_now.time_since_epoch()).count();
+            auto first_near_ns = near_distance_since_ns->load();
+            if (first_near_ns == 0) {
+              if (near_distance_since_ns->compare_exchange_strong(
+                  first_near_ns, now_ns))
+              {
+                first_near_ns = now_ns;
+              }
+            }
+            const double near_duration = static_cast<double>(
+              now_ns - first_near_ns) * 1.0e-9;
+            const bool yaw_ready = navigation_started->load() &&
+              std::abs(yaw_error) <= navigation_takeover_yaw_tolerance_;
+            const bool yaw_stalled =
+              near_duration >= navigation_takeover_stall_timeout_;
+            if (yaw_ready || yaw_stalled) {
+              stalled_takeover_requested->store(yaw_stalled && !yaw_ready);
+              takeover_requested->store(true);
+            }
           }
+        } else {
+          near_distance_since_ns->store(0);
         }
 
-        const auto now = std::chrono::steady_clock::now();
         {
           std::lock_guard<std::mutex> lock(navigation_feedback_mutex_);
-          if (now - last_navigation_feedback_ < 500ms) {
+          if (feedback_now - last_navigation_feedback_ < 500ms) {
             return;
           }
-          last_navigation_feedback_ = now;
+          last_navigation_feedback_ = feedback_now;
         }
         if (const auto operation_goal = weak_goal.lock()) {
           publish_feedback(
@@ -2409,7 +2905,12 @@ private:
             PressCabinetButton::Feedback::NAVIGATING,
             0.12F,
             "Nav2 distance remaining: " +
-            std::to_string(distance_remaining) + " m.");
+            std::to_string(distance_remaining) + " m, yaw: " +
+            (std::isfinite(yaw_error) ?
+            std::to_string(std::abs(yaw_error)) : "unavailable") +
+            " rad." +
+            (stalled_takeover_requested->load() ?
+            " Safe-distance yaw stall detected; taking over." : ""));
         }
       };
     auto goal_future = navigation_client_->async_send_goal(
@@ -2433,10 +2934,10 @@ private:
               "Nav2 rejected the cabinet staging goal.");
     }
     bool must_cancel_navigation = false;
+    const bool operation_should_stop = goal_should_stop(goal_handle);
     {
       std::lock_guard<std::mutex> lock(navigation_mutex_);
-      must_cancel_navigation = cancel_requested_.load() ||
-        goal_handle->is_canceling();
+      must_cancel_navigation = operation_should_stop;
       if (!must_cancel_navigation) {
         active_navigation_goal_ = navigation_goal_handle;
       }
@@ -2495,6 +2996,9 @@ private:
         goal_handle,
         PressCabinetButton::Feedback::NAVIGATING,
         0.16F,
+        stalled_takeover_requested->load() ?
+        "Nav2 reached the safe staging distance but its terminal yaw "
+        "stalled; switching to odometry docking." :
         "Nav2 coarse staging complete; switching to odometry docking.");
       return;
     }
@@ -2677,9 +3181,7 @@ private:
   void check_cancel(
     const std::shared_ptr<GoalHandleT> & goal_handle) const
   {
-    if (cancel_requested_.load() || goal_handle->is_canceling() ||
-      !rclcpp::ok())
-    {
+    if (goal_should_stop(goal_handle)) {
       throw OperationError(
               PressCabinetButton::Result::CANCELED,
               "Cabinet button operation was canceled.");
@@ -2689,17 +3191,7 @@ private:
   bool is_goal_canceling_noexcept(
     const std::shared_ptr<PressGoalHandle> & goal_handle) const noexcept
   {
-    try {
-      return goal_handle && goal_handle->is_canceling();
-    } catch (const std::exception & error) {
-      RCLCPP_ERROR(
-        get_logger(), "Could not read the action cancel state: %s",
-        error.what());
-    } catch (...) {
-      RCLCPP_ERROR(
-        get_logger(), "Could not read the action cancel state.");
-    }
-    return false;
+    return goal_canceling_after_request(goal_handle);
   }
 
   bool finish_goal_noexcept(
@@ -2713,7 +3205,7 @@ private:
           get_logger(), "Action goal was already in a terminal state.");
         return false;
       }
-      if (goal_handle->is_canceling()) {
+      if (is_goal_canceling_noexcept(goal_handle)) {
         result->success = false;
         result->error_code = PressCabinetButton::Result::CANCELED;
         result->message = "Cabinet button operation was canceled.";
@@ -2738,7 +3230,7 @@ private:
     // A cancel request may race the first terminal-state transition.
     try {
       if (goal_handle && goal_handle->is_active() &&
-        goal_handle->is_canceling())
+        is_goal_canceling_noexcept(goal_handle))
       {
         result->success = false;
         result->error_code = PressCabinetButton::Result::CANCELED;
@@ -2909,7 +3401,11 @@ private:
   std::mutex worker_mutex_;
   std::thread worker_thread_;
   std::atomic<bool> operation_active_{false};
+  mutable std::mutex active_goal_mutex_;
+  ActiveGoalType active_goal_type_{ActiveGoalType::NONE};
+  rclcpp_action::GoalUUID active_goal_id_{};
   std::atomic<bool> cancel_requested_{false};
+  std::atomic<bool> shutdown_requested_{false};
 
   std::string planning_frame_;
   std::string navigation_frame_;
@@ -2921,19 +3417,22 @@ private:
   double cabinet_pitch_{0.0};
   double cabinet_yaw_{-1.57079632679};
   double tool_tip_offset_{0.370};
-  double staging_distance_{1.040};
+  double staging_distance_{0.930};
   double prepress_distance_{0.060};
+  double grasp_outward_offset_{0.020};
   double contact_clearance_{0.001};
   double press_depth_{0.007};
   double button_state_timeout_{1.0};
   double system_wait_timeout_{15.0};
   double navigation_timeout_{120.0};
   double navigation_takeover_distance_{0.15};
-  double docking_timeout_{20.0};
+  double navigation_takeover_yaw_tolerance_{0.35};
+  double navigation_takeover_stall_timeout_{4.0};
+  double docking_timeout_{45.0};
   double docking_position_tolerance_{0.015};
   double docking_yaw_tolerance_{0.10};
   double docking_max_linear_speed_{0.15};
-  double docking_max_angular_speed_{0.30};
+  double docking_max_angular_speed_{0.45};
   double docking_linear_gain_{0.8};
   double docking_angular_gain_{1.2};
   double base_link_yaw_offset_{1.57079632679};
@@ -2943,6 +3442,9 @@ private:
   double target_tolerance_{0.035};
   double stable_velocity_tolerance_{0.03};
   double stable_state_duration_{0.30};
+  double grasp_release_settle_duration_{0.30};
+  double door_release_fraction_{0.60};
+  double door_settle_timeout_{45.0};
   double planning_scene_settle_seconds_{0.50};
   double rotation_waypoint_step_{0.03490658504};
   double cartesian_velocity_scale_{0.08};

@@ -114,34 +114,48 @@
         </geometry>
       </collision>
 
+      <!--
+        Keep the switch base rigid by making it part of the door link.  A
+        separate dynamic link joined with a Gazebo fixed constraint can
+        accumulate solver error while the probe creates a cross-model grasp
+        constraint, permanently displacing the switch after an operation.
+      -->
+      <visual name="cabinet_switch_base_visual">
+        <origin xyz="0.342 1.680 -0.018" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/cabinet_switch_base.stl" />
+        </geometry>
+        <material name="cabinet_light_gray" />
+      </visual>
+      <collision name="cabinet_switch_base_collision">
+        <origin xyz="0.342 1.680 -0.008" rpy="0 0 0" />
+        <geometry><cylinder radius="0.005" length="0.020" /></geometry>
+      </collision>
+
       <!-- Native U-shaped handle on the free edge of the rear door. -->
       <visual name="cabinet_door_handle_lower_visual">
         <origin xyz="0.600 1.035 -0.045" rpy="0 0 0" />
         <geometry><box size="0.025 0.025 0.070" /></geometry>
         <material name="cabinet_black" />
       </visual>
-      <collision name="cabinet_door_handle_lower_collision">
-        <origin xyz="0.600 1.035 -0.045" rpy="0 0 0" />
-        <geometry><box size="0.025 0.025 0.070" /></geometry>
-      </collision>
       <visual name="cabinet_door_handle_upper_visual">
         <origin xyz="0.600 1.175 -0.045" rpy="0 0 0" />
         <geometry><box size="0.025 0.025 0.070" /></geometry>
         <material name="cabinet_black" />
       </visual>
-      <collision name="cabinet_door_handle_upper_collision">
-        <origin xyz="0.600 1.175 -0.045" rpy="0 0 0" />
-        <geometry><box size="0.025 0.025 0.070" /></geometry>
-      </collision>
       <visual name="cabinet_door_handle_grip_visual">
         <origin xyz="0.600 1.105 -0.080" rpy="0 0 0" />
         <geometry><box size="0.025 0.165 0.025" /></geometry>
         <material name="cabinet_black" />
       </visual>
-      <collision name="cabinet_door_handle_grip_collision">
-        <origin xyz="0.600 1.105 -0.080" rpy="0 0 0" />
-        <geometry><box size="0.025 0.165 0.025" /></geometry>
-      </collision>
+      <!--
+        Grasping is enforced by the cabinet plugin's near-distance fixed
+        constraint.  Keeping decorative handle contacts enabled makes ODE
+        strike the probe again immediately after constraint release and can
+        throw the large door across its detent.  The door panel remains a
+        physical collision, while MoveIt still models all handle pieces for
+        conservative avoidance when the door is not the active target.
+      -->
     </link>
     <joint name="cabinet_body_cabinet_rear_door" type="revolute">
       <origin xyz="0.010 0.010 -0.600" rpy="0 0 0" />

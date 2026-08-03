@@ -27,6 +27,7 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool
@@ -80,6 +81,7 @@ class RosControlNode(Node):
         OperateCabinetControl.Goal.COMMAND_SET_POSITION: 4,
         OperateCabinetControl.Goal.COMMAND_TOGGLE: 8,
     }
+    CABINET_DETENT_TOLERANCE = 0.035
     DEFAULT_CABINET_CONTROL = {
         "control_id": CABINET_BUTTON_ID,
         "display_name": "10 号模块红色按钮",
@@ -104,6 +106,7 @@ class RosControlNode(Node):
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     JOINT_NAMES = [
+        "body_arm_lift",
         "body_arm1",
         "arm1_arm2",
         "arm2_arm3",
@@ -115,6 +118,7 @@ class RosControlNode(Node):
     ]
     NAMED_TARGETS = {
         ("manipulator", "home"): {
+            "body_arm_lift": 0.0,
             "body_arm1": 0.0,
             "arm1_arm2": 0.0,
             "arm2_arm3": 0.0,
@@ -400,16 +404,35 @@ class RosControlNode(Node):
 
     def set_joint_target(self, positions: List[float]) -> List[float]:
         """Queue one legacy manual joint target."""
-        safe_positions = [
-            max(-2.80, min(2.80, value))
-            for value in positions[:6]
-        ]
-        safe_positions.append(max(0.0, min(0.35, positions[6])))
-        safe_positions.append(max(-0.35, min(0.0, positions[7])))
+        if len(positions) == 9:
+            joint_names = list(self.JOINT_NAMES)
+            safe_positions = [max(0.0, min(0.85, positions[0]))]
+            safe_positions.extend(
+                max(-2.80, min(2.80, value))
+                for value in positions[1:7]
+            )
+            safe_positions.append(max(0.0, min(0.35, positions[7])))
+            safe_positions.append(max(-0.35, min(0.0, positions[8])))
+        elif len(positions) == 8:
+            # Backward-compatible six-axis command.  ros2_control keeps the
+            # current lift height because partial arm goals are enabled.
+            joint_names = list(self.JOINT_NAMES[1:7]) + list(
+                self.JOINT_NAMES[7:]
+            )
+            safe_positions = [
+                max(-2.80, min(2.80, value))
+                for value in positions[:6]
+            ]
+            safe_positions.append(max(0.0, min(0.35, positions[6])))
+            safe_positions.append(max(-0.35, min(0.0, positions[7])))
+        else:
+            raise ControlRequestError(
+                "positions must contain 8 legacy or 9 lift-aware values."
+            )
 
         trajectory = JointTrajectory()
         trajectory.header.frame_id = "world"
-        trajectory.joint_names = list(self.JOINT_NAMES)
+        trajectory.joint_names = joint_names
         point = JointTrajectoryPoint()
         point.positions = safe_positions
         # Give the controller a 0.5 s window to reach the target so it
@@ -2926,7 +2949,7 @@ class RosControlNode(Node):
                         selected_topic,
                         message,
                     ),
-                    10,
+                    qos_profile_sensor_data,
                 )
             if pressed_topic:
                 subscriptions["pressed"] = self.create_subscription(
@@ -3270,6 +3293,19 @@ class RosControlNode(Node):
                     "target_position is outside the control range "
                     f"[{min_position}, {max_position}]."
                 )
+            if command_code == OperateCabinetControl.Goal.COMMAND_SET_POSITION:
+                state_positions = [
+                    float(value)
+                    for value in control.get("state_positions", [])
+                ]
+                if not state_positions or min(
+                    abs(target_position - preset)
+                    for preset in state_positions
+                ) > self.CABINET_DETENT_TOLERANCE:
+                    raise ControlRequestError(
+                        "target_position must match a configured physical "
+                        "detent. Use set_state for the listed states."
+                    )
         return control
 
     def _validate_cabinet_button_locked(self, button_id: str) -> None:

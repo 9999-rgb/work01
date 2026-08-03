@@ -209,6 +209,7 @@ xczs_cabinet_button_operator:
       cabinet_main_switch:
         type: switch
         display_name: "柜体总开关"
+        grasp_outward_offset: 0.012
         parent_control_id: cabinet_rear_door
         joint_name: cabinet_switch_base_cabinet_switch_handle
         pivot_position: [0.352, 1.690, -0.618]
@@ -224,6 +225,7 @@ xczs_cabinet_button_operator:
       cabinet_rear_door:
         type: door
         display_name: "控制柜后门"
+        grasp_outward_offset: 0.015
         joint_name: cabinet_body_cabinet_rear_door
         pivot_position: [0.010, 0.010, -0.600]
         local_position: [0.610, 1.115, -0.680]
@@ -255,10 +257,20 @@ xczs_cabinet_button_operator:
 
     # 操作与闭环容差。
     cabinet_frame: control_cabinet_frame
+    staging_distance: 0.930
+    grasp_outward_offset: 0.020
+    navigation_takeover_distance: 0.15
+    navigation_takeover_yaw_tolerance: 0.35
+    navigation_takeover_stall_timeout: 4.0
+    docking_timeout: 45.0
+    docking_max_angular_speed: 0.45
     state_timeout: 1.0
     target_tolerance: 0.035
     stable_velocity_tolerance: 0.03
     stable_state_duration: 0.30
+    grasp_release_settle_duration: 0.30
+    door_release_fraction: 0.60
+    door_settle_timeout: 45.0
     planning_scene_settle_seconds: 0.50
     rotation_waypoint_step: 0.03490658504
     grasp_service: /xczs/cabinet/grasp

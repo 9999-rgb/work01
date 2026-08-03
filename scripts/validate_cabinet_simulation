@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional
 
 import rclpy
 from rclpy.action import ActionClient
@@ -15,6 +16,11 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from action_msgs.msg import GoalStatus
+from moveit_msgs.msg import PlanningSceneComponents
+from moveit_msgs.srv import GetPlanningScene
+from std_msgs.msg import String
+from std_srvs.srv import Trigger
 from xczs_inspection_robot_control.action import OperateCabinetControl
 from xczs_inspection_robot_control.msg import CabinetControl
 from xczs_inspection_robot_control.msg import CabinetControlCatalog
@@ -34,6 +40,7 @@ class Operation:
     control_id: str
     command: int
     target_state: str = ""
+    target_position: Optional[float] = None
 
 
 class CabinetValidator(Node):
@@ -48,6 +55,9 @@ class CabinetValidator(Node):
         )
         self.catalog: Optional[CabinetControlCatalog] = None
         self.states: Dict[str, CabinetControlState] = {}
+        self.state_received_at: Dict[str, float] = {}
+        self.active_control: Optional[str] = None
+        self.current_goal_handle: Optional[object] = None
         self._state_subscriptions = []
         self.create_subscription(
             CabinetControlCatalog,
@@ -59,6 +69,20 @@ class CabinetValidator(Node):
             self,
             OperateCabinetControl,
             "/xczs/operate_cabinet_control",
+        )
+        self.reset_client = self.create_client(
+            Trigger,
+            "/xczs/cabinet/reset_controls",
+        )
+        self.planning_scene_client = self.create_client(
+            GetPlanningScene,
+            "/get_planning_scene",
+        )
+        self.create_subscription(
+            String,
+            "/xczs/cabinet/active_control",
+            self._active_control_callback,
+            retained,
         )
         self._retained_qos = retained
 
@@ -82,8 +106,12 @@ class CabinetValidator(Node):
         control_id: str,
         state: CabinetControlState,
     ) -> None:
-        if state.control_id == control_id and state.valid:
+        if state.control_id == control_id:
             self.states[control_id] = state
+            self.state_received_at[control_id] = time.monotonic()
+
+    def _active_control_callback(self, message: String) -> None:
+        self.active_control = message.data
 
     def wait_for_catalog(self, timeout: float) -> CabinetControlCatalog:
         deadline = time.monotonic() + timeout
@@ -97,13 +125,277 @@ class CabinetValidator(Node):
         assert self.catalog is not None
         expected = {entry.control_id for entry in self.catalog.controls}
         deadline = time.monotonic() + timeout
-        while not expected.issubset(self.states) and time.monotonic() < deadline:
+        while time.monotonic() < deadline:
+            if all(self._fresh_valid_state(control_id) for control_id in expected):
+                return
             rclpy.spin_once(self, timeout_sec=0.1)
-        missing = sorted(expected - set(self.states))
-        if missing:
+        invalid = sorted(
+            control_id
+            for control_id in expected
+            if not self._fresh_valid_state(control_id)
+        )
+        raise RuntimeError(
+            "No fresh valid physical state for: " + ", ".join(invalid)
+        )
+
+    def _fresh_valid_state(
+        self,
+        control_id: str,
+        max_age: float = 1.0,
+    ) -> bool:
+        state = self.states.get(control_id)
+        received_at = self.state_received_at.get(control_id)
+        return bool(
+            state is not None
+            and state.valid
+            and received_at is not None
+            and time.monotonic() - received_at <= max_age
+            and math.isfinite(float(state.position))
+            and math.isfinite(float(state.velocity))
+            and math.isfinite(float(state.effort))
+        )
+
+    def _spin_until(self, predicate: Callable[[], bool], timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return True
+            rclpy.spin_once(self, timeout_sec=0.05)
+        return bool(predicate())
+
+    def _spin_until_stable(
+        self,
+        predicate: Callable[[], bool],
+        stable_duration: float,
+        timeout: float,
+    ) -> bool:
+        deadline = time.monotonic() + timeout
+        stable_since: Optional[float] = None
+        while time.monotonic() < deadline:
+            if predicate():
+                now = time.monotonic()
+                if stable_since is None:
+                    stable_since = now
+                elif now - stable_since >= stable_duration:
+                    return True
+            else:
+                stable_since = None
+            rclpy.spin_once(self, timeout_sec=0.05)
+        return False
+
+    def _expected_planning_scene_ids(
+        self,
+        active_control_id: Optional[str] = None,
+    ) -> set[str]:
+        assert self.catalog is not None
+        expected = {
+            f"cabinet_control_{control.control_id}"
+            for control in self.catalog.controls
+        }
+        expected.add("control_cabinet_frame")
+        if active_control_id:
+            expected.discard(f"cabinet_control_{active_control_id}")
+        return expected
+
+    def _planning_scene_ids(self, timeout: float) -> set[str]:
+        if not self.planning_scene_client.wait_for_service(
+            timeout_sec=min(timeout, 5.0)
+        ):
+            raise RuntimeError("MoveIt get_planning_scene service is unavailable.")
+        request = GetPlanningScene.Request()
+        request.components.components = (
+            PlanningSceneComponents.WORLD_OBJECT_NAMES
+        )
+        future = self.planning_scene_client.call_async(request)
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+        if not future.done() or future.result() is None:
+            raise RuntimeError("MoveIt planning-scene query timed out.")
+        return {
+            collision_object.id
+            for collision_object in future.result().scene.world.collision_objects
+        }
+
+    def verify_planning_scene(
+        self,
+        active_control_id: Optional[str],
+        timeout: float,
+    ) -> None:
+        expected = self._expected_planning_scene_ids(active_control_id)
+        deadline = time.monotonic() + timeout
+        actual: set[str] = set()
+        while time.monotonic() < deadline:
+            remaining = max(0.1, deadline - time.monotonic())
+            actual = self._planning_scene_ids(min(remaining, 2.0))
+            if actual == expected:
+                return
+            rclpy.spin_once(self, timeout_sec=0.05)
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise RuntimeError(
+            "MoveIt planning scene does not match the cabinet state; "
+            f"missing={missing}, unexpected={unexpected}."
+        )
+
+    def _cancel_and_wait(
+        self,
+        goal_handle: object,
+        result_future: object,
+        timeout: float,
+    ) -> object:
+        cancel_future = goal_handle.cancel_goal_async()
+        rclpy.spin_until_future_complete(
+            self,
+            cancel_future,
+            timeout_sec=min(timeout, 10.0),
+        )
+        if not cancel_future.done() or cancel_future.result() is None:
+            raise RuntimeError("Action cancellation was not acknowledged.")
+        rclpy.spin_until_future_complete(
+            self,
+            result_future,
+            timeout_sec=min(timeout, 30.0),
+        )
+        if not result_future.done() or result_future.result() is None:
+            raise RuntimeError("Canceled action did not reach a terminal state.")
+        wrapped = result_future.result()
+        self.current_goal_handle = None
+        if not self._spin_until(
+            lambda: self.active_control == "",
+            min(timeout, 10.0),
+        ):
             raise RuntimeError(
-                "No valid physical state for: " + ", ".join(missing)
+                "Canceled action did not clear the active-control target."
             )
+        return wrapped
+
+    def _cancel_after_validation_failure(
+        self,
+        goal_handle: object,
+        result_future: object,
+        timeout: float,
+        validation_error: Exception,
+    ) -> None:
+        try:
+            self._cancel_and_wait(goal_handle, result_future, timeout)
+        except Exception as cleanup_error:  # noqa: BLE001
+            raise RuntimeError(
+                f"{validation_error} Additionally, accepted-goal cleanup "
+                f"failed: {cleanup_error}"
+            ) from cleanup_error
+
+    def reset(self, timeout: float, expect_success: bool = True) -> str:
+        if not self.reset_client.wait_for_service(
+            timeout_sec=min(timeout, 10.0)
+        ):
+            raise RuntimeError("Cabinet reset service is unavailable.")
+        future = self.reset_client.call_async(Trigger.Request())
+        rclpy.spin_until_future_complete(self, future, timeout_sec=timeout)
+        if not future.done():
+            raise RuntimeError("Cabinet reset service timed out.")
+        response = future.result()
+        if response is None:
+            raise RuntimeError("Cabinet reset returned no response.")
+        if bool(response.success) != expect_success:
+            expectation = "success" if expect_success else "rejection"
+            raise RuntimeError(
+                f"Expected reset {expectation}, got: {response.message}"
+            )
+        return str(response.message)
+
+    @staticmethod
+    def _default_state(control: CabinetControl) -> tuple[str, float]:
+        state_ids = list(control.state_ids)
+        positions = list(control.state_positions)
+        desired = {
+            CabinetControl.TYPE_BUTTON: "released",
+            CabinetControl.TYPE_KNOB: "center",
+            CabinetControl.TYPE_SWITCH: "off",
+            CabinetControl.TYPE_DOOR: "closed",
+        }[control.control_type]
+        if desired not in state_ids:
+            raise RuntimeError(
+                f"{control.control_id} does not advertise default '{desired}'."
+            )
+        index = state_ids.index(desired)
+        return desired, float(positions[index])
+
+    def verify_defaults(self, timeout: float) -> None:
+        assert self.catalog is not None
+        expected = {
+            control.control_id: self._default_state(control)
+            for control in self.catalog.controls
+        }
+
+        def all_default() -> bool:
+            for control_id, (state_id, position) in expected.items():
+                state = self.states.get(control_id)
+                if (
+                    state is None
+                    or not self._fresh_valid_state(control_id)
+                    or state.state_id != state_id
+                    or state.in_motion
+                    or abs(float(state.position) - position) > 0.035
+                ):
+                    return False
+            return True
+
+        if not self._spin_until_stable(all_default, 0.30, timeout):
+            failures = []
+            for control_id, (state_id, position) in expected.items():
+                state = self.states.get(control_id)
+                actual = "missing" if state is None else (
+                    f"{state.state_id}@{float(state.position):.4f}, "
+                    f"valid={state.valid}, moving={state.in_motion}"
+                )
+                if (
+                    state is None
+                    or not self._fresh_valid_state(control_id)
+                    or state.state_id != state_id
+                    or state.in_motion
+                    or abs(float(state.position) - position) > 0.035
+                ):
+                    failures.append(
+                        f"{control_id}={actual}, expected {state_id}@{position:.4f}"
+                    )
+            raise RuntimeError(
+                "Controls did not reach reset defaults: " + "; ".join(failures)
+            )
+
+    @staticmethod
+    def _expected_target(
+        control: CabinetControl,
+        operation: Operation,
+        initial_state: CabinetControlState,
+    ) -> tuple[str, float]:
+        state_ids = list(control.state_ids)
+        positions = [float(value) for value in control.state_positions]
+        if control.control_type == CabinetControl.TYPE_BUTTON:
+            return "released", positions[0]
+        if operation.command == OperateCabinetControl.Goal.COMMAND_SET_STATE:
+            index = state_ids.index(operation.target_state)
+            return operation.target_state, positions[index]
+        if operation.command == OperateCabinetControl.Goal.COMMAND_SET_POSITION:
+            assert operation.target_position is not None
+            index = min(
+                range(len(positions)),
+                key=lambda candidate: abs(
+                    positions[candidate] - operation.target_position
+                ),
+            )
+            return state_ids[index], positions[index]
+        if operation.command == OperateCabinetControl.Goal.COMMAND_TOGGLE:
+            if initial_state.state_id in state_ids:
+                index = state_ids.index(initial_state.state_id)
+            else:
+                index = min(
+                    range(len(positions)),
+                    key=lambda candidate: abs(
+                        positions[candidate] - float(initial_state.position)
+                    ),
+                )
+            target_index = (index + 1) % len(state_ids)
+            return state_ids[target_index], positions[target_index]
+        raise RuntimeError("Cannot resolve the expected operation target.")
 
     def execute(
         self,
@@ -111,15 +403,38 @@ class CabinetValidator(Node):
         navigate: bool,
         timeout: float,
     ) -> str:
+        if self.current_goal_handle is not None:
+            raise RuntimeError(
+                "A previous accepted goal has not reached a terminal state."
+            )
         if not self.client.wait_for_server(timeout_sec=min(timeout, 15.0)):
             raise RuntimeError("Cabinet action server is unavailable.")
+
+        assert self.catalog is not None
+        controls = {
+            entry.control_id: entry for entry in self.catalog.controls
+        }
+        control = controls[operation.control_id]
+        initial_state = self.states.get(operation.control_id)
+        if initial_state is None or not self._fresh_valid_state(
+            operation.control_id
+        ):
+            raise RuntimeError(
+                "No fresh valid physical state before cabinet operation."
+            )
+        initial_sequence = int(initial_state.transition_sequence)
+        expected_state, expected_position = self._expected_target(
+            control,
+            operation,
+            initial_state,
+        )
 
         goal = OperateCabinetControl.Goal()
         goal.control_id = operation.control_id
         goal.command = operation.command
         goal.target_state = operation.target_state
-        goal.use_target_position = False
-        goal.target_position = 0.0
+        goal.use_target_position = operation.target_position is not None
+        goal.target_position = operation.target_position or 0.0
         goal.navigate_to_staging_pose = navigate
 
         last_feedback = {"at": 0.0}
@@ -134,7 +449,8 @@ class CabinetValidator(Node):
                 f"  phase={int(feedback.phase)} "
                 f"progress={float(feedback.progress):.0%} "
                 f"state={feedback.current_state or '-'} "
-                f"position={float(feedback.current_position):.4f}"
+                f"position={float(feedback.current_position):.4f} "
+                f"message={feedback.message}"
             )
 
         send_future = self.client.send_goal_async(
@@ -147,23 +463,333 @@ class CabinetValidator(Node):
         goal_handle = send_future.result()
         if goal_handle is None or not goal_handle.accepted:
             raise RuntimeError("Cabinet operator rejected the action goal.")
+        self.current_goal_handle = goal_handle
 
         result_future = goal_handle.get_result_async()
-        rclpy.spin_until_future_complete(
-            self,
-            result_future,
-            timeout_sec=timeout,
-        )
+        try:
+            if not self._spin_until(
+                lambda: self.active_control == operation.control_id,
+                min(timeout, 5.0),
+            ):
+                raise RuntimeError(
+                    "Active-control topic did not expose the accepted action."
+                )
+            self.verify_planning_scene(
+                operation.control_id,
+                min(timeout, 5.0),
+            )
+            rclpy.spin_until_future_complete(
+                self,
+                result_future,
+                timeout_sec=timeout,
+            )
+        except Exception as validation_error:  # noqa: BLE001
+            self._cancel_after_validation_failure(
+                goal_handle,
+                result_future,
+                timeout,
+                validation_error,
+            )
+            raise
         if not result_future.done():
-            goal_handle.cancel_goal_async()
-            raise RuntimeError("Cabinet operation timed out and was canceled.")
+            wrapped = self._cancel_and_wait(
+                goal_handle,
+                result_future,
+                timeout,
+            )
+            raise RuntimeError(
+                "Cabinet operation timed out; cancellation reached terminal "
+                f"status {int(wrapped.status)}."
+            )
         wrapped = result_future.result()
+        self.current_goal_handle = None
+        if wrapped is None or wrapped.status != GoalStatus.STATUS_SUCCEEDED:
+            status = "missing" if wrapped is None else int(wrapped.status)
+            details = ""
+            if wrapped is not None and wrapped.result is not None:
+                details = (
+                    f", error={int(wrapped.result.error_code)}: "
+                    f"{wrapped.result.message}"
+                )
+            raise RuntimeError(
+                "Action did not finish with SUCCEEDED status: "
+                f"{status}{details}."
+            )
         result = wrapped.result
         if not result.success or result.error_code != result.SUCCESS:
             raise RuntimeError(
                 f"error={int(result.error_code)}: {result.message}"
             )
+        if result.final_state != expected_state:
+            raise RuntimeError(
+                f"Action result final_state={result.final_state!r}, "
+                f"expected {expected_state!r}."
+            )
+        final_position = float(result.final_position)
+        peak_position = float(result.peak_position)
+        if not math.isfinite(final_position) or not math.isfinite(peak_position):
+            raise RuntimeError("Action result contains a non-finite position.")
+        if abs(final_position - expected_position) > 0.035:
+            raise RuntimeError(
+                f"Action result position={final_position:.4f}, "
+                f"expected {expected_position:.4f}."
+            )
+        if control.control_type == CabinetControl.TYPE_BUTTON and (
+            peak_position < float(control.state_positions[-1])
+        ):
+            raise RuntimeError(
+                "Button action reported success without reaching its physical "
+                "press threshold."
+            )
+
+        def physical_target_reached() -> bool:
+            state = self.states.get(operation.control_id)
+            if state is None:
+                return False
+            sequence_valid = True
+            if control.control_type == CabinetControl.TYPE_BUTTON:
+                sequence_valid = (
+                    int(state.transition_sequence) >= initial_sequence + 2
+                )
+            return (
+                self._fresh_valid_state(operation.control_id)
+                and state.state_id == expected_state
+                and not state.in_motion
+                and abs(float(state.position) - expected_position) <= 0.035
+                and sequence_valid
+            )
+
+        if not self._spin_until_stable(
+            physical_target_reached,
+            0.30,
+            min(timeout, 5.0),
+        ):
+            state = self.states.get(operation.control_id)
+            actual = "missing" if state is None else (
+                f"{state.state_id}@{float(state.position):.4f}, "
+                f"sequence={int(state.transition_sequence)}"
+            )
+            raise RuntimeError(
+                "Independent physical state did not confirm the action: " +
+                actual
+            )
+        if not self._spin_until(
+            lambda: self.active_control == "",
+            min(timeout, 5.0),
+        ):
+            raise RuntimeError(
+                "Action completed but the active-control target was not "
+                "cleared."
+            )
+        self.verify_planning_scene(None, min(timeout, 5.0))
         return str(result.message)
+
+    def verify_invalid_position_rejected(
+        self,
+        control: CabinetControl,
+        timeout: float,
+    ) -> None:
+        positions = sorted(float(value) for value in control.state_positions)
+        if len(positions) < 2:
+            raise RuntimeError("Need two detents for rejection validation.")
+        target = (positions[0] + positions[1]) / 2.0
+        if min(abs(target - value) for value in positions) <= 0.035:
+            target = positions[0] + 0.1 * (positions[1] - positions[0])
+        goal = OperateCabinetControl.Goal()
+        goal.control_id = control.control_id
+        goal.command = OperateCabinetControl.Goal.COMMAND_SET_POSITION
+        goal.target_position = target
+        goal.use_target_position = True
+        goal.navigate_to_staging_pose = False
+        send_future = self.client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future, timeout_sec=timeout)
+        if not send_future.done():
+            raise RuntimeError("Invalid-position rejection timed out.")
+        goal_handle = send_future.result()
+        if goal_handle is not None and goal_handle.accepted:
+            self.current_goal_handle = goal_handle
+            result_future = goal_handle.get_result_async()
+            self._cancel_and_wait(goal_handle, result_future, timeout)
+            raise RuntimeError(
+                "Action server accepted a non-detent SET_POSITION goal."
+            )
+
+    def verify_cancel_and_reset_interlock(
+        self,
+        control: CabinetControl,
+        navigate: bool,
+        timeout: float,
+    ) -> None:
+        state = self.states[control.control_id]
+        state_ids = list(control.state_ids)
+        current_index = (
+            state_ids.index(state.state_id)
+            if state.state_id in state_ids
+            else 0
+        )
+        target_index = (current_index + 1) % len(state_ids)
+        goal = OperateCabinetControl.Goal()
+        goal.control_id = control.control_id
+        goal.command = OperateCabinetControl.Goal.COMMAND_SET_STATE
+        goal.target_state = state_ids[target_index]
+        goal.navigate_to_staging_pose = navigate
+        phase = {"value": -1}
+
+        def feedback_callback(message: object) -> None:
+            phase["value"] = int(message.feedback.phase)
+
+        send_future = self.client.send_goal_async(
+            goal,
+            feedback_callback=feedback_callback,
+        )
+        rclpy.spin_until_future_complete(self, send_future, timeout_sec=timeout)
+        if not send_future.done():
+            raise RuntimeError("Cancellation test goal submission timed out.")
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            raise RuntimeError("Cancellation test goal was rejected.")
+        self.current_goal_handle = goal_handle
+        result_future = goal_handle.get_result_async()
+
+        try:
+            if not self._spin_until(
+                lambda: self.active_control == control.control_id,
+                min(timeout, 3.0),
+            ):
+                raise RuntimeError(
+                    "Active-control topic did not expose the goal."
+                )
+            self.verify_planning_scene(
+                control.control_id,
+                min(timeout, 5.0),
+            )
+            rejection = self.reset(timeout, expect_success=False)
+            if "active" not in rejection.lower():
+                raise RuntimeError(
+                    "Reset rejection did not report the active-operation "
+                    "interlock."
+                )
+
+            reached_manipulation = self._spin_until(
+                lambda: (
+                    phase["value"]
+                    == OperateCabinetControl.Feedback.MANIPULATING
+                    or result_future.done()
+                ),
+                timeout,
+            )
+            if (
+                not reached_manipulation
+                or result_future.done()
+                or phase["value"]
+                != OperateCabinetControl.Feedback.MANIPULATING
+            ):
+                raise RuntimeError(
+                    "Cancellation test did not reach the grasped "
+                    "manipulation phase."
+                )
+        except Exception as validation_error:  # noqa: BLE001
+            self._cancel_after_validation_failure(
+                goal_handle,
+                result_future,
+                timeout,
+                validation_error,
+            )
+            raise
+
+        wrapped = self._cancel_and_wait(
+            goal_handle,
+            result_future,
+            timeout,
+        )
+        if (
+            wrapped.status != GoalStatus.STATUS_CANCELED
+            or wrapped.result.error_code != wrapped.result.CANCELED
+            or wrapped.result.success
+        ):
+            raise RuntimeError(
+                "Canceled operation returned inconsistent action status/result."
+            )
+        self.verify_planning_scene(None, min(timeout, 5.0))
+
+    def verify_parented_switch(
+        self,
+        door: CabinetControl,
+        switch: CabinetControl,
+        navigate: bool,
+        timeout: float,
+    ) -> None:
+        sequence = [
+            Operation(
+                door.control_id,
+                OperateCabinetControl.Goal.COMMAND_SET_STATE,
+                target_state="open",
+            ),
+            Operation(
+                switch.control_id,
+                OperateCabinetControl.Goal.COMMAND_SET_STATE,
+                target_state="on",
+            ),
+            Operation(
+                switch.control_id,
+                OperateCabinetControl.Goal.COMMAND_SET_STATE,
+                target_state="off",
+            ),
+            Operation(
+                door.control_id,
+                OperateCabinetControl.Goal.COMMAND_SET_STATE,
+                target_state="closed",
+            ),
+        ]
+        for operation in sequence:
+            print(
+                "  parent-chain: "
+                f"{operation.control_id} -> {operation.target_state}"
+            )
+            print(
+                "    PASS: "
+                + self.execute(operation, navigate, timeout)
+            )
+
+    def best_effort_cleanup(
+        self,
+        timeout: float = 10.0,
+        reset_controls: bool = True,
+    ) -> None:
+        goal_handle = self.current_goal_handle
+        if goal_handle is not None:
+            try:
+                cancel_future = goal_handle.cancel_goal_async()
+                rclpy.spin_until_future_complete(
+                    self,
+                    cancel_future,
+                    timeout_sec=timeout,
+                )
+                result_future = goal_handle.get_result_async()
+                rclpy.spin_until_future_complete(
+                    self,
+                    result_future,
+                    timeout_sec=timeout,
+                )
+            except Exception as error:  # noqa: BLE001
+                print(
+                    f"Cleanup warning: could not cancel active goal: {error}",
+                    file=sys.stderr,
+                )
+            self.current_goal_handle = None
+        try:
+            if self.active_control:
+                self._spin_until(
+                    lambda: self.active_control == "",
+                    timeout,
+                )
+            if reset_controls and self.reset_client.service_is_ready():
+                self.reset(timeout)
+        except Exception as error:  # noqa: BLE001
+            print(
+                f"Cleanup warning: cabinet reset failed: {error}",
+                file=sys.stderr,
+            )
 
 
 def validate_catalog(catalog: CabinetControlCatalog) -> None:
@@ -219,7 +845,12 @@ def selected_controls(
 
 def operations_for(control: CabinetControl, exhaustive: bool) -> List[Operation]:
     if control.control_type == CabinetControl.TYPE_BUTTON:
-        return [Operation(control.control_id, OperateCabinetControl.Goal.COMMAND_PRESS)]
+        return [
+            Operation(
+                control.control_id,
+                OperateCabinetControl.Goal.COMMAND_PRESS,
+            )
+        ]
 
     states = list(control.state_ids)
     if control.control_type == CabinetControl.TYPE_KNOB:
@@ -263,6 +894,14 @@ def parse_arguments() -> argparse.Namespace:
         help="Validate catalog and physical state topics without moving.",
     )
     parser.add_argument(
+        "--contract-tests",
+        action="store_true",
+        help=(
+            "Also verify valid/invalid SET_POSITION, TOGGLE, cancellation, "
+            "active-target cleanup, reset and the reset/operation interlock."
+        ),
+    )
+    parser.add_argument(
         "--control",
         action="append",
         default=[],
@@ -293,10 +932,90 @@ def main() -> int:
             f"Cabinet inventory valid: {len(catalog.controls)} controls; "
             f"{len(node.states)} live physical states."
         )
+        node.verify_planning_scene(None, min(args.timeout, 10.0))
+        print("MoveIt planning scene valid: 34 cabinet collision objects.")
         if args.inventory_only:
             return 0
 
+        print("Resetting all controls to deterministic defaults...")
+        print(f"  PASS: {node.reset(args.timeout)}")
+        node.verify_defaults(min(args.timeout, 10.0))
+
+        if args.contract_tests:
+            knobs = [
+                entry
+                for entry in catalog.controls
+                if entry.control_type == CabinetControl.TYPE_KNOB
+            ]
+            doors = [
+                entry
+                for entry in catalog.controls
+                if entry.control_type == CabinetControl.TYPE_DOOR
+            ]
+            switches = [
+                entry
+                for entry in catalog.controls
+                if entry.control_type == CabinetControl.TYPE_SWITCH
+            ]
+            if not knobs or not doors or not switches:
+                raise RuntimeError(
+                    "Contract tests require a knob, switch and door."
+                )
+            knob = knobs[0]
+            print(f"[contract] reject non-detent position: {knob.control_id}")
+            node.verify_invalid_position_rejected(knob, args.timeout)
+            print("  PASS: invalid SET_POSITION rejected")
+            position = float(knob.state_positions[-1])
+            print(f"[contract] SET_POSITION: {knob.control_id} -> {position:.4f}")
+            print(
+                "  PASS: " + node.execute(
+                    Operation(
+                        knob.control_id,
+                        OperateCabinetControl.Goal.COMMAND_SET_POSITION,
+                        target_position=position,
+                    ),
+                    args.navigate,
+                    args.timeout,
+                )
+            )
+            print(f"[contract] TOGGLE: {knob.control_id}")
+            print(
+                "  PASS: " + node.execute(
+                    Operation(
+                        knob.control_id,
+                        OperateCabinetControl.Goal.COMMAND_TOGGLE,
+                    ),
+                    args.navigate,
+                    args.timeout,
+                )
+            )
+            print("[contract] cancellation and reset interlock")
+            node.verify_cancel_and_reset_interlock(
+                doors[0],
+                args.navigate,
+                args.timeout,
+            )
+            print("  PASS: cancel/interlock/active-target cleanup")
+            print(f"  PASS: {node.reset(args.timeout)}")
+            node.verify_defaults(min(args.timeout, 10.0))
+            print("[contract] articulated door -> parented switch chain")
+            node.verify_parented_switch(
+                doors[0],
+                switches[0],
+                args.navigate,
+                args.timeout,
+            )
+            print("  PASS: articulated parent geometry and operation chain")
+            print(f"  PASS: {node.reset(args.timeout)}")
+            node.verify_defaults(min(args.timeout, 10.0))
+
         for cycle in range(1, args.cycles + 1):
+            if cycle > 1:
+                print(
+                    f"Resetting controls before validation cycle {cycle}..."
+                )
+                print(f"  PASS: {node.reset(args.timeout)}")
+                node.verify_defaults(min(args.timeout, 10.0))
             for control in controls:
                 for operation in operations_for(control, args.exhaustive):
                     label = operation.target_state or "press"
@@ -318,6 +1037,9 @@ def main() -> int:
                         )
                         failures.append(failure)
                         print(f"  FAIL: {failure}", file=sys.stderr)
+        print("Returning all controls to deterministic defaults...")
+        print(f"  PASS: {node.reset(args.timeout)}")
+        node.verify_defaults(min(args.timeout, 10.0))
         print(f"Completed {completed} operations; failures={len(failures)}.")
         if failures:
             for failure in failures:
@@ -327,9 +1049,15 @@ def main() -> int:
     except Exception as error:  # noqa: BLE001
         print(f"Cabinet validation failed: {error}", file=sys.stderr)
         return 2
+    except KeyboardInterrupt:
+        print("Cabinet validation interrupted by the user.", file=sys.stderr)
+        return 130
     finally:
+        if rclpy.ok():
+            node.best_effort_cleanup(reset_controls=not args.inventory_only)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

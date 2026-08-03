@@ -13,6 +13,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <functional>
@@ -24,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -201,12 +203,42 @@ class CabinetStatePlugin final : public gazebo::ModelPlugin
 public:
   ~CabinetStatePlugin() override
   {
-    shutting_down_.store(true);
-    update_connection_.reset();
+    const auto callback_lifetime = callback_lifetime_;
+    if (callback_lifetime) {
+      std::lock_guard<std::mutex> lock(callback_lifetime->mutex);
+      callback_lifetime->shutting_down = true;
+    }
+
+    std::deque<std::shared_ptr<PhysicsRequest>> pending_requests;
+    {
+      std::lock_guard<std::mutex> lock(request_mutex_);
+      shutting_down_.store(true);
+      pending_requests.swap(requests_);
+    }
     reset_service_.reset();
     grasp_service_.reset();
-    fail_pending_requests("Cabinet state plugin is shutting down.");
-    release_grasp_constraint();
+    update_connection_.reset();
+    fail_requests(
+      pending_requests, "Cabinet state plugin is shutting down.");
+
+    // Disconnecting the event prevents new updates; this lock waits for an
+    // already-running physics callback before touching Gazebo objects.
+    {
+      std::lock_guard<std::mutex> physics_lock(physics_callback_mutex_);
+      const auto release = release_grasp_constraint();
+      if (!release.success && ros_node_) {
+        RCLCPP_ERROR(ros_node_->get_logger(), "%s", release.message.c_str());
+      }
+    }
+
+    if (callback_lifetime) {
+      std::unique_lock<std::mutex> lock(callback_lifetime->mutex);
+      callback_lifetime->condition.wait(
+        lock, [&callback_lifetime]() {
+          return callback_lifetime->active_callbacks == 0U;
+        });
+      callback_lifetime->owner = nullptr;
+    }
   }
 
   void Load(
@@ -223,7 +255,7 @@ public:
 
     try {
       const double publish_rate = optional_double(
-        sdf, "state_publish_rate", 50.0);
+        sdf, "state_publish_rate", 20.0);
       if (publish_rate <= 0.0) {
         throw std::invalid_argument(
                 "Cabinet state_publish_rate must be positive.");
@@ -248,24 +280,43 @@ public:
       return;
     }
 
+    callback_lifetime_ = std::make_shared<ServiceCallbackLifetime>();
+    callback_lifetime_->owner = this;
+    const auto callback_lifetime = callback_lifetime_;
     reset_service_ = ros_node_->create_service<std_srvs::srv::Trigger>(
       reset_service_name_,
-      [this](
+      [callback_lifetime](
         const std::shared_ptr<std_srvs::srv::Trigger::Request>,
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
       {
-        const auto outcome = submit_physics_request(
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          response->success = false;
+          response->message = "Cabinet state plugin is shutting down.";
+          return;
+        }
+        ServiceCallbackLease lease(callback_lifetime);
+        const auto outcome = owner->submit_physics_request(
           PhysicsRequest::Kind::kReset, {}, {}, {}, false);
         response->success = outcome.success;
         response->message = outcome.message;
       });
     grasp_service_ = ros_node_->create_service<SetCabinetGrasp>(
       grasp_service_name_,
-      [this](
+      [callback_lifetime](
         const std::shared_ptr<SetCabinetGrasp::Request> request,
         std::shared_ptr<SetCabinetGrasp::Response> response)
       {
-        const auto outcome = submit_physics_request(
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          response->success = false;
+          response->message = "Cabinet state plugin is shutting down.";
+          response->distance =
+            std::numeric_limits<double>::quiet_NaN();
+          return;
+        }
+        ServiceCallbackLease lease(callback_lifetime);
+        const auto outcome = owner->submit_physics_request(
           PhysicsRequest::Kind::kGrasp,
           request->control_id,
           request->robot_model,
@@ -285,7 +336,14 @@ public:
     last_publish_time_ = simulation_time;
 
     update_connection_ = gazebo::event::Events::ConnectWorldUpdateBegin(
-      std::bind(&CabinetStatePlugin::on_update, this));
+      [callback_lifetime](const gazebo::common::UpdateInfo &) {
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          return;
+        }
+        ServiceCallbackLease lease(callback_lifetime);
+        owner->on_update();
+      });
     RCLCPP_INFO(
       ros_node_->get_logger(),
       "Cabinet state plugin loaded %zu controls; reset=%s grasp=%s.",
@@ -298,7 +356,11 @@ public:
     if (controls_.empty()) {
       return;
     }
-    reset_controls();
+    std::lock_guard<std::mutex> physics_lock(physics_callback_mutex_);
+    const auto outcome = reset_controls();
+    if (!outcome.success && ros_node_) {
+      RCLCPP_ERROR(ros_node_->get_logger(), "%s", outcome.message.c_str());
+    }
     last_publish_time_ = world_->SimTime().Double();
   }
 
@@ -318,6 +380,7 @@ private:
     std::vector<std::string> state_ids;
     double stiffness{0.0};
     double damping{0.0};
+    double detent_hysteresis{0.0};
     double press_threshold{0.006};
     double release_threshold{0.003};
     double motion_tolerance{0.025};
@@ -325,6 +388,7 @@ private:
     bool graspable{false};
     ignition::math::Vector3d grasp_point{0.0, 0.0, 0.0};
     std::size_t reset_state_index{0U};
+    std::size_t detent_target_index{0U};
     std::size_t state_index{0U};
     std::string state_id;
     bool activated{false};
@@ -349,15 +413,59 @@ private:
   struct PhysicsRequest
   {
     enum class Kind {kReset, kGrasp};
+    enum class State {kPending, kExecuting, kCanceled, kCompleted};
     Kind kind{Kind::kReset};
     std::string control_id;
     std::string robot_model;
     std::string robot_link;
     bool attach{false};
     std::promise<PhysicsOutcome> promise;
-    std::atomic<bool> expired{false};
+    std::atomic<State> state{State::kPending};
     std::atomic<bool> completed{false};
   };
+
+  struct ServiceCallbackLifetime
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    CabinetStatePlugin * owner{nullptr};
+    std::size_t active_callbacks{0U};
+    bool shutting_down{false};
+  };
+
+  class ServiceCallbackLease
+  {
+  public:
+    explicit ServiceCallbackLease(
+      std::shared_ptr<ServiceCallbackLifetime> lifetime)
+    : lifetime_(std::move(lifetime)) {}
+
+    ServiceCallbackLease(const ServiceCallbackLease &) = delete;
+    ServiceCallbackLease & operator=(const ServiceCallbackLease &) = delete;
+
+    ~ServiceCallbackLease()
+    {
+      std::lock_guard<std::mutex> lock(lifetime_->mutex);
+      if (lifetime_->active_callbacks > 0U) {
+        --lifetime_->active_callbacks;
+      }
+      lifetime_->condition.notify_all();
+    }
+
+  private:
+    std::shared_ptr<ServiceCallbackLifetime> lifetime_;
+  };
+
+  static CabinetStatePlugin * acquire_service_callback(
+    const std::shared_ptr<ServiceCallbackLifetime> & lifetime)
+  {
+    std::lock_guard<std::mutex> lock(lifetime->mutex);
+    if (lifetime->shutting_down || !lifetime->owner) {
+      return nullptr;
+    }
+    ++lifetime->active_callbacks;
+    return lifetime->owner;
+  }
 
   void configure_controls(const sdf::ElementPtr & sdf)
   {
@@ -411,6 +519,26 @@ private:
                 "Cabinet control damping must be non-negative and motion "
                 "tolerance must be positive: " + control.id);
       }
+      const double lower = control.joint->LowerLimit(0);
+      const double upper = control.joint->UpperLimit(0);
+      if (control.reset_position < lower - 1.0e-6 ||
+        control.reset_position > upper + 1.0e-6)
+      {
+        throw std::invalid_argument(
+                "Cabinet reset position exceeds joint limits: " + control.id);
+      }
+      if (control.state_ids.empty() ||
+        std::any_of(
+          control.state_ids.begin(), control.state_ids.end(),
+          [](const std::string & value) {return value.empty();}) ||
+        std::unordered_set<std::string>(
+          control.state_ids.begin(), control.state_ids.end()).size() !=
+        control.state_ids.size())
+      {
+        throw std::invalid_argument(
+                "Cabinet state IDs must be non-empty and unique: " +
+                control.id);
+      }
       if (control.kind == ControlKind::kButton) {
         if (control.state_ids.size() != 2U) {
           throw std::invalid_argument(
@@ -439,17 +567,22 @@ private:
         control.detents = parse_doubles(required_text(element, "detents"));
         control.stiffness = optional_double(
           element, "detent_stiffness", 0.6);
+        control.detent_hysteresis = optional_double(
+          element, "detent_hysteresis", 0.0);
         if (control.detents.size() < 2U ||
           control.detents.size() != control.state_ids.size() ||
           !std::is_sorted(control.detents.begin(), control.detents.end()) ||
-          control.stiffness <= 0.0)
+          std::adjacent_find(
+            control.detents.begin(), control.detents.end(),
+            [](double left, double right) {
+              return std::abs(left - right) <= 1.0e-9;
+            }) != control.detents.end() ||
+          control.stiffness <= 0.0 || control.detent_hysteresis < 0.0)
         {
           throw std::invalid_argument(
                   "Invalid detent configuration for cabinet control: " +
                   control.id);
         }
-        const double lower = control.joint->LowerLimit(0);
-        const double upper = control.joint->UpperLimit(0);
         if (control.detents.front() < lower - 1.0e-6 ||
           control.detents.back() > upper + 1.0e-6)
         {
@@ -458,11 +591,30 @@ private:
         }
         control.reset_state_index = nearest_index(
           control.detents, control.reset_position);
+        control.detent_target_index = control.reset_state_index;
+        double minimum_detent_gap = std::numeric_limits<double>::infinity();
+        for (std::size_t index = 1U; index < control.detents.size(); ++index) {
+          minimum_detent_gap = std::min(
+            minimum_detent_gap,
+            control.detents[index] - control.detents[index - 1U]);
+        }
+        if (control.detent_hysteresis >= 0.5 * minimum_detent_gap) {
+          throw std::invalid_argument(
+                  "Cabinet detent hysteresis must be smaller than half the "
+                  "minimum detent spacing: " + control.id);
+        }
+        if (std::abs(
+            control.detents[control.reset_state_index] -
+            control.reset_position) > 1.0e-6)
+        {
+          throw std::invalid_argument(
+                  "Cabinet reset position must match a detent: " + control.id);
+        }
       }
 
       control.joint_state_publisher =
         ros_node_->create_publisher<sensor_msgs::msg::JointState>(
-        control.joint_state_topic, rclcpp::QoS(10).reliable());
+        control.joint_state_topic, rclcpp::SensorDataQoS());
       control.pressed_publisher =
         ros_node_->create_publisher<std_msgs::msg::Bool>(
         control.pressed_topic, state_qos);
@@ -478,12 +630,45 @@ private:
 
   void on_update()
   {
+    std::lock_guard<std::mutex> physics_lock(physics_callback_mutex_);
+    if (shutting_down_.load()) {
+      return;
+    }
     process_physics_requests();
     for (auto & control : controls_) {
       const double raw_position = control.joint->Position(0);
       const double velocity = control.joint->GetVelocity(0);
-      const double target = control.kind == ControlKind::kButton ?
-        0.0 : control.detents[nearest_index(control.detents, raw_position)];
+      double target = 0.0;
+      if (control.kind != ControlKind::kButton) {
+        const bool latched_control_is_being_grasped =
+          control.detent_hysteresis > 0.0 && grasp_joint_ &&
+          active_grasp_control_ == control.id;
+        if (control.detent_hysteresis == 0.0 ||
+          latched_control_is_being_grasped)
+        {
+          while (control.detent_target_index + 1U < control.detents.size()) {
+            const double boundary = 0.5 * (
+              control.detents[control.detent_target_index] +
+              control.detents[control.detent_target_index + 1U]) +
+              control.detent_hysteresis;
+            if (raw_position <= boundary) {
+              break;
+            }
+            ++control.detent_target_index;
+          }
+          while (control.detent_target_index > 0U) {
+            const double boundary = 0.5 * (
+              control.detents[control.detent_target_index - 1U] +
+              control.detents[control.detent_target_index]) -
+              control.detent_hysteresis;
+            if (raw_position >= boundary) {
+              break;
+            }
+            --control.detent_target_index;
+          }
+        }
+        target = control.detents[control.detent_target_index];
+      }
       control.effort =
         -control.stiffness * (raw_position - target) -
         control.damping * velocity;
@@ -577,23 +762,75 @@ private:
     control.state_publisher->publish(state);
   }
 
-  void reset_controls()
+  PhysicsOutcome reset_controls()
   {
-    release_grasp_constraint();
+    const auto release = release_grasp_constraint();
+    if (!release.success) {
+      return {false,
+        "Cabinet reset could not release the active grasp: " +
+        release.message,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
     for (auto & control : controls_) {
       control.joint->SetForce(0, 0.0);
       control.joint->SetVelocity(0, 0.0);
-      if (!control.joint->SetPosition(0, control.reset_position, false)) {
-        RCLCPP_WARN(
-          ros_node_->get_logger(),
-          "Failed to reset cabinet joint %s.",
-          control.joint_name.c_str());
-      }
+    }
+
+    // Reset articulated parents before their children.  The switch is a child
+    // of the rear door, so moving the door afterwards would perturb an already
+    // reset switch in ODE.
+    std::vector<Control *> reset_order;
+    reset_order.reserve(controls_.size());
+    for (auto & control : controls_) {
+      reset_order.push_back(&control);
+    }
+    std::stable_sort(
+      reset_order.begin(), reset_order.end(),
+      [](const Control * left, const Control * right) {
+        const auto rank = [](ControlKind kind) {
+            if (kind == ControlKind::kDoor) {
+              return 0;
+            }
+            if (kind == ControlKind::kSwitch) {
+              return 1;
+            }
+            return 2;
+          };
+        return rank(left->kind) < rank(right->kind);
+      });
+    for (auto * control : reset_order) {
+      // Gazebo/ODE can return false for a nested joint even when it reaches the
+      // requested pose.  The physical state is therefore verified below rather
+      // than trusting this backend-specific return value alone.
+      control->joint->SetPosition(0, control->reset_position, false);
+      control->detent_target_index = control->reset_state_index;
+    }
+
+    std::vector<std::string> failed_joints;
+    for (auto & control : controls_) {
       control.effort = 0.0;
       update_control_state(control, false);
+      const double position_tolerance =
+        control.kind == ControlKind::kButton ?
+        control.release_threshold : control.motion_tolerance;
+      if (control.state_index != control.reset_state_index ||
+        std::abs(control.position - control.reset_position) >
+        position_tolerance)
+      {
+        failed_joints.push_back(control.joint_name);
+      }
       ++control.transition_sequence;
       publish_control(control);
     }
+    if (!failed_joints.empty()) {
+      std::ostringstream message;
+      message << "Failed to reset cabinet joints:";
+      for (const auto & joint : failed_joints) {
+        message << ' ' << joint;
+      }
+      return {false, message.str(), 0.0};
+    }
+    return {true, "Cabinet physics reset complete.", 0.0};
   }
 
   PhysicsOutcome submit_physics_request(
@@ -603,10 +840,6 @@ private:
     std::string robot_link,
     bool attach)
   {
-    if (shutting_down_.load() || !update_connection_) {
-      return {false, "Cabinet physics plugin is not running.",
-        std::numeric_limits<double>::quiet_NaN()};
-    }
     auto request = std::make_shared<PhysicsRequest>();
     request->kind = kind;
     request->control_id = std::move(control_id);
@@ -616,12 +849,25 @@ private:
     auto result = request->promise.get_future();
     {
       std::lock_guard<std::mutex> lock(request_mutex_);
+      if (shutting_down_.load() || !update_connection_) {
+        return {false, "Cabinet physics plugin is not running.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
       requests_.push_back(request);
     }
     if (result.wait_for(kPhysicsRequestTimeout) != std::future_status::ready) {
-      request->expired.store(true);
-      return {false, "Timed out waiting for the Gazebo physics update.",
-        std::numeric_limits<double>::quiet_NaN()};
+      auto expected = PhysicsRequest::State::kPending;
+      if (request->state.compare_exchange_strong(
+          expected, PhysicsRequest::State::kCanceled))
+      {
+        return {false, "Timed out waiting for the Gazebo physics update; "
+          "the request was canceled before execution.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      // Once the physics thread has claimed a request, returning a timeout
+      // would allow the attach/reset to happen after the caller saw failure.
+      // Wait for the already-started bounded Gazebo operation instead.
+      result.wait();
     }
     return result.get();
   }
@@ -634,21 +880,33 @@ private:
       requests.swap(requests_);
     }
     for (const auto & request : requests) {
-      if (request->expired.load()) {
+      auto expected = PhysicsRequest::State::kPending;
+      if (!request->state.compare_exchange_strong(
+          expected, PhysicsRequest::State::kExecuting))
+      {
         complete_request(
           request,
-          {false, "Gazebo physics request expired.",
+          {false, "Gazebo physics request was canceled before execution.",
             std::numeric_limits<double>::quiet_NaN()});
         continue;
       }
-      if (request->kind == PhysicsRequest::Kind::kReset) {
-        reset_controls();
-        complete_request(
-          request,
-          {true, "Cabinet physics reset complete.", 0.0});
-      } else {
-        complete_request(request, handle_grasp_request(*request));
+      PhysicsOutcome outcome;
+      try {
+        outcome = request->kind == PhysicsRequest::Kind::kReset ?
+          reset_controls() : handle_grasp_request(*request);
+      } catch (const std::exception & error) {
+        outcome = {
+          false,
+          "Gazebo cabinet physics request failed: " +
+          std::string(error.what()),
+          std::numeric_limits<double>::quiet_NaN()};
+      } catch (...) {
+        outcome = {
+          false,
+          "Gazebo cabinet physics request failed with an unknown error.",
+          std::numeric_limits<double>::quiet_NaN()};
       }
+      complete_request(request, std::move(outcome));
     }
   }
 
@@ -675,8 +933,7 @@ private:
           active_grasp_control_,
           std::numeric_limits<double>::quiet_NaN()};
       }
-      release_grasp_constraint();
-      return {true, "Cabinet grasp released.", 0.0};
+      return release_grasp_constraint();
     }
 
     if (grasp_joint_) {
@@ -727,10 +984,12 @@ private:
       // without teleporting either model or directly setting a control angle.
       grasp_joint_->Init();
     } catch (const std::exception & error) {
-      release_grasp_constraint();
+      const auto release = release_grasp_constraint();
       return {false,
         "Failed to create cabinet grasp constraint: " +
-        std::string(error.what()), distance};
+        std::string(error.what()) +
+        (release.success ? "" : "; cleanup failed: " + release.message),
+        distance};
     }
     active_grasp_control_ = control.id;
     active_robot_model_ = request.robot_model;
@@ -738,23 +997,32 @@ private:
     return {true, "Cabinet grasp attached.", distance};
   }
 
-  void release_grasp_constraint()
+  PhysicsOutcome release_grasp_constraint()
   {
     if (grasp_joint_) {
-      // Model::RemoveJoint owns the complete joint teardown in Gazebo 11,
-      // including Detach() and Fini().  Calling those methods here first would
-      // finalize the backend joint twice and can crash during reset/shutdown.
+      // Gazebo can clear the model joint registry before the ModelPlugin is
+      // destroyed.  Treat that stale bookkeeping handle as already released.
+      if (!model_ || !model_->GetJoint(kRuntimeGraspJointName)) {
+        grasp_joint_.reset();
+        active_grasp_control_.clear();
+        active_robot_model_.clear();
+        active_robot_link_.clear();
+        return {true, "Cabinet grasp joint was already absent.", 0.0};
+      }
+      // Model::RemoveJoint owns the complete registered-joint teardown in
+      // Gazebo 11; do not call Detach() or Fini() separately.
       if (!model_->RemoveJoint(kRuntimeGraspJointName)) {
-        RCLCPP_WARN(
-          ros_node_->get_logger(),
-          "Gazebo could not remove runtime cabinet grasp joint '%s'.",
-          kRuntimeGraspJointName);
+        return {false,
+          "Gazebo could not remove runtime cabinet grasp joint '" +
+          std::string(kRuntimeGraspJointName) + "'.",
+          std::numeric_limits<double>::quiet_NaN()};
       }
       grasp_joint_.reset();
     }
     active_grasp_control_.clear();
     active_robot_model_.clear();
     active_robot_link_.clear();
+    return {true, "Cabinet grasp released.", 0.0};
   }
 
   static void complete_request(
@@ -763,17 +1031,18 @@ private:
   {
     if (!request->completed.exchange(true)) {
       request->promise.set_value(std::move(outcome));
+      request->state.store(PhysicsRequest::State::kCompleted);
     }
   }
 
-  void fail_pending_requests(const std::string & message)
+  static void fail_requests(
+    const std::deque<std::shared_ptr<PhysicsRequest>> & requests,
+    const std::string & message)
   {
-    std::deque<std::shared_ptr<PhysicsRequest>> requests;
-    {
-      std::lock_guard<std::mutex> lock(request_mutex_);
-      requests.swap(requests_);
-    }
     for (const auto & request : requests) {
+      auto expected = PhysicsRequest::State::kPending;
+      request->state.compare_exchange_strong(
+        expected, PhysicsRequest::State::kCanceled);
       complete_request(
         request,
         {false, message, std::numeric_limits<double>::quiet_NaN()});
@@ -790,10 +1059,12 @@ private:
   rclcpp::Service<SetCabinetGrasp>::SharedPtr grasp_service_;
   std::string reset_service_name_;
   std::string grasp_service_name_;
-  double publish_period_{0.02};
+  double publish_period_{0.05};
   double last_publish_time_{0.0};
   double grasp_distance_threshold_{0.12};
 
+  std::shared_ptr<ServiceCallbackLifetime> callback_lifetime_;
+  std::mutex physics_callback_mutex_;
   std::mutex request_mutex_;
   std::deque<std::shared_ptr<PhysicsRequest>> requests_;
   std::atomic<bool> shutting_down_{false};

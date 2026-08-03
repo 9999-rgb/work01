@@ -20,6 +20,7 @@
   ros__parameters:
     use_sim_time: true
     joints:
+      - body_arm_lift
       - body_arm1
       - arm1_arm2
       - arm2_arm3
@@ -33,12 +34,15 @@
       - velocity
     state_publish_rate: 50.0
     action_monitor_rate: 20.0
-    allow_partial_joints_goal: false
+    # Legacy/manual clients may continue sending only the original six arm
+    # joints; MoveIt cabinet trajectories include the lift automatically.
+    allow_partial_joints_goal: true
     allow_nonzero_velocity_at_trajectory_end: false
     open_loop_control: false
     constraints:
       goal_time: 1.0
       stopped_velocity_tolerance: 0.05
+      body_arm_lift: {trajectory: 0.05, goal: 0.02}
       body_arm1: {trajectory: 0.25, goal: 0.10}
       arm1_arm2: {trajectory: 0.25, goal: 0.10}
       arm2_arm3: {trajectory: 0.25, goal: 0.10}

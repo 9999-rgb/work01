@@ -27,6 +27,7 @@
         <plugin>gazebo_ros2_control/GazeboSystem</plugin>
       </hardware>
 
+      <xacro:xczs_position_controlled_joint joint_name="body_arm_lift" />
       <xacro:xczs_position_controlled_joint joint_name="body_arm1" />
       <xacro:xczs_position_controlled_joint joint_name="arm1_arm2" />
       <xacro:xczs_position_controlled_joint joint_name="arm2_arm3" />

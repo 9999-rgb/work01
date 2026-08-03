@@ -5,8 +5,9 @@
 #include <gazebo/physics/World.hh>
 
 #include <cmath>
-#include <functional>
+#include <condition_variable>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,6 +18,29 @@ namespace xczs_inspection_robot_control
 class PlanarStabilizerPlugin final : public gazebo::ModelPlugin
 {
 public:
+  ~PlanarStabilizerPlugin() override
+  {
+    const auto callback_lifetime = callback_lifetime_;
+    if (callback_lifetime) {
+      std::lock_guard<std::mutex> lock(callback_lifetime->mutex);
+      callback_lifetime->shutting_down = true;
+      callback_lifetime->owner = nullptr;
+    }
+
+    // Stop both world-update sources before any Gazebo object is released.
+    // A callback that already holds a lease is allowed to finish below.
+    joint_snapshot_connection_.reset();
+    update_connection_.reset();
+
+    if (callback_lifetime) {
+      std::unique_lock<std::mutex> lock(callback_lifetime->mutex);
+      callback_lifetime->condition.wait(
+        lock, [&callback_lifetime]() {
+          return callback_lifetime->active_callbacks == 0U;
+        });
+    }
+  }
+
   void Load(
     gazebo::physics::ModelPtr model,
     sdf::ElementPtr sdf) override
@@ -27,24 +51,85 @@ public:
     load_held_joints(sdf);
     held_joint_positions_.resize(held_joints_.size(), 0.0);
     schedule_height_lock();
+
+    callback_lifetime_ = std::make_shared<UpdateCallbackLifetime>();
+    callback_lifetime_->owner = this;
+    const auto callback_lifetime = callback_lifetime_;
     update_connection_ = gazebo::event::Events::ConnectWorldUpdateEnd(
-      std::bind(&PlanarStabilizerPlugin::stabilize, this));
+      [callback_lifetime]() {
+        auto * owner = acquire_update_callback(callback_lifetime);
+        if (!owner) {
+          return;
+        }
+        UpdateCallbackLease lease(callback_lifetime);
+        std::lock_guard<std::mutex> lock(owner->update_mutex_);
+        owner->stabilize();
+      });
     joint_snapshot_connection_ =
       gazebo::event::Events::ConnectWorldUpdateBegin(
-      std::bind(
-        &PlanarStabilizerPlugin::capture_joint_positions,
-        this,
-        std::placeholders::_1));
+      [callback_lifetime](const gazebo::common::UpdateInfo & update_info) {
+        auto * owner = acquire_update_callback(callback_lifetime);
+        if (!owner) {
+          return;
+        }
+        UpdateCallbackLease lease(callback_lifetime);
+        std::lock_guard<std::mutex> lock(owner->update_mutex_);
+        owner->capture_joint_positions(update_info);
+      });
   }
 
   void Reset() override
   {
+    std::lock_guard<std::mutex> lock(update_mutex_);
     height_is_locked_ = false;
     has_joint_snapshot_ = false;
     schedule_height_lock();
   }
 
 private:
+  struct UpdateCallbackLifetime
+  {
+    std::mutex mutex;
+    std::condition_variable condition;
+    PlanarStabilizerPlugin * owner{nullptr};
+    std::size_t active_callbacks{0U};
+    bool shutting_down{false};
+  };
+
+  class UpdateCallbackLease
+  {
+  public:
+    explicit UpdateCallbackLease(
+      std::shared_ptr<UpdateCallbackLifetime> lifetime)
+    : lifetime_(std::move(lifetime)) {}
+
+    UpdateCallbackLease(const UpdateCallbackLease &) = delete;
+    UpdateCallbackLease & operator=(const UpdateCallbackLease &) = delete;
+
+    ~UpdateCallbackLease()
+    {
+      std::lock_guard<std::mutex> lock(lifetime_->mutex);
+      if (lifetime_->active_callbacks > 0U) {
+        --lifetime_->active_callbacks;
+      }
+      lifetime_->condition.notify_all();
+    }
+
+  private:
+    std::shared_ptr<UpdateCallbackLifetime> lifetime_;
+  };
+
+  static PlanarStabilizerPlugin * acquire_update_callback(
+    const std::shared_ptr<UpdateCallbackLifetime> & lifetime)
+  {
+    std::lock_guard<std::mutex> lock(lifetime->mutex);
+    if (lifetime->shutting_down || !lifetime->owner) {
+      return nullptr;
+    }
+    ++lifetime->active_callbacks;
+    return lifetime->owner;
+  }
+
   void load_held_joints(const sdf::ElementPtr & sdf)
   {
     if (!sdf->HasElement("hold_joint")) {
@@ -150,6 +235,8 @@ private:
   gazebo::physics::ModelPtr model_;
   gazebo::event::ConnectionPtr update_connection_;
   gazebo::event::ConnectionPtr joint_snapshot_connection_;
+  std::shared_ptr<UpdateCallbackLifetime> callback_lifetime_;
+  std::mutex update_mutex_;
   std::vector<gazebo::physics::JointPtr> held_joints_;
   std::vector<double> held_joint_positions_;
   double settling_duration_{0.5};
