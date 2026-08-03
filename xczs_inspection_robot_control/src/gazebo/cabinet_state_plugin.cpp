@@ -732,6 +732,8 @@ private:
         active_grasp_control_ == control.id;
       double target = 0.0;
       if (control.kind != ControlKind::kButton) {
+        const auto previous_detent_target_index =
+          control.detent_target_index;
         const bool latched_control_is_being_grasped =
           control.detent_hysteresis > 0.0 && control_is_being_grasped;
         if (control.detent_hysteresis == 0.0 ||
@@ -757,6 +759,14 @@ private:
             }
             --control.detent_target_index;
           }
+        }
+        if (control.detent_target_index != previous_detent_target_index) {
+          RCLCPP_INFO(
+            ros_node_->get_logger(),
+            "Physical detent target for '%s' changed to '%s' at %.6f rad.",
+            control.id.c_str(),
+            control.state_ids[control.detent_target_index].c_str(),
+            raw_position);
         }
         target = control.detents[control.detent_target_index];
       }
@@ -966,6 +976,13 @@ private:
       // than trusting this backend-specific return value alone.
       control->joint->SetPosition(0, control->reset_position, false);
       control->detent_target_index = control->reset_state_index;
+    }
+    // Moving an articulated parent can transfer velocity back into nested
+    // controls in ODE.  Clear every joint again after the complete hierarchy
+    // has reached its reset pose so reset returns a stable physical state.
+    for (auto & control : controls_) {
+      control.joint->SetForce(0, 0.0);
+      control.joint->SetVelocity(0, 0.0);
     }
 
     std::vector<std::string> failed_joints;

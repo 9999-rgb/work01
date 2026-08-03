@@ -130,9 +130,9 @@
         <state_topic>/xczs/cabinet/cabinet_rear_door/state</state_topic>
         <detents>0 ${cabinet_door_limit}</detents>
         <state_ids>closed open</state_ids>
-        <detent_stiffness>5.00</detent_stiffness>
+        <detent_stiffness>20.00</detent_stiffness>
         <grasp_stiffness>0.50</grasp_stiffness>
-        <spring_damping>12.00</spring_damping>
+        <spring_damping>14.00</spring_damping>
         <grasp_damping>2.00</grasp_damping>
         <detent_hysteresis>0.02</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>

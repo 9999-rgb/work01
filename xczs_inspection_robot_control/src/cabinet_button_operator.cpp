@@ -1577,12 +1577,25 @@ private:
             goal_handle, *control, initial_state.position,
             manipulation_position, std::chrono::steady_clock::now());
         }
+        const auto release_hold_started = std::chrono::steady_clock::now();
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MANIPULATING,
           0.74F, target_position,
           "Holding the target detent briefly before grasp release.");
         interruptible_hold(goal_handle, grasp_release_settle_duration_);
+        if (control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
+          std::abs(target_position - initial_state.position) >
+          target_tolerance_)
+        {
+          // A single threshold crossing is not sufficient if the physical
+          // door rebounds during the release hold.  Require a new sample on
+          // the safe side immediately before detaching the grasp.
+          wait_for_door_release_position(
+            goal_handle, *control, initial_state.position,
+            manipulation_position, release_hold_started);
+        }
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::RELEASING,
@@ -2023,13 +2036,16 @@ private:
     const std::string & control_id,
     bool attach)
   {
-    if (!grasp_client_->wait_for_service(
-        std::chrono::duration<double>(system_wait_timeout_)))
-    {
-      throw GenericOperationError(
-              attach ? OperateCabinetControl::Result::GRASP_FAILED :
-              OperateCabinetControl::Result::RELEASE_FAILED,
-              "Cabinet grasp service is unavailable.");
+    const auto service_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    while (!grasp_client_->wait_for_service(50ms)) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= service_deadline) {
+        throw GenericOperationError(
+                attach ? OperateCabinetControl::Result::GRASP_FAILED :
+                OperateCabinetControl::Result::RELEASE_FAILED,
+                "Cabinet grasp service is unavailable.");
+      }
     }
     auto request = std::make_shared<
       xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();

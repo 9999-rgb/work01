@@ -54,6 +54,14 @@ SRDF = MOVEIT_CONFIG / "xczs_inspection_robot.srdf"
 NAV2_CONFIG = ROOT / "xczs_inspection_robot_nav2" / "config" / "nav2_params.yaml"
 WEB_ROS_NODE = ROOT / "jiang" / "control_gateway" / "ros_node.py"
 WEB_MONITOR = ROOT / "jiang" / "monitor.html"
+CONTROL_CMAKE = ROOT / "xczs_inspection_robot_control" / "CMakeLists.txt"
+PLANAR_STABILIZER = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "src"
+    / "gazebo"
+    / "planar_stabilizer_plugin.cpp"
+)
 ARM_JOINTS = [
     "body_arm_lift",
     "body_arm1",
@@ -193,8 +201,8 @@ def main() -> int:
         door_settle_timeout = float(
             parameters.get("door_settle_timeout", 0.0)
         )
-        if not math.isfinite(door_settle_timeout) or door_settle_timeout < 30.0:
-            fail("Door physical settling timeout must be at least 30 seconds.")
+        if not math.isfinite(door_settle_timeout) or door_settle_timeout < 90.0:
+            fail("Door physical settling timeout must be at least 90 seconds.")
         door_release_position_timeout = float(
             parameters.get("door_release_position_timeout", 0.0)
         )
@@ -439,10 +447,13 @@ def main() -> int:
                     collision_restore_delay = float(
                         text(entry, "actuation_collision_restore_delay")
                     )
-                    if stiffness < 5.0 or not 10.0 <= damping <= 16.0:
+                    if (
+                        not 15.0 <= stiffness <= 30.0
+                        or not 12.0 <= damping <= 18.0
+                    ):
                         fail(
-                            "Door detent must remain close to critical "
-                            "damping for the configured panel inertia."
+                            "Door closer must remain near critically damped "
+                            "for the configured panel inertia."
                         )
                     if not 0.25 <= grasp_stiffness <= 1.5:
                         fail(
@@ -736,6 +747,27 @@ def main() -> int:
             fail("Gazebo planar stabilizer plugin is absent.")
         if text(stabilizer, "grasp_active_topic") != grasp_active_topic:
             fail("Cabinet and planar stabilizer grasp-active topics differ.")
+        cmake_source = CONTROL_CMAKE.read_text(encoding="utf-8")
+        stabilizer_dependencies = re.search(
+            r"ament_target_dependencies\(\s*xczs_planar_stabilizer(.*?)\)",
+            cmake_source,
+            re.DOTALL,
+        )
+        if stabilizer_dependencies is None or not {
+            "gazebo_dev",
+            "gazebo_ros",
+            "rclcpp",
+            "std_msgs",
+        }.issubset(set(stabilizer_dependencies.group(1).split())):
+            fail("Planar stabilizer ROS/Gazebo build dependencies are incomplete.")
+        stabilizer_source = PLANAR_STABILIZER.read_text(encoding="utf-8")
+        if not re.search(
+            r"if\s*\(!grasp_active_->load\(\)\)\s*\{\s*"
+            r"restore_joint_positions\(\);",
+            stabilizer_source,
+            re.DOTALL,
+        ):
+            fail("Planar stabilizer does not pause joint restore while grasping.")
 
         with ROS2_CONTROLLERS.open("r", encoding="utf-8") as stream:
             controller_config = yaml.safe_load(stream)
