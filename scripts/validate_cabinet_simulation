@@ -361,6 +361,91 @@ class CabinetValidator(Node):
                 "Controls did not reach reset defaults: " + "; ".join(failures)
             )
 
+    def snapshot_non_target_controls(
+        self,
+        target_control_id: str,
+    ) -> Dict[str, tuple[str, float, int]]:
+        """Capture stable detents so one operation cannot disturb its peers."""
+        assert self.catalog is not None
+        snapshot: Dict[str, tuple[str, float, int]] = {}
+        failures = []
+        for control in self.catalog.controls:
+            if control.control_id == target_control_id:
+                continue
+            state = self.states.get(control.control_id)
+            state_ids = list(control.state_ids)
+            if state is None or state.state_id not in state_ids:
+                failures.append(f"{control.control_id}=missing/unknown")
+                continue
+            position = float(control.state_positions[state_ids.index(state.state_id)])
+            if (
+                not self._fresh_valid_state(control.control_id)
+                or state.in_motion
+                or abs(float(state.position) - position) > 0.035
+            ):
+                failures.append(
+                    f"{control.control_id}={state.state_id}@"
+                    f"{float(state.position):.4f}, moving={state.in_motion}"
+                )
+                continue
+            snapshot[control.control_id] = (
+                str(state.state_id),
+                position,
+                int(state.transition_sequence),
+            )
+        if failures:
+            raise RuntimeError(
+                "Non-target controls were not stable before operation: "
+                + "; ".join(failures)
+            )
+        return snapshot
+
+    def verify_non_target_controls_unchanged(
+        self,
+        snapshot: Dict[str, tuple[str, float, int]],
+        timeout: float,
+    ) -> None:
+        def unchanged() -> bool:
+            for control_id, (state_id, position, sequence) in snapshot.items():
+                state = self.states.get(control_id)
+                if (
+                    state is None
+                    or not self._fresh_valid_state(control_id)
+                    or state.state_id != state_id
+                    or state.in_motion
+                    or abs(float(state.position) - position) > 0.035
+                    or int(state.transition_sequence) != sequence
+                ):
+                    return False
+            return True
+
+        if self._spin_until_stable(unchanged, 0.30, timeout):
+            return
+        failures = []
+        for control_id, (state_id, position, sequence) in snapshot.items():
+            state = self.states.get(control_id)
+            actual = "missing" if state is None else (
+                f"{state.state_id}@{float(state.position):.4f}, "
+                f"moving={state.in_motion}, "
+                f"sequence={int(state.transition_sequence)}"
+            )
+            if (
+                state is None
+                or not self._fresh_valid_state(control_id)
+                or state.state_id != state_id
+                or state.in_motion
+                or abs(float(state.position) - position) > 0.035
+                or int(state.transition_sequence) != sequence
+            ):
+                failures.append(
+                    f"{control_id}={actual}, expected "
+                    f"{state_id}@{position:.4f}, sequence={sequence}"
+                )
+        raise RuntimeError(
+            "Cabinet operation disturbed non-target controls: "
+            + "; ".join(failures)
+        )
+
     @staticmethod
     def _expected_target(
         control: CabinetControl,
@@ -423,6 +508,9 @@ class CabinetValidator(Node):
                 "No fresh valid physical state before cabinet operation."
             )
         initial_sequence = int(initial_state.transition_sequence)
+        non_target_snapshot = self.snapshot_non_target_controls(
+            operation.control_id
+        )
         expected_state, expected_position = self._expected_target(
             control,
             operation,
@@ -582,6 +670,10 @@ class CabinetValidator(Node):
                 "cleared."
             )
         self.verify_planning_scene(None, min(timeout, 5.0))
+        self.verify_non_target_controls_unchanged(
+            non_target_snapshot,
+            min(timeout, 10.0),
+        )
         return str(result.message)
 
     def verify_invalid_position_rejected(

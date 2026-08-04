@@ -16,6 +16,7 @@ from launch.substitutions import LaunchConfiguration
 from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
+from moveit_configs_utils import MoveItConfigsBuilder
 
 
 CONTROL_PACKAGE = "xczs_inspection_robot_control"
@@ -59,6 +60,30 @@ def generate_launch_description() -> LaunchDescription:
             ]
         ),
         value_type=str,
+    )
+    # MoveGroupInterface otherwise falls back to the global transient
+    # `robot_description` topic.  A workstation may have another description
+    # publisher (for example a depth camera), so every cabinet action client
+    # must receive the XCZS model explicitly and deterministically.
+    moveit_client_config = (
+        MoveItConfigsBuilder(
+            ROBOT_NAME,
+            package_name=MOVEIT_CONFIG_PACKAGE,
+        )
+        .robot_description(file_path=str(xacro_file))
+        .robot_description_semantic(
+            file_path="config/xczs_inspection_robot.srdf"
+        )
+        .robot_description_kinematics(file_path="config/kinematics.yaml")
+        # Restrict the client-only configuration to the pipeline that exists
+        # in this package.  Humble's builder otherwise auto-discovers Pilz and
+        # tries to load a non-existent pilz_cartesian_limits.yaml file while
+        # the launch description is being generated.
+        .planning_pipelines(
+            default_planning_pipeline="ompl",
+            pipelines=["ompl"],
+        )
+        .to_moveit_configs()
     )
 
     gui_argument = DeclareLaunchArgument(
@@ -366,6 +391,9 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[("joint_states", "/xczs/joint_states")],
         parameters=[
             str(cabinet_controls_config),
+            moveit_client_config.robot_description,
+            moveit_client_config.robot_description_semantic,
+            moveit_client_config.robot_description_kinematics,
             {
                 "use_sim_time": True,
                 "planning_frame": "odom",

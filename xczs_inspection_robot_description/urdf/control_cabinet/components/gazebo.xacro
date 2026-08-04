@@ -119,6 +119,8 @@
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>
+        <actuation_collision>cabinet_switch_handle_collision</actuation_collision>
+        <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
       </control>
 
       <control>
@@ -132,14 +134,27 @@
         <state_ids>closed open</state_ids>
         <detent_stiffness>20.00</detent_stiffness>
         <grasp_stiffness>0.50</grasp_stiffness>
-        <spring_damping>14.00</spring_damping>
+        <!--
+          Door inertia about the hinge is about 9.7 kg m^2.  Together with
+          the native 1.0 N m s/rad joint damping, 27.0 keeps the 20.0 N m/rad
+          detent spring in the critical-damping region after release.
+        -->
+        <spring_damping>27.00</spring_damping>
         <grasp_damping>2.00</grasp_damping>
         <detent_hysteresis>0.02</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0.600 1.105 -0.080</grasp_point>
+        <!--
+          The retreat pose remains inside the swept volume of the rear switch.
+          Disable the complete moving door subtree while the door settles;
+          otherwise the panel spring can be held at the over-center boundary
+          even though the main panel collision itself is already disabled.
+        -->
         <actuation_collision>cabinet_rear_door_collision</actuation_collision>
+        <actuation_collision>cabinet_switch_base_collision</actuation_collision>
+        <actuation_collision>cabinet_switch_handle::cabinet_switch_handle_collision</actuation_collision>
         <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
       </control>
     </plugin>

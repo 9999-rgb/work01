@@ -300,7 +300,7 @@ public:
       throw std::invalid_argument(
               "Parameter 'door_release_fraction' must be in (0.5, 0.75).");
     }
-    door_settle_timeout_ = positive_parameter("door_settle_timeout", 45.0);
+    door_settle_timeout_ = positive_parameter("door_settle_timeout", 90.0);
     door_release_position_timeout_ = positive_parameter(
       "door_release_position_timeout", 10.0);
     door_detent_hysteresis_ = positive_parameter(
@@ -3627,7 +3627,7 @@ private:
   double grasp_attach_settle_duration_{0.15};
   double grasp_release_settle_duration_{0.30};
   double door_release_fraction_{0.60};
-  double door_settle_timeout_{45.0};
+  double door_settle_timeout_{90.0};
   double door_release_position_timeout_{10.0};
   double door_detent_hysteresis_{0.02};
   double door_release_position_margin_{0.01};

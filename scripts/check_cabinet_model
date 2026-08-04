@@ -54,6 +54,12 @@ SRDF = MOVEIT_CONFIG / "xczs_inspection_robot.srdf"
 NAV2_CONFIG = ROOT / "xczs_inspection_robot_nav2" / "config" / "nav2_params.yaml"
 WEB_ROS_NODE = ROOT / "jiang" / "control_gateway" / "ros_node.py"
 WEB_MONITOR = ROOT / "jiang" / "monitor.html"
+CONTROL_LAUNCH = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "launch"
+    / "inspection_robot.launch.py"
+)
 CONTROL_CMAKE = ROOT / "xczs_inspection_robot_control" / "CMakeLists.txt"
 PLANAR_STABILIZER = (
     ROOT
@@ -437,19 +443,30 @@ def main() -> int:
                 )
                 if not close_lists(detents, expected_positions):
                     fail(f"{control_id} plugin/config detents differ.")
+                actuation_collisions = [
+                    collision.text.strip()
+                    for collision in entry.findall("actuation_collision")
+                    if collision.text and collision.text.strip()
+                ]
+                if control_type == "switch" and actuation_collisions != [
+                    "cabinet_switch_handle_collision"
+                ]:
+                    fail(
+                        "Rear switch actuation must suppress its physical "
+                        "handle collision."
+                    )
                 if control_type == "door":
                     stiffness = float(text(entry, "detent_stiffness"))
                     grasp_stiffness = float(text(entry, "grasp_stiffness"))
                     damping = float(text(entry, "spring_damping"))
                     grasp_damping = float(text(entry, "grasp_damping"))
                     hysteresis = float(text(entry, "detent_hysteresis"))
-                    actuation_collision = text(entry, "actuation_collision")
                     collision_restore_delay = float(
                         text(entry, "actuation_collision_restore_delay")
                     )
                     if (
                         not 15.0 <= stiffness <= 30.0
-                        or not 12.0 <= damping <= 18.0
+                        or not 24.0 <= damping <= 32.0
                     ):
                         fail(
                             "Door closer must remain near critically damped "
@@ -474,10 +491,17 @@ def main() -> int:
                         abs_tol=1.0e-9,
                     ):
                         fail("Door plugin/action detent hysteresis values differ.")
-                    if actuation_collision != "cabinet_rear_door_collision":
+                    if actuation_collisions != [
+                        "cabinet_rear_door_collision",
+                        "cabinet_switch_base_collision",
+                        (
+                            "cabinet_switch_handle::"
+                            "cabinet_switch_handle_collision"
+                        ),
+                    ]:
                         fail(
-                            "Door actuation must suppress only its physical "
-                            "panel collision."
+                            "Door actuation must suppress the complete moving "
+                            "door/switch collision subtree."
                         )
                     if not 1.0 <= collision_restore_delay <= 3.0:
                         fail(
@@ -498,6 +522,13 @@ def main() -> int:
         }
         if "cabinet_rear_door_collision" not in door_collision_names:
             fail("Rear door must retain its physical panel collision.")
+        if "cabinet_switch_base_collision" not in door_collision_names:
+            fail("Rear door must retain the physical switch-base collision.")
+        switch_handle_link = links.get("cabinet_switch_handle")
+        if switch_handle_link is None or switch_handle_link.find(
+            "./collision[@name='cabinet_switch_handle_collision']"
+        ) is None:
+            fail("Rear switch must retain its named physical handle collision.")
         if any("handle" in name for name in door_collision_names):
             fail(
                 "Decorative door-handle contacts must stay disabled; the "
@@ -768,6 +799,29 @@ def main() -> int:
             re.DOTALL,
         ):
             fail("Planar stabilizer does not pause joint restore while grasping.")
+
+        launch_source = CONTROL_LAUNCH.read_text(encoding="utf-8")
+        if not re.search(
+            r"\.planning_pipelines\(\s*"
+            r"default_planning_pipeline=[\"']ompl[\"']\s*,\s*"
+            r"pipelines=\[[\"']ompl[\"']\]\s*,?\s*\)",
+            launch_source,
+            re.DOTALL,
+        ):
+            fail("Unified launch must restrict its MoveIt client to OMPL.")
+        required_client_parameters = (
+            "moveit_client_config.robot_description",
+            "moveit_client_config.robot_description_semantic",
+            "moveit_client_config.robot_description_kinematics",
+        )
+        if not all(
+            parameter in launch_source
+            for parameter in required_client_parameters
+        ):
+            fail(
+                "Cabinet operator must receive explicit URDF, SRDF and "
+                "kinematics parameters."
+            )
 
         with ROS2_CONTROLLERS.open("r", encoding="utf-8") as stream:
             controller_config = yaml.safe_load(stream)

@@ -65,7 +65,7 @@
         </geometry>
         <material name="cabinet_black" />
       </visual>
-      <collision>
+      <collision name="cabinet_switch_handle_collision">
         <origin xyz="0 0 0.01" rpy="0 0 0" />
         <geometry>
           <box size="0.020 0.080 0.020" />

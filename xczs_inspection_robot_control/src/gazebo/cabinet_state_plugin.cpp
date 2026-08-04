@@ -411,7 +411,7 @@ private:
     double grasp_stiffness{0.0};
     double damping{0.0};
     double grasp_damping{0.0};
-    gazebo::physics::CollisionPtr actuation_collision;
+    std::vector<gazebo::physics::CollisionPtr> actuation_collisions;
     double actuation_collision_restore_delay{1.5};
     double collision_restore_not_before{0.0};
     bool actuation_collision_suppressed{false};
@@ -551,41 +551,30 @@ private:
           element->Get<std::string>("grasp_point"));
       }
       if (element->HasElement("actuation_collision")) {
-        const auto collision_name = required_text(
-          element, "actuation_collision");
-        control.actuation_collision = control.link->GetCollision(
-          collision_name);
-        if (!control.actuation_collision) {
-          for (const auto & collision : control.link->GetCollisions()) {
-            if (!collision) {
-              continue;
-            }
-            const auto scoped_name = collision->GetScopedName();
-            const auto suffix = std::string("::") + collision_name;
-            const auto converted_name = collision_name + "_collision";
-            const auto converted_suffix =
-              std::string("::") + converted_name;
-            if (collision->GetName() == collision_name ||
-              collision->GetName() == converted_name ||
-              scoped_name == collision_name ||
-              (scoped_name.size() > suffix.size() &&
-              scoped_name.compare(
-                scoped_name.size() - suffix.size(), suffix.size(), suffix) ==
-              0) ||
-              (scoped_name.size() > converted_suffix.size() &&
-              scoped_name.compare(
-                scoped_name.size() - converted_suffix.size(),
-                converted_suffix.size(), converted_suffix) == 0))
-            {
-              control.actuation_collision = collision;
-              break;
-            }
+        auto collision_element = element->GetElement("actuation_collision");
+        while (collision_element) {
+          const auto collision_reference =
+            collision_element->Get<std::string>();
+          if (collision_reference.empty()) {
+            throw std::invalid_argument(
+                    "Cabinet <actuation_collision> must not be empty.");
           }
-        }
-        if (!control.actuation_collision) {
-          throw std::invalid_argument(
-                  "Cabinet actuation collision was not found on child link: " +
-                  collision_name);
+          const auto collision = find_actuation_collision(
+            control.link, collision_reference);
+          if (!collision) {
+            throw std::invalid_argument(
+                    "Cabinet actuation collision was not found: " +
+                    collision_reference);
+          }
+          if (std::find(
+              control.actuation_collisions.begin(),
+              control.actuation_collisions.end(), collision) ==
+            control.actuation_collisions.end())
+          {
+            control.actuation_collisions.push_back(collision);
+          }
+          collision_element = collision_element->GetNextElement(
+            "actuation_collision");
         }
         control.actuation_collision_restore_delay = optional_double(
           element, "actuation_collision_restore_delay", 1.5);
@@ -599,7 +588,7 @@ private:
                 "Cabinet control damping values must be non-negative and "
                 "motion tolerance must be positive: " + control.id);
       }
-      if (control.actuation_collision && !control.graspable) {
+      if (!control.actuation_collisions.empty() && !control.graspable) {
         throw std::invalid_argument(
                 "Cabinet actuation collision suppression requires a "
                 "graspable control: " + control.id);
@@ -734,11 +723,13 @@ private:
       if (control.kind != ControlKind::kButton) {
         const auto previous_detent_target_index =
           control.detent_target_index;
-        const bool latched_control_is_being_grasped =
-          control.detent_hysteresis > 0.0 && control_is_being_grasped;
-        if (control.detent_hysteresis == 0.0 ||
-          latched_control_is_being_grasped)
-        {
+        // A detent may change only while this exact control is held by the
+        // robot.  A cross-model grasp can transmit a short ODE impulse through
+        // the cabinet assembly; letting unrelated joints track their raw
+        // positions here would turn that disturbance into a persistent knob
+        // or switch state change.  Latching every non-button target after
+        // release also models the mechanical detent consistently.
+        if (control_is_being_grasped) {
           while (control.detent_target_index + 1U < control.detents.size()) {
             const double boundary = 0.5 * (
               control.detents[control.detent_target_index] +
@@ -874,14 +865,84 @@ private:
     control.state_publisher->publish(state);
   }
 
+  gazebo::physics::CollisionPtr find_actuation_collision(
+    const gazebo::physics::LinkPtr & default_link,
+    const std::string & reference) const
+  {
+    auto link = default_link;
+    auto collision_name = reference;
+    const auto separator = reference.find("::");
+    if (separator != std::string::npos) {
+      const auto link_name = reference.substr(0U, separator);
+      collision_name = reference.substr(separator + 2U);
+      link = model_->GetLink(link_name);
+    }
+    if (!link || collision_name.empty()) {
+      return {};
+    }
+
+    if (const auto collision = link->GetCollision(collision_name)) {
+      return collision;
+    }
+    // URDF-to-SDF appends `_collision` even when the named URDF collision
+    // already ends with that suffix.  A collision belonging to a fixed child
+    // link is additionally folded into a name such as
+    // `<parent>_fixed_joint_lump__<name>_collision_1`.  Keep the plugin
+    // configuration expressed in stable URDF names and recognize both Gazebo
+    // normalization forms here.
+    const std::vector<std::string> candidate_names{
+      collision_name,
+      collision_name + "_collision",
+    };
+    for (const auto & collision : link->GetCollisions()) {
+      if (!collision) {
+        continue;
+      }
+      const auto scoped_name = collision->GetScopedName();
+      for (const auto & candidate : candidate_names) {
+        const auto suffix = std::string("::") + candidate;
+        const auto lump_marker =
+          std::string("_fixed_joint_lump__") + candidate;
+        const auto lump_position = scoped_name.rfind(lump_marker);
+        const auto lump_end = lump_position == std::string::npos ?
+          std::string::npos : lump_position + lump_marker.size();
+        const auto has_valid_lump_suffix =
+          lump_end != std::string::npos &&
+          (lump_end == scoped_name.size() ||
+          (lump_end + 1U < scoped_name.size() &&
+          scoped_name[lump_end] == '_' &&
+          std::all_of(
+            scoped_name.begin() + static_cast<std::ptrdiff_t>(lump_end + 1U),
+            scoped_name.end(),
+            [](const char character) {
+              return character >= '0' && character <= '9';
+            })));
+        if (collision->GetName() == candidate ||
+          scoped_name == candidate ||
+          (scoped_name.size() > suffix.size() &&
+          scoped_name.compare(
+            scoped_name.size() - suffix.size(), suffix.size(), suffix) == 0) ||
+          has_valid_lump_suffix)
+        {
+          return collision;
+        }
+      }
+    }
+    return {};
+  }
+
   void set_actuation_collision_enabled(Control & control, bool enabled)
   {
-    if (!control.actuation_collision ||
+    if (control.actuation_collisions.empty() ||
       control.actuation_collision_suppressed == !enabled)
     {
       return;
     }
-    control.actuation_collision->SetCollideBits(enabled ? 0xFFFFu : 0u);
+    for (const auto & collision : control.actuation_collisions) {
+      if (collision) {
+        collision->SetCollideBits(enabled ? 0xFFFFu : 0u);
+      }
+    }
     control.actuation_collision_suppressed = !enabled;
     if (enabled) {
       control.collision_restore_not_before = 0.0;
@@ -889,8 +950,9 @@ private:
     if (ros_node_) {
       RCLCPP_INFO(
         ros_node_->get_logger(),
-        "%s actuation collision for cabinet control '%s'.",
-        enabled ? "Restored" : "Suppressed", control.id.c_str());
+        "%s %zu actuation collision(s) for cabinet control '%s'.",
+        enabled ? "Restored" : "Suppressed",
+        control.actuation_collisions.size(), control.id.c_str());
     }
   }
 
