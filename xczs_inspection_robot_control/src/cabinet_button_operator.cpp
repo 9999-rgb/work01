@@ -2270,9 +2270,13 @@ private:
         control.runtime->condition.wait_for(lock, 50ms);
       }
     }
+    const auto final_state = button_snapshot(control);
     throw GenericOperationError(
             OperateCabinetControl::Result::TARGET_NOT_REACHED,
-            control.id + " did not settle at the requested physical state.");
+            control.id + " did not settle at the requested physical state "
+            "(state='" + final_state.state_id + "', position=" +
+            std::to_string(final_state.position) + ", velocity=" +
+            std::to_string(final_state.velocity) + ").");
   }
 
   static std::uint8_t map_legacy_error_code(std::uint8_t error_code)

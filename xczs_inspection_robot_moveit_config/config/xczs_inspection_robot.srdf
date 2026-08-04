@@ -23,7 +23,9 @@
   <group_state name="home" group="manipulator">
     <joint name="body_arm_lift" value="0" />
     <joint name="body_arm1" value="0" />
-    <joint name="arm1_arm2" value="0" />
+    <!-- Raise the long planar links vertically so the transport pose stays
+         inside the Nav2 base footprint instead of sweeping front controls. -->
+    <joint name="arm1_arm2" value="-1.5707963267948966" />
     <joint name="arm2_arm3" value="0" />
     <joint name="arm3_arm4" value="0" />
     <joint name="arm4_arm5" value="0" />

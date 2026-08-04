@@ -350,17 +350,13 @@ def main() -> int:
         grasp_active_topic = text(plugin, "grasp_active_topic")
         if grasp_active_topic != "/xczs/cabinet/grasp_active":
             fail("Cabinet grasp-active topic must use its canonical name.")
+        active_control_topic = text(plugin, "active_control_topic")
+        if active_control_topic != "/xczs/cabinet/active_control":
+            fail("Cabinet active-control topic must use its canonical name.")
         if text(plugin, "grasp_robot_base_link") != "body":
             fail(
                 "Cabinet physical grasp must brake the mobile base at "
                 "the canonical body link."
-            )
-        grasp_erp = float(text(plugin, "grasp_constraint_erp"))
-        grasp_cfm = float(text(plugin, "grasp_constraint_cfm"))
-        if not 0.7 <= grasp_erp <= 1.0 or not 0.0 <= grasp_cfm <= 1.0e-6:
-            fail(
-                "Cabinet runtime grasp must use a stiff, numerically stable "
-                "ODE constraint."
             )
         plugin_controls = plugin.findall("control")
         if len(plugin_controls) != 33:
@@ -460,13 +456,25 @@ def main() -> int:
                     grasp_stiffness = float(text(entry, "grasp_stiffness"))
                     damping = float(text(entry, "spring_damping"))
                     grasp_damping = float(text(entry, "grasp_damping"))
+                    coupling_stiffness = float(
+                        text(entry, "grasp_coupling_stiffness")
+                    )
+                    coupling_damping = float(
+                        text(entry, "grasp_coupling_damping")
+                    )
+                    coupling_max_effort = float(
+                        text(entry, "grasp_coupling_max_effort")
+                    )
                     hysteresis = float(text(entry, "detent_hysteresis"))
                     collision_restore_delay = float(
                         text(entry, "actuation_collision_restore_delay")
                     )
+                    collision_restore_distance = float(
+                        text(entry, "actuation_collision_restore_distance")
+                    )
                     if (
-                        not 15.0 <= stiffness <= 30.0
-                        or not 24.0 <= damping <= 32.0
+                        not 40.0 <= stiffness <= 80.0
+                        or not 20.0 <= damping <= 32.0
                     ):
                         fail(
                             "Door closer must remain near critically damped "
@@ -481,6 +489,21 @@ def main() -> int:
                         fail(
                             "Door damping while physically grasped must stay "
                             "low enough for arm-guided motion."
+                        )
+                    if not 60.0 <= coupling_stiffness <= 100.0:
+                        fail(
+                            "Door compliant grasp stiffness must remain "
+                            "consistent with its hinge inertia."
+                        )
+                    if not 20.0 <= coupling_damping <= 40.0:
+                        fail(
+                            "Door compliant grasp damping must remain near "
+                            "critical damping."
+                        )
+                    if not 100.0 <= coupling_max_effort <= 180.0:
+                        fail(
+                            "Door compliant grasp effort must stay below the "
+                            "physical hinge effort limit."
                         )
                     if not 0.01 <= hysteresis <= 0.04:
                         fail("Door detent hysteresis must be in [0.01, 0.04].")
@@ -507,6 +530,11 @@ def main() -> int:
                         fail(
                             "Door panel collision restore delay must be in "
                             "[1, 3] seconds."
+                        )
+                    if not 0.4 <= collision_restore_distance <= 0.8:
+                        fail(
+                            "Door panel collision may be restored only after "
+                            "the tool reaches a safe clearance."
                         )
         if set(plugin_ids) != set(control_ids) or len(set(plugin_ids)) != 33:
             fail("Plugin and catalog control IDs differ or contain duplicates.")
@@ -872,10 +900,18 @@ def main() -> int:
             entry.attrib.get("name", ""): float(entry.attrib.get("value", "nan"))
             for entry in ([] if home is None else home.findall("joint"))
         }
+        expected_home = {joint: 0.0 for joint in ARM_JOINTS}
+        expected_home["arm1_arm2"] = -math.pi / 2.0
         if set(home_joints) != set(ARM_JOINTS) or any(
-            home_joints[joint] != 0.0 for joint in ARM_JOINTS
+            not math.isclose(
+                home_joints[joint], expected_home[joint], abs_tol=1.0e-9
+            )
+            for joint in ARM_JOINTS
         ):
-            fail("MoveIt home state must stow all seven arm joints at zero.")
+            fail(
+                "MoveIt home state must use the compact vertical transport "
+                "pose."
+            )
         disabled_pairs = {
             frozenset((entry.attrib.get("link1"), entry.attrib.get("link2")))
             for entry in srdf_root.findall("disable_collisions")

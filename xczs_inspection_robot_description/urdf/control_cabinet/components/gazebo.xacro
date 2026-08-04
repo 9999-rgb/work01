@@ -66,10 +66,9 @@
       <reset_service>/xczs/cabinet/reset_physics</reset_service>
       <grasp_service>/xczs/cabinet/grasp</grasp_service>
       <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
+      <active_control_topic>/xczs/cabinet/active_control</active_control_topic>
       <grasp_distance_threshold>0.12</grasp_distance_threshold>
       <grasp_robot_base_link>body</grasp_robot_base_link>
-      <grasp_constraint_erp>0.80</grasp_constraint_erp>
-      <grasp_constraint_cfm>1e-8</grasp_constraint_cfm>
 
       <xacro:control_cabinet_button_state control_id="box_1_button_1" joint_name="box_1_box_1_button_1" />
       <xacro:control_cabinet_button_state control_id="box_1_button_2" joint_name="box_1_box_1_button_2" />
@@ -121,6 +120,7 @@
         <grasp_point>0 0 0</grasp_point>
         <actuation_collision>cabinet_switch_handle_collision</actuation_collision>
         <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
+        <actuation_collision_restore_distance>0.50</actuation_collision_restore_distance>
       </control>
 
       <control>
@@ -132,15 +132,23 @@
         <state_topic>/xczs/cabinet/cabinet_rear_door/state</state_topic>
         <detents>0 ${cabinet_door_limit}</detents>
         <state_ids>closed open</state_ids>
-        <detent_stiffness>20.00</detent_stiffness>
+        <detent_stiffness>60.00</detent_stiffness>
         <grasp_stiffness>0.50</grasp_stiffness>
         <!--
-          Door inertia about the hinge is about 9.7 kg m^2.  Together with
-          the native 1.0 N m s/rad joint damping, 27.0 keeps the 20.0 N m/rad
-          detent spring in the critical-damping region after release.
+          Door inertia about the hinge is about 2.75 kg m^2.  Together with
+          the native 1.0 N m s/rad joint damping, 25.0 keeps the 60.0 N m/rad
+          detent spring close to critical damping after release.
         -->
-        <spring_damping>27.00</spring_damping>
+        <spring_damping>25.00</spring_damping>
         <grasp_damping>2.00</grasp_damping>
+        <!--
+          The arm's Gazebo position backend is kinematic.  Convert its measured
+          handle rotation into a bounded compliant hinge torque so the door is
+          still integrated by ODE instead of being assigned a target angle.
+        -->
+        <grasp_coupling_stiffness>80.0</grasp_coupling_stiffness>
+        <grasp_coupling_damping>30.0</grasp_coupling_damping>
+        <grasp_coupling_max_effort>150.0</grasp_coupling_max_effort>
         <detent_hysteresis>0.02</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
@@ -156,6 +164,7 @@
         <actuation_collision>cabinet_switch_base_collision</actuation_collision>
         <actuation_collision>cabinet_switch_handle::cabinet_switch_handle_collision</actuation_collision>
         <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
+        <actuation_collision_restore_distance>0.50</actuation_collision_restore_distance>
       </control>
     </plugin>
   </xacro:macro>

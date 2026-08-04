@@ -270,7 +270,7 @@ xczs_cabinet_button_operator:
     stable_state_duration: 0.30
     grasp_attach_settle_duration: 0.15
     grasp_release_settle_duration: 0.30
-    door_release_fraction: 0.53
+    door_release_fraction: 0.56
     door_settle_timeout: 90.0
     door_release_position_timeout: 10.0
     door_detent_hysteresis: 0.02

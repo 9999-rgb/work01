@@ -8,7 +8,7 @@
 #include <gazebo/physics/Link.hh>
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/World.hh>
-#include <gazebo/physics/ode/ODEJoint.hh>
+#include <gazebo/physics/ode/ODECollision.hh>
 #include <gazebo_ros/node.hpp>
 
 #include <algorithm>
@@ -34,6 +34,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
@@ -221,6 +222,7 @@ public:
     }
     reset_service_.reset();
     grasp_service_.reset();
+    active_control_subscription_.reset();
     update_connection_.reset();
     fail_requests(
       pending_requests, "Cabinet state plugin is shutting down.");
@@ -278,26 +280,18 @@ public:
         throw std::invalid_argument(
                 "Cabinet grasp_robot_base_link must not be empty.");
       }
-      grasp_constraint_erp_ = optional_double(
-        sdf, "grasp_constraint_erp", 0.8);
-      grasp_constraint_cfm_ = optional_double(
-        sdf, "grasp_constraint_cfm", 1.0e-8);
-      if (grasp_constraint_erp_ <= 0.0 || grasp_constraint_erp_ > 1.0 ||
-        grasp_constraint_cfm_ < 0.0)
-      {
-        throw std::invalid_argument(
-                "Cabinet grasp constraint ERP must be in (0, 1] and CFM "
-                "must be non-negative.");
-      }
       reset_service_name_ = sdf->Get<std::string>(
         "reset_service", "/xczs/cabinet/reset_physics").first;
       grasp_service_name_ = sdf->Get<std::string>(
         "grasp_service", "/xczs/cabinet/grasp").first;
       grasp_active_topic_ = sdf->Get<std::string>(
         "grasp_active_topic", "/xczs/cabinet/grasp_active").first;
+      active_control_topic_ = sdf->Get<std::string>(
+        "active_control_topic", "/xczs/cabinet/active_control").first;
       require_absolute_topic(reset_service_name_, "reset_service");
       require_absolute_topic(grasp_service_name_, "grasp_service");
       require_absolute_topic(grasp_active_topic_, "grasp_active_topic");
+      require_absolute_topic(active_control_topic_, "active_control_topic");
       configure_controls(sdf);
     } catch (const std::exception & error) {
       RCLCPP_ERROR(ros_node_->get_logger(), "%s", error.what());
@@ -312,6 +306,19 @@ public:
       ros_node_->create_publisher<std_msgs::msg::Bool>(
       grasp_active_topic_, rclcpp::QoS(1).reliable().transient_local());
     publish_grasp_active(false);
+    active_control_subscription_ =
+      ros_node_->create_subscription<std_msgs::msg::String>(
+      active_control_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      [callback_lifetime](const std_msgs::msg::String::SharedPtr message) {
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          return;
+        }
+        ServiceCallbackLease lease(callback_lifetime);
+        std::lock_guard<std::mutex> lock(owner->active_control_mutex_);
+        owner->active_control_received_ = true;
+        owner->active_operation_control_ = message->data;
+      });
     reset_service_ = ros_node_->create_service<std_srvs::srv::Trigger>(
       reset_service_name_,
       [callback_lifetime](
@@ -394,6 +401,13 @@ public:
   }
 
 private:
+  struct ActuationCollision
+  {
+    gazebo::physics::CollisionPtr collision;
+    unsigned int category_bits{GZ_ALL_COLLIDE};
+    unsigned int collide_bits{GZ_ALL_COLLIDE};
+  };
+
   struct Control
   {
     std::string id;
@@ -411,9 +425,14 @@ private:
     double grasp_stiffness{0.0};
     double damping{0.0};
     double grasp_damping{0.0};
-    std::vector<gazebo::physics::CollisionPtr> actuation_collisions;
+    double grasp_coupling_stiffness{0.0};
+    double grasp_coupling_damping{0.0};
+    double grasp_coupling_max_effort{0.0};
+    std::vector<ActuationCollision> actuation_collisions;
     double actuation_collision_restore_delay{1.5};
+    double actuation_collision_restore_distance{0.5};
     double collision_restore_not_before{0.0};
+    gazebo::physics::LinkPtr collision_restore_robot_link;
     bool actuation_collision_suppressed{false};
     double detent_hysteresis{0.0};
     double press_threshold{0.006};
@@ -543,6 +562,12 @@ private:
       control.damping = optional_double(element, "spring_damping", 0.1);
       control.grasp_damping = optional_double(
         element, "grasp_damping", control.damping);
+      control.grasp_coupling_stiffness = optional_double(
+        element, "grasp_coupling_stiffness", 0.0);
+      control.grasp_coupling_damping = optional_double(
+        element, "grasp_coupling_damping", 0.0);
+      control.grasp_coupling_max_effort = optional_double(
+        element, "grasp_coupling_max_effort", 0.0);
       control.motion_tolerance = optional_double(
         element, "motion_tolerance", 0.025);
       control.graspable = optional_bool(element, "graspable", false);
@@ -566,23 +591,46 @@ private:
                     "Cabinet actuation collision was not found: " +
                     collision_reference);
           }
-          if (std::find(
-              control.actuation_collisions.begin(),
-              control.actuation_collisions.end(), collision) ==
-            control.actuation_collisions.end())
+          const auto duplicate = std::find_if(
+            control.actuation_collisions.begin(),
+            control.actuation_collisions.end(),
+            [&collision](const ActuationCollision & configured) {
+              return configured.collision == collision;
+            });
+          if (duplicate == control.actuation_collisions.end())
           {
-            control.actuation_collisions.push_back(collision);
+            const auto ode_collision =
+              boost::dynamic_pointer_cast<gazebo::physics::ODECollision>(
+              collision);
+            if (!ode_collision || !ode_collision->GetCollisionId()) {
+              throw std::invalid_argument(
+                      "Cabinet actuation collision masking requires the "
+                      "Gazebo ODE physics backend: " + collision_reference);
+            }
+            const auto collision_id = ode_collision->GetCollisionId();
+            control.actuation_collisions.push_back(
+              {collision,
+                static_cast<unsigned int>(
+                  dGeomGetCategoryBits(collision_id)),
+                static_cast<unsigned int>(
+                  dGeomGetCollideBits(collision_id))});
           }
           collision_element = collision_element->GetNextElement(
             "actuation_collision");
         }
         control.actuation_collision_restore_delay = optional_double(
           element, "actuation_collision_restore_delay", 1.5);
+        control.actuation_collision_restore_distance = optional_double(
+          element, "actuation_collision_restore_distance", 0.5);
       }
 
       if (control.damping < 0.0 || control.grasp_damping < 0.0 ||
+        control.grasp_coupling_stiffness < 0.0 ||
+        control.grasp_coupling_damping < 0.0 ||
+        control.grasp_coupling_max_effort < 0.0 ||
         control.motion_tolerance <= 0.0 ||
-        control.actuation_collision_restore_delay < 0.0)
+        control.actuation_collision_restore_delay < 0.0 ||
+        control.actuation_collision_restore_distance <= 0.0)
       {
         throw std::invalid_argument(
                 "Cabinet control damping values must be non-negative and "
@@ -592,6 +640,21 @@ private:
         throw std::invalid_argument(
                 "Cabinet actuation collision suppression requires a "
                 "graspable control: " + control.id);
+      }
+      const bool has_grasp_coupling =
+        control.grasp_coupling_stiffness > 0.0 ||
+        control.grasp_coupling_damping > 0.0 ||
+        control.grasp_coupling_max_effort > 0.0;
+      if (has_grasp_coupling &&
+        (!control.graspable ||
+        control.grasp_coupling_stiffness <= 0.0 ||
+        control.grasp_coupling_damping <= 0.0 ||
+        control.grasp_coupling_max_effort <= 0.0))
+      {
+        throw std::invalid_argument(
+                "Cabinet compliant grasp coupling requires a graspable "
+                "control and positive stiffness, damping and effort: " +
+                control.id);
       }
       const double lower = control.joint->LowerLimit(0);
       const double upper = control.joint->UpperLimit(0);
@@ -713,11 +776,19 @@ private:
       return;
     }
     process_physics_requests();
+    if (grasp_joint_ && active_control_link_ && active_robot_link_ptr_) {
+      const auto relative_pose =
+        active_control_link_->WorldPose().Inverse() *
+        active_robot_link_ptr_->WorldPose();
+      max_grasp_linear_error_ = std::max(
+        max_grasp_linear_error_,
+        relative_pose.Pos().Distance(grasp_relative_pose_.Pos()));
+    }
     const double simulation_time = world_->SimTime().Double();
     for (auto & control : controls_) {
       const double raw_position = control.joint->Position(0);
       const double velocity = control.joint->GetVelocity(0);
-      const bool control_is_being_grasped = grasp_joint_ &&
+      const bool control_is_being_grasped = grasp_is_active() &&
         active_grasp_control_ == control.id;
       double target = 0.0;
       if (control.kind != ControlKind::kButton) {
@@ -768,10 +839,69 @@ private:
       control.effort =
         -effective_stiffness * (raw_position - target) -
         effective_damping * velocity;
+      if (control_is_being_grasped &&
+        control.grasp_coupling_stiffness > 0.0)
+      {
+        // gazebo_ros2_control's plain position backend moves the arm
+        // kinematically every controller update.  That motion is authoritative
+        // for the simulated tool but can repeatedly inject error into a
+        // cross-model ODE fixed joint.  Recover the commanded one-DOF motion
+        // analytically from the tool orientation and apply it as a compliant
+        // physical torque.  The cabinet joint is never teleported: inertia,
+        // limits, damping, collisions and the fixed grasp remain active.
+        auto delta_rotation = active_robot_link_ptr_->WorldPose().Rot() *
+          grasp_tool_rotation_.Inverse();
+        delta_rotation.Normalize();
+        const ignition::math::Vector3d imaginary{
+          delta_rotation.X(), delta_rotation.Y(), delta_rotation.Z()};
+        const double projected_sine = grasp_axis_world_.Dot(imaginary);
+        const double projected_norm = std::hypot(
+          delta_rotation.W(), projected_sine);
+        if (std::isfinite(projected_norm) && projected_norm > 1.0e-8) {
+          const double wrapped_twist = std::remainder(
+            2.0 * std::atan2(projected_sine, delta_rotation.W()),
+            2.0 * M_PI);
+          const double twist_step = std::remainder(
+            wrapped_twist - grasp_previous_twist_, 2.0 * M_PI);
+          grasp_unwrapped_twist_ += twist_step;
+          grasp_previous_twist_ = wrapped_twist;
+          const double desired_position = std::clamp(
+            grasp_initial_position_ + grasp_unwrapped_twist_,
+            control.joint->LowerLimit(0), control.joint->UpperLimit(0));
+          const double position_error = desired_position - raw_position;
+          const double coupling_effort = std::clamp(
+            control.grasp_coupling_stiffness * position_error -
+            control.grasp_coupling_damping * velocity,
+            -control.grasp_coupling_max_effort,
+            control.grasp_coupling_max_effort);
+          control.effort += coupling_effort;
+          max_grasp_angle_error_ = std::max(
+            max_grasp_angle_error_, std::abs(position_error));
+          max_grasp_coupling_effort_ = std::max(
+            max_grasp_coupling_effort_, std::abs(coupling_effort));
+        }
+      }
       control.joint->SetForce(0, control.effort);
+      if (control.kind == ControlKind::kDoor &&
+        !control_is_being_grasped &&
+        (std::abs(raw_position - target) > control.motion_tolerance ||
+        std::abs(velocity) > control.motion_tolerance))
+      {
+        const auto axis = control.joint->GlobalAxis(0);
+        const double projected_angular_acceleration =
+          axis.Dot(control.link->WorldAngularAccel());
+        RCLCPP_INFO_THROTTLE(
+          ros_node_->get_logger(), *ros_node_->get_clock(), 5000,
+          "Door detent dynamics: q=%.6f target=%.6f v=%.6f "
+          "effort=%.6f joint_force=%.6f angular_accel=%.6f.",
+          raw_position, target, velocity, control.effort,
+          control.joint->GetForce(0), projected_angular_acceleration);
+      }
       if (control.actuation_collision_suppressed &&
         !control_is_being_grasped &&
         simulation_time >= control.collision_restore_not_before &&
+        actuation_operation_is_complete(control) &&
+        actuation_tool_is_clear(control) &&
         std::abs(raw_position - target) <= control.motion_tolerance &&
         std::abs(velocity) <= control.motion_tolerance)
       {
@@ -790,6 +920,32 @@ private:
     for (const auto & control : controls_) {
       publish_control(control);
     }
+  }
+
+  bool grasp_is_active() const
+  {
+    return static_cast<bool>(grasp_joint_) || compliant_grasp_active_;
+  }
+
+  bool actuation_tool_is_clear(const Control & control) const
+  {
+    if (!control.collision_restore_robot_link) {
+      return true;
+    }
+    const auto control_pose = control.link->WorldPose();
+    const auto grasp_position = control_pose.Pos() +
+      control_pose.Rot().RotateVector(control.grasp_point);
+    const double distance =
+      control.collision_restore_robot_link->WorldPose().Pos().Distance(
+      grasp_position);
+    return std::isfinite(distance) &&
+           distance >= control.actuation_collision_restore_distance;
+  }
+
+  bool actuation_operation_is_complete(const Control &) const
+  {
+    std::lock_guard<std::mutex> lock(active_control_mutex_);
+    return active_control_received_ && active_operation_control_.empty();
   }
 
   void update_control_state(Control & control, bool count_transition)
@@ -938,14 +1094,23 @@ private:
     {
       return;
     }
-    for (const auto & collision : control.actuation_collisions) {
-      if (collision) {
-        collision->SetCollideBits(enabled ? 0xFFFFu : 0u);
+    for (const auto & configured : control.actuation_collisions) {
+      if (configured.collision) {
+        // ODE accepts a contact when either geom's category mask matches the
+        // other geom's collide mask. Clearing only collide bits therefore
+        // still leaves robot-vs-control contacts active through the opposite
+        // half of that test. Disable both masks and restore their exact
+        // pre-actuation values once the tool is clear.
+        configured.collision->SetCategoryBits(
+          enabled ? configured.category_bits : 0u);
+        configured.collision->SetCollideBits(
+          enabled ? configured.collide_bits : 0u);
       }
     }
     control.actuation_collision_suppressed = !enabled;
     if (enabled) {
       control.collision_restore_not_before = 0.0;
+      control.collision_restore_robot_link.reset();
     }
     if (ros_node_) {
       RCLCPP_INFO(
@@ -965,7 +1130,9 @@ private:
     }
   }
 
-  void schedule_actuation_collision_restore(const std::string & control_id)
+  void schedule_actuation_collision_restore(
+    const std::string & control_id,
+    const gazebo::physics::LinkPtr & robot_link)
   {
     const auto control_it = control_indices_.find(control_id);
     if (control_it == control_indices_.end()) {
@@ -975,6 +1142,7 @@ private:
     if (control.actuation_collision_suppressed) {
       control.collision_restore_not_before = world_->SimTime().Double() +
         control.actuation_collision_restore_delay;
+      control.collision_restore_robot_link = robot_link;
     }
   }
 
@@ -1165,7 +1333,7 @@ private:
     }
 
     if (!request.attach) {
-      if (!grasp_joint_ && !base_brake_joint_) {
+      if (!grasp_is_active() && !base_brake_joint_) {
         return {true, "Cabinet grasp is already released.", 0.0};
       }
       if (active_grasp_control_ != control.id) {
@@ -1177,7 +1345,7 @@ private:
       return release_grasp_constraint();
     }
 
-    if (grasp_joint_ || base_brake_joint_) {
+    if (grasp_is_active() || base_brake_joint_) {
       if (active_grasp_control_ == control.id &&
         active_robot_model_ == request.robot_model &&
         active_robot_link_ == request.robot_link)
@@ -1219,6 +1387,15 @@ private:
         "Robot link is outside the cabinet grasp distance threshold.",
         distance};
     }
+    auto grasp_axis_world = control.joint->GlobalAxis(0);
+    if (control.grasp_coupling_stiffness > 0.0 &&
+      (!grasp_axis_world.IsFinite() || grasp_axis_world.Length() <= 1.0e-8))
+    {
+      return {false,
+        "Cabinet control has no valid world joint axis for compliant grasp: " +
+        control.id, distance};
+    }
+    grasp_axis_world.Normalize();
 
     try {
       // A real mobile manipulator engages its wheel brakes before exerting
@@ -1233,20 +1410,38 @@ private:
           distance};
       }
       base_brake_joint_->Init();
-      configure_runtime_fixed_joint(base_brake_joint_);
-      grasp_joint_ = model_->CreateJoint(
-        kRuntimeGraspJointName, "fixed", control.link, robot_link);
-      if (!grasp_joint_) {
-        const auto release = release_grasp_constraint();
-        return {false,
-          "Gazebo could not create the cabinet grasp joint." +
-          (release.success ? "" : " Cleanup failed: " + release.message),
-          distance};
+      if (control.grasp_coupling_stiffness > 0.0) {
+        // A kinematic ros2_control position update and a cross-model 6-DOF
+        // fixed joint form an inconsistent closed loop.  This control has an
+        // explicitly configured one-DOF compliant physical coupling instead,
+        // so do not add the conflicting ODE constraint as well.
+        compliant_grasp_active_ = true;
+      } else {
+        grasp_joint_ = model_->CreateJoint(
+          kRuntimeGraspJointName, "fixed", control.link, robot_link);
+        if (!grasp_joint_) {
+          const auto release = release_grasp_constraint();
+          return {false,
+            "Gazebo could not create the cabinet grasp joint." +
+            (release.success ? "" : " Cleanup failed: " + release.message),
+            distance};
+        }
+        // Model::CreateJoint loads the current relative pose; Init activates
+        // it without teleporting either model or writing a control angle.
+        grasp_joint_->Init();
       }
-      // Model::CreateJoint loads the current relative pose; Init activates it
-      // without teleporting either model or directly setting a control angle.
-      grasp_joint_->Init();
-      configure_runtime_fixed_joint(grasp_joint_);
+      active_control_link_ = control.link;
+      active_robot_link_ptr_ = robot_link;
+      grasp_relative_pose_ =
+        control.link->WorldPose().Inverse() * robot_link->WorldPose();
+      max_grasp_linear_error_ = 0.0;
+      grasp_initial_position_ = control.joint->Position(0);
+      grasp_tool_rotation_ = robot_link->WorldPose().Rot();
+      grasp_axis_world_ = grasp_axis_world;
+      grasp_previous_twist_ = 0.0;
+      grasp_unwrapped_twist_ = 0.0;
+      max_grasp_angle_error_ = 0.0;
+      max_grasp_coupling_effort_ = 0.0;
       active_grasp_control_ = control.id;
       active_robot_model_ = request.robot_model;
       active_robot_link_ = request.robot_link;
@@ -1268,22 +1463,26 @@ private:
     return {true, "Cabinet grasp attached.", distance};
   }
 
-  void configure_runtime_fixed_joint(
-    const gazebo::physics::JointPtr & joint) const
-  {
-    const auto ode_joint = boost::dynamic_pointer_cast<
-      gazebo::physics::ODEJoint>(joint);
-    if (!ode_joint) {
-      return;
-    }
-    ode_joint->SetERP(grasp_constraint_erp_);
-    ode_joint->SetCFM(grasp_constraint_cfm_);
-  }
-
   PhysicsOutcome release_grasp_constraint()
   {
     const auto released_control = active_grasp_control_;
+    const auto released_robot_link = active_robot_link_ptr_;
+    if (!released_control.empty()) {
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Releasing cabinet grasp '%s' (maximum fixed-constraint linear "
+        "error %.6f m, compliant angle error %.6f rad, coupling effort "
+        "%.3f).",
+        released_control.c_str(), max_grasp_linear_error_,
+        max_grasp_angle_error_, max_grasp_coupling_effort_);
+    }
     if (grasp_joint_) {
+      // Remove the ODE constraint itself before touching Gazebo's model
+      // registry.  Resetting the shared pointer (or relying on RemoveJoint)
+      // alone can leave the dynamically-created fixed constraint attached
+      // until another link motion wakes the solver, which pins a released
+      // door to the retreating tool.
+      grasp_joint_->Detach();
       // Gazebo can clear the model joint registry before the ModelPlugin is
       // destroyed.  Treat that stale bookkeeping handle as already released.
       if (!model_ || !model_->GetJoint(kRuntimeGraspJointName)) {
@@ -1296,7 +1495,9 @@ private:
       }
       grasp_joint_.reset();
     }
+    compliant_grasp_active_ = false;
     if (base_brake_joint_) {
+      base_brake_joint_->Detach();
       if (!model_ || !model_->GetJoint(kRuntimeBaseBrakeJointName)) {
         base_brake_joint_.reset();
       } else if (!model_->RemoveJoint(kRuntimeBaseBrakeJointName)) {
@@ -1310,8 +1511,19 @@ private:
     active_grasp_control_.clear();
     active_robot_model_.clear();
     active_robot_link_.clear();
+    active_control_link_.reset();
+    active_robot_link_ptr_.reset();
+    max_grasp_linear_error_ = 0.0;
+    grasp_initial_position_ = 0.0;
+    grasp_tool_rotation_ = ignition::math::Quaterniond::Identity;
+    grasp_axis_world_ = ignition::math::Vector3d::UnitZ;
+    grasp_previous_twist_ = 0.0;
+    grasp_unwrapped_twist_ = 0.0;
+    max_grasp_angle_error_ = 0.0;
+    max_grasp_coupling_effort_ = 0.0;
     publish_grasp_active(false);
-    schedule_actuation_collision_restore(released_control);
+    schedule_actuation_collision_restore(
+      released_control, released_robot_link);
     return {true, "Cabinet grasp released.", 0.0};
   }
 
@@ -1348,24 +1560,41 @@ private:
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
   rclcpp::Service<SetCabinetGrasp>::SharedPtr grasp_service_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr grasp_active_publisher_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    active_control_subscription_;
   std::string reset_service_name_;
   std::string grasp_service_name_;
   std::string grasp_active_topic_;
+  std::string active_control_topic_;
   double publish_period_{0.05};
   double last_publish_time_{0.0};
   double grasp_distance_threshold_{0.12};
   std::string grasp_robot_base_link_{"body"};
-  double grasp_constraint_erp_{0.8};
-  double grasp_constraint_cfm_{1.0e-8};
-
   std::shared_ptr<ServiceCallbackLifetime> callback_lifetime_;
   std::mutex physics_callback_mutex_;
   std::mutex request_mutex_;
   std::deque<std::shared_ptr<PhysicsRequest>> requests_;
   std::atomic<bool> shutting_down_{false};
+  mutable std::mutex active_control_mutex_;
+  bool active_control_received_{false};
+  std::string active_operation_control_;
 
   gazebo::physics::JointPtr grasp_joint_;
+  bool compliant_grasp_active_{false};
   gazebo::physics::JointPtr base_brake_joint_;
+  gazebo::physics::LinkPtr active_control_link_;
+  gazebo::physics::LinkPtr active_robot_link_ptr_;
+  ignition::math::Pose3d grasp_relative_pose_;
+  double max_grasp_linear_error_{0.0};
+  double grasp_initial_position_{0.0};
+  ignition::math::Quaterniond grasp_tool_rotation_{
+    ignition::math::Quaterniond::Identity};
+  ignition::math::Vector3d grasp_axis_world_{
+    ignition::math::Vector3d::UnitZ};
+  double grasp_previous_twist_{0.0};
+  double grasp_unwrapped_twist_{0.0};
+  double max_grasp_angle_error_{0.0};
+  double max_grasp_coupling_effort_{0.0};
   std::string active_grasp_control_;
   std::string active_robot_model_;
   std::string active_robot_link_;
