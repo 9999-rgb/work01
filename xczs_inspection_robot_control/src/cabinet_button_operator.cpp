@@ -1392,8 +1392,23 @@ private:
       if (is_button) {
         button_poses = calculate_operation_poses(*control, navigate);
       } else {
+        double staging_reference_position = initial_state.position;
+        if (control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
+          target_position < initial_state.position - target_tolerance_)
+        {
+          // Staging normal to a fully open door leaves the closing release
+          // point more than 1.4 m from the base.  Face the door near its
+          // over-center release angle instead: both the initial handle and
+          // the complete closing arc then remain inside the arm workspace,
+          // while the chassis stays outside the open panel's swept radius.
+          staging_reference_position = target_position +
+            door_release_fraction_ *
+            (initial_state.position - target_position);
+        }
         rotary_poses = calculate_rotary_operation_poses(
-          *control, initial_state.position, navigate);
+          *control, initial_state.position, staging_reference_position,
+          navigate);
       }
       const auto & staging_pose = is_button ?
         button_poses.staging_pose : rotary_poses.staging_pose;
@@ -1951,6 +1966,7 @@ private:
   RotaryOperationPoses calculate_rotary_operation_poses(
     const ButtonSpec & control,
     double position,
+    double staging_reference_position,
     bool include_staging_pose)
   {
     RotaryOperationPoses poses;
@@ -1965,7 +1981,7 @@ private:
     const tf2::Transform cabinet = resolve_cabinet_transform();
     const auto geometry = resolve_control_geometry(control);
     tf2::Quaternion local_rotation;
-    local_rotation.setRotation(geometry.axis, position);
+    local_rotation.setRotation(geometry.axis, staging_reference_position);
     local_rotation.normalize();
     const tf2::Vector3 local_grasp = geometry.pivot +
       tf2::quatRotate(
@@ -1976,7 +1992,7 @@ private:
     const tf2::Vector3 world_axis = tf2::quatRotate(
       cabinet.getRotation(), geometry.axis);
     tf2::Quaternion world_rotation;
-    world_rotation.setRotation(world_axis, position);
+    world_rotation.setRotation(world_axis, staging_reference_position);
     const tf2::Vector3 outward = tf2::quatRotate(
       world_rotation, outward_zero).normalized();
     const tf2::Vector3 inward = -outward;
