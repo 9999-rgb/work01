@@ -1,0 +1,415 @@
+#!/usr/bin/env bash
+# Validate the real Web -> ROS 2 -> Nav2/MoveIt -> Gazebo cabinet path.
+
+set -euo pipefail
+
+API_URL="${XCZS_CONTROL_API_URL:-http://127.0.0.1:8090}"
+OPERATION_TIMEOUT="${XCZS_CABINET_TIMEOUT:-360}"
+NAVIGATE="true"
+RUN_CONTRACT_TESTS="false"
+RESPONSE_BODY=""
+CLEANUP_REQUIRED="false"
+COMPLETED_OPERATIONS=0
+
+usage() {
+  cat <<'EOF'
+用法: scripts/validate_cabinet_web [选项]
+
+通过 Web HTTP API 真实执行按钮、旋钮、门上总开关和后门操作，并核对
+最终 Gazebo 物理状态。运行前需启动: ./run_all.sh --web --no-gui
+
+选项:
+  --api URL           控制服务地址（默认 http://127.0.0.1:8090）
+  --timeout SECONDS   单次动作超时（默认 360）
+  --no-navigate       不执行 Nav2 工位导航，仅用于底盘已在对应工位时
+  --contract-tests    追加非法请求、冲突、取消和复位互锁检查
+  -h, --help          显示帮助
+EOF
+}
+
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "缺少命令: $1"
+}
+
+is_positive_integer() {
+  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --api)
+      [[ $# -ge 2 ]] || fail "--api 缺少 URL"
+      API_URL="${2%/}"
+      shift 2
+      ;;
+    --timeout)
+      [[ $# -ge 2 ]] || fail "--timeout 缺少秒数"
+      OPERATION_TIMEOUT="$2"
+      is_positive_integer "$OPERATION_TIMEOUT" ||
+        fail "--timeout 必须是正整数"
+      shift 2
+      ;;
+    --no-navigate)
+      NAVIGATE="false"
+      shift
+      ;;
+    --contract-tests)
+      RUN_CONTRACT_TESTS="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "未知选项: $1"
+      ;;
+  esac
+done
+
+is_positive_integer "$OPERATION_TIMEOUT" ||
+  fail "--timeout 必须是正整数"
+require_command curl
+require_command jq
+
+request_json() {
+  local method="$1"
+  local path="$2"
+  local expected_code="$3"
+  local request_body="${4:-}"
+  local raw_response
+  local response_code
+
+  if [[ -n "$request_body" ]]; then
+    raw_response="$(
+      curl -sS --connect-timeout 5 \
+        -H 'Content-Type: application/json' \
+        -X "$method" --data "$request_body" \
+        -w $'\n%{http_code}' "$API_URL$path"
+    )" || fail "$method $path 请求失败"
+  else
+    raw_response="$(
+      curl -sS --connect-timeout 5 \
+        -X "$method" -w $'\n%{http_code}' "$API_URL$path"
+    )" || fail "$method $path 请求失败"
+  fi
+
+  response_code="${raw_response##*$'\n'}"
+  RESPONSE_BODY="${raw_response%$'\n'*}"
+  jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "$method $path 返回的不是有效 JSON"
+  if [[ "$response_code" != "$expected_code" ]]; then
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "$method $path 期望 HTTP $expected_code，实际 $response_code"
+  fi
+}
+
+get_json() {
+  local path="$1"
+  RESPONSE_BODY="$(curl -fsS --connect-timeout 5 "$API_URL$path")" ||
+    fail "GET $path 请求失败"
+  jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "GET $path 返回的不是有效 JSON"
+}
+
+best_effort_cleanup() {
+  local exit_code=$?
+  local status_body=""
+  local active="false"
+  local deadline
+
+  trap - EXIT INT TERM
+  if [[ "$CLEANUP_REQUIRED" == "true" ]]; then
+    status_body="$(curl -fsS "$API_URL/cabinet/status" 2>/dev/null || true)"
+    if jq -e . >/dev/null 2>&1 <<<"$status_body"; then
+      active="$(jq -r '.active // false' <<<"$status_body")"
+    fi
+    if [[ "$active" == "true" ]]; then
+      curl -sS -H 'Content-Type: application/json' \
+        -X POST --data '{}' "$API_URL/cabinet/cancel" >/dev/null 2>&1 || true
+      deadline=$((SECONDS + 30))
+      while (( SECONDS < deadline )); do
+        status_body="$(
+          curl -fsS "$API_URL/cabinet/status" 2>/dev/null || true
+        )"
+        if jq -e '.active == false' >/dev/null 2>&1 <<<"$status_body"; then
+          break
+        fi
+        sleep 1
+      done
+    fi
+    curl -sS -H 'Content-Type: application/json' \
+      -X POST --data '{}' "$API_URL/cabinet/reset" >/dev/null 2>&1 || true
+  fi
+  exit "$exit_code"
+}
+trap best_effort_cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+wait_for_defaults() {
+  local deadline=$((SECONDS + 60))
+  local controls_body=""
+
+  while (( SECONDS < deadline )); do
+    controls_body="$(curl -fsS "$API_URL/cabinet/controls")" ||
+      fail "无法读取控制柜目录"
+    if jq -e '
+      ([.controls[] | select(
+        .control_type == 0 and .valid == true and
+        .current_state == "released" and .in_motion == false
+      )] | length) == 20 and
+      ([.controls[] | select(
+        .control_type == 1 and .valid == true and
+        .current_state == "center" and .in_motion == false
+      )] | length) == 11 and
+      ([.controls[] | select(
+        .control_id == "cabinet_main_switch" and .valid == true and
+        .current_state == "off" and .in_motion == false
+      )] | length) == 1 and
+      ([.controls[] | select(
+        .control_id == "cabinet_rear_door" and .valid == true and
+        .current_state == "closed" and .in_motion == false
+      )] | length) == 1
+    ' <<<"$controls_body" >/dev/null; then
+      return
+    fi
+    sleep 1
+  done
+
+  jq . <<<"$controls_body" >&2
+  fail "控制件未在 60 秒内恢复默认状态"
+}
+
+reset_to_defaults() {
+  request_json POST /cabinet/reset 200 '{}'
+  jq -e '.status == "reset"' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "控制柜复位未返回 reset 状态"
+  wait_for_defaults
+}
+
+wait_for_result() {
+  local control_id="$1"
+  local expected_state="$2"
+  local expected_position="$3"
+  local minimum_peak="$4"
+  local deadline
+  local status_body=""
+  local operation_state
+  local signature
+  local previous_signature=""
+
+  deadline="$((SECONDS + ${OPERATION_TIMEOUT%.*}))"
+  while (( SECONDS < deadline )); do
+    status_body="$(curl -fsS "$API_URL/cabinet/status")" ||
+      fail "无法读取 $control_id 的动作状态"
+    operation_state="$(jq -r '.state // ""' <<<"$status_body")"
+    signature="$(
+      jq -r '[.state, (.phase // -1), (.message // "")] | @tsv' \
+        <<<"$status_body"
+    )"
+    if [[ "$signature" != "$previous_signature" ]]; then
+      jq -r '
+        "  state=\(.state) phase=\(.phase // -1) " +
+        "progress=\(((.progress // 0) * 100) | floor)% " +
+        "physical=\(.current_state // "unknown")@" +
+        "\((.current_position // 0) * 10000 | round / 10000) " +
+        "\(.message // "")"
+      ' <<<"$status_body"
+      previous_signature="$signature"
+    fi
+
+    case "$operation_state" in
+      succeeded)
+        jq -e \
+          --arg control_id "$control_id" \
+          --arg expected_state "$expected_state" \
+          --argjson expected_position "$expected_position" \
+          --argjson minimum_peak "$minimum_peak" '
+          def abs_value: if . < 0 then -. else . end;
+          .active == false and .success == true and .error_code == 0 and
+          .progress == 1 and .control_id == $control_id and
+          .final_state == $expected_state and
+          .current_state == $expected_state and
+          (((.final_position - $expected_position) | abs_value) <= 0.035) and
+          ($minimum_peak == null or (
+            (.peak_position // 0) >= $minimum_peak and
+            (.max_travel // 0) >= $minimum_peak
+          ))
+        ' <<<"$status_body" >/dev/null || {
+          jq . <<<"$status_body" >&2
+          fail "$control_id 的成功终态与物理期望不一致"
+        }
+        jq -c '{
+          control_id, state, final_state, final_position,
+          peak_position, success, error_code
+        }' <<<"$status_body"
+        COMPLETED_OPERATIONS=$((COMPLETED_OPERATIONS + 1))
+        return
+        ;;
+      failed|canceled|rejected)
+        jq . <<<"$status_body" >&2
+        fail "$control_id 进入异常终态: $operation_state"
+        ;;
+    esac
+    sleep 1
+  done
+
+  jq . <<<"$status_body" >&2
+  fail "$control_id 未在 ${OPERATION_TIMEOUT}s 内完成"
+}
+
+run_operation() {
+  local path="$1"
+  local control_id="$2"
+  local expected_state="$3"
+  local expected_position="$4"
+  local minimum_peak="$5"
+  local request_body="$6"
+
+  printf '\n[%d] %s -> %s\n' \
+    "$((COMPLETED_OPERATIONS + 1))" "$control_id" "$expected_state"
+  request_json POST "$path" 202 "$request_body"
+  jq -e --arg control_id "$control_id" '
+    .status == "accepted" and
+    ((.control_id // .button_id) == $control_id)
+  ' <<<"$RESPONSE_BODY" >/dev/null || {
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "$control_id 未被 Web 控制服务接受"
+  }
+  wait_for_result \
+    "$control_id" "$expected_state" "$expected_position" "$minimum_peak"
+}
+
+expect_bad_request() {
+  local label="$1"
+  local path="$2"
+  local request_body="$3"
+
+  request_json POST "$path" 400 "$request_body"
+  printf '  PASS: %s 被正确拒绝\n' "$label"
+}
+
+wait_for_canceled() {
+  local deadline="$((SECONDS + ${OPERATION_TIMEOUT%.*}))"
+  local status_body=""
+  local operation_state=""
+
+  while (( SECONDS < deadline )); do
+    status_body="$(curl -fsS "$API_URL/cabinet/status")" ||
+      fail "无法读取取消状态"
+    operation_state="$(jq -r '.state // ""' <<<"$status_body")"
+    case "$operation_state" in
+      canceled)
+        jq -e '
+          .active == false and .success == false and .error_code == 10
+        ' <<<"$status_body" >/dev/null || {
+          jq . <<<"$status_body" >&2
+          fail "取消终态字段不一致"
+        }
+        return
+        ;;
+      succeeded|failed|rejected)
+        jq . <<<"$status_body" >&2
+        fail "取消测试进入非 canceled 终态: $operation_state"
+        ;;
+    esac
+    sleep 1
+  done
+  fail "取消动作未在 ${OPERATION_TIMEOUT}s 内结束"
+}
+
+run_contract_tests() {
+  printf '\n[contract] 非法请求校验\n'
+  expect_bad_request \
+    "按钮 set_state" /cabinet/operate \
+    '{"control_id":"box_10_button_1","command":"set_state","target_state":"pressed"}'
+  expect_bad_request \
+    "旋钮非档位位置" /cabinet/operate \
+    '{"control_id":"box_1_knob","command":"set_position","target_position":0.2}'
+  expect_bad_request \
+    "后门非法状态" /cabinet/operate \
+    '{"control_id":"cabinet_rear_door","command":"set_state","target_state":"ajar"}'
+  expect_bad_request \
+    "带选项复位" /cabinet/reset \
+    '{"control_id":"cabinet_rear_door"}'
+
+  printf '\n[contract] 动作冲突、取消与复位互锁\n'
+  reset_to_defaults
+  request_json POST /cabinet/operate 202 \
+    "{\"control_id\":\"cabinet_rear_door\",\"command\":\"set_state\",\"target_state\":\"open\",\"navigate_to_staging_pose\":$NAVIGATE}"
+  jq -e '.status == "accepted"' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "取消测试动作未被接受"
+  request_json POST /cabinet/reset 409 '{}'
+  request_json POST /cabinet/operate 409 \
+    "{\"control_id\":\"box_1_knob\",\"command\":\"set_state\",\"target_state\":\"right\",\"navigate_to_staging_pose\":$NAVIGATE}"
+  request_json POST /cabinet/cancel 202 '{}'
+  jq -e '.status == "canceling"' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "Web 服务没有进入 canceling 状态"
+  wait_for_canceled
+  printf '  PASS: 冲突被拒绝，动作安全取消且活动目标已清空\n'
+  reset_to_defaults
+}
+
+printf 'XCZS 控制柜 Web 端到端验收\n'
+printf '  API: %s\n' "$API_URL"
+printf '  Nav2: %s\n' "$NAVIGATE"
+
+get_json /health
+jq -e '
+  .status == "ok" and .navigation_available == true and
+  .moveit_available == true and .cabinet_available == true
+' <<<"$RESPONSE_BODY" >/dev/null || {
+  jq . <<<"$RESPONSE_BODY" >&2
+  fail "Web 健康检查未确认 Nav2、MoveIt 和控制柜可用"
+}
+
+get_json /cabinet/controls
+jq -e '
+  .catalog_received == true and .source == "operator_catalog" and
+  .operation_available == true and .reset_available == true and
+  (.controls | length) == 33 and
+  ([.controls[] | select(.control_type == 0)] | length) == 20 and
+  ([.controls[] | select(.control_type == 1)] | length) == 11 and
+  ([.controls[] | select(.control_type == 2)] | length) == 1 and
+  ([.controls[] | select(.control_type == 3)] | length) == 1
+' <<<"$RESPONSE_BODY" >/dev/null || {
+  jq . <<<"$RESPONSE_BODY" >&2
+  fail "Web 控制目录不是预期的 20/11/1/1 共 33 项"
+}
+
+get_json /cabinet/status
+jq -e '.active == false' <<<"$RESPONSE_BODY" >/dev/null ||
+  fail "已有控制柜动作正在运行，拒绝接管"
+
+CLEANUP_REQUIRED="true"
+reset_to_defaults
+
+run_operation /cabinet/press box_10_button_1 released 0.0 0.006 \
+  "{\"button_id\":\"box_10_button_1\",\"navigate_to_staging_pose\":$NAVIGATE}"
+run_operation /cabinet/operate box_1_knob right 0.78539816339 null \
+  "{\"control_id\":\"box_1_knob\",\"command\":\"set_state\",\"target_state\":\"right\",\"navigate_to_staging_pose\":$NAVIGATE}"
+run_operation /cabinet/operate box_1_knob center 0.0 null \
+  "{\"control_id\":\"box_1_knob\",\"command\":\"set_state\",\"target_state\":\"center\",\"navigate_to_staging_pose\":$NAVIGATE}"
+run_operation /cabinet/operate cabinet_rear_door open 1.57079632679 null \
+  "{\"control_id\":\"cabinet_rear_door\",\"command\":\"set_state\",\"target_state\":\"open\",\"navigate_to_staging_pose\":$NAVIGATE}"
+run_operation /cabinet/operate cabinet_main_switch on 1.57079632679 null \
+  "{\"control_id\":\"cabinet_main_switch\",\"command\":\"set_state\",\"target_state\":\"on\",\"navigate_to_staging_pose\":$NAVIGATE}"
+run_operation /cabinet/operate cabinet_main_switch off 0.0 null \
+  "{\"control_id\":\"cabinet_main_switch\",\"command\":\"set_state\",\"target_state\":\"off\",\"navigate_to_staging_pose\":$NAVIGATE}"
+run_operation /cabinet/operate cabinet_rear_door closed 0.0 null \
+  "{\"control_id\":\"cabinet_rear_door\",\"command\":\"set_state\",\"target_state\":\"closed\",\"navigate_to_staging_pose\":$NAVIGATE}"
+
+if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
+  run_contract_tests
+fi
+
+reset_to_defaults
+CLEANUP_REQUIRED="false"
+printf '\nPASS: Web 端到端验收完成；真实物理动作=%d，失败=0。\n' \
+  "$COMPLETED_OPERATIONS"
