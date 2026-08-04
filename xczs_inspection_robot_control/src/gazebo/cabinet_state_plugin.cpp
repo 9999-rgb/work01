@@ -882,21 +882,6 @@ private:
         }
       }
       control.joint->SetForce(0, control.effort);
-      if (control.kind == ControlKind::kDoor &&
-        !control_is_being_grasped &&
-        (std::abs(raw_position - target) > control.motion_tolerance ||
-        std::abs(velocity) > control.motion_tolerance))
-      {
-        const auto axis = control.joint->GlobalAxis(0);
-        const double projected_angular_acceleration =
-          axis.Dot(control.link->WorldAngularAccel());
-        RCLCPP_INFO_THROTTLE(
-          ros_node_->get_logger(), *ros_node_->get_clock(), 5000,
-          "Door detent dynamics: q=%.6f target=%.6f v=%.6f "
-          "effort=%.6f joint_force=%.6f angular_accel=%.6f.",
-          raw_position, target, velocity, control.effort,
-          control.joint->GetForce(0), projected_angular_acceleration);
-      }
       if (control.actuation_collision_suppressed &&
         !control_is_being_grasped &&
         simulation_time >= control.collision_restore_not_before &&

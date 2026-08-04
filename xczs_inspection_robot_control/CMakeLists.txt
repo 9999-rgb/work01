@@ -58,11 +58,6 @@ add_library(
   src/gazebo/planar_stabilizer_plugin.cpp
 )
 add_library(
-  xczs_cabinet_button
-  SHARED
-  src/gazebo/cabinet_button_plugin.cpp
-)
-add_library(
   xczs_cabinet_state
   SHARED
   src/gazebo/cabinet_state_plugin.cpp
@@ -167,16 +162,6 @@ ament_target_dependencies(
   std_msgs
 )
 
-target_compile_features(xczs_cabinet_button PUBLIC cxx_std_17)
-ament_target_dependencies(
-  xczs_cabinet_button
-  gazebo_dev
-  gazebo_ros
-  rclcpp
-  sensor_msgs
-  std_msgs
-)
-
 target_compile_features(xczs_cabinet_state PUBLIC cxx_std_17)
 ament_target_dependencies(
   xczs_cabinet_state
@@ -212,7 +197,6 @@ install(
 install(
   TARGETS
     xczs_planar_stabilizer
-    xczs_cabinet_button
     xczs_cabinet_state
   LIBRARY DESTINATION lib
 )
@@ -226,7 +210,6 @@ install(
 
 ament_export_include_directories(include)
 ament_export_libraries(xczs_planar_stabilizer)
-ament_export_libraries(xczs_cabinet_button)
 ament_export_libraries(xczs_cabinet_state)
 ament_export_dependencies(gazebo_dev)
 ament_export_dependencies(rosidl_default_runtime)
