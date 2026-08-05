@@ -194,6 +194,26 @@ def main() -> int:
             or not 3 <= cartesian_attempts <= 10
         ):
             fail("Cartesian planning attempts must be an integer in [3, 10].")
+        door_segment_waypoints = parameters.get(
+            "door_cartesian_segment_waypoints"
+        )
+        if (
+            not isinstance(door_segment_waypoints, int)
+            or not 2 <= door_segment_waypoints <= 12
+        ):
+            fail(
+                "Door Cartesian segment size must be an integer in "
+                "[2, 12]."
+            )
+        motion_planning_attempts = parameters.get("motion_planning_attempts")
+        if (
+            not isinstance(motion_planning_attempts, int)
+            or not 2 <= motion_planning_attempts <= 10
+        ):
+            fail(
+                "Motion planning attempts must be an integer in "
+                "[2, 10]."
+            )
         door_release_fraction = float(
             parameters.get("door_release_fraction", 0.0)
         )
@@ -451,6 +471,45 @@ def main() -> int:
                         "Rear switch actuation must suppress its physical "
                         "handle collision."
                     )
+                if control_type == "switch":
+                    grasp_stiffness = float(
+                        text(entry, "grasp_stiffness")
+                    )
+                    grasp_damping = float(text(entry, "grasp_damping"))
+                    coupling_stiffness = float(
+                        text(entry, "grasp_coupling_stiffness")
+                    )
+                    coupling_damping = float(
+                        text(entry, "grasp_coupling_damping")
+                    )
+                    coupling_max_effort = float(
+                        text(entry, "grasp_coupling_max_effort")
+                    )
+                    if not 0.0 <= grasp_stiffness <= 0.20:
+                        fail(
+                            "Rear switch grasp preload must not recreate a "
+                            "rigid detent loop."
+                        )
+                    if not 0.05 <= grasp_damping <= 0.50:
+                        fail(
+                            "Rear switch grasp damping is outside "
+                            "[0.05, 0.50]."
+                        )
+                    if not 1.0 <= coupling_stiffness <= 10.0:
+                        fail(
+                            "Rear switch compliant coupling stiffness is "
+                            "outside [1.0, 10.0]."
+                        )
+                    if not 0.05 <= coupling_damping <= 1.0:
+                        fail(
+                            "Rear switch compliant coupling damping is "
+                            "outside [0.05, 1.0]."
+                        )
+                    if not 0.25 <= coupling_max_effort <= 5.0:
+                        fail(
+                            "Rear switch compliant coupling effort is "
+                            "outside [0.25, 5.0]."
+                        )
                 if control_type == "door":
                     stiffness = float(text(entry, "detent_stiffness"))
                     grasp_stiffness = float(text(entry, "grasp_stiffness"))

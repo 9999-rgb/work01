@@ -321,6 +321,23 @@ public:
       throw std::invalid_argument(
               "Parameter 'cartesian_planning_attempts' must be in [1, 10].");
     }
+    door_cartesian_segment_waypoints_ = declare_parameter<int>(
+      "door_cartesian_segment_waypoints", 6);
+    if (door_cartesian_segment_waypoints_ < 2 ||
+      door_cartesian_segment_waypoints_ > 12)
+    {
+      throw std::invalid_argument(
+              "Parameter 'door_cartesian_segment_waypoints' must be in "
+              "[2, 12].");
+    }
+    motion_planning_attempts_ = declare_parameter<int>(
+      "motion_planning_attempts", 3);
+    if (motion_planning_attempts_ < 2 || motion_planning_attempts_ > 10)
+    {
+      throw std::invalid_argument(
+              "Parameter 'motion_planning_attempts' must be in "
+              "[2, 10].");
+    }
 
     configure_controls(
       legacy_button_id,
@@ -1573,10 +1590,24 @@ private:
           OperateCabinetControl::Feedback::MANIPULATING,
           0.62F, target_position,
           "Following the control joint arc without commanding the joint.");
-        execute_cartesian_path(
-          *move_group, goal_handle, waypoints,
-          cartesian_velocity_scale_ * 0.5,
-          cartesian_acceleration_scale_ * 0.5);
+        if (control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+        {
+          // A long door arc can keep MoveIt's Cartesian interpolation on an
+          // IK branch that becomes invalid near the end of the sweep.  Short
+          // complete segments preserve physical continuity while allowing
+          // each next segment to start from the measured robot state.
+          execute_segmented_cartesian_path(
+            *move_group, goal_handle, waypoints,
+            static_cast<std::size_t>(door_cartesian_segment_waypoints_),
+            cartesian_velocity_scale_ * 0.5,
+            cartesian_acceleration_scale_ * 0.5);
+        } else {
+          execute_cartesian_path(
+            *move_group, goal_handle, waypoints,
+            cartesian_velocity_scale_ * 0.5,
+            cartesian_acceleration_scale_ * 0.5);
+        }
         if (control->control_type ==
           xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
           std::abs(target_position - initial_state.position) >
@@ -2695,21 +2726,35 @@ private:
     const std::string & tool_link = kArmTipLink)
   {
     check_cancel(goal_handle);
-    move_group.setStartStateToCurrentState();
-    if (!move_group.setPoseTarget(target, tool_link)) {
-      throw OperationError(
-              PressCabinetButton::Result::PLANNING_FAILED,
-              "MoveIt rejected the cabinet prepress pose target.");
-    }
-
     MoveGroupInterface::Plan plan;
-    const auto planning_result = move_group.plan(plan);
-    move_group.clearPoseTargets();
-    if (planning_result != moveit::core::MoveItErrorCode::SUCCESS) {
+    bool planned = false;
+    for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      move_group.setStartStateToCurrentState();
+      if (!move_group.setPoseTarget(target, tool_link)) {
+        throw OperationError(
+                PressCabinetButton::Result::PLANNING_FAILED,
+                "MoveIt rejected the cabinet prepress pose target.");
+      }
+      const auto planning_result = move_group.plan(plan);
+      move_group.clearPoseTargets();
+      if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+        planned = true;
+        break;
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "MoveIt planning to the cabinet pose for '%s' failed "
+        "(attempt %d/%d).",
+        tool_link.c_str(), attempt, motion_planning_attempts_);
+    }
+    if (!planned) {
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
-              "MoveIt could not plan to the prepress pose. If navigation "
-              "was skipped, first park the base in front of the cabinet.");
+              "MoveIt could not plan to the prepress pose after " +
+              std::to_string(motion_planning_attempts_) +
+              " attempts. If navigation was skipped, first park the base "
+              "in front of the cabinet.");
     }
     check_cancel(goal_handle);
     if (move_group.execute(plan) !=
@@ -2730,20 +2775,33 @@ private:
     const std::string & target_name)
   {
     check_cancel(goal_handle);
-    move_group.setStartStateToCurrentState();
-    if (!move_group.setNamedTarget(target_name)) {
-      throw OperationError(
-              PressCabinetButton::Result::PLANNING_FAILED,
-              "MoveIt does not contain the arm target '" + target_name +
-              "'.");
-    }
-
     MoveGroupInterface::Plan plan;
-    if (move_group.plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+    bool planned = false;
+    for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      move_group.setStartStateToCurrentState();
+      if (!move_group.setNamedTarget(target_name)) {
+        throw OperationError(
+                PressCabinetButton::Result::PLANNING_FAILED,
+                "MoveIt does not contain the arm target '" + target_name +
+                "'.");
+      }
+      if (move_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+        planned = true;
+        break;
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "MoveIt planning to named target '%s' failed (attempt %d/%d).",
+        target_name.c_str(), attempt, motion_planning_attempts_);
+    }
+    if (!planned) {
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
               "MoveIt could not plan the arm to the safe '" + target_name +
-              "' target.");
+              "' target after " +
+              std::to_string(motion_planning_attempts_) +
+              " attempts.");
     }
     check_cancel(goal_handle);
     if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
@@ -2754,6 +2812,33 @@ private:
               "' target.");
     }
     check_cancel(goal_handle);
+  }
+
+  template<typename GoalHandleT>
+  void execute_segmented_cartesian_path(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const std::vector<geometry_msgs::msg::Pose> & waypoints,
+    std::size_t maximum_segment_waypoints,
+    double velocity_scale,
+    double acceleration_scale)
+  {
+    if (maximum_segment_waypoints == 0U) {
+      throw std::invalid_argument(
+              "Cartesian segment size must be greater than zero.");
+    }
+    for (std::size_t begin = 0; begin < waypoints.size();
+      begin += maximum_segment_waypoints)
+    {
+      check_cancel(goal_handle);
+      const auto end = std::min(
+        begin + maximum_segment_waypoints, waypoints.size());
+      const std::vector<geometry_msgs::msg::Pose> segment(
+        waypoints.begin() + begin, waypoints.begin() + end);
+      execute_cartesian_path(
+        move_group, goal_handle, segment,
+        velocity_scale, acceleration_scale);
+    }
   }
 
   template<typename GoalHandleT>
@@ -3656,6 +3741,8 @@ private:
   double cartesian_velocity_scale_{0.08};
   double cartesian_acceleration_scale_{0.08};
   int cartesian_planning_attempts_{5};
+  int door_cartesian_segment_waypoints_{6};
+  int motion_planning_attempts_{3};
 };
 
 }  // namespace xczs_inspection_robot_control

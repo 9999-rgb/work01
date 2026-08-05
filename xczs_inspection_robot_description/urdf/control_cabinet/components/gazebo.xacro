@@ -113,7 +113,19 @@
         <detents>0 ${cabinet_switch_limit}</detents>
         <state_ids>off on</state_ids>
         <detent_stiffness>0.80</detent_stiffness>
+        <grasp_stiffness>0.05</grasp_stiffness>
         <spring_damping>0.10</spring_damping>
+        <grasp_damping>0.10</grasp_damping>
+        <!--
+          The switch is mounted on the articulated rear door.  A cross-model
+          fixed joint closes a stiff loop through both cabinet hinges and can
+          pull the arm away from its Cartesian path.  Follow the measured tool
+          twist with a bounded one-DOF torque instead; the switch joint remains
+          fully integrated by ODE and its detent completes the final travel.
+        -->
+        <grasp_coupling_stiffness>2.0</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.10</grasp_coupling_damping>
+        <grasp_coupling_max_effort>1.0</grasp_coupling_max_effort>
         <motion_tolerance>0.035</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>

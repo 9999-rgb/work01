@@ -278,5 +278,7 @@ xczs_cabinet_button_operator:
     planning_scene_settle_seconds: 0.50
     rotation_waypoint_step: 0.03490658504
     cartesian_planning_attempts: 5
+    door_cartesian_segment_waypoints: 6
+    motion_planning_attempts: 3
     grasp_service: /xczs/cabinet/grasp
     reset_physics_service: /xczs/cabinet/reset_physics
