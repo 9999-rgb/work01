@@ -203,12 +203,20 @@ wait_for_result() {
   local operation_state
   local signature
   local previous_signature=""
+  local saw_navigation="false"
+  local saw_docking="false"
 
   deadline="$((SECONDS + ${OPERATION_TIMEOUT%.*}))"
   while (( SECONDS < deadline )); do
     status_body="$(curl -fsS "$API_URL/cabinet/status")" ||
       fail "无法读取 $control_id 的动作状态"
     operation_state="$(jq -r '.state // ""' <<<"$status_body")"
+    if [[ "$(jq -r '.phase // -1' <<<"$status_body")" == "1" ]]; then
+      saw_navigation="true"
+    fi
+    if [[ "$(jq -r '.phase // -1' <<<"$status_body")" == "2" ]]; then
+      saw_docking="true"
+    fi
     signature="$(
       jq -r '[.state, (.phase // -1), (.message // "")] | @tsv' \
         <<<"$status_body"
@@ -237,6 +245,7 @@ wait_for_result() {
           .final_state == $expected_state and
           .current_state == $expected_state and
           (((.final_position - $expected_position) | abs_value) <= 0.035) and
+          (((.current_position - $expected_position) | abs_value) <= 0.035) and
           ($minimum_peak == null or (
             (.peak_position // 0) >= $minimum_peak and
             (.max_travel // 0) >= $minimum_peak
@@ -249,6 +258,11 @@ wait_for_result() {
           control_id, state, final_state, final_position,
           peak_position, success, error_code
         }' <<<"$status_body"
+        if [[ "$NAVIGATE" == "true" && "$COMPLETED_OPERATIONS" -eq 0 &&
+          ("$saw_navigation" != "true" || "$saw_docking" != "true") ]]
+        then
+          fail "首个动作未观察到完整的 Nav2 导航和里程计停靠阶段"
+        fi
         COMPLETED_OPERATIONS=$((COMPLETED_OPERATIONS + 1))
         return
         ;;
@@ -262,6 +276,24 @@ wait_for_result() {
 
   jq . <<<"$status_body" >&2
   fail "$control_id 未在 ${OPERATION_TIMEOUT}s 内完成"
+}
+
+wait_for_system_ready() {
+  local deadline="$((SECONDS + 120))"
+  local health_body=""
+  while (( SECONDS < deadline )); do
+    health_body="$(curl -fsS "$API_URL/health" 2>/dev/null || true)"
+    if jq -e '
+      .status == "ok" and .navigation_available == true and
+      .moveit_available == true and .cabinet_available == true
+    ' <<<"$health_body" >/dev/null 2>&1; then
+      RESPONSE_BODY="$health_body"
+      return
+    fi
+    sleep 1
+  done
+  [[ -z "$health_body" ]] || jq . <<<"$health_body" >&2
+  fail "Web 服务未在 120 秒内确认 Nav2、MoveIt 和控制柜可用"
 }
 
 run_operation() {
@@ -360,14 +392,7 @@ printf 'XCZS 控制柜 Web 端到端验收\n'
 printf '  API: %s\n' "$API_URL"
 printf '  Nav2: %s\n' "$NAVIGATE"
 
-get_json /health
-jq -e '
-  .status == "ok" and .navigation_available == true and
-  .moveit_available == true and .cabinet_available == true
-' <<<"$RESPONSE_BODY" >/dev/null || {
-  jq . <<<"$RESPONSE_BODY" >&2
-  fail "Web 健康检查未确认 Nav2、MoveIt 和控制柜可用"
-}
+wait_for_system_ready
 
 get_json /cabinet/controls
 jq -e '

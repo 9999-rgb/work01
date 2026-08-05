@@ -194,6 +194,14 @@ def main() -> int:
             or not 3 <= cartesian_attempts <= 10
         ):
             fail("Cartesian planning attempts must be an integer in [3, 10].")
+        cartesian_jump_threshold = float(
+            parameters.get("cartesian_jump_threshold", 0.0)
+        )
+        if (
+            not math.isfinite(cartesian_jump_threshold)
+            or not 1.0 <= cartesian_jump_threshold <= 10.0
+        ):
+            fail("Cartesian jump threshold must be in [1, 10].")
         door_segment_waypoints = parameters.get(
             "door_cartesian_segment_waypoints"
         )
@@ -237,6 +245,16 @@ def main() -> int:
             or door_release_position_timeout < 5.0
         ):
             fail("Door physical release-position timeout must be at least 5 s.")
+        door_pregrasp_clearance = float(
+            parameters.get("door_pregrasp_clearance", 0.0)
+        )
+        if (
+            not math.isfinite(door_pregrasp_clearance)
+            or not 0.003 <= door_pregrasp_clearance <= 0.015
+        ):
+            fail(
+                "Door pre-grasp clearance must be in [0.003, 0.015] m."
+            )
         door_detent_hysteresis = float(
             parameters.get("door_detent_hysteresis", 0.0)
         )

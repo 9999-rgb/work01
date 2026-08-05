@@ -119,6 +119,7 @@ struct RotaryOperationPoses
   geometry_msgs::msg::PoseStamped staging_pose;
   geometry_msgs::msg::PoseStamped staging_pose_in_planning_frame;
   geometry_msgs::msg::Pose ready_pose;
+  geometry_msgs::msg::Pose door_pregrasp_pose;
   geometry_msgs::msg::Pose grasp_pose;
 };
 
@@ -307,6 +308,13 @@ public:
       "door_detent_hysteresis", 0.02);
     door_release_position_margin_ = positive_parameter(
       "door_release_position_margin", 0.01);
+    door_pregrasp_clearance_ = positive_parameter(
+      "door_pregrasp_clearance", 0.010);
+    if (door_pregrasp_clearance_ > 0.015) {
+      throw std::invalid_argument(
+              "Parameter 'door_pregrasp_clearance' must be no greater "
+              "than 0.015 m.");
+    }
     planning_scene_settle_seconds_ = positive_parameter(
       "planning_scene_settle_seconds", 0.50);
     rotation_waypoint_step_ = positive_parameter(
@@ -315,6 +323,14 @@ public:
       "cartesian_velocity_scale", 0.08);
     cartesian_acceleration_scale_ = unit_interval_parameter(
       "cartesian_acceleration_scale", 0.08);
+    cartesian_jump_threshold_ = positive_parameter(
+      "cartesian_jump_threshold", 2.0);
+    if (cartesian_jump_threshold_ < 1.0 ||
+      cartesian_jump_threshold_ > 10.0)
+    {
+      throw std::invalid_argument(
+              "Parameter 'cartesian_jump_threshold' must be in [1, 10].");
+    }
     cartesian_planning_attempts_ = declare_parameter<int>(
       "cartesian_planning_attempts", 5);
     if (cartesian_planning_attempts_ < 1 || cartesian_planning_attempts_ > 10) {
@@ -332,8 +348,7 @@ public:
     }
     motion_planning_attempts_ = declare_parameter<int>(
       "motion_planning_attempts", 3);
-    if (motion_planning_attempts_ < 2 || motion_planning_attempts_ > 10)
-    {
+    if (motion_planning_attempts_ < 2 || motion_planning_attempts_ > 10) {
       throw std::invalid_argument(
               "Parameter 'motion_planning_attempts' must be in "
               "[2, 10].");
@@ -990,7 +1005,7 @@ private:
           control->state_positions.begin(), control->state_positions.end(),
           [this, &goal](double preset) {
             return std::abs(preset - goal->target_position) <=
-                   target_tolerance_;
+            target_tolerance_;
           });
       } else if (goal->command ==
         OperateCabinetControl::Goal::COMMAND_TOGGLE)
@@ -1016,9 +1031,9 @@ private:
     const std::shared_ptr<OperateGoalHandle> goal_handle)
   {
     return goal_handle ?
-      cancel_active_goal(
+           cancel_active_goal(
       ActiveGoalType::OPERATE, goal_handle->get_goal_id()) :
-      rclcpp_action::CancelResponse::REJECT;
+           rclcpp_action::CancelResponse::REJECT;
   }
 
   void handle_operate_accepted(
@@ -1086,8 +1101,8 @@ private:
     const std::shared_ptr<PressGoalHandle> goal_handle)
   {
     return goal_handle ?
-      cancel_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id()) :
-      rclcpp_action::CancelResponse::REJECT;
+           cancel_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id()) :
+           rclcpp_action::CancelResponse::REJECT;
   }
 
   void handle_accepted(const std::shared_ptr<PressGoalHandle> goal_handle)
@@ -1554,6 +1569,17 @@ private:
           OperateCabinetControl::Feedback::APPROACHING,
           0.43F, target_position,
           "Approaching the physical grasp point.");
+        if (control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+        {
+          // A pose-only OMPL plan can select a ready-pose IK branch that
+          // cannot finish the final inward Cartesian approach.  Require an
+          // exact collision-checked plan to a near-grasp pose first, then
+          // preserve a short straight-line final approach.
+          plan_and_execute_pose(
+            *move_group, goal_handle, rotary_poses.door_pregrasp_pose,
+            kContactToolLink);
+        }
         execute_cartesian_path(
           *move_group, goal_handle, {rotary_poses.grasp_pose},
           cartesian_velocity_scale_ * 0.5,
@@ -2003,6 +2029,9 @@ private:
     RotaryOperationPoses poses;
     poses.ready_pose = calculate_rotary_tool_pose(
       control, position, prepress_distance_);
+    poses.door_pregrasp_pose = calculate_rotary_tool_pose(
+      control, position,
+      control.grasp_outward_offset + door_pregrasp_clearance_);
     poses.grasp_pose = calculate_rotary_tool_pose(
       control, position, control.grasp_outward_offset);
     if (!include_staging_pose) {
@@ -2070,9 +2099,10 @@ private:
     for (std::size_t index = 1U; index <= count; ++index) {
       const double ratio = static_cast<double>(index) /
         static_cast<double>(count);
-      waypoints.push_back(calculate_rotary_tool_pose(
-        control, initial_position + travel * ratio,
-        control.grasp_outward_offset));
+      waypoints.push_back(
+        calculate_rotary_tool_pose(
+          control, initial_position + travel * ratio,
+          control.grasp_outward_offset));
     }
     return waypoints;
   }
@@ -2859,7 +2889,7 @@ private:
       const double fraction = move_group.computeCartesianPath(
         waypoints,
         0.002,
-        0.0,
+        cartesian_jump_threshold_,
         candidate,
         true);
       if (fraction > best_fraction) {
@@ -2934,7 +2964,7 @@ private:
       const double fraction = move_group.computeCartesianPath(
         {prepress_pose},
         0.002,
-        0.0,
+        cartesian_jump_threshold_,
         trajectory_message,
         true);
       if (fraction < 0.99) {
@@ -3022,7 +3052,7 @@ private:
     options.goal_response_callback =
       [this, request_abandoned,
         weak_goal = std::weak_ptr<GoalHandleT>(goal_handle)](
-        NavigationGoalHandle::SharedPtr goal_handle)
+      NavigationGoalHandle::SharedPtr goal_handle)
       {
         if (!goal_handle) {
           return;
@@ -3146,25 +3176,45 @@ private:
             " Safe-distance yaw stall detected; taking over." : ""));
         }
       };
-    auto goal_future = navigation_client_->async_send_goal(
-      navigation_goal, options);
-    try {
-      wait_for_future(
-        goal_future,
-        goal_handle,
-        system_wait_timeout_,
-        PressCabinetButton::Result::NAVIGATION_FAILED,
-        "Nav2 did not accept the staging goal in time.");
-    } catch (...) {
-      request_abandoned->store(true);
-      cancel_active_navigation();
-      throw;
-    }
-    const auto navigation_goal_handle = goal_future.get();
-    if (!navigation_goal_handle) {
-      throw OperationError(
-              PressCabinetButton::Result::NAVIGATION_FAILED,
-              "Nav2 rejected the cabinet staging goal.");
+    NavigationGoalHandle::SharedPtr navigation_goal_handle;
+    const auto acceptance_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    int rejected_attempts = 0;
+    while (!navigation_goal_handle) {
+      check_cancel(goal_handle);
+      navigation_goal.pose.header.stamp = get_clock()->now();
+      auto goal_future = navigation_client_->async_send_goal(
+        navigation_goal, options);
+      try {
+        wait_for_future(
+          goal_future,
+          goal_handle,
+          system_wait_timeout_,
+          PressCabinetButton::Result::NAVIGATION_FAILED,
+          "Nav2 did not accept the staging goal in time.");
+      } catch (...) {
+        request_abandoned->store(true);
+        cancel_active_navigation();
+        throw;
+      }
+      navigation_goal_handle = goal_future.get();
+      if (navigation_goal_handle) {
+        break;
+      }
+      ++rejected_attempts;
+      if (std::chrono::steady_clock::now() >= acceptance_deadline) {
+        throw OperationError(
+                PressCabinetButton::Result::NAVIGATION_FAILED,
+                "Nav2 rejected the cabinet staging goal for " +
+                std::to_string(rejected_attempts) +
+                " consecutive startup attempts.");
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "Nav2 rejected staging goal attempt %d while its lifecycle may "
+        "still be activating; retrying.",
+        rejected_attempts);
+      std::this_thread::sleep_for(250ms);
     }
     bool must_cancel_navigation = false;
     const bool operation_should_stop = goal_should_stop(goal_handle);
@@ -3297,6 +3347,19 @@ private:
   }
 
   template<typename GoalHandleT>
+  static std::uint8_t docking_feedback_phase(
+    const std::shared_ptr<GoalHandleT> &)
+  {
+    return PressCabinetButton::Feedback::NAVIGATING;
+  }
+
+  static std::uint8_t docking_feedback_phase(
+    const std::shared_ptr<OperateGoalHandle> &)
+  {
+    return OperateCabinetControl::Feedback::DOCKING;
+  }
+
+  template<typename GoalHandleT>
   void dock_to_staging_pose(
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const geometry_msgs::msg::PoseStamped & target)
@@ -3373,7 +3436,7 @@ private:
           last_feedback = now;
           publish_feedback(
             goal_handle,
-            PressCabinetButton::Feedback::NAVIGATING,
+            docking_feedback_phase(goal_handle),
             0.20F,
             "Precision docking error: " +
             std::to_string(position_error) + " m, yaw: " +
@@ -3736,10 +3799,12 @@ private:
   double door_release_position_timeout_{10.0};
   double door_detent_hysteresis_{0.02};
   double door_release_position_margin_{0.01};
+  double door_pregrasp_clearance_{0.010};
   double planning_scene_settle_seconds_{0.50};
   double rotation_waypoint_step_{0.03490658504};
   double cartesian_velocity_scale_{0.08};
   double cartesian_acceleration_scale_{0.08};
+  double cartesian_jump_threshold_{2.0};
   int cartesian_planning_attempts_{5};
   int door_cartesian_segment_waypoints_{6};
   int motion_planning_attempts_{3};
