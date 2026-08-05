@@ -193,7 +193,13 @@ class CabinetValidator(Node):
             for control in self.catalog.controls
         }
         expected.add("control_cabinet_frame")
-        if active_control_id:
+        door_handle_id = "cabinet_control_cabinet_rear_door_handle"
+        expected.add(door_handle_id)
+        if active_control_id == "cabinet_rear_door":
+            # The active handle opens for grasping, but the articulated panel
+            # must remain a collision object throughout the complete action.
+            expected.discard(door_handle_id)
+        elif active_control_id:
             expected.discard(f"cabinet_control_{active_control_id}")
         return expected
 

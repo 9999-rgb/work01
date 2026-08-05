@@ -34,6 +34,10 @@ constexpr char kSwitchId[] = "cabinet_main_switch";
 constexpr double kButtonCollisionLength = 0.012;
 constexpr double kButtonCollisionRadius = 0.015;
 constexpr double kButtonCollisionCenterOffset = -0.0055;
+constexpr double kDoorPanelWidth = 0.636;
+constexpr double kDoorPanelHeight = 2.204;
+constexpr double kDoorPanelThickness = 0.010;
+constexpr double kDoorPanelCenterZ = -0.008;
 
 struct ControlCollision
 {
@@ -170,7 +174,7 @@ public:
       });
 
     retry_timer_ = create_wall_timer(
-      std::chrono::milliseconds(250),
+      std::chrono::milliseconds(50),
       [this]() {publish_scene_if_needed();});
   }
 
@@ -198,9 +202,10 @@ private:
       double x, double y, double z)
       {
         frame.primitives.push_back(primitive);
-        frame.primitive_poses.push_back(to_pose(
-          model * tf2::Transform(
-            tf2::Quaternion::getIdentity(), tf2::Vector3(x, y, z))));
+        frame.primitive_poses.push_back(
+          to_pose(
+            model * tf2::Transform(
+              tf2::Quaternion::getIdentity(), tf2::Vector3(x, y, z))));
       };
 
     // The front panel remains closed behind the controls.  The rear panel is
@@ -214,45 +219,69 @@ private:
     return frame;
   }
 
-  moveit_msgs::msg::CollisionObject make_door(
-    double door_position,
-    bool remove) const
+  tf2::Transform door_transform(double door_position) const
+  {
+    tf2::Quaternion hinge_rotation;
+    hinge_rotation.setRotation(tf2::Vector3(0.0, 1.0, 0.0), door_position);
+    const tf2::Transform hinge(
+      hinge_rotation, tf2::Vector3(0.010, 0.010, -0.600));
+    return model_transform() * hinge;
+  }
+
+  moveit_msgs::msg::CollisionObject make_door_panel(
+    double door_position) const
   {
     moveit_msgs::msg::CollisionObject door;
     door.header.frame_id = frame_id_;
     door.header.stamp = now();
     door.id = "cabinet_control_" + std::string(kDoorId);
-    if (remove) {
-      door.operation = moveit_msgs::msg::CollisionObject::REMOVE;
-      return door;
-    }
     door.operation = moveit_msgs::msg::CollisionObject::ADD;
-    door.primitives.push_back(box(0.642, 2.210, 0.010));
-    door.primitives.push_back(box(0.025, 0.025, 0.070));
-    door.primitives.push_back(box(0.025, 0.025, 0.070));
-    door.primitives.push_back(box(0.025, 0.165, 0.025));
-
-    tf2::Quaternion hinge_rotation;
-    hinge_rotation.setRotation(tf2::Vector3(0.0, 1.0, 0.0), door_position);
-    const tf2::Transform hinge(
-      hinge_rotation, tf2::Vector3(0.010, 0.010, -0.600));
+    // The panel follows the visible URDF envelope and remains in MoveIt's
+    // world even while the door itself is the active control.
+    door.primitives.push_back(
+      box(kDoorPanelWidth, kDoorPanelHeight, kDoorPanelThickness));
     const tf2::Transform panel_center(
-      tf2::Quaternion::getIdentity(), tf2::Vector3(0.321, 1.105, -0.005));
-    const auto door_transform = model_transform() * hinge;
-    door.primitive_poses.push_back(to_pose(door_transform * panel_center));
-    door.primitive_poses.push_back(to_pose(
-      door_transform * tf2::Transform(
-        tf2::Quaternion::getIdentity(),
-        tf2::Vector3(0.600, 1.035, -0.045))));
-    door.primitive_poses.push_back(to_pose(
-      door_transform * tf2::Transform(
-        tf2::Quaternion::getIdentity(),
-        tf2::Vector3(0.600, 1.175, -0.045))));
-    door.primitive_poses.push_back(to_pose(
-      door_transform * tf2::Transform(
-        tf2::Quaternion::getIdentity(),
-        tf2::Vector3(0.600, 1.105, -0.080))));
+      tf2::Quaternion::getIdentity(),
+      tf2::Vector3(0.321, 1.105, kDoorPanelCenterZ));
+    door.primitive_poses.push_back(
+      to_pose(
+        door_transform(door_position) * panel_center));
     return door;
+  }
+
+  moveit_msgs::msg::CollisionObject make_door_handle(
+    double door_position,
+    bool remove) const
+  {
+    moveit_msgs::msg::CollisionObject handle;
+    handle.header.frame_id = frame_id_;
+    handle.header.stamp = now();
+    handle.id = "cabinet_control_" + std::string(kDoorId) + "_handle";
+    if (remove) {
+      handle.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+      return handle;
+    }
+    handle.operation = moveit_msgs::msg::CollisionObject::ADD;
+    handle.primitives.push_back(box(0.025, 0.025, 0.070));
+    handle.primitives.push_back(box(0.025, 0.025, 0.070));
+    handle.primitives.push_back(box(0.025, 0.165, 0.025));
+    const auto transform = door_transform(door_position);
+    handle.primitive_poses.push_back(
+      to_pose(
+        transform * tf2::Transform(
+          tf2::Quaternion::getIdentity(),
+          tf2::Vector3(0.600, 1.035, -0.045))));
+    handle.primitive_poses.push_back(
+      to_pose(
+        transform * tf2::Transform(
+          tf2::Quaternion::getIdentity(),
+          tf2::Vector3(0.600, 1.175, -0.045))));
+    handle.primitive_poses.push_back(
+      to_pose(
+        transform * tf2::Transform(
+          tf2::Quaternion::getIdentity(),
+          tf2::Vector3(0.600, 1.105, -0.080))));
+    return handle;
   }
 
   moveit_msgs::msg::CollisionObject make_control(
@@ -276,10 +305,11 @@ private:
       cylinder(kButtonCollisionLength, kButtonCollisionRadius));
     const double collision_z = control.rotary ? control.z + 0.013 :
       control.z + kButtonCollisionCenterOffset;
-    object.primitive_poses.push_back(to_pose(
-      model_transform() * tf2::Transform(
-        tf2::Quaternion::getIdentity(),
-        tf2::Vector3(control.x, control.y, collision_z))));
+    object.primitive_poses.push_back(
+      to_pose(
+        model_transform() * tf2::Transform(
+          tf2::Quaternion::getIdentity(),
+          tf2::Vector3(control.x, control.y, collision_z))));
     return object;
   }
 
@@ -312,9 +342,10 @@ private:
       switch_rotation, tf2::Vector3(0.0, 0.0, 0.0));
     const tf2::Transform switch_center(
       tf2::Quaternion::getIdentity(), tf2::Vector3(0.0, 0.0, 0.010));
-    object.primitive_poses.push_back(to_pose(
-      model_transform() * hinge * switch_pivot * switch_handle *
-      switch_center));
+    object.primitive_poses.push_back(
+      to_pose(
+        model_transform() * hinge * switch_pivot * switch_handle *
+        switch_center));
     return object;
   }
 
@@ -338,7 +369,7 @@ private:
     }
 
     std::vector<moveit_msgs::msg::CollisionObject> objects;
-    objects.reserve(kControlCollisions.size() + 3U);
+    objects.reserve(kControlCollisions.size() + 4U);
     objects.push_back(make_frame());
     for (const auto & control : kControlCollisions) {
       if (active_control == control.id) {
@@ -356,12 +387,13 @@ private:
     } else {
       objects.push_back(make_switch(door_position, switch_position, false));
     }
+    objects.push_back(make_door_panel(door_position));
     if (active_control == kDoorId) {
       if (published_active_control != active_control) {
-        objects.push_back(make_door(door_position, true));
+        objects.push_back(make_door_handle(door_position, true));
       }
     } else {
-      objects.push_back(make_door(door_position, false));
+      objects.push_back(make_door_handle(door_position, false));
     }
 
     if (planning_scene_publisher_->get_subscription_count() == 0U) {

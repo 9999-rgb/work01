@@ -315,6 +315,15 @@ public:
               "Parameter 'door_pregrasp_clearance' must be no greater "
               "than 0.015 m.");
     }
+    door_release_clearance_ = positive_parameter(
+      "door_release_clearance", 0.30);
+    if (door_release_clearance_ < 0.28 ||
+      door_release_clearance_ > 0.35)
+    {
+      throw std::invalid_argument(
+              "Parameter 'door_release_clearance' must be in "
+              "[0.28, 0.35] m.");
+    }
     planning_scene_settle_seconds_ = positive_parameter(
       "planning_scene_settle_seconds", 0.50);
     rotation_waypoint_step_ = positive_parameter(
@@ -1432,8 +1441,7 @@ private:
           // Staging normal to a fully open door leaves the closing release
           // point more than 1.4 m from the base.  Face the door near its
           // over-center release angle instead: both the initial handle and
-          // the complete closing arc then remain inside the arm workspace,
-          // while the chassis stays outside the open panel's swept radius.
+          // complete closing arc then remain inside the arm workspace.
           staging_reference_position = target_position +
             door_release_fraction_ *
             (initial_state.position - target_position);
@@ -1668,28 +1676,54 @@ private:
             goal_handle, *control, initial_state.position,
             manipulation_position, release_hold_started);
         }
-        publish_operate_feedback(
-          goal_handle,
-          OperateCabinetControl::Feedback::RELEASING,
-          0.78F, target_position,
-          control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ?
-          "Releasing the door beyond its physical detent midpoint." :
-          "Releasing the physical grasp at the requested detent.");
-        set_control_grasp(goal_handle, control->id, false);
-        grasp_attached = false;
-        const auto released_at = std::chrono::steady_clock::now();
+        const bool is_door = control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+        const double release_clearance = is_door ?
+          door_release_clearance_ : prepress_distance_;
         const auto target_ready = calculate_rotary_tool_pose(
-          *control, manipulation_position, prepress_distance_, false);
-        publish_operate_feedback(
-          goal_handle,
-          OperateCabinetControl::Feedback::RETREATING,
-          0.84F, target_position,
-          "Retreating before verifying the released control.");
-        execute_cartesian_path(
-          *move_group, goal_handle, {target_ready},
-          cartesian_velocity_scale_, cartesian_acceleration_scale_);
-        should_attempt_retreat = false;
+          *control, manipulation_position, release_clearance, false);
+        std::chrono::steady_clock::time_point released_at;
+        if (is_door) {
+          // Compliant door grasping couples only tool rotation to the hinge.
+          // Keep that coupling active while translating the tool beyond the
+          // remaining door sweep.  Releasing first lets the closer drive the
+          // visible panel through the retreating arm.
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::RETREATING,
+            0.78F, target_position,
+            "Holding the door angle while clearing its remaining sweep.");
+          execute_cartesian_path(
+            *move_group, goal_handle, {target_ready},
+            cartesian_velocity_scale_, cartesian_acceleration_scale_);
+          should_attempt_retreat = false;
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::RELEASING,
+            0.84F, target_position,
+            "Releasing the door after the tool cleared its sweep.");
+          set_control_grasp(goal_handle, control->id, false);
+          grasp_attached = false;
+          released_at = std::chrono::steady_clock::now();
+        } else {
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::RELEASING,
+            0.78F, target_position,
+            "Releasing the physical grasp at the requested detent.");
+          set_control_grasp(goal_handle, control->id, false);
+          grasp_attached = false;
+          released_at = std::chrono::steady_clock::now();
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::RETREATING,
+            0.84F, target_position,
+            "Retreating before verifying the released control.");
+          execute_cartesian_path(
+            *move_group, goal_handle, {target_ready},
+            cartesian_velocity_scale_, cartesian_acceleration_scale_);
+          should_attempt_retreat = false;
+        }
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::VERIFYING,
@@ -2448,6 +2482,22 @@ private:
     bool grasp_attached,
     bool canceled) noexcept
   {
+    const bool is_door = control && control->control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+    if (is_door && grasp_attached && should_attempt_retreat && move_group &&
+      rclcpp::ok())
+    {
+      try {
+        const auto state = button_snapshot(*control);
+        const auto retreat_pose = calculate_rotary_tool_pose(
+          *control, state.position, door_release_clearance_, false);
+        best_effort_retreat(*move_group, retreat_pose);
+      } catch (const std::exception & error) {
+        RCLCPP_ERROR(
+          get_logger(), "Door pre-release safety retreat failed: %s",
+          error.what());
+      }
+    }
     if (control && (grasp_attached || control->requires_grasp)) {
       release_control_grasp_noexcept(control->id);
     }
@@ -2459,7 +2509,8 @@ private:
         const auto retreat_pose = is_button ?
           calculate_operation_poses(*control, false).prepress_pose :
           calculate_rotary_tool_pose(
-          *control, state.position, prepress_distance_, false);
+          *control, state.position,
+          is_door ? door_release_clearance_ : prepress_distance_, false);
         best_effort_retreat(*move_group, retreat_pose);
       } catch (const std::exception & error) {
         RCLCPP_ERROR(
@@ -3800,6 +3851,7 @@ private:
   double door_detent_hysteresis_{0.02};
   double door_release_position_margin_{0.01};
   double door_pregrasp_clearance_{0.010};
+  double door_release_clearance_{0.30};
   double planning_scene_settle_seconds_{0.50};
   double rotation_waypoint_step_{0.03490658504};
   double cartesian_velocity_scale_{0.08};

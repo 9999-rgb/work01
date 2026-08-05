@@ -28,7 +28,7 @@
       friction="0.8" />
     <xacro:xczs_gazebo_link_properties
       link_name="arm_lift_mast"
-      material="Gazebo/DarkGrey"
+      material="Gazebo/Grey"
       gravity="false"
       friction="0.8" />
     <xacro:xczs_gazebo_link_properties

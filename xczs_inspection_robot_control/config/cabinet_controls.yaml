@@ -276,11 +276,12 @@ xczs_cabinet_button_operator:
     door_detent_hysteresis: 0.02
     door_release_position_margin: 0.01
     door_pregrasp_clearance: 0.010
+    door_release_clearance: 0.30
     planning_scene_settle_seconds: 0.50
     rotation_waypoint_step: 0.03490658504
     cartesian_jump_threshold: 2.0
     cartesian_planning_attempts: 5
-    door_cartesian_segment_waypoints: 6
+    door_cartesian_segment_waypoints: 3
     motion_planning_attempts: 3
     grasp_service: /xczs/cabinet/grasp
     reset_physics_service: /xczs/cabinet/reset_physics

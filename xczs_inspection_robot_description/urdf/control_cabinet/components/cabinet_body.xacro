@@ -101,14 +101,21 @@
           iyy="0.6871" iyz="0" izz="8.8271" />
       </inertial>
       <visual name="cabinet_rear_door_visual">
-        <origin xyz="0.321 1.105 -0.005" rpy="0 0 0" />
+        <!--
+          A visible reveal keeps the panel clear of the fixed frame throughout
+          the hinge sweep instead of sharing coplanar faces at both detents.
+        -->
+        <origin xyz="0.321 1.105 -${cabinet_door_thickness / 2 + cabinet_door_visual_depth_clearance}" rpy="0 0 0" />
         <geometry>
-          <box size="${cabinet_door_width} ${cabinet_door_height} ${cabinet_door_thickness}" />
+          <box size="${cabinet_door_width - 2 * cabinet_door_visual_clearance} ${cabinet_door_height - 2 * cabinet_door_visual_clearance} ${cabinet_door_thickness}" />
         </geometry>
         <material name="cabinet_dark_gray" />
       </visual>
       <collision name="cabinet_rear_door_collision">
-        <!-- Leave assembly clearance from the fixed frame on every edge. -->
+        <!--
+          Keep physical assembly clearance while overlapping most of the
+          visible panel depth, so contact occurs before visible penetration.
+        -->
         <origin xyz="0.321 1.105 -${cabinet_door_thickness / 2 + cabinet_door_collision_depth_clearance}" rpy="0 0 0" />
         <geometry>
           <box size="${cabinet_door_width - 2 * cabinet_door_collision_clearance} ${cabinet_door_height - 2 * cabinet_door_collision_clearance} ${cabinet_door_thickness}" />

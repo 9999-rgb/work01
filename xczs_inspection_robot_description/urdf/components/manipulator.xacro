@@ -22,7 +22,7 @@
         <geometry>
           <box size="0.20 0.04 ${arm_lift_mast_height}" />
         </geometry>
-        <material name="industrial_navy" />
+        <material name="guide_steel" />
       </visual>
       <visual>
         <origin xyz="-0.075 -0.29 ${arm_lift_mast_center_z}" rpy="0 0 0" />
@@ -43,7 +43,7 @@
         <geometry>
           <box size="0.24 0.40 0.08" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="guide_steel" />
       </visual>
       <visual>
         <origin
@@ -52,7 +52,7 @@
         <geometry>
           <box size="0.20 0.11 0.03" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="guide_steel" />
       </visual>
       <collision name="lift_mast_backplate_collision">
         <origin xyz="0 -0.34 ${arm_lift_mast_center_z}" rpy="0 0 0" />

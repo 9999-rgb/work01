@@ -326,6 +326,14 @@ def main() -> int:
             fail(
                 "Door pre-grasp clearance must be in [0.003, 0.015] m."
             )
+        door_release_clearance = float(
+            parameters.get("door_release_clearance", 0.0)
+        )
+        if (
+            not math.isfinite(door_release_clearance)
+            or not 0.28 <= door_release_clearance <= 0.35
+        ):
+            fail("Door release clearance must be in [0.28, 0.35] m.")
         door_detent_hysteresis = float(
             parameters.get("door_detent_hysteresis", 0.0)
         )
@@ -614,12 +622,6 @@ def main() -> int:
                         text(entry, "grasp_coupling_max_effort")
                     )
                     hysteresis = float(text(entry, "detent_hysteresis"))
-                    collision_restore_delay = float(
-                        text(entry, "actuation_collision_restore_delay")
-                    )
-                    collision_restore_distance = float(
-                        text(entry, "actuation_collision_restore_distance")
-                    )
                     if (
                         not 40.0 <= stiffness <= 80.0
                         or not 20.0 <= damping <= 32.0
@@ -662,27 +664,10 @@ def main() -> int:
                         abs_tol=1.0e-9,
                     ):
                         fail("Door plugin/action detent hysteresis values differ.")
-                    if actuation_collisions != [
-                        "cabinet_rear_door_collision",
-                        "cabinet_switch_base_collision",
-                        (
-                            "cabinet_switch_handle::"
-                            "cabinet_switch_handle_collision"
-                        ),
-                    ]:
+                    if actuation_collisions:
                         fail(
-                            "Door actuation must suppress the complete moving "
-                            "door/switch collision subtree."
-                        )
-                    if not 1.0 <= collision_restore_delay <= 3.0:
-                        fail(
-                            "Door panel collision restore delay must be in "
-                            "[1, 3] seconds."
-                        )
-                    if not 0.4 <= collision_restore_distance <= 0.8:
-                        fail(
-                            "Door panel collision may be restored only after "
-                            "the tool reaches a safe clearance."
+                            "Door and mounted-switch collisions must remain "
+                            "physical throughout door actuation."
                         )
         if set(plugin_ids) != set(control_ids) or len(set(plugin_ids)) != 33:
             fail("Plugin and catalog control IDs differ or contain duplicates.")
@@ -744,36 +729,14 @@ def main() -> int:
             or len(door_collision_size) != 3
             or len(door_visual_xyz) != 3
             or len(door_collision_xyz) != 3
-            or not math.isclose(
-                door_visual_size[0] - door_collision_size[0],
-                0.020,
-                abs_tol=1.0e-6,
-            )
-            or not math.isclose(
-                door_visual_size[1] - door_collision_size[1],
-                0.020,
-                abs_tol=1.0e-6,
-            )
-            or not math.isclose(
-                door_visual_size[2],
-                door_collision_size[2],
-                abs_tol=1.0e-6,
-            )
-            or not math.isclose(
-                door_visual_xyz[0], door_collision_xyz[0], abs_tol=1.0e-6
-            )
-            or not math.isclose(
-                door_visual_xyz[1], door_collision_xyz[1], abs_tol=1.0e-6
-            )
-            or not math.isclose(
-                door_visual_xyz[2] - door_collision_xyz[2],
-                0.010,
-                abs_tol=1.0e-6,
-            )
+            or not close_lists(door_visual_size, [0.636, 2.204, 0.010])
+            or not close_lists(door_collision_size, [0.634, 2.202, 0.010])
+            or not close_lists(door_visual_xyz, [0.321, 1.105, -0.008])
+            or not close_lists(door_collision_xyz, [0.321, 1.105, -0.009])
         ):
             fail(
-                "Rear-door collision must retain 10 mm frame clearance on "
-                "all four swinging-panel edges and in depth."
+                "Rear-door visual must keep a 3 mm frame reveal and its "
+                "physical collision must stay only 1 mm inside that shell."
             )
 
         # Derive the nearest articulated parent from the URDF link tree.  This
@@ -861,11 +824,25 @@ def main() -> int:
             "constexpr double kButtonCollisionLength = 0.012;",
             "constexpr double kButtonCollisionRadius = 0.015;",
             "constexpr double kButtonCollisionCenterOffset = -0.0055;",
+            "constexpr double kDoorPanelWidth = 0.636;",
+            "constexpr double kDoorPanelHeight = 2.204;",
+            "constexpr double kDoorPanelThickness = 0.010;",
+            "constexpr double kDoorPanelCenterZ = -0.008;",
         ):
             if declaration not in planning_source:
                 fail(
-                    "Planning-scene button primitive must match the "
-                    "physical URDF."
+                    "Planning-scene cabinet primitives must match the "
+                    "physical or visible URDF envelope."
+                )
+        for door_scene_requirement in (
+            "objects.push_back(make_door_panel(door_position));",
+            "objects.push_back(make_door_handle(door_position, true));",
+            "std::chrono::milliseconds(50)",
+        ):
+            if door_scene_requirement not in planning_source:
+                fail(
+                    "Planning scene must retain and rapidly synchronize the "
+                    "door panel while opening only the active handle target."
                 )
 
         prismatic_count = sum(
@@ -933,6 +910,12 @@ def main() -> int:
                 "applies its "
                 "link material."
             )
+        if any(
+            visual.find("material") is None
+            or visual.find("material").attrib.get("name") != "guide_steel"
+            for visual in mast_visuals
+        ):
+            fail("Every lift mast visual must use the light guide-steel color.")
         required_mast_collisions = {
             "lift_mast_backplate_collision",
             "lift_mast_left_rail_collision",
@@ -1001,7 +984,7 @@ def main() -> int:
             for entry in robot_root.findall("./gazebo[@reference]")
         }
         for link_name, expected_material in (
-            ("arm_lift_mast", "Gazebo/DarkGrey"),
+            ("arm_lift_mast", "Gazebo/Grey"),
             ("arm_lift", "Gazebo/Orange"),
         ):
             properties = gazebo_properties.get(link_name)
@@ -1066,7 +1049,7 @@ def main() -> int:
             expected_material = (
                 "Gazebo/Orange"
                 if link_name == "arm_lift"
-                else "Gazebo/DarkGrey"
+                else "Gazebo/Grey"
             )
             if (
                 len(material_names) < expected_material_minimum

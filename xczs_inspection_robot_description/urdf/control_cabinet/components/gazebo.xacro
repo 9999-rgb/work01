@@ -167,16 +167,11 @@
         <graspable>true</graspable>
         <grasp_point>0.600 1.105 -0.080</grasp_point>
         <!--
-          The retreat pose remains inside the swept volume of the rear switch.
-          Disable the complete moving door subtree while the door settles;
-          otherwise the panel spring can be held at the over-center boundary
-          even though the main panel collision itself is already disabled.
+          The door uses compliant one-DOF coupling rather than a rigid
+          cross-model constraint.  Its panel and mounted switch therefore
+          remain physical throughout manipulation; the operator moves the
+          tool beyond the complete remaining sweep before releasing it.
         -->
-        <actuation_collision>cabinet_rear_door_collision</actuation_collision>
-        <actuation_collision>cabinet_switch_base_collision</actuation_collision>
-        <actuation_collision>cabinet_switch_handle::cabinet_switch_handle_collision</actuation_collision>
-        <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
-        <actuation_collision_restore_distance>0.50</actuation_collision_restore_distance>
       </control>
     </plugin>
   </xacro:macro>
