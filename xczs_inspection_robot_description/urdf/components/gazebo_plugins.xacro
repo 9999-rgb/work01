@@ -27,6 +27,21 @@
       gravity="true"
       friction="0.8" />
     <xacro:xczs_gazebo_link_properties
+      link_name="arm_lift_mast"
+      material="Gazebo/DarkGrey"
+      gravity="false"
+      friction="0.8" />
+    <xacro:xczs_gazebo_link_properties
+      link_name="arm_lift"
+      material="Gazebo/Orange"
+      gravity="true"
+      friction="0.8" />
+    <!-- Prevent Gazebo from lumping the mast into body. Lumping would merge
+         gravity=false from the mast into the gravity-enabled mobile base. -->
+    <gazebo reference="body_arm_lift_mast">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+    <xacro:xczs_gazebo_link_properties
       link_name="arm1"
       material="Gazebo/Orange"
       gravity="false"

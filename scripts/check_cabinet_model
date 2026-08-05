@@ -8,6 +8,7 @@ import math
 import re
 import subprocess
 import sys
+import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Dict
@@ -123,6 +124,24 @@ def close_lists(left: list[float], right: list[float]) -> bool:
     )
 
 
+def box_geometry(
+    element: ElementTree.Element,
+    field: str,
+) -> tuple[list[float], list[float]]:
+    """Return one URDF box origin and size after strict dimensional checks."""
+    origin = element.find("origin")
+    box = element.find("./geometry/box")
+    if origin is None or box is None:
+        fail(f"{field} is missing its origin or box geometry.")
+    origin_xyz = numbers(origin.attrib.get("xyz", ""), field)
+    box_size = numbers(box.attrib.get("size", ""), field)
+    if len(origin_xyz) != 3 or len(box_size) != 3:
+        fail(f"{field} must have three-dimensional geometry.")
+    if any(dimension <= 0.0 for dimension in box_size):
+        fail(f"{field} box dimensions must be positive.")
+    return origin_xyz, box_size
+
+
 def load_config() -> Dict[str, object]:
     with CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
@@ -137,7 +156,8 @@ def load_config() -> Dict[str, object]:
     return parameters
 
 
-def expand_xacro(path: Path = XACRO) -> ElementTree.Element:
+def render_xacro(path: Path) -> str:
+    """Expand a Xacro document and return its serialized XML."""
     try:
         result = subprocess.run(
             ["xacro", str(path)],
@@ -149,6 +169,57 @@ def expand_xacro(path: Path = XACRO) -> ElementTree.Element:
         fail("xacro is unavailable; source /opt/ros/humble/setup.bash first.")
     except subprocess.CalledProcessError as error:
         fail(f"xacro failed:\n{error.stderr}")
+    return result.stdout
+
+
+def expand_xacro(path: Path = XACRO) -> ElementTree.Element:
+    return ElementTree.fromstring(render_xacro(path))
+
+
+def validate_rcl_parameter_value(robot_description: str) -> None:
+    """Ensure gazebo_ros2_control can pass this XML through rcl arguments."""
+    try:
+        import rclpy
+    except ImportError:
+        fail("rclpy is unavailable; source /opt/ros/humble/setup.bash first.")
+    try:
+        rclpy.init(
+            args=[
+                "--ros-args",
+                "--param",
+                f"robot_description:={robot_description}",
+            ]
+        )
+    except Exception as error:
+        fail(
+            "Expanded robot_description is not a valid rcl parameter value; "
+            f"avoid YAML-significant text in XML comments: {error}"
+        )
+    finally:
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+def convert_urdf_to_sdf(root: ElementTree.Element) -> ElementTree.Element:
+    """Convert an expanded robot to SDF for Gazebo-specific checks."""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".urdf") as urdf_file:
+            ElementTree.ElementTree(root).write(
+                urdf_file,
+                encoding="utf-8",
+                xml_declaration=True,
+            )
+            urdf_file.flush()
+            result = subprocess.run(
+                ["gz", "sdf", "-p", urdf_file.name],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+    except FileNotFoundError:
+        fail("gz is unavailable; install/source Gazebo Classic first.")
+    except subprocess.CalledProcessError as error:
+        fail(f"URDF-to-SDF conversion failed:\n{error.stderr}")
     return ElementTree.fromstring(result.stdout)
 
 
@@ -809,7 +880,9 @@ def main() -> int:
                 f"joints; got {prismatic_count} and {revolute_count}."
             )
 
-        robot_root = expand_xacro(ROBOT_XACRO)
+        robot_description = render_xacro(ROBOT_XACRO)
+        validate_rcl_parameter_value(robot_description)
+        robot_root = ElementTree.fromstring(robot_description)
         lift_joint = robot_root.find("./joint[@name='body_arm_lift']")
         if lift_joint is None or lift_joint.attrib.get("type") != "prismatic":
             fail("Robot URDF is missing the prismatic body_arm_lift joint.")
@@ -836,6 +909,172 @@ def main() -> int:
             or lift_child.attrib.get("link") != "arm_lift"
         ):
             fail("body_arm_lift must connect body to arm_lift.")
+
+        mast_link = robot_root.find("./link[@name='arm_lift_mast']")
+        mast_joint = robot_root.find("./joint[@name='body_arm_lift_mast']")
+        mast_parent = None if mast_joint is None else mast_joint.find("parent")
+        mast_child = None if mast_joint is None else mast_joint.find("child")
+        if (
+            mast_link is None
+            or mast_joint is None
+            or mast_joint.attrib.get("type") != "fixed"
+            or mast_parent is None
+            or mast_parent.attrib.get("link") != "body"
+            or mast_child is None
+            or mast_child.attrib.get("link") != "arm_lift_mast"
+        ):
+            fail("The fixed arm lift mast must be attached directly to body.")
+        mast_visuals = mast_link.findall("visual")
+        if len(mast_visuals) < 5 or any(
+            "name" in visual.attrib for visual in mast_visuals
+        ):
+            fail(
+                "The mast needs at least five unnamed visuals so Gazebo "
+                "applies its "
+                "link material."
+            )
+        required_mast_collisions = {
+            "lift_mast_backplate_collision",
+            "lift_mast_left_rail_collision",
+            "lift_mast_right_rail_collision",
+            "lift_mast_base_collision",
+            "lift_mast_top_collision",
+        }
+        mast_collisions = {
+            collision.attrib.get("name", ""): collision
+            for collision in mast_link.findall("collision")
+        }
+        if not required_mast_collisions.issubset(mast_collisions):
+            fail("The arm lift mast collision structure is incomplete.")
+        mast_boxes = {
+            name: box_geometry(mast_collisions[name], name)
+            for name in required_mast_collisions
+        }
+        for rear_component_name in (
+            "lift_mast_backplate_collision",
+            "lift_mast_left_rail_collision",
+            "lift_mast_right_rail_collision",
+            "lift_mast_top_collision",
+        ):
+            origin_xyz, box_size = mast_boxes[rear_component_name]
+            component_front = origin_xyz[1] + box_size[1] / 2.0
+            if component_front > -0.25:
+                fail(
+                    "The mast, rails and top beam must remain behind the "
+                    "compact arm's 0.25 m clearance envelope."
+                )
+        for rail_name in (
+            "lift_mast_left_rail_collision",
+            "lift_mast_right_rail_collision",
+        ):
+            origin_xyz, box_size = mast_boxes[rail_name]
+            rail_bottom = origin_xyz[2] - box_size[2] / 2.0
+            rail_top = origin_xyz[2] + box_size[2] / 2.0
+            carriage_top_at_max_lift = lift_upper + 0.20
+            if rail_bottom > lift_lower + 1.0e-6 or rail_top < (
+                carriage_top_at_max_lift + 0.05
+            ):
+                fail(
+                    "Both lift rails must cover the complete carriage travel "
+                    "with at least 0.05 m top clearance."
+                )
+        carriage = robot_root.find("./link[@name='arm_lift']")
+        if carriage is None:
+            fail("Robot URDF is missing the arm_lift carriage link.")
+        carriage_visuals = carriage.findall("visual")
+        carriage_collisions = {
+            collision.attrib.get("name", "")
+            for collision in carriage.findall("collision")
+        }
+        if (
+            len(carriage_visuals) < 3
+            or any("name" in visual.attrib for visual in carriage_visuals)
+            or not {
+                "lift_carriage_collision",
+                "lift_carriage_bracket_collision",
+            }.issubset(carriage_collisions)
+        ):
+            fail("The arm lift moving carriage geometry is incomplete.")
+
+        gazebo_properties = {
+            entry.attrib.get("reference", ""): entry
+            for entry in robot_root.findall("./gazebo[@reference]")
+        }
+        for link_name, expected_material in (
+            ("arm_lift_mast", "Gazebo/DarkGrey"),
+            ("arm_lift", "Gazebo/Orange"),
+        ):
+            properties = gazebo_properties.get(link_name)
+            material = None if properties is None else properties.find("material")
+            gravity = None if properties is None else properties.find("gravity")
+            if (
+                material is None
+                or (material.text or "").strip() != expected_material
+                or gravity is None
+                or (gravity.text or "").strip()
+                != ("true" if link_name == "arm_lift" else "false")
+            ):
+                fail(
+                    f"{link_name} must have explicit Gazebo material and "
+                    "gravity properties."
+                )
+        mast_joint_properties = gazebo_properties.get("body_arm_lift_mast")
+        preserve_fixed_joint = (
+            None
+            if mast_joint_properties is None
+            else mast_joint_properties.find("preserveFixedJoint")
+        )
+        if (
+            preserve_fixed_joint is None
+            or (preserve_fixed_joint.text or "").strip() != "true"
+        ):
+            fail(
+                "Gazebo must preserve body_arm_lift_mast so its gravity "
+                "setting is not merged into body."
+            )
+
+        sdf_root = convert_urdf_to_sdf(robot_root)
+        sdf_links = {
+            link.attrib.get("name", ""): link
+            for link in sdf_root.findall("./model/link")
+        }
+        for link_name, expected_gravity, expected_material_minimum in (
+            ("body", "1", 1),
+            ("arm_lift", "1", 3),
+            ("arm_lift_mast", "0", 5),
+        ):
+            sdf_link = sdf_links.get(link_name)
+            gravity_values = (
+                []
+                if sdf_link is None
+                else [
+                    (gravity.text or "").strip()
+                    for gravity in sdf_link.findall("gravity")
+                ]
+            )
+            if gravity_values != [expected_gravity]:
+                fail(
+                    f"Gazebo SDF must preserve one gravity={expected_gravity} "
+                    f"setting for {link_name}; got {gravity_values}."
+                )
+            if link_name == "body":
+                continue
+            material_names = [
+                (material.text or "").strip()
+                for material in sdf_link.findall("./visual/material/script/name")
+            ]
+            expected_material = (
+                "Gazebo/Orange"
+                if link_name == "arm_lift"
+                else "Gazebo/DarkGrey"
+            )
+            if (
+                len(material_names) < expected_material_minimum
+                or any(
+                    material != expected_material for material in material_names
+                )
+            ):
+                fail(f"Gazebo did not retain {link_name} visual materials.")
         shoulder_joint = robot_root.find("./joint[@name='body_arm1']")
         shoulder_parent = (
             None if shoulder_joint is None else shoulder_joint.find("parent")
@@ -995,6 +1234,8 @@ def main() -> int:
         }
         if frozenset(("arm_lift", "arm2")) not in disabled_pairs:
             fail("Synthetic lift/arm2 design overlap is not documented in SRDF.")
+        if frozenset(("arm_lift_mast", "arm_lift")) not in disabled_pairs:
+            fail("Lift mast/carriage guide overlap is not documented in SRDF.")
 
         with NAV2_CONFIG.open("r", encoding="utf-8") as stream:
             nav2_config = yaml.safe_load(stream)

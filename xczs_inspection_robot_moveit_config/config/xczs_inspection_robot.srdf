@@ -49,6 +49,9 @@
     parent_group="manipulator" />
 
   <disable_collisions link1="body" link2="arm_lift" reason="Adjacent" />
+  <disable_collisions link1="body" link2="arm_lift_mast" reason="Adjacent" />
+  <!-- The carriage runs inside the fixed mast guide envelope. -->
+  <disable_collisions link1="arm_lift_mast" link2="arm_lift" reason="Default" />
   <!-- The synthetic carriage encloses the original shoulder package; this
        arm2 overlap is part of its intended guide envelope. -->
   <disable_collisions link1="arm_lift" link2="arm2" reason="Default" />

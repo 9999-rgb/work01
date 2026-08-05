@@ -9,6 +9,9 @@
   <material name="graphite_black">
     <color rgba="0.12 0.14 0.17 1" />
   </material>
+  <material name="guide_steel">
+    <color rgba="0.42 0.47 0.52 1" />
+  </material>
   <material name="rubber_black">
     <color rgba="0.025 0.025 0.03 1" />
   </material>
