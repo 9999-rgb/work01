@@ -274,12 +274,6 @@ public:
         throw std::invalid_argument(
                 "Cabinet grasp_distance_threshold must be positive.");
       }
-      grasp_robot_base_link_ = sdf->Get<std::string>(
-        "grasp_robot_base_link", "body").first;
-      if (grasp_robot_base_link_.empty()) {
-        throw std::invalid_argument(
-                "Cabinet grasp_robot_base_link must not be empty.");
-      }
       reset_service_name_ = sdf->Get<std::string>(
         "reset_service", "/xczs/cabinet/reset_physics").first;
       grasp_service_name_ = sdf->Get<std::string>(
@@ -333,7 +327,7 @@ public:
         }
         ServiceCallbackLease lease(callback_lifetime);
         const auto outcome = owner->submit_physics_request(
-          PhysicsRequest::Kind::kReset, {}, {}, {}, false);
+          PhysicsRequest::Kind::kReset, {}, {}, {}, {}, false);
         response->success = outcome.success;
         response->message = outcome.message;
       });
@@ -348,7 +342,7 @@ public:
           response->success = false;
           response->message = "Cabinet state plugin is shutting down.";
           response->distance =
-            std::numeric_limits<double>::quiet_NaN();
+          std::numeric_limits<double>::quiet_NaN();
           return;
         }
         ServiceCallbackLease lease(callback_lifetime);
@@ -357,6 +351,7 @@ public:
           request->control_id,
           request->robot_model,
           request->robot_link,
+          request->robot_base_link,
           request->attach);
         response->success = outcome.success;
         response->message = outcome.message;
@@ -472,6 +467,7 @@ private:
     std::string control_id;
     std::string robot_model;
     std::string robot_link;
+    std::string robot_base_link;
     bool attach{false};
     std::promise<PhysicsOutcome> promise;
     std::atomic<State> state{State::kPending};
@@ -489,7 +485,7 @@ private:
 
   class ServiceCallbackLease
   {
-  public:
+public:
     explicit ServiceCallbackLease(
       std::shared_ptr<ServiceCallbackLifetime> lifetime)
     : lifetime_(std::move(lifetime)) {}
@@ -506,7 +502,7 @@ private:
       lifetime_->condition.notify_all();
     }
 
-  private:
+private:
     std::shared_ptr<ServiceCallbackLifetime> lifetime_;
   };
 
@@ -597,8 +593,7 @@ private:
             [&collision](const ActuationCollision & configured) {
               return configured.collision == collision;
             });
-          if (duplicate == control.actuation_collisions.end())
-          {
+          if (duplicate == control.actuation_collisions.end()) {
             const auto ode_collision =
               boost::dynamic_pointer_cast<gazebo::physics::ODECollision>(
               collision);
@@ -1175,14 +1170,14 @@ private:
       reset_order.begin(), reset_order.end(),
       [](const Control * left, const Control * right) {
         const auto rank = [](ControlKind kind) {
-            if (kind == ControlKind::kDoor) {
-              return 0;
-            }
-            if (kind == ControlKind::kSwitch) {
-              return 1;
-            }
-            return 2;
-          };
+          if (kind == ControlKind::kDoor) {
+            return 0;
+          }
+          if (kind == ControlKind::kSwitch) {
+            return 1;
+          }
+          return 2;
+        };
         return rank(left->kind) < rank(right->kind);
       });
     for (auto * control : reset_order) {
@@ -1232,6 +1227,7 @@ private:
     std::string control_id,
     std::string robot_model,
     std::string robot_link,
+    std::string robot_base_link,
     bool attach)
   {
     auto request = std::make_shared<PhysicsRequest>();
@@ -1239,6 +1235,7 @@ private:
     request->control_id = std::move(control_id);
     request->robot_model = std::move(robot_model);
     request->robot_link = std::move(robot_link);
+    request->robot_base_link = std::move(robot_base_link);
     request->attach = attach;
     auto result = request->promise.get_future();
     {
@@ -1341,8 +1338,11 @@ private:
         "Another cabinet grasp is active: " + active_grasp_control_,
         std::numeric_limits<double>::quiet_NaN()};
     }
-    if (request.robot_model.empty() || request.robot_link.empty()) {
-      return {false, "robot_model and robot_link are required for attach.",
+    if (request.robot_model.empty() || request.robot_link.empty() ||
+      request.robot_base_link.empty())
+    {
+      return {false,
+        "robot_model, robot_link and robot_base_link are required for attach.",
         std::numeric_limits<double>::quiet_NaN()};
     }
     const auto robot_model = world_->ModelByName(request.robot_model);
@@ -1355,11 +1355,10 @@ private:
       return {false, "Robot link was not found: " + request.robot_link,
         std::numeric_limits<double>::quiet_NaN()};
     }
-    const auto robot_base_link = robot_model->GetLink(
-      grasp_robot_base_link_);
+    const auto robot_base_link = robot_model->GetLink(request.robot_base_link);
     if (!robot_base_link) {
       return {false, "Robot base brake link was not found: " +
-        grasp_robot_base_link_, std::numeric_limits<double>::quiet_NaN()};
+        request.robot_base_link, std::numeric_limits<double>::quiet_NaN()};
     }
 
     const auto target_pose = control.link->WorldPose();
@@ -1554,7 +1553,6 @@ private:
   double publish_period_{0.05};
   double last_publish_time_{0.0};
   double grasp_distance_threshold_{0.12};
-  std::string grasp_robot_base_link_{"body"};
   std::shared_ptr<ServiceCallbackLifetime> callback_lifetime_;
   std::mutex physics_callback_mutex_;
   std::mutex request_mutex_;

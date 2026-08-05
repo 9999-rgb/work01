@@ -36,6 +36,18 @@ CONFIG = (
     / "config"
     / "cabinet_controls.yaml"
 )
+SCENE_CONFIG = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "config"
+    / "cabinet_scene.yaml"
+)
+ROBOT_ADAPTER_CONFIG = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "config"
+    / "cabinet_robot_adapter.yaml"
+)
 PLANNING_SCENE = (
     ROOT
     / "xczs_inspection_robot_control"
@@ -146,13 +158,39 @@ def load_config() -> Dict[str, object]:
     with CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
     try:
-        parameters = document["xczs_cabinet_button_operator"][
-            "ros__parameters"
-        ]
+        parameters = document["/**"]["ros__parameters"]
     except (KeyError, TypeError) as error:
         fail(f"Invalid cabinet parameter file: {error}")
     if not isinstance(parameters, dict):
         fail("Cabinet ros__parameters must be a mapping.")
+    return parameters
+
+
+def load_scene_config() -> Dict[str, object]:
+    with SCENE_CONFIG.open("r", encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    try:
+        parameters = document["xczs_cabinet_planning_scene"][
+            "ros__parameters"
+        ]
+    except (KeyError, TypeError) as error:
+        fail(f"Invalid cabinet scene parameter file: {error}")
+    if not isinstance(parameters, dict):
+        fail("Cabinet scene ros__parameters must be a mapping.")
+    return parameters
+
+
+def load_robot_adapter_config() -> Dict[str, object]:
+    with ROBOT_ADAPTER_CONFIG.open("r", encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    try:
+        parameters = document["xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]
+    except (KeyError, TypeError) as error:
+        fail(f"Invalid cabinet robot-adapter parameter file: {error}")
+    if not isinstance(parameters, dict):
+        fail("Cabinet robot-adapter ros__parameters must be a mapping.")
     return parameters
 
 
@@ -226,6 +264,8 @@ def convert_urdf_to_sdf(root: ElementTree.Element) -> ElementTree.Element:
 def main() -> int:
     try:
         parameters = load_config()
+        scene_parameters = load_scene_config()
+        robot_parameters = load_robot_adapter_config()
         root = expand_xacro()
 
         control_ids = parameters.get("control_ids")
@@ -276,13 +316,9 @@ def main() -> int:
         door_segment_waypoints = parameters.get(
             "door_cartesian_segment_waypoints"
         )
-        if (
-            not isinstance(door_segment_waypoints, int)
-            or not 2 <= door_segment_waypoints <= 12
-        ):
+        if door_segment_waypoints != 2:
             fail(
-                "Door Cartesian segment size must be an integer in "
-                "[2, 12]."
+                "Door Cartesian segment size must be exactly 2 waypoints."
             )
         motion_planning_attempts = parameters.get("motion_planning_attempts")
         if (
@@ -353,7 +389,7 @@ def main() -> int:
         ):
             fail("Door release-position safety margin must be in [0.005, 0.02].")
         takeover_yaw = float(
-            parameters.get("navigation_takeover_yaw_tolerance", 0.0)
+            robot_parameters.get("navigation_takeover_yaw_tolerance", 0.0)
         )
         if not math.isfinite(takeover_yaw) or not 0.1 <= takeover_yaw <= 0.5:
             fail(
@@ -361,7 +397,7 @@ def main() -> int:
                 "[0.1, 0.5] rad."
             )
         takeover_distance = float(
-            parameters.get("navigation_takeover_distance", 0.0)
+            robot_parameters.get("navigation_takeover_distance", 0.0)
         )
         if (
             not math.isfinite(takeover_distance)
@@ -372,7 +408,7 @@ def main() -> int:
                 "[0.10, 0.25] m."
             )
         takeover_stall_timeout = float(
-            parameters.get("navigation_takeover_stall_timeout", 0.0)
+            robot_parameters.get("navigation_takeover_stall_timeout", 0.0)
         )
         if (
             not math.isfinite(takeover_stall_timeout)
@@ -381,11 +417,11 @@ def main() -> int:
             fail(
                 "Nav2 safe-distance stall timeout must be in [1, 10] s."
             )
-        docking_timeout = float(parameters.get("docking_timeout", 0.0))
+        docking_timeout = float(robot_parameters.get("docking_timeout", 0.0))
         if not math.isfinite(docking_timeout) or docking_timeout < 30.0:
             fail("Precision docking timeout must be at least 30 seconds.")
         docking_max_angular_speed = float(
-            parameters.get("docking_max_angular_speed", 0.0)
+            robot_parameters.get("docking_max_angular_speed", 0.0)
         )
         if (
             not math.isfinite(docking_max_angular_speed)
@@ -470,11 +506,12 @@ def main() -> int:
         active_control_topic = text(plugin, "active_control_topic")
         if active_control_topic != "/xczs/cabinet/active_control":
             fail("Cabinet active-control topic must use its canonical name.")
-        if text(plugin, "grasp_robot_base_link") != "body":
+        if plugin.find("grasp_robot_base_link") is not None:
             fail(
-                "Cabinet physical grasp must brake the mobile base at "
-                "the canonical body link."
+                "Cabinet model must not embed a robot-specific base link."
             )
+        if not str(robot_parameters.get("docking_base_frame", "")):
+            fail("Robot adapter must provide the grasp brake/base frame.")
         plugin_controls = plugin.findall("control")
         if len(plugin_controls) != 33:
             fail(f"Expected 33 plugin controls, got {len(plugin_controls)}.")
@@ -774,75 +811,58 @@ def main() -> int:
                 )
 
         planning_source = PLANNING_SCENE.read_text(encoding="utf-8")
-        planning_entries = re.findall(
-            r'\{"([a-z0-9_]+)",\s*([-0-9.]+),\s*([-0-9.]+),'
-            r'\s*([-0-9.]+),\s*(true|false)\}',
-            planning_source,
-        )
-        if len(planning_entries) != len({entry[0] for entry in planning_entries}):
-            fail("Planning-scene front-control registry contains duplicate IDs.")
-        planning_geometry = {
-            control_id: (
-                float(x), float(y), float(z), rotary == "true"
-            )
-            for control_id, x, y, z, rotary in planning_entries
-        }
-        planning_ids = set(planning_geometry)
         front_ids = {
             control_id
             for control_id in control_ids
             if controls[control_id]["type"] in {"button", "knob"}
         }
-        if len(planning_entries) != len(front_ids):
-            fail("Planning-scene front-control registry has the wrong size.")
-        if planning_ids != front_ids:
-            fail("Planning-scene front-control registry differs from config.")
-        for control_id in front_ids:
-            spec = controls[control_id]
-            is_knob = spec["type"] == "knob"
-            source_position = spec.get(
-                "pivot_position" if is_knob else "local_position"
-            )
-            position = numbers(source_position, f"{control_id}.geometry")
-            scene_x, scene_y, scene_z, scene_rotary = planning_geometry[
-                control_id
-            ]
-            if scene_rotary != is_knob or not close_lists(
-                [scene_x, scene_y], position[:2]
-            ) or not math.isclose(
-                scene_z,
-                position[2],
-                rel_tol=0.0,
-                abs_tol=1.0e-3,
-            ):
-                fail(f"{control_id} planning-scene geometry differs from YAML.")
-        if 'constexpr char kDoorId[] = "cabinet_rear_door"' not in planning_source:
-            fail("Planning scene does not register the articulated rear door.")
-        if 'constexpr char kSwitchId[] = "cabinet_main_switch"' not in planning_source:
-            fail("Planning scene does not register the rear-door switch.")
-        for declaration in (
-            "constexpr double kButtonCollisionLength = 0.012;",
-            "constexpr double kButtonCollisionRadius = 0.015;",
-            "constexpr double kButtonCollisionCenterOffset = -0.0055;",
-            "constexpr double kDoorPanelWidth = 0.636;",
-            "constexpr double kDoorPanelHeight = 2.204;",
-            "constexpr double kDoorPanelThickness = 0.010;",
-            "constexpr double kDoorPanelCenterZ = -0.008;",
+        if len(front_ids) != 31:
+            fail("Shared control profile must contain 31 front controls.")
+        door_scene = scene_parameters.get("door")
+        switch_scene = scene_parameters.get("switch")
+        collision_scene = scene_parameters.get("control_collision")
+        if not all(
+            isinstance(value, dict)
+            for value in (door_scene, switch_scene, collision_scene)
         ):
-            if declaration not in planning_source:
-                fail(
-                    "Planning-scene cabinet primitives must match the "
-                    "physical or visible URDF envelope."
-                )
-        for door_scene_requirement in (
-            "objects.push_back(make_door_panel(door_position));",
-            "objects.push_back(make_door_handle(door_position, true));",
+            fail("Scene profile is missing door, switch or control geometry.")
+        if door_scene.get("control_id") != "cabinet_rear_door":
+            fail("Scene profile does not select the articulated rear door.")
+        if switch_scene.get("control_id") != "cabinet_main_switch":
+            fail("Scene profile does not select the rear-door switch.")
+        if switch_scene.get("parent_control_id") != door_scene.get("control_id"):
+            fail("Scene switch must be parented to the configured door.")
+        expected_scene_geometry = {
+            "control_collision.button_size": ([0.012, 0.015], collision_scene.get("button_size")),
+            "control_collision.knob_size": ([0.046, 0.050], collision_scene.get("knob_size")),
+            "door.panel_size": ([0.636, 2.204, 0.011], door_scene.get("panel_size")),
+            "door.panel_position": ([0.321, 1.105, -0.0085], door_scene.get("panel_position")),
+        }
+        for field, (expected, configured) in expected_scene_geometry.items():
+            if not close_lists(numbers(configured, field), expected):
+                fail(f"{field} differs from the verified cabinet envelope.")
+        if not math.isclose(
+            float(collision_scene.get("button_center_offset", 0.0)),
+            0.0055,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            fail("Button collision center offset differs from the URDF.")
+        if "kControlCollisions" in planning_source:
+            fail("Planning scene must not duplicate the YAML control catalog.")
+        for scene_requirement in (
+            '"control_ids"',
+            '"controls." + id + "."',
+            "lookupTransform(",
+            "require_pose_valid_",
+            "objects.push_back(make_door_panel(model, door_position));",
+            "objects.push_back(make_door_handle(model, door_position, true));",
             "std::chrono::milliseconds(50)",
         ):
-            if door_scene_requirement not in planning_source:
+            if scene_requirement not in planning_source:
                 fail(
-                    "Planning scene must retain and rapidly synchronize the "
-                    "door panel while opening only the active handle target."
+                    "Planning scene must consume the shared catalog and TF, "
+                    "retain the door panel, and remove only the active handle."
                 )
 
         prismatic_count = sum(

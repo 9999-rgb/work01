@@ -1,0 +1,21 @@
+xczs_cabinet_button_operator:
+  ros__parameters:
+    # 机器人适配层：更换机器人时只替换这些 MoveIt/Nav2/工具参数。
+    robot_model_name: xczs_inspection_robot
+    move_group: manipulator
+    planning_tip_link: end
+    contact_tool_link: button_press_tip
+    transport_named_target: home
+    navigation_base_frame: base_link
+    docking_base_frame: body
+    base_link_yaw_offset: 1.57079632679
+    navigation_takeover_distance: 0.15
+    navigation_takeover_yaw_tolerance: 0.35
+    navigation_takeover_stall_timeout: 4.0
+    docking_timeout: 45.0
+    docking_position_tolerance: 0.008
+    docking_yaw_tolerance: 0.070
+    docking_max_linear_speed: 0.15
+    docking_max_angular_speed: 0.45
+    docking_linear_gain: 0.8
+    docking_angular_gain: 1.2

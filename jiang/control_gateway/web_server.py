@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from http.server import BaseHTTPRequestHandler
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from .ros_node import ControlRequestError
@@ -36,11 +36,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                     200,
                     self.control_server.navigation_map(),
                 )
-            elif path == "/motion/status":
-                self._send_json(
-                    200,
-                    self.control_server.motion_status(),
-                )
             elif path == "/cabinet/status":
                 self._send_json(
                     200,
@@ -59,7 +54,7 @@ class ControlHandler(BaseHTTPRequestHandler):
             self._send_json(500, {"error": str(error)})
 
     def do_POST(self) -> None:
-        """Dispatch manual, Nav2 and MoveIt commands."""
+        """Dispatch manual, Nav2 and cabinet commands."""
         path = urlparse(self.path).path
         try:
             routes = {
@@ -69,9 +64,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/navigation/goal": self._handle_navigation_goal,
                 "/navigation/cancel": self._handle_navigation_cancel,
                 "/navigation/takeover": self._handle_navigation_takeover,
-                "/motion/named": self._handle_motion_named,
-                "/motion/pose": self._handle_motion_pose,
-                "/motion/cancel": self._handle_motion_cancel,
                 "/cabinet/operate": self._handle_cabinet_operate,
                 "/cabinet/press": self._handle_cabinet_press,
                 "/cabinet/cancel": self._handle_cabinet_cancel,
@@ -164,53 +156,6 @@ class ControlHandler(BaseHTTPRequestHandler):
         self._send_json(
             202,
             self.control_server.takeover_navigation(),
-        )
-
-    def _handle_motion_named(self) -> None:
-        body = self._required_body()
-        group = body.get("group")
-        target = body.get("target")
-        execute = body.get("execute", True)
-        if not isinstance(group, str) or not isinstance(target, str):
-            raise ControlRequestError(
-                "group and target must be strings."
-            )
-        if not isinstance(execute, bool):
-            raise ControlRequestError("execute must be a boolean.")
-        self._send_json(
-            202,
-            self.control_server.send_named_motion(
-                group,
-                target,
-                execute,
-            ),
-        )
-
-    def _handle_motion_pose(self) -> None:
-        body = self._required_body()
-        frame_id = body.get("frame_id", "body")
-        execute = body.get("execute", False)
-        if not isinstance(frame_id, str):
-            raise ControlRequestError("frame_id must be a string.")
-        if not isinstance(execute, bool):
-            raise ControlRequestError("execute must be a boolean.")
-        position = self._number_list(body, "position", 3)
-        orientation = self._number_list(body, "orientation", 4)
-        self._send_json(
-            202,
-            self.control_server.send_pose_motion(
-                frame_id,
-                position,
-                orientation,
-                execute,
-            ),
-        )
-
-    def _handle_motion_cancel(self) -> None:
-        self._optional_body()
-        self._send_json(
-            202,
-            self.control_server.cancel_motion(),
         )
 
     def _handle_cabinet_press(self) -> None:
@@ -352,28 +297,6 @@ class ControlHandler(BaseHTTPRequestHandler):
         if not math.isfinite(value):
             raise ControlRequestError(f"{name} must be finite.")
         return value
-
-    @classmethod
-    def _number_list(
-        cls,
-        body: Dict[str, Any],
-        name: str,
-        expected_length: int,
-    ) -> List[float]:
-        values = body.get(name)
-        if not isinstance(values, list) or len(values) != expected_length:
-            raise ControlRequestError(
-                f"{name} must contain {expected_length} numbers."
-            )
-        result = []
-        for index, value in enumerate(values):
-            result.append(
-                cls._finite_number(
-                    {f"{name}[{index}]": value},
-                    f"{name}[{index}]",
-                )
-            )
-        return result
 
     def _send_json(self, status: int, data: Any) -> None:
         body = json.dumps(

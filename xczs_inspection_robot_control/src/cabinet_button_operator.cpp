@@ -72,16 +72,9 @@ using MoveGroupInterface =
 
 constexpr char kActionName[] = "/xczs/press_cabinet_button";
 constexpr char kOperateActionName[] = "/xczs/operate_cabinet_control";
-constexpr char kDefaultButtonId[] = "box_10_button_1";
-constexpr char kSecondButtonId[] = "box_10_button_2";
 constexpr char kControlCatalogTopic[] = "/xczs/cabinet/control_catalog";
 constexpr char kActiveControlTopic[] = "/xczs/cabinet/active_control";
 constexpr char kResetControlsService[] = "/xczs/cabinet/reset_controls";
-constexpr char kArmGroup[] = "manipulator";
-constexpr char kArmStowTarget[] = "home";
-constexpr char kArmTipLink[] = "end";
-constexpr char kContactToolLink[] = "button_press_tip";
-constexpr char kRobotModelName[] = "xczs_inspection_robot";
 
 class OperationError : public std::runtime_error
 {
@@ -121,6 +114,14 @@ struct RotaryOperationPoses
   geometry_msgs::msg::Pose ready_pose;
   geometry_msgs::msg::Pose door_pregrasp_pose;
   geometry_msgs::msg::Pose grasp_pose;
+};
+
+struct DoorArcProgress
+{
+  bool in_progress{false};
+  double initial_position{0.0};
+  std::size_t completed_waypoints{0U};
+  std::size_t total_waypoints{0U};
 };
 
 struct ButtonSnapshot
@@ -206,25 +207,35 @@ public:
   CabinetButtonOperator()
   : Node("xczs_cabinet_button_operator")
   {
-    const auto legacy_button_id = declare_parameter<std::string>(
-      "button_id", kDefaultButtonId);
     planning_frame_ = declare_parameter<std::string>(
       "planning_frame", "odom");
     navigation_frame_ = declare_parameter<std::string>(
       "navigation_frame", "map");
-    const auto legacy_button_joint_name = declare_parameter<std::string>(
-      "button_joint_name", "box_10_box_10_button_1");
-    const auto legacy_button_joint_state_topic =
-      declare_parameter<std::string>(
-      "button_joint_state_topic",
-      "/xczs/cabinet/box_10_button_1/joint_states");
-    const auto legacy_button_pressed_topic = declare_parameter<std::string>(
-      "button_pressed_topic",
-      "/xczs/cabinet/box_10_button_1/pressed");
+    robot_model_name_ = required_string_parameter(
+      "robot_model_name", "");
+    move_group_name_ = required_string_parameter("move_group", "");
+    planning_tip_link_ = required_string_parameter(
+      "planning_tip_link", "");
+    contact_tool_link_ = required_string_parameter(
+      "contact_tool_link", "");
+    transport_named_target_ = required_string_parameter(
+      "transport_named_target", "");
+    navigation_base_frame_ = required_string_parameter(
+      "navigation_base_frame", "");
+    docking_base_frame_ = required_string_parameter(
+      "docking_base_frame", "");
     const auto control_catalog_topic = declare_parameter<std::string>(
       "control_catalog_topic", kControlCatalogTopic);
     cabinet_frame_ = declare_parameter<std::string>(
       "cabinet_frame", "control_cabinet_frame");
+    require_cabinet_pose_valid_ = declare_parameter<bool>(
+      "require_cabinet_pose_valid", true);
+    const auto cabinet_pose_valid_topic = required_string_parameter(
+      "cabinet_pose_valid_topic", "/xczs/cabinet/pose_valid");
+    cabinet_pose_translation_tolerance_ = positive_parameter(
+      "cabinet_pose_translation_tolerance", 0.020);
+    cabinet_pose_rotation_tolerance_ = positive_parameter(
+      "cabinet_pose_rotation_tolerance", 0.035);
     const auto grasp_service = declare_parameter<std::string>(
       "grasp_service", "/xczs/cabinet/grasp");
     const auto reset_physics_service = declare_parameter<std::string>(
@@ -232,22 +243,6 @@ public:
     const auto manual_base_topic = declare_parameter<std::string>(
       "manual_base_topic", "/xczs/manual_cmd_vel");
 
-    cabinet_x_ = declare_parameter<double>("cabinet_x", 2.0);
-    cabinet_y_ = declare_parameter<double>("cabinet_y", 0.33);
-    cabinet_z_ = declare_parameter<double>("cabinet_z", 0.0);
-    cabinet_roll_ = declare_parameter<double>(
-      "cabinet_roll", 1.57079632679);
-    cabinet_pitch_ = declare_parameter<double>("cabinet_pitch", 0.0);
-    cabinet_yaw_ = declare_parameter<double>(
-      "cabinet_yaw", -1.57079632679);
-
-    const double legacy_button_local_x = declare_parameter<double>(
-      "button_local_x", 0.492);
-    const double legacy_button_local_y = declare_parameter<double>(
-      "button_local_y", 0.574);
-    const double legacy_button_local_z = declare_parameter<double>(
-      "button_local_z", 0.011494);
-    tool_tip_offset_ = positive_parameter("tool_tip_offset", 0.370);
     staging_distance_ = positive_parameter("staging_distance", 0.930);
     prepress_distance_ = positive_parameter("prepress_distance", 0.060);
     grasp_outward_offset_ = positive_parameter(
@@ -347,13 +342,10 @@ public:
               "Parameter 'cartesian_planning_attempts' must be in [1, 10].");
     }
     door_cartesian_segment_waypoints_ = declare_parameter<int>(
-      "door_cartesian_segment_waypoints", 6);
-    if (door_cartesian_segment_waypoints_ < 2 ||
-      door_cartesian_segment_waypoints_ > 12)
-    {
+      "door_cartesian_segment_waypoints", 2);
+    if (door_cartesian_segment_waypoints_ != 2) {
       throw std::invalid_argument(
-              "Parameter 'door_cartesian_segment_waypoints' must be in "
-              "[2, 12].");
+              "Parameter 'door_cartesian_segment_waypoints' must be 2.");
     }
     motion_planning_attempts_ = declare_parameter<int>(
       "motion_planning_attempts", 3);
@@ -363,13 +355,7 @@ public:
               "[2, 10].");
     }
 
-    configure_controls(
-      legacy_button_id,
-      legacy_button_joint_name,
-      legacy_button_joint_state_topic,
-      legacy_button_pressed_topic,
-      {legacy_button_local_x, legacy_button_local_y,
-        legacy_button_local_z});
+    configure_controls();
     subscribe_to_button_states();
     control_catalog_publisher_ =
       create_publisher<
@@ -397,6 +383,13 @@ public:
     transform_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     transform_listener_ =
       std::make_unique<tf2_ros::TransformListener>(*transform_buffer_);
+    cabinet_pose_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      cabinet_pose_valid_topic,
+      rclcpp::QoS(1).reliable().transient_local(),
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
+        cabinet_pose_valid_.store(message->data);
+        cabinet_pose_valid_received_.store(true);
+      });
 
     action_server_ = rclcpp_action::create_server<PressCabinetButton>(
       this,
@@ -464,6 +457,17 @@ private:
     PRESS,
     OPERATE,
   };
+
+  std::string required_string_parameter(
+    const std::string & name,
+    const std::string & default_value)
+  {
+    const auto value = declare_parameter<std::string>(name, default_value);
+    if (value.empty()) {
+      throw std::invalid_argument("Parameter '" + name + "' must not be empty.");
+    }
+    return value;
+  }
 
   void activate_goal(
     ActiveGoalType type,
@@ -575,19 +579,10 @@ private:
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
-  void configure_controls(
-    const std::string & legacy_button_id,
-    const std::string & legacy_joint_name,
-    const std::string & legacy_joint_state_topic,
-    const std::string & legacy_pressed_topic,
-    const std::vector<double> & legacy_local_position)
+  void configure_controls()
   {
-    const std::vector<std::string> default_control_ids =
-      legacy_button_id == kDefaultButtonId ?
-      std::vector<std::string>{kDefaultButtonId, kSecondButtonId} :
-    std::vector<std::string>{legacy_button_id};
     const auto control_ids = declare_parameter<std::vector<std::string>>(
-      "control_ids", default_control_ids);
+      "control_ids", std::vector<std::string>{});
     if (control_ids.empty()) {
       throw std::invalid_argument(
               "Parameter 'control_ids' must contain at least one control.");
@@ -662,32 +657,11 @@ private:
                 "Duplicate cabinet control ID '" + control_id + "'.");
       }
 
-      const bool is_legacy_button = control_id == legacy_button_id;
-      const bool is_second_button = control_id == kSecondButtonId;
-      const std::string default_display_name = is_second_button ?
-        "10号模块绿色按钮" :
-        (control_id == kDefaultButtonId ?
-        "10号模块红色按钮" : control_id);
-      const std::string default_joint_name = is_legacy_button ?
-        legacy_joint_name :
-        (is_second_button ? "box_10_box_10_button_2" : control_id);
-      const std::string default_joint_state_topic = is_legacy_button ?
-        legacy_joint_state_topic :
-        "/xczs/cabinet/" + control_id + "/joint_states";
-      const std::string default_pressed_topic = is_legacy_button ?
-        legacy_pressed_topic :
-        "/xczs/cabinet/" + control_id + "/pressed";
-      const std::vector<double> default_local_position = is_legacy_button ?
-        legacy_local_position :
-        (is_second_button ?
-        std::vector<double>{0.527, 0.574, 0.011494} :
-        std::vector<double>{0.0, 0.0, 0.0});
-
       const std::string prefix = "controls." + control_id + ".";
       auto button = std::make_shared<ButtonSpec>();
       button->id = control_id;
       const auto type_name = declare_parameter<std::string>(
-        prefix + "type", "button");
+        prefix + "type", "");
       if (type_name == "button") {
         button->control_type =
           xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
@@ -712,18 +686,20 @@ private:
       const bool is_switch = button->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_SWITCH;
       button->display_name = declare_parameter<std::string>(
-        prefix + "display_name", default_display_name);
+        prefix + "display_name", control_id);
       button->joint_name = declare_parameter<std::string>(
-        prefix + "joint_name", default_joint_name);
+        prefix + "joint_name", "");
       button->joint_state_topic = declare_parameter<std::string>(
-        prefix + "joint_state_topic", default_joint_state_topic);
+        prefix + "joint_state_topic",
+        "/xczs/cabinet/" + control_id + "/joint_states");
       button->pressed_topic = declare_parameter<std::string>(
-        prefix + "pressed_topic", is_button ? default_pressed_topic : "");
+        prefix + "pressed_topic",
+        is_button ? "/xczs/cabinet/" + control_id + "/pressed" : "");
       button->state_topic = declare_parameter<std::string>(
         prefix + "state_topic",
         "/xczs/cabinet/" + control_id + "/state");
       const auto local_position = declare_parameter<std::vector<double>>(
-        prefix + "local_position", default_local_position);
+        prefix + "local_position", std::vector<double>{});
       const auto pivot_position = declare_parameter<std::vector<double>>(
         prefix + "pivot_position", local_position);
       const auto axis = declare_parameter<std::vector<double>>(
@@ -1152,6 +1128,7 @@ private:
       wait_for_fresh_button_state(
         goal_handle, *button, operation_started_at);
       check_cancel(goal_handle);
+      latch_cabinet_transform();
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
       const bool should_navigate_to_staging_pose =
@@ -1161,7 +1138,7 @@ private:
 
       move_group = std::make_shared<MoveGroupInterface>(
         shared_from_this(),
-        kArmGroup,
+        move_group_name_,
         std::shared_ptr<tf2_ros::Buffer>(),
         rclcpp::Duration::from_seconds(system_wait_timeout_));
       check_cancel(goal_handle);
@@ -1183,7 +1160,7 @@ private:
           0.05F,
           "Returning the arm to its safe transport target.");
         plan_and_execute_named_target(
-          *move_group, goal_handle, kArmStowTarget);
+          *move_group, goal_handle, transport_named_target_);
         publish_feedback(
           goal_handle,
           PressCabinetButton::Feedback::NAVIGATING,
@@ -1208,7 +1185,7 @@ private:
         0.25F,
         "Planning to the button prepress pose.");
       plan_and_execute_pose(
-        *move_group, goal_handle, poses.prepress_pose);
+        *move_group, goal_handle, poses.prepress_pose, contact_tool_link_);
       should_attempt_retreat = true;
 
       publish_feedback(
@@ -1295,7 +1272,7 @@ private:
         0.99F,
         "Returning the arm to its safe transport target.");
       plan_and_execute_named_target(
-        *move_group, goal_handle, kArmStowTarget);
+        *move_group, goal_handle, transport_named_target_);
 
       result->success = true;
       result->error_code = PressCabinetButton::Result::SUCCESS;
@@ -1363,6 +1340,7 @@ private:
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     }
 
+    clear_latched_cabinet_transform();
     stop_active_motion();
     cancel_active_navigation();
     request_navigation_mode_without_wait(false);
@@ -1396,6 +1374,7 @@ private:
     bool should_attempt_retreat = false;
     bool grasp_attached = false;
     bool request_success = false;
+    DoorArcProgress door_arc_progress;
     double target_position = 0.0;
     std::string target_state;
     std::unordered_map<std::string, std::string> expected_parent_states;
@@ -1416,6 +1395,11 @@ private:
       check_cancel(goal_handle);
       const auto initial_state = button_snapshot(*control);
       result->initial_position = initial_state.position;
+      if (control->control_type ==
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+      {
+        door_arc_progress.initial_position = initial_state.position;
+      }
       for (const auto * ancestor : control_ancestors(*control)) {
         wait_for_fresh_button_state(
           goal_handle, *ancestor, operation_started_at);
@@ -1424,6 +1408,7 @@ private:
       }
       std::tie(target_position, target_state) = resolve_operation_target(
         *control, *goal_handle->get_goal(), initial_state);
+      latch_cabinet_transform();
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
       const bool navigate =
@@ -1457,7 +1442,7 @@ private:
         rotary_poses.staging_pose_in_planning_frame;
 
       move_group = std::make_shared<MoveGroupInterface>(
-        shared_from_this(), kArmGroup,
+        shared_from_this(), move_group_name_,
         std::shared_ptr<tf2_ros::Buffer>(),
         rclcpp::Duration::from_seconds(system_wait_timeout_));
       {
@@ -1478,7 +1463,7 @@ private:
           0.05F, target_position,
           "Returning the arm to its safe transport target.");
         plan_and_execute_named_target(
-          *move_group, goal_handle, kArmStowTarget);
+          *move_group, goal_handle, transport_named_target_);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::NAVIGATING,
@@ -1503,7 +1488,8 @@ private:
           0.25F, target_position,
           "Planning to the button ready pose.");
         plan_and_execute_pose(
-          *move_group, goal_handle, button_poses.prepress_pose);
+          *move_group, goal_handle, button_poses.prepress_pose,
+          contact_tool_link_);
         should_attempt_retreat = true;
         publish_operate_feedback(
           goal_handle,
@@ -1558,11 +1544,6 @@ private:
                   "The button did not return to its released state.");
         }
       } else {
-        if (!move_group->setEndEffectorLink(kContactToolLink)) {
-          throw GenericOperationError(
-                  OperateCabinetControl::Result::NOT_READY,
-                  "MoveIt does not contain the button_press_tip tool link.");
-        }
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MOVING_TO_READY,
@@ -1570,7 +1551,7 @@ private:
           "Planning the probe to the control ready pose.");
         plan_and_execute_pose(
           *move_group, goal_handle, rotary_poses.ready_pose,
-          kContactToolLink);
+          contact_tool_link_);
         should_attempt_retreat = true;
         publish_operate_feedback(
           goal_handle,
@@ -1586,7 +1567,7 @@ private:
           // preserve a short straight-line final approach.
           plan_and_execute_pose(
             *move_group, goal_handle, rotary_poses.door_pregrasp_pose,
-            kContactToolLink);
+            contact_tool_link_);
         }
         execute_cartesian_path(
           *move_group, goal_handle, {rotary_poses.grasp_pose},
@@ -1631,11 +1612,16 @@ private:
           // IK branch that becomes invalid near the end of the sweep.  Short
           // complete segments preserve physical continuity while allowing
           // each next segment to start from the measured robot state.
+          door_arc_progress.in_progress = true;
+          door_arc_progress.completed_waypoints = 0U;
+          door_arc_progress.total_waypoints = waypoints.size();
           execute_segmented_cartesian_path(
             *move_group, goal_handle, waypoints,
             static_cast<std::size_t>(door_cartesian_segment_waypoints_),
             cartesian_velocity_scale_ * 0.5,
-            cartesian_acceleration_scale_ * 0.5);
+            cartesian_acceleration_scale_ * 0.5,
+            door_arc_progress.completed_waypoints);
+          door_arc_progress.in_progress = false;
         } else {
           execute_cartesian_path(
             *move_group, goal_handle, waypoints,
@@ -1747,7 +1733,7 @@ private:
         0.98F, target_position,
         "Returning the arm to its safe transport target.");
       plan_and_execute_named_target(
-        *move_group, goal_handle, kArmStowTarget);
+        *move_group, goal_handle, transport_named_target_);
 
       const auto final_state = button_snapshot(*control);
       result->success = true;
@@ -1763,14 +1749,16 @@ private:
       result->message = error.what();
       recover_failed_operate_goal(
         result, control, move_group, should_attempt_retreat,
-        grasp_attached, is_operate_goal_canceling(goal_handle));
+        grasp_attached, door_arc_progress,
+        is_operate_goal_canceling(goal_handle));
     } catch (const OperationError & error) {
       result->success = false;
       result->error_code = map_legacy_error_code(error.error_code);
       result->message = error.what();
       recover_failed_operate_goal(
         result, control, move_group, should_attempt_retreat,
-        grasp_attached, is_operate_goal_canceling(goal_handle));
+        grasp_attached, door_arc_progress,
+        is_operate_goal_canceling(goal_handle));
     } catch (const std::exception & error) {
       result->success = false;
       result->error_code = is_operate_goal_canceling(goal_handle) ?
@@ -1781,16 +1769,19 @@ private:
         std::string("Cabinet operation failed: ") + error.what();
       recover_failed_operate_goal(
         result, control, move_group, should_attempt_retreat,
-        grasp_attached, is_operate_goal_canceling(goal_handle));
+        grasp_attached, door_arc_progress,
+        is_operate_goal_canceling(goal_handle));
     } catch (...) {
       result->success = false;
       result->error_code = OperateCabinetControl::Result::INTERNAL_ERROR;
       result->message = "Cabinet operation failed with an unknown error.";
       recover_failed_operate_goal(
         result, control, move_group, should_attempt_retreat,
-        grasp_attached, is_operate_goal_canceling(goal_handle));
+        grasp_attached, door_arc_progress,
+        is_operate_goal_canceling(goal_handle));
     }
 
+    clear_latched_cabinet_transform();
     stop_active_motion();
     cancel_active_navigation();
     request_navigation_mode_without_wait(false);
@@ -1890,25 +1881,81 @@ private:
             "The requested command is not supported by this control.");
   }
 
-  tf2::Transform resolve_cabinet_transform()
+  tf2::Transform lookup_cabinet_transform(
+    const tf2::Duration & timeout = tf2::durationFromSec(0.2)) const
   {
+    if (require_cabinet_pose_valid_ &&
+      (!cabinet_pose_valid_received_.load() || !cabinet_pose_valid_.load()))
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "The cabinet pose authority has no fresh valid pose.");
+    }
     try {
       const auto transform = transform_buffer_->lookupTransform(
-        planning_frame_, cabinet_frame_, tf2::TimePointZero, 200ms);
+        planning_frame_, cabinet_frame_, tf2::TimePointZero, timeout);
       tf2::Transform result;
       tf2::fromMsg(transform.transform, result);
+      result.getRotation().normalize();
       return result;
     } catch (const tf2::TransformException & error) {
-      RCLCPP_WARN_THROTTLE(
-        get_logger(), *get_clock(), 5000,
-        "Cabinet truth TF is unavailable; using launch-parameter fallback: %s",
-        error.what());
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Cabinet TF '" + planning_frame_ + "' -> '" + cabinet_frame_ +
+              "' is unavailable: " + error.what());
     }
-    tf2::Quaternion rotation;
-    rotation.setRPY(cabinet_roll_, cabinet_pitch_, cabinet_yaw_);
-    rotation.normalize();
-    return tf2::Transform(
-      rotation, tf2::Vector3(cabinet_x_, cabinet_y_, cabinet_z_));
+  }
+
+  void latch_cabinet_transform()
+  {
+    const auto transform = lookup_cabinet_transform(
+      tf2::durationFromSec(system_wait_timeout_));
+    std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
+    latched_cabinet_transform_ = transform;
+    cabinet_transform_latched_ = true;
+  }
+
+  void clear_latched_cabinet_transform() noexcept
+  {
+    std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
+    cabinet_transform_latched_ = false;
+  }
+
+  tf2::Transform resolve_cabinet_transform()
+  {
+    {
+      std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
+      if (cabinet_transform_latched_) {
+        return latched_cabinet_transform_;
+      }
+    }
+    return lookup_cabinet_transform();
+  }
+
+  void verify_latched_cabinet_transform() const
+  {
+    tf2::Transform latched;
+    {
+      std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
+      if (!cabinet_transform_latched_) {
+        return;
+      }
+      latched = latched_cabinet_transform_;
+    }
+    const auto current = lookup_cabinet_transform(tf2::durationFromSec(0.05));
+    const double translation_change =
+      latched.getOrigin().distance(current.getOrigin());
+    const double rotation_change = latched.getRotation().angleShortestPath(
+      current.getRotation());
+    if (translation_change > cabinet_pose_translation_tolerance_ ||
+      rotation_change > cabinet_pose_rotation_tolerance_)
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Cabinet pose moved by " + std::to_string(translation_change) +
+              " m / " + std::to_string(rotation_change) +
+              " rad during operation; motion was stopped.");
+    }
   }
 
   std::vector<const ButtonSpec *> control_ancestors(
@@ -2161,8 +2208,9 @@ private:
     auto request = std::make_shared<
       xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
     request->control_id = control_id;
-    request->robot_model = kRobotModelName;
-    request->robot_link = kContactToolLink;
+    request->robot_model = robot_model_name_;
+    request->robot_link = contact_tool_link_;
+    request->robot_base_link = docking_base_frame_;
     request->attach = attach;
     auto future = grasp_client_->async_send_request(request);
     const auto deadline = std::chrono::steady_clock::now() +
@@ -2201,8 +2249,9 @@ private:
         auto request = std::make_shared<
           xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
         request->control_id = control_id;
-        request->robot_model = kRobotModelName;
-        request->robot_link = kContactToolLink;
+        request->robot_model = robot_model_name_;
+        request->robot_link = contact_tool_link_;
+        request->robot_base_link = docking_base_frame_;
         request->attach = false;
         auto future = grasp_client_->async_send_request(request);
         if (future.wait_for(2s) != std::future_status::ready) {
@@ -2480,14 +2529,28 @@ private:
     const std::shared_ptr<MoveGroupInterface> & move_group,
     bool should_attempt_retreat,
     bool grasp_attached,
+    const DoorArcProgress & door_arc_progress,
     bool canceled) noexcept
   {
     const bool is_door = control && control->control_type ==
       xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+    bool rollback_and_retreat_succeeded = false;
+    if (is_door && grasp_attached && door_arc_progress.in_progress &&
+      move_group && rclcpp::ok())
+    {
+      rollback_and_retreat_succeeded = best_effort_rollback_door_arc(
+        *move_group, *control, door_arc_progress);
+    }
     if (is_door && grasp_attached && should_attempt_retreat && move_group &&
-      rclcpp::ok())
+      rclcpp::ok() && !rollback_and_retreat_succeeded)
     {
       try {
+        if (door_arc_progress.in_progress) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Door arc rollback did not complete; using the outward safety "
+            "retreat fallback while the grasp remains attached.");
+        }
         const auto state = button_snapshot(*control);
         const auto retreat_pose = calculate_rotary_tool_pose(
           *control, state.position, door_release_clearance_, false);
@@ -2730,26 +2793,22 @@ private:
     tf2::Quaternion tool_rotation;
     tool_basis.getRotation(tool_rotation);
     tool_rotation.normalize();
-    const tf2::Vector3 end_to_tip = tf2::quatRotate(
-      tool_rotation, tf2::Vector3(0.0, 0.0, -tool_tip_offset_));
-
-    const auto make_end_pose =
+    const auto make_tool_pose =
       [&](double tip_offset) -> geometry_msgs::msg::Pose {
         const tf2::Vector3 tip_position = button_face +
           inward * tip_offset;
-        const tf2::Vector3 end_position = tip_position - end_to_tip;
         geometry_msgs::msg::Pose pose;
-        pose.position.x = end_position.x();
-        pose.position.y = end_position.y();
-        pose.position.z = end_position.z();
+        pose.position.x = tip_position.x();
+        pose.position.y = tip_position.y();
+        pose.position.z = tip_position.z();
         pose.orientation = to_message(tool_rotation);
         return pose;
       };
 
     OperationPoses poses;
-    poses.prepress_pose = make_end_pose(-prepress_distance_);
-    poses.contact_pose = make_end_pose(-contact_clearance_);
-    poses.pressed_pose = make_end_pose(press_depth_);
+    poses.prepress_pose = make_tool_pose(-prepress_distance_);
+    poses.contact_pose = make_tool_pose(-contact_clearance_);
+    poses.pressed_pose = make_tool_pose(press_depth_);
 
     if (include_staging_pose) {
       geometry_msgs::msg::PoseStamped staging_in_planning_frame;
@@ -2788,6 +2847,32 @@ private:
 
   void configure_move_group(MoveGroupInterface & move_group)
   {
+    const auto robot_model = move_group.getRobotModel();
+    if (!robot_model ||
+      !robot_model->getJointModelGroup(move_group_name_) ||
+      !robot_model->getLinkModel(planning_tip_link_) ||
+      !robot_model->getLinkModel(contact_tool_link_))
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "The robot adapter references a missing MoveIt group or link.");
+    }
+    const auto named_targets = move_group.getNamedTargets();
+    if (std::find(
+        named_targets.begin(), named_targets.end(),
+        transport_named_target_) == named_targets.end())
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "The robot adapter transport target '" +
+              transport_named_target_ + "' does not exist in the SRDF.");
+    }
+    if (!move_group.setEndEffectorLink(contact_tool_link_)) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "MoveIt cannot use configured contact tool link '" +
+              contact_tool_link_ + "'.");
+    }
     move_group.setPoseReferenceFrame(planning_frame_);
     move_group.setPlanningTime(10.0);
     move_group.setNumPlanningAttempts(10);
@@ -2804,7 +2889,7 @@ private:
     MoveGroupInterface & move_group,
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const geometry_msgs::msg::Pose & target,
-    const std::string & tool_link = kArmTipLink)
+    const std::string & tool_link)
   {
     check_cancel(goal_handle);
     MoveGroupInterface::Plan plan;
@@ -2902,23 +2987,75 @@ private:
     const std::vector<geometry_msgs::msg::Pose> & waypoints,
     std::size_t maximum_segment_waypoints,
     double velocity_scale,
-    double acceleration_scale)
+    double acceleration_scale,
+    std::size_t & completed_waypoints)
   {
     if (maximum_segment_waypoints == 0U) {
       throw std::invalid_argument(
               "Cartesian segment size must be greater than zero.");
     }
+    completed_waypoints = 0U;
+    const std::size_t segment_count =
+      (waypoints.size() + maximum_segment_waypoints - 1U) /
+      maximum_segment_waypoints;
+    std::size_t segment_index = 0U;
     for (std::size_t begin = 0; begin < waypoints.size();
       begin += maximum_segment_waypoints)
     {
+      ++segment_index;
       check_cancel(goal_handle);
       const auto end = std::min(
         begin + maximum_segment_waypoints, waypoints.size());
       const std::vector<geometry_msgs::msg::Pose> segment(
         waypoints.begin() + begin, waypoints.begin() + end);
-      execute_cartesian_path(
-        move_group, goal_handle, segment,
-        velocity_scale, acceleration_scale);
+      RCLCPP_INFO(
+        get_logger(),
+        "Starting door Cartesian segment %zu/%zu [%zu, %zu); "
+        "%zu/%zu waypoints already executed.",
+        segment_index, segment_count, begin, end,
+        completed_waypoints, waypoints.size());
+      try {
+        execute_cartesian_path(
+          move_group, goal_handle, segment,
+          velocity_scale, acceleration_scale);
+        completed_waypoints = end;
+        RCLCPP_INFO(
+          get_logger(),
+          "Door Cartesian segment %zu/%zu [%zu, %zu) completed; "
+          "%zu/%zu waypoints executed.",
+          segment_index, segment_count, begin, end,
+          completed_waypoints, waypoints.size());
+      } catch (const OperationError & error) {
+        if (error.error_code != PressCabinetButton::Result::PLANNING_FAILED ||
+          segment.size() == 1U)
+        {
+          throw;
+        }
+
+        // Recomputing each waypoint from the measured joint state can escape
+        // an IK/state-validity dead end without ever executing a partial
+        // Cartesian plan. The fallback also reduces the maximum swept-door
+        // update interval from four degrees to two degrees.
+        RCLCPP_WARN(
+          get_logger(),
+          "Door Cartesian segment %zu/%zu [%zu, %zu) was not fully "
+          "plannable after %zu/%zu completed waypoints; retrying it one "
+          "waypoint at a time.",
+          segment_index, segment_count, begin, end,
+          completed_waypoints, waypoints.size());
+        for (std::size_t offset = 0U; offset < segment.size(); ++offset) {
+          execute_cartesian_path(
+            move_group, goal_handle, {segment[offset]},
+            velocity_scale, acceleration_scale);
+          completed_waypoints = begin + offset + 1U;
+          RCLCPP_INFO(
+            get_logger(),
+            "Door Cartesian fallback waypoint %zu/%zu completed; "
+            "%zu/%zu waypoints executed.",
+            offset + 1U, segment.size(), completed_waypoints,
+            waypoints.size());
+        }
+      }
     }
   }
 
@@ -2989,7 +3126,7 @@ private:
               "MoveIt lost the current robot state while retiming the path.");
     }
     robot_trajectory::RobotTrajectory trajectory(
-      move_group.getRobotModel(), kArmGroup);
+      move_group.getRobotModel(), move_group_name_);
     trajectory.setRobotTrajectoryMsg(*current_state, trajectory_message);
     trajectory_processing::TimeOptimalTrajectoryGeneration time_parameterizer;
     if (!time_parameterizer.computeTimeStamps(
@@ -3004,40 +3141,127 @@ private:
     trajectory.getRobotTrajectoryMsg(trajectory_message);
   }
 
-  void best_effort_retreat(
+  bool best_effort_cartesian_move(
     MoveGroupInterface & move_group,
-    const geometry_msgs::msg::Pose & prepress_pose) noexcept
+    const std::vector<geometry_msgs::msg::Pose> & waypoints,
+    double velocity_scale,
+    double acceleration_scale,
+    const char * description) noexcept
   {
     try {
       move_group.stop();
       move_group.setStartStateToCurrentState();
       moveit_msgs::msg::RobotTrajectory trajectory_message;
       const double fraction = move_group.computeCartesianPath(
-        {prepress_pose},
+        waypoints,
         0.002,
         cartesian_jump_threshold_,
         trajectory_message,
         true);
       if (fraction < 0.99) {
         RCLCPP_ERROR(
-          get_logger(), "Safety retreat path was only %.1f%% complete.",
-          fraction * 100.0);
-        return;
+          get_logger(), "%s path was only %.1f%% complete.",
+          description, fraction * 100.0);
+        return false;
       }
       retime_cartesian_trajectory(
         move_group,
         trajectory_message,
-        cartesian_velocity_scale_,
-        cartesian_acceleration_scale_);
+        velocity_scale,
+        acceleration_scale);
       if (move_group.execute(trajectory_message) !=
         moveit::core::MoveItErrorCode::SUCCESS)
       {
-        RCLCPP_ERROR(get_logger(), "Safety retreat execution failed.");
+        RCLCPP_ERROR(get_logger(), "%s execution failed.", description);
+        return false;
       }
+      return true;
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
-        get_logger(), "Safety retreat failed: %s", error.what());
+        get_logger(), "%s failed: %s", description, error.what());
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "%s failed with an unknown error.", description);
     }
+    return false;
+  }
+
+  bool best_effort_rollback_door_arc(
+    MoveGroupInterface & move_group,
+    const ButtonSpec & control,
+    const DoorArcProgress & progress) noexcept
+  {
+    try {
+      const auto current_state = button_snapshot(control);
+      if (!std::isfinite(current_state.position)) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Door arc rollback cannot start from a non-finite position.");
+        return false;
+      }
+
+      std::vector<geometry_msgs::msg::Pose> rollback_waypoints;
+      if (std::abs(current_state.position - progress.initial_position) >
+        target_tolerance_)
+      {
+        rollback_waypoints = calculate_rotation_waypoints(
+          control, current_state.position, progress.initial_position);
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "Door arc failed after %zu/%zu executed waypoints; rolling the "
+        "grasped door back from %.4f rad to %.4f rad using %zu waypoints.",
+        progress.completed_waypoints, progress.total_waypoints,
+        current_state.position, progress.initial_position,
+        rollback_waypoints.size());
+
+      for (std::size_t index = 0U; index < rollback_waypoints.size(); ++index) {
+        if (!best_effort_cartesian_move(
+            move_group, {rollback_waypoints[index]},
+            cartesian_velocity_scale_ * 0.5,
+            cartesian_acceleration_scale_ * 0.5,
+            "Door arc rollback waypoint"))
+        {
+          RCLCPP_ERROR(
+            get_logger(),
+            "Door arc rollback stopped after %zu/%zu waypoints.",
+            index, rollback_waypoints.size());
+          return false;
+        }
+        RCLCPP_INFO(
+          get_logger(), "Door arc rollback waypoint %zu/%zu completed.",
+          index + 1U, rollback_waypoints.size());
+      }
+
+      const auto retreat_pose = calculate_rotary_tool_pose(
+        control, progress.initial_position, door_release_clearance_, false);
+      if (!best_effort_cartesian_move(
+          move_group, {retreat_pose}, cartesian_velocity_scale_,
+          cartesian_acceleration_scale_, "Door post-rollback safety retreat"))
+      {
+        return false;
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "Door arc rollback and outward safety retreat completed while the "
+        "grasp remained attached.");
+      return true;
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Door arc rollback failed: %s", error.what());
+    } catch (...) {
+      RCLCPP_ERROR(
+        get_logger(), "Door arc rollback failed with an unknown error.");
+    }
+    return false;
+  }
+
+  void best_effort_retreat(
+    MoveGroupInterface & move_group,
+    const geometry_msgs::msg::Pose & prepress_pose) noexcept
+  {
+    (void)best_effort_cartesian_move(
+      move_group, {prepress_pose}, cartesian_velocity_scale_,
+      cartesian_acceleration_scale_, "Safety retreat");
   }
 
   void best_effort_stow(MoveGroupInterface & move_group) noexcept
@@ -3045,10 +3269,10 @@ private:
     try {
       move_group.stop();
       move_group.setStartStateToCurrentState();
-      if (!move_group.setNamedTarget(kArmStowTarget)) {
+      if (!move_group.setNamedTarget(transport_named_target_)) {
         RCLCPP_ERROR(
           get_logger(), "Safety target '%s' is not configured.",
-          kArmStowTarget);
+          transport_named_target_.c_str());
         return;
       }
       MoveGroupInterface::Plan plan;
@@ -3286,7 +3510,8 @@ private:
     const auto verified_direct_goal_distance = [this, &staging_pose]() {
         try {
           const auto current_pose = transform_buffer_->lookupTransform(
-            staging_pose.header.frame_id, "base_link", tf2::TimePointZero,
+            staging_pose.header.frame_id, navigation_base_frame_,
+            tf2::TimePointZero,
             200ms);
           const double current_x =
             current_pose.transform.translation.x;
@@ -3430,7 +3655,7 @@ private:
         geometry_msgs::msg::TransformStamped current_transform;
         try {
           current_transform = transform_buffer_->lookupTransform(
-            planning_frame_, "body", tf2::TimePointZero);
+            planning_frame_, docking_base_frame_, tf2::TimePointZero);
         } catch (const tf2::TransformException & error) {
           throw OperationError(
                   PressCabinetButton::Result::NOT_READY,
@@ -3587,6 +3812,7 @@ private:
               PressCabinetButton::Result::CANCELED,
               "Cabinet button operation was canceled.");
     }
+    verify_latched_cabinet_transform();
   }
 
   bool is_goal_canceling_noexcept(
@@ -3781,6 +4007,8 @@ private:
     control_catalog_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
     active_control_publisher_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
+    cabinet_pose_valid_subscription_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr>
   button_joint_state_subscriptions_;
   std::vector<rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr>
@@ -3807,17 +4035,25 @@ private:
   rclcpp_action::GoalUUID active_goal_id_{};
   std::atomic<bool> cancel_requested_{false};
   std::atomic<bool> shutdown_requested_{false};
+  std::atomic<bool> cabinet_pose_valid_{false};
+  std::atomic<bool> cabinet_pose_valid_received_{false};
+  mutable std::mutex cabinet_transform_mutex_;
+  tf2::Transform latched_cabinet_transform_{tf2::Transform::getIdentity()};
+  bool cabinet_transform_latched_{false};
 
   std::string planning_frame_;
   std::string navigation_frame_;
   std::string cabinet_frame_;
-  double cabinet_x_{2.0};
-  double cabinet_y_{0.33};
-  double cabinet_z_{0.0};
-  double cabinet_roll_{1.57079632679};
-  double cabinet_pitch_{0.0};
-  double cabinet_yaw_{-1.57079632679};
-  double tool_tip_offset_{0.370};
+  std::string robot_model_name_;
+  std::string move_group_name_;
+  std::string planning_tip_link_;
+  std::string contact_tool_link_;
+  std::string transport_named_target_;
+  std::string navigation_base_frame_;
+  std::string docking_base_frame_;
+  bool require_cabinet_pose_valid_{true};
+  double cabinet_pose_translation_tolerance_{0.020};
+  double cabinet_pose_rotation_tolerance_{0.035};
   double staging_distance_{0.930};
   double prepress_distance_{0.060};
   double grasp_outward_offset_{0.020};
@@ -3858,7 +4094,7 @@ private:
   double cartesian_acceleration_scale_{0.08};
   double cartesian_jump_threshold_{2.0};
   int cartesian_planning_attempts_{5};
-  int door_cartesian_segment_waypoints_{6};
+  int door_cartesian_segment_waypoints_{2};
   int motion_planning_attempts_{3};
 };
 

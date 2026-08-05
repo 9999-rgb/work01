@@ -33,7 +33,6 @@ class _FakeControlServer:
         return {
             "status": "ok",
             "navigation_available": True,
-            "moveit_available": True,
             "cabinet_available": True,
             "cabinet_active": False,
         }
@@ -312,6 +311,7 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(health["cabinet_available"])
         self.assertFalse(health["cabinet_active"])
+        self.assertNotIn("moveit_available", health)
         self.assertEqual("*", headers["Access-Control-Allow-Origin"])
 
         status, cabinet, _ = self.request("/cabinet/status")
@@ -343,6 +343,17 @@ class ControlGatewayHttpTest(unittest.TestCase):
             "button_state_updated_at",
         }
         self.assertTrue(expected_fields.issubset(cabinet))
+
+    def test_direct_moveit_routes_are_not_exposed(self) -> None:
+        status, response, _ = self.request("/motion/status")
+        self.assertEqual(404, status)
+        self.assertEqual("not found", response["error"])
+
+        for path in ("/motion/named", "/motion/pose", "/motion/cancel"):
+            with self.subTest(path=path):
+                status, response, _ = self.request(path, "POST", {})
+                self.assertEqual(404, status)
+                self.assertEqual("not found", response["error"])
 
     def test_joint_trajectory_accepts_lift_and_legacy_shapes(self) -> None:
         lift_aware = [0.4, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.2, -0.2]

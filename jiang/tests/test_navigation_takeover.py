@@ -142,7 +142,6 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
         "updated_at": 0.0,
     }
     node._cabinet_state = {"state": "idle"}
-    node._motion_state = {"state": "idle"}
     node._map_state = None
     node._target_linear_y = 0.2
     node._target_angular_z = 0.4

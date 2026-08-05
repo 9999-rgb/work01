@@ -1,4 +1,4 @@
-xczs_cabinet_button_operator:
+/**:
   ros__parameters:
     # 本目录是控制柜自动操作的唯一标定源。坐标均位于
     # control_cabinet_frame；位置单位为 m，转角单位为 rad。
@@ -259,11 +259,6 @@ xczs_cabinet_button_operator:
     cabinet_frame: control_cabinet_frame
     staging_distance: 0.930
     grasp_outward_offset: 0.020
-    navigation_takeover_distance: 0.15
-    navigation_takeover_yaw_tolerance: 0.35
-    navigation_takeover_stall_timeout: 4.0
-    docking_timeout: 45.0
-    docking_max_angular_speed: 0.45
     state_timeout: 1.0
     target_tolerance: 0.035
     stable_velocity_tolerance: 0.03
@@ -281,7 +276,7 @@ xczs_cabinet_button_operator:
     rotation_waypoint_step: 0.03490658504
     cartesian_jump_threshold: 2.0
     cartesian_planning_attempts: 5
-    door_cartesian_segment_waypoints: 3
+    door_cartesian_segment_waypoints: 2
     motion_planning_attempts: 3
     grasp_service: /xczs/cabinet/grasp
     reset_physics_service: /xczs/cabinet/reset_physics

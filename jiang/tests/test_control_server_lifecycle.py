@@ -81,10 +81,6 @@ class _BlockingNode:
         del allow_idle
         return {"status": "idle"}
 
-    def cancel_motion(self, allow_idle: bool = False) -> Dict[str, str]:
-        del allow_idle
-        return {"status": "idle"}
-
     def emergency_stop(self) -> None:
         return
 

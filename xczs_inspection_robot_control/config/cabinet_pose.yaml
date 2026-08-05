@@ -1,0 +1,16 @@
+xczs_cabinet_pose_authority:
+  ros__parameters:
+    # static：由 launch 中的柜体生成位姿提供 TF。
+    # topic：只接受 PoseWithCovarianceStamped，不会回退到旧静态坐标。
+    pose_source: static
+    parent_frame: odom
+    cabinet_frame: control_cabinet_frame
+    measurement_topic: /xczs/cabinet/pose_measurement
+    limits:
+      measurement_timeout_sec: 1.0
+      transform_timeout_sec: 0.20
+      future_tolerance_sec: 0.10
+      max_translation_variance: 0.0004
+      max_rotation_variance: 0.0076154
+      max_translation_jump_m: 0.50
+      max_rotation_jump_rad: 0.78539816339

@@ -735,11 +735,11 @@
         <div>
           <div class="cabinet-target">
             <label for="cabinetTarget">操作目标</label>
-            <select id="cabinetTarget">
-              <option value="box_10_button_1">10 号模块红色按钮</option>
+            <select id="cabinetTarget" disabled>
+              <option value="">等待控制柜目录</option>
             </select>
-            <strong id="cabinetTargetId">box_10_button_1</strong>
-            <small id="cabinetCatalogHint">等待控制柜目录，当前使用红色按钮兼容目标。</small>
+            <strong id="cabinetTargetId">-</strong>
+            <small id="cabinetCatalogHint">等待控制柜目录。</small>
           </div>
           <div class="cabinet-command-fields" id="cabinetCommandFields">
             <div class="cabinet-command-field" id="cabinetStateField" hidden>
@@ -898,28 +898,8 @@ let autonomyStatusPollGeneration = 0;
 let navigationMap = null;
 let navigationMapImage = null;
 let navigationStatus = null;
-let moveitStatus = null;
 let cabinetStatus = null;
-const fallbackCabinetControls = [{
-  control_id: 'box_10_button_1',
-  display_name: '10 号模块红色按钮',
-  control_type: 0,
-  supported_commands: 1,
-  unit: 'm',
-  min_position: 0,
-  max_position: 0.008,
-  state_ids: ['released', 'pressed'],
-  state_labels: ['已释放', '已按下'],
-  state_positions: [0, 0.006],
-  operable: true,
-  unavailable_reason: '',
-  current_position: null,
-  current_state: '',
-  button_pressed: null,
-  button_travel: null,
-  button_state_updated_at: null
-}];
-let cabinetControls = fallbackCabinetControls.map(control => ({...control}));
+let cabinetControls = [];
 let cabinetCatalogReceived = false;
 let cabinetAvailableFromHealth = false;
 let cabinetOperationAvailable = false;
@@ -1554,9 +1534,9 @@ async function testControlConnection() {
         );
       } catch (_) {
         applyCabinetControls({
-          available: cabinetAvailableFromHealth,
+          available: false,
           catalog_received: false,
-          controls: fallbackCabinetControls
+          controls: []
         });
       }
       try {
@@ -1576,9 +1556,6 @@ async function testControlConnection() {
       }
       if (isCabinetOperationActive(cabinetStatus)) {
         log('info', '控制柜操作正在进行，保持当前底盘模式');
-      }
-      if (!health.moveit_available) {
-        log('info', '机械臂自动规划服务尚未就绪');
       }
       if (!cabinetAvailableFromHealth) {
         log('info', '控制柜按钮操作服务尚未就绪');
@@ -1705,7 +1682,6 @@ const navActiveStates = new Set([
   'canceling',
   'taking_over'
 ]);
-const moveitActiveStates = new Set(['sending', 'planning', 'executing', 'canceling']);
 const cabinetActiveStates = new Set([
   'accepted',
   'sending',
@@ -1831,12 +1807,6 @@ function hasRetiringNavigationGoals() {
   );
 }
 
-function isMoveitActive() {
-  return Boolean(
-    moveitStatus && moveitActiveStates.has(moveitStatus.state)
-  );
-}
-
 function isCabinetAvailable() {
   if (
     cabinetStatusCurrent &&
@@ -1920,9 +1890,7 @@ function applyCabinetControls(payload) {
         : ''
     }));
 
-  const nextControls = validControls.length
-    ? validControls
-    : fallbackCabinetControls.map(control => ({...control}));
+  const nextControls = validControls;
   const previousSelection = cabinetTarget.value;
   const activeTarget = isCabinetOperationActive() && cabinetStatus
     ? (cabinetStatus.control_id || cabinetStatus.button_id)
@@ -1931,16 +1899,18 @@ function applyCabinetControls(payload) {
   const activeControl = nextControls.find(control => (
     control.control_id === activeTarget
   ));
-  const preferredSelection = activeControl
-    ? activeControl.control_id
-    : [
-        previousSelection,
-        advertisedSelection,
-        (nextControls.find(control => control.operable) || {}).control_id,
-        nextControls[0].control_id
-      ].find(controlId => nextControls.some(control => (
-        control.control_id === controlId && control.operable
-      ))) || nextControls[0].control_id;
+  let preferredSelection = '';
+  if (nextControls.length) {
+    preferredSelection = activeControl
+      ? activeControl.control_id
+      : [
+          previousSelection,
+          advertisedSelection,
+          (nextControls.find(control => control.operable) || {}).control_id
+        ].find(controlId => nextControls.some(control => (
+          control.control_id === controlId && control.operable
+        ))) || nextControls[0].control_id;
+  }
   const oldSignature = cabinetControls
     .map(control => [
       control.control_id,
@@ -1985,9 +1955,16 @@ function applyCabinetControls(payload) {
       });
       return group;
     }).filter(Boolean);
-    cabinetTarget.replaceChildren(...groups);
+    if (groups.length) {
+      cabinetTarget.replaceChildren(...groups);
+    } else {
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '等待控制柜目录';
+      cabinetTarget.replaceChildren(placeholder);
+    }
   }
-  cabinetTarget.value = preferredSelection || cabinetControls[0].control_id;
+  cabinetTarget.value = preferredSelection;
   if (typeof (payload && payload.available) === 'boolean') {
     cabinetAvailableFromHealth = payload.available;
   }
@@ -2005,7 +1982,7 @@ function renderCabinetTarget() {
   $('cabinetTargetId').textContent = control ? control.control_id : '-';
   $('cabinetCatalogHint').textContent = cabinetCatalogReceived
     ? `已载入 ${cabinetControls.length} 个控制件，按按钮、旋钮、总开关和柜门分组。`
-    : '控制柜目录尚未到达，当前仅允许红色按钮兼容目标。';
+    : '控制柜目录尚未到达，操作功能已禁用。';
   const unavailable = $('cabinetUnavailable');
   unavailable.hidden = !control || control.operable !== false;
   unavailable.textContent = control && control.operable === false
@@ -2167,14 +2144,6 @@ async function refreshAutonomyStatus(
       status => {
         navigationStatus = status;
         renderNavigationStatus();
-      }
-    ),
-    pollAutonomyEndpoint(
-      '/motion/status',
-      generation,
-      status => {
-        moveitStatus = status;
-        updateControlInterlocks();
       }
     ),
     pollAutonomyEndpoint(
@@ -2781,7 +2750,6 @@ function renderCabinetStatus() {
 function updateControlInterlocks() {
   const navigationActive = isNavigationActive();
   const navigationRetiring = hasRetiringNavigationGoals();
-  const motionActive = isMoveitActive();
   const cabinetActive = isCabinetOperationActive();
   const takingOver = manualTakeoverState === 'taking_over';
   const navigationAvailable = Boolean(
@@ -2832,14 +2800,15 @@ function updateControlInterlocks() {
   $('spdAngular').disabled = manualBlocked;
 
   document.querySelectorAll('#jointSliders input').forEach(input => {
-    input.disabled = !ctrlConnected || motionActive || cabinetActive;
+    input.disabled = !ctrlConnected || cabinetActive;
   });
-  $('btnArmZero').disabled = !ctrlConnected || motionActive || cabinetActive;
-  $('btnGripperOpen').disabled = !ctrlConnected || motionActive || cabinetActive;
-  $('btnGripperClose').disabled = !ctrlConnected || motionActive || cabinetActive;
+  $('btnArmZero').disabled = !ctrlConnected || cabinetActive;
+  $('btnGripperOpen').disabled = !ctrlConnected || cabinetActive;
+  $('btnGripperClose').disabled = !ctrlConnected || cabinetActive;
 
   $('btnCabinetPress').disabled =
     !ctrlConnected ||
+    !cabinetCatalogReceived ||
     !isCabinetAvailable() ||
     !selectedCabinetControl() ||
     selectedCabinetControl().operable === false ||
@@ -2850,7 +2819,6 @@ function updateControlInterlocks() {
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
-    motionActive ||
     takingOver;
   $('btnCabinetCancel').disabled =
     !ctrlConnected ||
@@ -2858,16 +2826,16 @@ function updateControlInterlocks() {
     Boolean(cabinetStatus && cabinetStatus.state === 'resetting');
   $('btnCabinetReset').disabled =
     !ctrlConnected ||
+    !cabinetCatalogReceived ||
     !cabinetResetAvailable ||
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
-    motionActive ||
     takingOver;
-  cabinetTarget.disabled = cabinetActive;
-  $('cabinetNavigate').disabled = cabinetActive;
-  $('cabinetTargetState').disabled = cabinetActive;
-  $('cabinetTargetPosition').disabled = cabinetActive;
+  cabinetTarget.disabled = cabinetActive || !cabinetCatalogReceived;
+  $('cabinetNavigate').disabled = cabinetActive || !cabinetCatalogReceived;
+  $('cabinetTargetState').disabled = cabinetActive || !cabinetCatalogReceived;
+  $('cabinetTargetPosition').disabled = cabinetActive || !cabinetCatalogReceived;
   renderBaseControlStatus();
 }
 
@@ -3047,12 +3015,15 @@ async function cancelNavigation() {
 
 async function sendCabinetOperation() {
   if (isCabinetOperationActive()) return;
+  if (!cabinetCatalogReceived) {
+    toast('控制柜目录尚未到达，请稍后重试', 'err');
+    return;
+  }
   if (
     isNavigationActive() ||
-    hasRetiringNavigationGoals() ||
-    isMoveitActive()
+    hasRetiringNavigationGoals()
   ) {
-    toast('请先结束当前导航或机械臂任务', 'err');
+    toast('请先结束当前导航任务', 'err');
     return;
   }
   const target = selectedCabinetControl();

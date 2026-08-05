@@ -9,15 +9,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import rclpy
 from action_msgs.msg import GoalStatus
-from action_msgs.srv import CancelGoal
-from geometry_msgs.msg import Pose
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from geometry_msgs.msg import Twist
-from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import Constraints
-from moveit_msgs.msg import JointConstraint
-from moveit_msgs.msg import OrientationConstraint
-from moveit_msgs.msg import PositionConstraint
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
 from nav_msgs.msg import Path
@@ -29,7 +22,6 @@ from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
-from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Bool
 from std_srvs.srv import SetBool
 from std_srvs.srv import Trigger
@@ -37,6 +29,7 @@ from trajectory_msgs.msg import JointTrajectory
 from trajectory_msgs.msg import JointTrajectoryPoint
 from xczs_inspection_robot_control.action import OperateCabinetControl
 from xczs_inspection_robot_control.action import PressCabinetButton
+from xczs_inspection_robot_control.msg import CabinetControl
 from xczs_inspection_robot_control.msg import CabinetControlCatalog
 from xczs_inspection_robot_control.msg import CabinetControlState
 
@@ -54,12 +47,10 @@ class ControlRequestError(RuntimeError):
 class RosControlNode(Node):
     """Own manual publishers and autonomous ROS 2 clients."""
 
-    CABINET_BUTTON_ID = "box_10_button_1"
-    CABINET_BUTTON_JOINT_NAME = "box_10_box_10_button_1"
-    CABINET_CONTROL_TYPE_BUTTON = 0
-    CABINET_CONTROL_TYPE_KNOB = 1
-    CABINET_CONTROL_TYPE_SWITCH = 2
-    CABINET_CONTROL_TYPE_DOOR = 3
+    CABINET_CONTROL_TYPE_BUTTON = CabinetControl.TYPE_BUTTON
+    CABINET_CONTROL_TYPE_KNOB = CabinetControl.TYPE_KNOB
+    CABINET_CONTROL_TYPE_SWITCH = CabinetControl.TYPE_SWITCH
+    CABINET_CONTROL_TYPE_DOOR = CabinetControl.TYPE_DOOR
     CABINET_CONTROL_TYPES = {
         CABINET_CONTROL_TYPE_BUTTON,
         CABINET_CONTROL_TYPE_KNOB,
@@ -76,33 +67,16 @@ class RosControlNode(Node):
         value: name for name, value in CABINET_COMMANDS.items()
     }
     CABINET_COMMAND_SUPPORT = {
-        OperateCabinetControl.Goal.COMMAND_PRESS: 1,
-        OperateCabinetControl.Goal.COMMAND_SET_STATE: 2,
-        OperateCabinetControl.Goal.COMMAND_SET_POSITION: 4,
-        OperateCabinetControl.Goal.COMMAND_TOGGLE: 8,
+        OperateCabinetControl.Goal.COMMAND_PRESS: CabinetControl.SUPPORT_PRESS,
+        OperateCabinetControl.Goal.COMMAND_SET_STATE: (
+            CabinetControl.SUPPORT_SET_STATE
+        ),
+        OperateCabinetControl.Goal.COMMAND_SET_POSITION: (
+            CabinetControl.SUPPORT_SET_POSITION
+        ),
+        OperateCabinetControl.Goal.COMMAND_TOGGLE: CabinetControl.SUPPORT_TOGGLE,
     }
     CABINET_DETENT_TOLERANCE = 0.035
-    DEFAULT_CABINET_CONTROL = {
-        "control_id": CABINET_BUTTON_ID,
-        "display_name": "10 号模块红色按钮",
-        "control_type": CABINET_CONTROL_TYPE_BUTTON,
-        "joint_name": CABINET_BUTTON_JOINT_NAME,
-        "joint_state_topic": (
-            "/xczs/cabinet/box_10_button_1/joint_states"
-        ),
-        "pressed_topic": "/xczs/cabinet/box_10_button_1/pressed",
-        "state_topic": "/xczs/cabinet/box_10_button_1/state",
-        "supported_commands": 1,
-        "unit": "m",
-        "min_position": 0.0,
-        "max_position": 0.008,
-        "state_ids": ["released", "pressed"],
-        "state_labels": ["已释放", "已按下"],
-        "state_positions": [0.0, 0.006],
-        "requires_grasp": False,
-        "operable": True,
-        "unavailable_reason": "",
-    }
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     JOINT_NAMES = [
@@ -116,37 +90,12 @@ class RosControlNode(Node):
         "end_worklink1",
         "end_worklink2",
     ]
-    NAMED_TARGETS = {
-        ("manipulator", "home"): {
-            "body_arm_lift": 0.0,
-            "body_arm1": 0.0,
-            "arm1_arm2": 0.0,
-            "arm2_arm3": 0.0,
-            "arm3_arm4": 0.0,
-            "arm4_arm5": 0.0,
-            "arm5_end": 0.0,
-        },
-        ("gripper", "open"): {
-            "end_worklink1": 0.35,
-            "end_worklink2": -0.35,
-        },
-        ("gripper", "closed"): {
-            "end_worklink1": 0.0,
-            "end_worklink2": 0.0,
-        },
-    }
     ACTIVE_NAVIGATION_STATES = {
         "enabling",
         "sending",
         "navigating",
         "canceling",
         "taking_over",
-    }
-    ACTIVE_MOTION_STATES = {
-        "sending",
-        "planning",
-        "executing",
-        "canceling",
     }
     ACTIVE_CABINET_STATES = {
         "sending",
@@ -200,15 +149,8 @@ class RosControlNode(Node):
         self._pending_trajectory: Optional[JointTrajectory] = None
         self._pending_trajectory_repeats = 0
         self._cabinet_catalog_received = False
-        self._cabinet_controls: Dict[str, Dict[str, Any]] = {
-            self.CABINET_BUTTON_ID: dict(self.DEFAULT_CABINET_CONTROL)
-        }
-        self._cabinet_control_states: Dict[str, Dict[str, Any]] = {
-            self.CABINET_BUTTON_ID: self._new_cabinet_control_state()
-        }
-        self._cabinet_control_states[self.CABINET_BUTTON_ID][
-            "control_type"
-        ] = self.CABINET_CONTROL_TYPE_BUTTON
+        self._cabinet_controls: Dict[str, Dict[str, Any]] = {}
+        self._cabinet_control_states: Dict[str, Dict[str, Any]] = {}
         self._cabinet_control_subscriptions: Dict[
             str, Dict[str, Any]
         ] = {}
@@ -221,11 +163,6 @@ class RosControlNode(Node):
         self._navigation_mode_client = self.create_client(
             SetBool,
             "/xczs/set_navigation_mode",
-        )
-        self._move_group_client = ActionClient(
-            self,
-            MoveGroup,
-            "/move_action",
         )
         self._cabinet_button_client = ActionClient(
             self,
@@ -241,23 +178,6 @@ class RosControlNode(Node):
             Trigger,
             "/xczs/cabinet/reset_controls",
         )
-        self._controller_cancel_clients = [
-            self.create_client(
-                CancelGoal,
-                (
-                    "/xczs/arm_controller/follow_joint_trajectory/"
-                    "_action/cancel_goal"
-                ),
-            ),
-            self.create_client(
-                CancelGoal,
-                (
-                    "/xczs/gripper_controller/follow_joint_trajectory/"
-                    "_action/cancel_goal"
-                ),
-            ),
-        ]
-
         transient_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -293,11 +213,6 @@ class RosControlNode(Node):
             self._cabinet_control_catalog_callback,
             transient_qos,
         )
-        self._ensure_cabinet_control_subscriptions(
-            self.DEFAULT_CABINET_CONTROL,
-            transient_qos,
-        )
-
         self._navigation_mode: Optional[bool] = None
         self._navigation_mode_acknowledged: Optional[bool] = None
         self._navigation_generation = 0
@@ -326,20 +241,6 @@ class RosControlNode(Node):
         self._robot_pose: Optional[Dict[str, float]] = None
         self._global_plan: List[Dict[str, float]] = []
 
-        self._motion_goal_handle: Any = None
-        self._motion_cancel_requested = False
-        self._last_controller_cancel_time = 0.0
-        self._motion_state: Dict[str, Any] = {
-            "state": "idle",
-            "message": "No MoveIt goal has been sent.",
-            "target": None,
-            "execute": False,
-            "feedback": "",
-            "planning_time": None,
-            "error_code": None,
-            "updated_at": time.time(),
-        }
-
         self._cabinet_goal_handle: Any = None
         self._cabinet_cancel_requested = False
         self._cabinet_generation = 0
@@ -348,16 +249,16 @@ class RosControlNode(Node):
         self._cabinet_state: Dict[str, Any] = {
             "state": "idle",
             "message": "No cabinet operation has been sent.",
-            "control_id": self.CABINET_BUTTON_ID,
-            "control_type": self.CABINET_CONTROL_TYPE_BUTTON,
-            "type": self.CABINET_CONTROL_TYPE_BUTTON,
+            "control_id": "",
+            "control_type": None,
+            "type": None,
             "command": None,
             "command_code": None,
             "target_state": None,
             "target_position": None,
             "target": {"state": None, "position": None},
             "action_interface": None,
-            "button_id": self.CABINET_BUTTON_ID,
+            "button_id": "",
             "navigate_to_staging_pose": True,
             "phase": None,
             "progress": 0.0,
@@ -502,15 +403,6 @@ class RosControlNode(Node):
                 "data": list(self._map_state["data"]),
             }
 
-    def motion_snapshot(self) -> Dict[str, Any]:
-        """Return current MoveIt availability and action state."""
-        with self._lock:
-            snapshot = dict(self._motion_state)
-            snapshot["available"] = self._action_server_ready(
-                self._move_group_client
-            )
-        return snapshot
-
     def cabinet_snapshot(self) -> Dict[str, Any]:
         """Return cabinet action availability, feedback and control state."""
         with self._lock:
@@ -518,7 +410,7 @@ class RosControlNode(Node):
             selected_control_id = str(
                 snapshot.get("control_id")
                 or snapshot.get("button_id")
-                or self.CABINET_BUTTON_ID
+                or ""
             )
             control_state = self._cabinet_control_states.get(
                 selected_control_id
@@ -538,13 +430,16 @@ class RosControlNode(Node):
             legacy_button_available = self._action_server_ready(
                 getattr(self, "_cabinet_button_client", None)
             )
+            catalog_received = self._cabinet_catalog_received
             snapshot.update(
                 {
                     "available": (
-                        operation_available or legacy_button_available
+                        catalog_received
+                        and (operation_available or legacy_button_available)
                     ),
                     "operation_available": operation_available,
                     "legacy_button_available": legacy_button_available,
+                    "catalog_received": catalog_received,
                     "reset_available": self._service_ready(
                         getattr(self, "_cabinet_reset_client", None)
                     ),
@@ -563,15 +458,16 @@ class RosControlNode(Node):
                 if state is not None:
                     snapshot.update(state)
                 controls.append(snapshot)
-            selected_control_id = str(
-                self._cabinet_state.get(
-                    "control_id",
-                    self._cabinet_state.get(
-                        "button_id",
-                        self.CABINET_BUTTON_ID,
+            selected_control_id = self._selected_cabinet_control_id_locked()
+            if selected_control_id not in self._cabinet_controls:
+                selected_control_id = next(
+                    (
+                        control_id
+                        for control_id, control in self._cabinet_controls.items()
+                        if bool(control.get("operable", True))
                     ),
+                    next(iter(self._cabinet_controls), ""),
                 )
-            )
             catalog_received = self._cabinet_catalog_received
             operation_available = self._action_server_ready(
                 getattr(self, "_cabinet_operation_client", None)
@@ -580,7 +476,10 @@ class RosControlNode(Node):
                 getattr(self, "_cabinet_button_client", None)
             )
         return {
-            "available": operation_available or legacy_button_available,
+            "available": (
+                catalog_received
+                and (operation_available or legacy_button_available)
+            ),
             "operation_available": operation_available,
             "legacy_button_available": legacy_button_available,
             "reset_available": self._service_ready(
@@ -590,7 +489,7 @@ class RosControlNode(Node):
             "source": (
                 "operator_catalog"
                 if catalog_received
-                else "compatibility_default"
+                else "waiting_for_catalog"
             ),
             "selected_control_id": selected_control_id,
             "controls": controls,
@@ -1253,150 +1152,6 @@ class RosControlNode(Node):
             )
         return {"status": "canceling"}
 
-    def send_named_motion(
-        self,
-        group: str,
-        target: str,
-        execute: bool,
-    ) -> Dict[str, Any]:
-        """Submit a collision-checked MoveIt named joint target."""
-        key = (group, target)
-        if key not in self.NAMED_TARGETS:
-            raise ControlRequestError(
-                f"Unsupported MoveIt named target: {group}/{target}."
-            )
-        constraints = Constraints()
-        constraints.name = target
-        for joint_name, position in self.NAMED_TARGETS[key].items():
-            constraint = JointConstraint()
-            constraint.joint_name = joint_name
-            constraint.position = position
-            constraint.tolerance_above = 0.001
-            constraint.tolerance_below = 0.001
-            constraint.weight = 1.0
-            constraints.joint_constraints.append(constraint)
-        description = {
-            "type": "named",
-            "group": group,
-            "name": target,
-        }
-        return self._send_move_group_goal(
-            group,
-            constraints,
-            description,
-            execute,
-        )
-
-    def send_pose_motion(
-        self,
-        frame_id: str,
-        position: List[float],
-        orientation: List[float],
-        execute: bool,
-    ) -> Dict[str, Any]:
-        """Submit a MoveIt end-effector pose target."""
-        if frame_id not in {"body", "odom", "map"}:
-            raise ControlRequestError(
-                "frame_id must be body, odom or map."
-            )
-        if len(position) != 3 or len(orientation) != 4:
-            raise ControlRequestError(
-                "MoveIt pose requires 3 position and 4 orientation values."
-            )
-        if not all(math.isfinite(value) for value in position + orientation):
-            raise ControlRequestError("MoveIt pose values must be finite.")
-        quaternion_norm = math.sqrt(
-            sum(value * value for value in orientation)
-        )
-        if quaternion_norm < 1.0e-6:
-            raise ControlRequestError(
-                "MoveIt orientation quaternion must be non-zero."
-            )
-        normalized = [
-            value / quaternion_norm
-            for value in orientation
-        ]
-
-        region = SolidPrimitive()
-        region.type = SolidPrimitive.SPHERE
-        region.dimensions = [0.005]
-        region_pose = Pose()
-        region_pose.position.x = position[0]
-        region_pose.position.y = position[1]
-        region_pose.position.z = position[2]
-        region_pose.orientation.w = 1.0
-
-        position_constraint = PositionConstraint()
-        position_constraint.header.frame_id = frame_id
-        position_constraint.header.stamp = self.get_clock().now().to_msg()
-        position_constraint.link_name = "end"
-        position_constraint.constraint_region.primitives.append(region)
-        position_constraint.constraint_region.primitive_poses.append(
-            region_pose
-        )
-        position_constraint.weight = 1.0
-
-        orientation_constraint = OrientationConstraint()
-        orientation_constraint.header.frame_id = frame_id
-        orientation_constraint.header.stamp = (
-            position_constraint.header.stamp
-        )
-        orientation_constraint.link_name = "end"
-        orientation_constraint.orientation.x = normalized[0]
-        orientation_constraint.orientation.y = normalized[1]
-        orientation_constraint.orientation.z = normalized[2]
-        orientation_constraint.orientation.w = normalized[3]
-        orientation_constraint.absolute_x_axis_tolerance = 0.01
-        orientation_constraint.absolute_y_axis_tolerance = 0.01
-        orientation_constraint.absolute_z_axis_tolerance = 0.01
-        orientation_constraint.weight = 1.0
-
-        constraints = Constraints()
-        constraints.name = "web_end_pose"
-        constraints.position_constraints.append(position_constraint)
-        constraints.orientation_constraints.append(orientation_constraint)
-        description = {
-            "type": "pose",
-            "group": "manipulator",
-            "frame_id": frame_id,
-            "position": position,
-            "orientation": normalized,
-        }
-        return self._send_move_group_goal(
-            "manipulator",
-            constraints,
-            description,
-            execute,
-        )
-
-    def cancel_motion(self, allow_idle: bool = False) -> Dict[str, Any]:
-        """Cancel the currently accepted MoveIt goal."""
-        with self._lock:
-            goal_handle = self._motion_goal_handle
-            active = self._motion_state["state"] in self.ACTIVE_MOTION_STATES
-            if goal_handle is None:
-                if allow_idle or not active:
-                    return {"status": "idle"}
-                self._motion_state.update(
-                    {
-                        "state": "canceled",
-                        "message": "MoveIt goal canceled before acceptance.",
-                        "updated_at": time.time(),
-                    }
-                )
-                return {"status": "canceling"}
-            self._motion_state.update(
-                {
-                    "state": "canceling",
-                    "message": "Canceling the active MoveIt goal.",
-                    "updated_at": time.time(),
-                }
-            )
-            self._motion_cancel_requested = True
-        future = goal_handle.cancel_goal_async()
-        future.add_done_callback(self._motion_cancel_callback)
-        return {"status": "canceling"}
-
     def _update_manual_control(self) -> None:
         now = time.monotonic()
         period = now - self._last_update_time
@@ -1430,8 +1185,6 @@ class RosControlNode(Node):
                 self._cmd_vel_publisher.publish(command)
                 if trajectory is not None:
                     self._trajectory_publisher.publish(trajectory)
-        self._enforce_motion_cancel(now)
-
     def _request_navigation_mode_locked(
         self,
         enabled: bool,
@@ -2071,205 +1824,6 @@ class RosControlNode(Node):
             }
         )
 
-    def _send_move_group_goal(
-        self,
-        group: str,
-        constraints: Constraints,
-        description: Dict[str, Any],
-        execute: bool,
-    ) -> Dict[str, Any]:
-        with self._lock:
-            self._reject_if_cabinet_active_locked()
-        if not self._action_server_ready(self._move_group_client):
-            raise ControlRequestError(
-                "MoveIt MoveGroup action server is unavailable.",
-                503,
-            )
-        with self._lock:
-            self._reject_if_cabinet_active_locked()
-            if self._motion_state["state"] in self.ACTIVE_MOTION_STATES:
-                raise ControlRequestError(
-                    "A MoveIt goal is already active.",
-                    409,
-                )
-            self._motion_state.update(
-                {
-                    "state": "sending",
-                    "message": "Sending the MoveIt planning request.",
-                    "target": description,
-                    "execute": execute,
-                    "feedback": "",
-                    "planning_time": None,
-                    "error_code": None,
-                    "updated_at": time.time(),
-                }
-            )
-            self._motion_cancel_requested = False
-
-        goal = MoveGroup.Goal()
-        goal.request.group_name = group
-        goal.request.num_planning_attempts = 5
-        goal.request.allowed_planning_time = 5.0
-        goal.request.max_velocity_scaling_factor = 0.25
-        goal.request.max_acceleration_scaling_factor = 0.25
-        goal.request.start_state.is_diff = True
-        goal.request.goal_constraints = [constraints]
-        goal.planning_options.planning_scene_diff.is_diff = True
-        goal.planning_options.planning_scene_diff.robot_state.is_diff = True
-        goal.planning_options.plan_only = not execute
-        goal.planning_options.look_around = False
-        goal.planning_options.replan = execute
-        goal.planning_options.replan_attempts = 2
-        goal.planning_options.replan_delay = 0.25
-
-        future = self._move_group_client.send_goal_async(
-            goal,
-            feedback_callback=self._motion_feedback_callback,
-        )
-        future.add_done_callback(self._motion_goal_response_callback)
-        return {
-            "status": "accepted",
-            "target": description,
-            "execute": execute,
-        }
-
-    def _motion_goal_response_callback(self, future: Any) -> None:
-        try:
-            goal_handle = future.result()
-        except Exception as error:  # noqa: BLE001
-            self._set_motion_terminal(
-                "failed",
-                f"Failed to send MoveIt goal: {error}",
-            )
-            return
-        if not goal_handle.accepted:
-            self._set_motion_terminal(
-                "rejected",
-                "MoveIt rejected the planning request.",
-            )
-            return
-        with self._lock:
-            canceled_before_acceptance = (
-                self._motion_state["state"] == "canceled"
-            )
-            self._motion_goal_handle = goal_handle
-            state = (
-                "canceling"
-                if canceled_before_acceptance
-                else (
-                    "executing"
-                    if self._motion_state["execute"]
-                    else "planning"
-                )
-            )
-            self._motion_state.update(
-                {
-                    "state": state,
-                    "message": (
-                        "Canceling the accepted MoveIt goal."
-                        if canceled_before_acceptance
-                        else (
-                            "MoveIt is planning and executing the trajectory."
-                            if self._motion_state["execute"]
-                            else "MoveIt is planning without execution."
-                        )
-                    ),
-                    "updated_at": time.time(),
-                }
-            )
-            if canceled_before_acceptance:
-                self._motion_cancel_requested = True
-        if canceled_before_acceptance:
-            cancel_future = goal_handle.cancel_goal_async()
-            cancel_future.add_done_callback(self._motion_cancel_callback)
-        result_future = goal_handle.get_result_async()
-        result_future.add_done_callback(self._motion_result_callback)
-
-    def _motion_feedback_callback(self, feedback_message: Any) -> None:
-        with self._lock:
-            self._motion_state.update(
-                {
-                    "feedback": str(feedback_message.feedback.state),
-                    "updated_at": time.time(),
-                }
-            )
-
-    def _motion_result_callback(self, future: Any) -> None:
-        try:
-            wrapped_result = future.result()
-            error_code = int(wrapped_result.result.error_code.val)
-            planning_time = float(wrapped_result.result.planning_time)
-            with self._lock:
-                cancel_requested = self._motion_cancel_requested
-            if cancel_requested:
-                state = "canceled"
-                message = "MoveIt motion was canceled."
-            elif (
-                wrapped_result.status == GoalStatus.STATUS_SUCCEEDED
-                and error_code == 1
-            ):
-                state = "succeeded"
-                message = (
-                    "MoveIt trajectory execution succeeded."
-                    if self._motion_state["execute"]
-                    else "MoveIt plan succeeded."
-                )
-            else:
-                state, message = self._goal_status(
-                    wrapped_result.status,
-                    "MoveIt",
-                )
-                if state == "succeeded":
-                    state = "failed"
-                    message = (
-                        "MoveIt planning failed with error code "
-                        f"{error_code}."
-                    )
-        except Exception as error:  # noqa: BLE001
-            state = "failed"
-            message = f"MoveIt result failed: {error}"
-            error_code = None
-            planning_time = None
-        self._set_motion_terminal(
-            state,
-            message,
-            error_code,
-            planning_time,
-        )
-
-    def _motion_cancel_callback(self, future: Any) -> None:
-        try:
-            response = future.result()
-            if not response.goals_canceling:
-                self.get_logger().warning(
-                    "MoveIt did not accept direct action cancellation; "
-                    "canceling active trajectory controllers."
-                )
-        except Exception as error:  # noqa: BLE001
-            self.get_logger().warning(
-                f"MoveIt action cancellation failed: {error}"
-            )
-
-    def _set_motion_terminal(
-        self,
-        state: str,
-        message: str,
-        error_code: Optional[int] = None,
-        planning_time: Optional[float] = None,
-    ) -> None:
-        with self._lock:
-            self._motion_goal_handle = None
-            self._motion_cancel_requested = False
-            self._motion_state.update(
-                {
-                    "state": state,
-                    "message": message,
-                    "error_code": error_code,
-                    "planning_time": planning_time,
-                    "updated_at": time.time(),
-                }
-            )
-
     def _cabinet_goal_response_callback(
         self,
         future: Any,
@@ -2693,22 +2247,6 @@ class RosControlNode(Node):
             if result_updates:
                 self._cabinet_state.update(result_updates)
             self._cabinet_terminal_event.set()
-
-    def _enforce_motion_cancel(self, now: float) -> None:
-        with self._lock:
-            should_cancel = (
-                self._motion_cancel_requested
-                and self._motion_state["state"]
-                in self.ACTIVE_MOTION_STATES
-                and now - self._last_controller_cancel_time >= 0.2
-            )
-            if should_cancel:
-                self._last_controller_cancel_time = now
-        if not should_cancel:
-            return
-        for client in self._controller_cancel_clients:
-            if client.service_is_ready():
-                client.call_async(CancelGoal.Request())
 
     def _navigation_mode_callback(self, message: Bool) -> None:
         with self._lock:
@@ -3205,7 +2743,7 @@ class RosControlNode(Node):
         return str(
             self._cabinet_state.get("control_id")
             or self._cabinet_state.get("button_id")
-            or self.CABINET_BUTTON_ID
+            or ""
         )
 
     def _prepare_for_cabinet_operation_locked(self) -> None:
@@ -3238,6 +2776,11 @@ class RosControlNode(Node):
         target_state: Optional[str],
         target_position: Optional[float],
     ) -> Dict[str, Any]:
+        if not self._cabinet_catalog_received:
+            raise ControlRequestError(
+                "Cabinet control catalog is not available yet.",
+                503,
+            )
         control = self._cabinet_controls.get(control_id)
         if control is None:
             raise ControlRequestError(
@@ -3309,6 +2852,11 @@ class RosControlNode(Node):
         return control
 
     def _validate_cabinet_button_locked(self, button_id: str) -> None:
+        if not self._cabinet_catalog_received:
+            raise ControlRequestError(
+                "Cabinet control catalog is not available yet.",
+                503,
+            )
         control = self._cabinet_controls.get(button_id)
         if (
             control is None
@@ -3343,12 +2891,6 @@ class RosControlNode(Node):
                 "operating the cabinet.",
                 409,
             )
-        if self._motion_state["state"] in self.ACTIVE_MOTION_STATES:
-            raise ControlRequestError(
-                "MoveIt is active; cancel it before operating the cabinet.",
-                409,
-            )
-
     @staticmethod
     def _action_server_ready(client: Any) -> bool:
         try:

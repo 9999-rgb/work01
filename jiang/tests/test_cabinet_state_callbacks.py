@@ -69,6 +69,31 @@ class _ActionClient:
         return self.future
 
 
+def _button_control(
+    control_id: str = "box_10_button_1",
+    display_name: str = "10 号模块红色按钮",
+) -> dict[str, object]:
+    return {
+        "control_id": control_id,
+        "display_name": display_name,
+        "control_type": CabinetControl.TYPE_BUTTON,
+        "joint_name": f"box_10_{control_id}",
+        "joint_state_topic": f"/xczs/cabinet/{control_id}/joint_states",
+        "pressed_topic": f"/xczs/cabinet/{control_id}/pressed",
+        "state_topic": f"/xczs/cabinet/{control_id}/state",
+        "supported_commands": CabinetControl.SUPPORT_PRESS,
+        "unit": "m",
+        "min_position": 0.0,
+        "max_position": 0.008,
+        "state_ids": ["released", "pressed"],
+        "state_labels": ["已释放", "已按下"],
+        "state_positions": [0.0, 0.006],
+        "requires_grasp": False,
+        "operable": True,
+        "unavailable_reason": "",
+    }
+
+
 def _make_node() -> RosControlNode:
     node = object.__new__(RosControlNode)
     node._lock = threading.RLock()
@@ -78,38 +103,11 @@ def _make_node() -> RosControlNode:
     node._cabinet_terminal_event = threading.Event()
     node._cabinet_catalog_received = True
     node._cabinet_controls = {
-        "box_10_button_1": {
-            "control_id": "box_10_button_1",
-            "display_name": "10 号模块红色按钮",
-            "control_type": 0,
-            "joint_name": "box_10_box_10_button_1",
-            "joint_state_topic": (
-                "/xczs/cabinet/box_10_button_1/joint_states"
-            ),
-            "pressed_topic": "/xczs/cabinet/box_10_button_1/pressed",
-            "state_topic": "/xczs/cabinet/box_10_button_1/state",
-            "supported_commands": 1,
-            "min_position": 0.0,
-            "max_position": 0.008,
-            "state_ids": ["released", "pressed"],
-            "operable": True,
-        },
-        "box_10_button_2": {
-            "control_id": "box_10_button_2",
-            "display_name": "10 号模块绿色按钮",
-            "control_type": 0,
-            "joint_name": "box_10_box_10_button_2",
-            "joint_state_topic": (
-                "/xczs/cabinet/box_10_button_2/joint_states"
-            ),
-            "pressed_topic": "/xczs/cabinet/box_10_button_2/pressed",
-            "state_topic": "/xczs/cabinet/box_10_button_2/state",
-            "supported_commands": 1,
-            "min_position": 0.0,
-            "max_position": 0.008,
-            "state_ids": ["released", "pressed"],
-            "operable": True,
-        },
+        "box_10_button_1": _button_control(),
+        "box_10_button_2": _button_control(
+            "box_10_button_2",
+            "10 号模块绿色按钮",
+        ),
     }
     node._cabinet_control_states = {
         control_id: node._new_cabinet_control_state()
@@ -128,8 +126,8 @@ def _make_node() -> RosControlNode:
         "state": "operating",
         "message": "current operation",
         "control_id": "box_10_button_2",
-        "control_type": 0,
-        "type": 0,
+        "control_type": CabinetControl.TYPE_BUTTON,
+        "type": CabinetControl.TYPE_BUTTON,
         "command": "press",
         "target_state": None,
         "target_position": None,
@@ -153,12 +151,16 @@ def _add_knob(node: RosControlNode) -> None:
     node._cabinet_controls[control_id] = {
         "control_id": control_id,
         "display_name": "3 号模块旋钮",
-        "control_type": 1,
+        "control_type": CabinetControl.TYPE_KNOB,
         "joint_name": "box_03_box_03_knob_1",
         "joint_state_topic": "/xczs/cabinet/box_03_knob_1/joint_states",
         "pressed_topic": "",
         "state_topic": "/xczs/cabinet/box_03_knob_1/state",
-        "supported_commands": 2 | 4 | 8,
+        "supported_commands": (
+            CabinetControl.SUPPORT_SET_STATE
+            | CabinetControl.SUPPORT_SET_POSITION
+            | CabinetControl.SUPPORT_TOGGLE
+        ),
         "unit": "rad",
         "min_position": -pi,
         "max_position": pi,
@@ -173,12 +175,53 @@ def _add_knob(node: RosControlNode) -> None:
         node._new_cabinet_control_state()
     )
     node._cabinet_control_states[control_id].update(
-        {"control_type": 1, "type": 1}
+        {
+            "control_type": CabinetControl.TYPE_KNOB,
+            "type": CabinetControl.TYPE_KNOB,
+        }
     )
 
 
 class CabinetStateCallbackTest(unittest.TestCase):
     """Ensure delayed callbacks cannot mutate a newer cabinet goal."""
+
+    def test_catalog_is_empty_and_operations_wait_before_first_message(
+        self,
+    ) -> None:
+        node = object.__new__(RosControlNode)
+        node._lock = threading.RLock()
+        node._cabinet_catalog_received = False
+        node._cabinet_controls = {}
+        node._cabinet_control_states = {}
+        node._cabinet_state = {
+            "state": "idle",
+            "control_id": "",
+            "button_id": "",
+        }
+        node._cabinet_button_client = SimpleNamespace(
+            server_is_ready=lambda: True
+        )
+        node._cabinet_operation_client = SimpleNamespace(
+            server_is_ready=lambda: True
+        )
+        node._cabinet_reset_client = SimpleNamespace(
+            service_is_ready=lambda: True
+        )
+
+        snapshot = node.cabinet_controls_snapshot()
+
+        self.assertFalse(snapshot["available"])
+        self.assertFalse(snapshot["catalog_received"])
+        self.assertEqual("waiting_for_catalog", snapshot["source"])
+        self.assertEqual("", snapshot["selected_control_id"])
+        self.assertEqual([], snapshot["controls"])
+        with self.assertRaises(ControlRequestError) as operation_error:
+            node.operate_cabinet_control("box_10_button_1", "press")
+        self.assertEqual(503, operation_error.exception.status)
+        self.assertIn("catalog", str(operation_error.exception).lower())
+        with self.assertRaises(ControlRequestError) as button_error:
+            node.press_cabinet_button("box_10_button_1", True)
+        self.assertEqual(503, button_error.exception.status)
 
     def test_manual_joint_target_supports_and_clamps_lift(self) -> None:
         node = object.__new__(RosControlNode)
@@ -236,7 +279,7 @@ class CabinetStateCallbackTest(unittest.TestCase):
 
         node.create_subscription = create_subscription
         node.destroy_subscription = destroyed.append
-        control = dict(node.DEFAULT_CABINET_CONTROL)
+        control = _button_control()
 
         node._ensure_cabinet_control_subscriptions(control, object())
         node._ensure_cabinet_control_subscriptions(control, object())
@@ -339,8 +382,8 @@ class CabinetStateCallbackTest(unittest.TestCase):
             {
                 "control_id": "box_03_knob_1",
                 "button_id": "box_03_knob_1",
-                "control_type": 1,
-                "type": 1,
+                "control_type": CabinetControl.TYPE_KNOB,
+                "type": CabinetControl.TYPE_KNOB,
             }
         )
         state = CabinetControlState()
@@ -380,7 +423,6 @@ class CabinetStateCallbackTest(unittest.TestCase):
         node._navigation_mode_request = None
         node._navigation_mode_desired = None
         node._navigation_retirements = {}
-        node._motion_state = {"state": "idle"}
         node._linear_profile = SimpleNamespace(reset=lambda: None)
         node._angular_profile = SimpleNamespace(reset=lambda: None)
         node._pending_trajectory = None
@@ -404,7 +446,10 @@ class CabinetStateCallbackTest(unittest.TestCase):
         self.assertAlmostEqual(pi / 2, action_client.goal.target_position)
         self.assertFalse(action_client.goal.navigate_to_staging_pose)
         self.assertEqual("generic", node._cabinet_state["action_interface"])
-        self.assertEqual(1, node._cabinet_state["type"])
+        self.assertEqual(
+            CabinetControl.TYPE_KNOB,
+            node._cabinet_state["type"],
+        )
         self.assertEqual(
             {"state": None, "position": pi / 2},
             node._cabinet_state["target"],
@@ -445,8 +490,8 @@ class CabinetStateCallbackTest(unittest.TestCase):
         node._cabinet_state.update(
             {
                 "control_id": "box_03_knob_1",
-                "control_type": 1,
-                "type": 1,
+                "control_type": CabinetControl.TYPE_KNOB,
+                "type": CabinetControl.TYPE_KNOB,
                 "peak_position": 0.0,
             }
         )
@@ -499,7 +544,6 @@ class CabinetStateCallbackTest(unittest.TestCase):
         node._navigation_mode_request = None
         node._navigation_mode_desired = None
         node._navigation_retirements = {}
-        node._motion_state = {"state": "idle"}
         node._cabinet_reset_client = SimpleNamespace(
             service_is_ready=lambda: True,
             call_async=lambda request: _CompletedFuture(

@@ -7,7 +7,7 @@
 #   ./start_xczs_bridge.sh --no-gui          # 无 Gazebo 界面（headless）
 #   ./start_xczs_bridge.sh --with-proxy      # 同时启动 CDR→JSON 代理
 #   ./start_xczs_bridge.sh --manual          # 使用 GUI 手动控制
-#   ./start_xczs_bridge.sh --web             # 浏览器统一控制（含 Nav2、MoveIt 2）
+#   ./start_xczs_bridge.sh --web             # 浏览器统一控制（含 Nav2 与控制柜自动操作）
 #   ./start_xczs_bridge.sh --nav2            # 使用 Nav2 自主导航
 #
 # 启动后:

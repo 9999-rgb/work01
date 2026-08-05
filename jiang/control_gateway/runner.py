@@ -119,7 +119,6 @@ class ControlServer:
                 "during Web gateway shutdown."
             )
         self._node.cancel_navigation(allow_idle=True)
-        self._node.cancel_motion(allow_idle=True)
         self._node.emergency_stop()
         self._executor.shutdown(timeout_sec=3.0)
         self._executor_thread.join(timeout=3.0)
@@ -130,12 +129,10 @@ class ControlServer:
         """Return gateway and ROS action availability."""
         with self._request_scope():
             navigation = self._node.navigation_snapshot()
-            motion = self._node.motion_snapshot()
             cabinet = self._node.cabinet_snapshot()
             return {
                 "status": "ok",
                 "navigation_available": navigation["available"],
-                "moveit_available": motion["available"],
                 "cabinet_available": cabinet["available"],
                 "cabinet_active": cabinet["active"],
             }
@@ -191,42 +188,6 @@ class ControlServer:
         """Cancel Nav2 and switch the base router to zero-speed manual mode."""
         with self._request_scope():
             return self._node.takeover_navigation()
-
-    def motion_status(self) -> Dict[str, Any]:
-        """Return MoveIt action state."""
-        with self._request_scope():
-            return self._node.motion_snapshot()
-
-    def send_named_motion(
-        self,
-        group: str,
-        target: str,
-        execute: bool,
-    ) -> Dict[str, Any]:
-        """Send a named MoveIt goal."""
-        with self._request_scope():
-            return self._node.send_named_motion(group, target, execute)
-
-    def send_pose_motion(
-        self,
-        frame_id: str,
-        position: List[float],
-        orientation: List[float],
-        execute: bool,
-    ) -> Dict[str, Any]:
-        """Send an end-effector MoveIt goal."""
-        with self._request_scope():
-            return self._node.send_pose_motion(
-                frame_id,
-                position,
-                orientation,
-                execute,
-            )
-
-    def cancel_motion(self) -> Dict[str, Any]:
-        """Cancel active MoveIt planning or execution."""
-        with self._request_scope():
-            return self._node.cancel_motion()
 
     def cabinet_status(self) -> Dict[str, Any]:
         """Return generic cabinet action and physical control state."""

@@ -1,23 +1,31 @@
 // Copyright 2026
 // SPDX-License-Identifier: BSD-3-Clause
 
-#include <array>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
+#include "geometry_msgs/msg/transform_stamped.hpp"
 #include "moveit_msgs/msg/collision_object.hpp"
 #include "moveit_msgs/msg/planning_scene.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "shape_msgs/msg/solid_primitive.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Transform.h"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
+#include "tf2_ros/buffer.h"
+#include "tf2_ros/transform_listener.h"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
 
 namespace xczs_inspection_robot_control
@@ -29,60 +37,19 @@ namespace
 using CabinetControlState =
   xczs_inspection_robot_control::msg::CabinetControlState;
 
-constexpr char kDoorId[] = "cabinet_rear_door";
-constexpr char kSwitchId[] = "cabinet_main_switch";
-constexpr double kButtonCollisionLength = 0.012;
-constexpr double kButtonCollisionRadius = 0.015;
-constexpr double kButtonCollisionCenterOffset = -0.0055;
-constexpr double kDoorPanelWidth = 0.636;
-constexpr double kDoorPanelHeight = 2.204;
-constexpr double kDoorPanelThickness = 0.010;
-constexpr double kDoorPanelCenterZ = -0.008;
+struct BoxPart
+{
+  tf2::Vector3 size;
+  tf2::Vector3 position;
+};
 
 struct ControlCollision
 {
-  const char * id;
-  double x;
-  double y;
-  double z;
-  bool rotary;
+  std::string id;
+  tf2::Vector3 center;
+  tf2::Vector3 axis;
+  bool rotary{false};
 };
-
-// These are cabinet-body-local CAD pivots.  Keeping the collision registry in
-// one table makes it straightforward to compare it with cabinet_controls.yaml.
-constexpr std::array<ControlCollision, 31> kControlCollisions{{
-  {"box_1_button_1", 0.120, 1.876, 0.011, false},
-  {"box_1_button_2", 0.170, 1.876, 0.011, false},
-  {"box_2_button_1", 0.449, 1.876, 0.011, false},
-  {"box_2_button_2", 0.499, 1.876, 0.011, false},
-  {"box_3_button_1", 0.120, 1.547, 0.011, false},
-  {"box_3_button_2", 0.170, 1.547, 0.011, false},
-  {"box_4_button_1", 0.449, 1.547, 0.011, false},
-  {"box_4_button_2", 0.499, 1.547, 0.011, false},
-  {"box_5_button_1", 0.120, 1.218, 0.011, false},
-  {"box_5_button_2", 0.170, 1.218, 0.011, false},
-  {"box_6_button_1", 0.449, 1.218, 0.011, false},
-  {"box_6_button_2", 0.499, 1.218, 0.011, false},
-  {"box_7_button_1", 0.120, 0.889, 0.011, false},
-  {"box_7_button_2", 0.170, 0.889, 0.011, false},
-  {"box_8_button_1", 0.449, 0.889, 0.011, false},
-  {"box_8_button_2", 0.499, 0.889, 0.011, false},
-  {"box_10_button_1", 0.492, 0.574, 0.011, false},
-  {"box_10_button_2", 0.527, 0.574, 0.011, false},
-  {"box_11_button_1", 0.492, 0.377, 0.011, false},
-  {"box_11_button_2", 0.527, 0.377, 0.011, false},
-  {"box_1_knob", 0.167470, 2.050940, 0.0295, true},
-  {"box_2_knob", 0.496470, 2.050940, 0.0295, true},
-  {"box_3_knob", 0.167470, 1.721940, 0.0295, true},
-  {"box_4_knob", 0.496470, 1.721940, 0.0295, true},
-  {"box_5_knob", 0.167470, 1.392940, 0.0295, true},
-  {"box_6_knob", 0.496470, 1.392940, 0.0295, true},
-  {"box_7_knob", 0.167470, 1.063940, 0.0295, true},
-  {"box_8_knob", 0.496470, 1.063940, 0.0295, true},
-  {"box_9_knob", 0.124940, 0.774526, 0.0295, true},
-  {"box_10_knob", 0.135470, 0.630940, 0.0295, true},
-  {"box_11_knob", 0.135470, 0.433940, 0.0295, true},
-}};
 
 geometry_msgs::msg::Pose to_pose(const tf2::Transform & transform)
 {
@@ -97,11 +64,11 @@ geometry_msgs::msg::Pose to_pose(const tf2::Transform & transform)
   return pose;
 }
 
-shape_msgs::msg::SolidPrimitive box(double x, double y, double z)
+shape_msgs::msg::SolidPrimitive box(const tf2::Vector3 & size)
 {
   shape_msgs::msg::SolidPrimitive primitive;
   primitive.type = shape_msgs::msg::SolidPrimitive::BOX;
-  primitive.dimensions = {x, y, z};
+  primitive.dimensions = {size.x(), size.y(), size.z()};
   return primitive;
 }
 
@@ -117,6 +84,23 @@ shape_msgs::msg::SolidPrimitive cylinder(double height, double radius)
   return primitive;
 }
 
+tf2::Quaternion cylinder_rotation(const tf2::Vector3 & axis)
+{
+  const auto normalized_axis = axis.normalized();
+  tf2::Quaternion rotation = tf2::shortestArcQuat(
+    tf2::Vector3(0.0, 0.0, 1.0), normalized_axis);
+  rotation.normalize();
+  return rotation;
+}
+
+bool transform_changed(
+  const tf2::Transform & first,
+  const tf2::Transform & second)
+{
+  return first.getOrigin().distance(second.getOrigin()) > 1.0e-5 ||
+         first.getRotation().angleShortestPath(second.getRotation()) > 1.0e-5;
+}
+
 }  // namespace
 
 class CabinetPlanningScene final : public rclcpp::Node
@@ -125,15 +109,19 @@ public:
   CabinetPlanningScene()
   : Node("xczs_cabinet_planning_scene")
   {
-    frame_id_ = declare_parameter<std::string>("frame_id", "odom");
-    cabinet_x_ = declare_parameter<double>("cabinet_x", 2.0);
-    cabinet_y_ = declare_parameter<double>("cabinet_y", 0.33);
-    cabinet_z_ = declare_parameter<double>("cabinet_z", 0.0);
-    cabinet_roll_ = declare_parameter<double>(
-      "cabinet_roll", 1.57079632679);
-    cabinet_pitch_ = declare_parameter<double>("cabinet_pitch", 0.0);
-    cabinet_yaw_ = declare_parameter<double>(
-      "cabinet_yaw", -1.57079632679);
+    frame_id_ = required_string_parameter("frame_id", "odom");
+    cabinet_frame_ = required_string_parameter(
+      "cabinet_frame", "control_cabinet_frame");
+    require_pose_valid_ = declare_parameter<bool>("require_pose_valid", false);
+    const auto pose_valid_topic = required_string_parameter(
+      "pose_valid_topic", "/xczs/cabinet/pose_valid");
+
+    load_scene_profile();
+    load_control_collisions();
+
+    transform_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    transform_listener_ =
+      std::make_unique<tf2_ros::TransformListener>(*transform_buffer_);
     planning_scene_publisher_ =
       create_publisher<moveit_msgs::msg::PlanningScene>(
       "/planning_scene", rclcpp::QoS(1).reliable().transient_local());
@@ -146,29 +134,30 @@ public:
         active_control_id_ = message->data;
         ++scene_revision_;
       });
-    door_state_subscription_ = create_subscription<CabinetControlState>(
-      "/xczs/cabinet/cabinet_rear_door/state",
+    pose_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
+      pose_valid_topic,
       rclcpp::QoS(1).reliable().transient_local(),
-      [this](const CabinetControlState::SharedPtr message) {
-        if (!message->valid || !std::isfinite(message->position)) {
-          return;
-        }
+      [this](const std_msgs::msg::Bool::SharedPtr message) {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (std::abs(door_position_ - message->position) > 1.0e-3) {
-          door_position_ = message->position;
+        if (pose_valid_ != message->data || !pose_valid_received_) {
+          pose_valid_ = message->data;
+          pose_valid_received_ = true;
           ++scene_revision_;
         }
       });
-    switch_state_subscription_ = create_subscription<CabinetControlState>(
-      "/xczs/cabinet/cabinet_main_switch/state",
-      rclcpp::QoS(1).reliable().transient_local(),
-      [this](const CabinetControlState::SharedPtr message) {
-        if (!message->valid || !std::isfinite(message->position)) {
-          return;
-        }
+    door_state_subscription_ = create_control_state_subscription(
+      door_control_id_, [this](double position) {
         std::lock_guard<std::mutex> lock(state_mutex_);
-        if (std::abs(switch_position_ - message->position) > 1.0e-3) {
-          switch_position_ = message->position;
+        if (std::abs(door_position_ - position) > 1.0e-3) {
+          door_position_ = position;
+          ++scene_revision_;
+        }
+      });
+    switch_state_subscription_ = create_control_state_subscription(
+      switch_control_id_, [this](double position) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (std::abs(switch_position_ - position) > 1.0e-3) {
+          switch_position_ = position;
           ++scene_revision_;
         }
       });
@@ -179,221 +168,426 @@ public:
   }
 
 private:
-  tf2::Transform model_transform() const
+  std::string required_string_parameter(
+    const std::string & name,
+    const std::string & default_value)
   {
-    tf2::Quaternion rotation;
-    rotation.setRPY(cabinet_roll_, cabinet_pitch_, cabinet_yaw_);
-    return tf2::Transform(
-      rotation, tf2::Vector3(cabinet_x_, cabinet_y_, cabinet_z_));
+    const auto value = declare_parameter<std::string>(name, default_value);
+    if (value.empty()) {
+      throw std::invalid_argument("Parameter '" + name + "' must not be empty.");
+    }
+    return value;
   }
 
-  moveit_msgs::msg::CollisionObject make_frame() const
+  tf2::Vector3 vector3_parameter(
+    const std::string & name,
+    const std::vector<double> & default_value,
+    bool require_positive = false)
+  {
+    const auto values = declare_parameter<std::vector<double>>(
+      name, default_value);
+    if (values.size() != 3U ||
+      !std::all_of(
+        values.begin(), values.end(),
+        [require_positive](double value) {
+          return std::isfinite(value) && (!require_positive || value > 0.0);
+        }))
+    {
+      throw std::invalid_argument(
+              "Parameter '" + name + "' must contain three " +
+              (require_positive ? "positive " : "finite ") + "values.");
+    }
+    return tf2::Vector3(values[0], values[1], values[2]);
+  }
+
+  std::pair<double, double> cylinder_size_parameter(
+    const std::string & name,
+    const std::vector<double> & default_value)
+  {
+    const auto values = declare_parameter<std::vector<double>>(
+      name, default_value);
+    if (values.size() != 2U ||
+      !std::all_of(
+        values.begin(), values.end(),
+        [](double value) {return std::isfinite(value) && value > 0.0;}))
+    {
+      throw std::invalid_argument(
+              "Parameter '" + name +
+              "' must contain a positive height and radius.");
+    }
+    return {values[0], values[1]};
+  }
+
+  void load_scene_profile()
+  {
+    const auto frame_part_ids =
+      declare_parameter<std::vector<std::string>>(
+      "frame_part_ids", std::vector<std::string>{});
+    if (frame_part_ids.empty()) {
+      throw std::invalid_argument(
+              "Parameter 'frame_part_ids' must contain the cabinet shell.");
+    }
+    for (const auto & id : frame_part_ids) {
+      if (id.empty()) {
+        throw std::invalid_argument("Cabinet frame part IDs must not be empty.");
+      }
+      const auto prefix = "frame_parts." + id + ".";
+      frame_parts_.push_back(
+        {
+          vector3_parameter(prefix + "size", {}, true),
+          vector3_parameter(prefix + "position", {})});
+    }
+
+    std::tie(button_collision_height_, button_collision_radius_) =
+      cylinder_size_parameter("control_collision.button_size", {});
+    button_collision_center_offset_ = declare_parameter<double>(
+      "control_collision.button_center_offset", 0.0);
+    std::tie(knob_collision_height_, knob_collision_radius_) =
+      cylinder_size_parameter("control_collision.knob_size", {});
+    knob_collision_center_offset_ = declare_parameter<double>(
+      "control_collision.knob_center_offset", 0.0);
+    if (!std::isfinite(button_collision_center_offset_) ||
+      !std::isfinite(knob_collision_center_offset_))
+    {
+      throw std::invalid_argument(
+              "Control collision center offsets must be finite.");
+    }
+
+    door_control_id_ = required_string_parameter("door.control_id", "");
+    door_hinge_position_ = vector3_parameter("door.hinge_position", {});
+    door_axis_ = vector3_parameter("door.axis", {});
+    door_panel_size_ = vector3_parameter("door.panel_size", {}, true);
+    door_panel_position_ = vector3_parameter("door.panel_position", {});
+    if (door_axis_.length2() < 1.0e-12) {
+      throw std::invalid_argument("Parameter 'door.axis' must be non-zero.");
+    }
+    door_axis_.normalize();
+    const auto handle_part_ids = declare_parameter<std::vector<std::string>>(
+      "door.handle_part_ids", std::vector<std::string>{});
+    if (handle_part_ids.empty()) {
+      throw std::invalid_argument(
+              "Parameter 'door.handle_part_ids' must not be empty.");
+    }
+    for (const auto & id : handle_part_ids) {
+      const auto prefix = "door.handle_parts." + id + ".";
+      door_handle_parts_.push_back(
+        {
+          vector3_parameter(prefix + "size", {}, true),
+          vector3_parameter(prefix + "position", {})});
+    }
+
+    switch_control_id_ = required_string_parameter("switch.control_id", "");
+    switch_parent_control_id_ = required_string_parameter(
+      "switch.parent_control_id", "");
+    switch_pivot_position_ = vector3_parameter(
+      "switch.pivot_position", {});
+    switch_axis_ = vector3_parameter("switch.axis", {});
+    switch_size_ = vector3_parameter("switch.size", {}, true);
+    switch_center_offset_ = vector3_parameter("switch.center_offset", {});
+    if (switch_axis_.length2() < 1.0e-12) {
+      throw std::invalid_argument("Parameter 'switch.axis' must be non-zero.");
+    }
+    switch_axis_.normalize();
+    if (switch_parent_control_id_ != door_control_id_) {
+      throw std::invalid_argument(
+              "The current articulated scene adapter requires the switch "
+              "parent to match door.control_id.");
+    }
+  }
+
+  void load_control_collisions()
+  {
+    const auto control_ids =
+      declare_parameter<std::vector<std::string>>(
+      "control_ids", std::vector<std::string>{});
+    if (control_ids.empty()) {
+      throw std::invalid_argument(
+              "Parameter 'control_ids' must contain the shared catalog.");
+    }
+    const auto button_axis = vector3_parameter(
+      "button_defaults.axis", {0.0, 0.0, -1.0});
+    const auto knob_axis = vector3_parameter(
+      "knob_defaults.axis", {0.0, 0.0, 1.0});
+    bool found_door = false;
+    bool found_switch = false;
+    for (const auto & id : control_ids) {
+      const auto prefix = "controls." + id + ".";
+      const auto type = required_string_parameter(prefix + "type", "");
+      if (id == door_control_id_) {
+        found_door = type == "door";
+        continue;
+      }
+      if (id == switch_control_id_) {
+        found_switch = type == "switch";
+        const auto parent = required_string_parameter(
+          prefix + "parent_control_id", "");
+        if (parent != switch_parent_control_id_) {
+          throw std::invalid_argument(
+                  "Switch parent differs between scene and control profiles.");
+        }
+        continue;
+      }
+      if (type != "button" && type != "knob") {
+        throw std::invalid_argument(
+                "No collision adapter is configured for control '" + id +
+                "' of type '" + type + "'.");
+      }
+      const bool rotary = type == "knob";
+      auto axis = vector3_parameter(
+        prefix + "axis", rotary ?
+        std::vector<double>{knob_axis.x(), knob_axis.y(), knob_axis.z()} :
+        std::vector<double>{button_axis.x(), button_axis.y(), button_axis.z()});
+      if (axis.length2() < 1.0e-12) {
+        throw std::invalid_argument(
+                "Control '" + id + "' has a zero collision axis.");
+      }
+      axis.normalize();
+      const auto reference = vector3_parameter(
+        prefix + (rotary ? "pivot_position" : "local_position"), {});
+      const double offset = rotary ?
+        knob_collision_center_offset_ : button_collision_center_offset_;
+      control_collisions_.push_back(
+        {id, reference + axis * offset, axis, rotary});
+    }
+    if (!found_door || !found_switch) {
+      throw std::invalid_argument(
+              "Scene door and switch IDs must exist with matching types in "
+              "the shared control catalog.");
+    }
+  }
+
+  rclcpp::Subscription<CabinetControlState>::SharedPtr
+  create_control_state_subscription(
+    const std::string & control_id,
+    std::function<void(double)> update)
+  {
+    return create_subscription<CabinetControlState>(
+      "/xczs/cabinet/" + control_id + "/state",
+      rclcpp::QoS(1).reliable().transient_local(),
+      [update = std::move(update)](
+        const CabinetControlState::SharedPtr message) {
+        if (message->valid && std::isfinite(message->position)) {
+          update(message->position);
+        }
+      });
+  }
+
+  bool lookup_model_transform(tf2::Transform & model)
+  {
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (require_pose_valid_ && (!pose_valid_received_ || !pose_valid_)) {
+        RCLCPP_WARN_THROTTLE(
+          get_logger(), *get_clock(), 5000,
+          "Waiting for a valid cabinet pose from the scene pose authority.");
+        return false;
+      }
+    }
+    try {
+      const auto transform = transform_buffer_->lookupTransform(
+        frame_id_, cabinet_frame_, tf2::TimePointZero);
+      tf2::fromMsg(transform.transform, model);
+      model.getRotation().normalize();
+      return true;
+    } catch (const tf2::TransformException & error) {
+      RCLCPP_WARN_THROTTLE(
+        get_logger(), *get_clock(), 5000,
+        "Waiting for %s -> %s cabinet transform: %s",
+        frame_id_.c_str(), cabinet_frame_.c_str(), error.what());
+      return false;
+    }
+  }
+
+  moveit_msgs::msg::CollisionObject make_frame(
+    const tf2::Transform & model)
   {
     moveit_msgs::msg::CollisionObject frame;
     frame.header.frame_id = frame_id_;
     frame.header.stamp = now();
     frame.id = "control_cabinet_frame";
     frame.operation = moveit_msgs::msg::CollisionObject::ADD;
-
-    const auto model = model_transform();
-    const auto add_panel =
-      [&frame, &model](
-      const shape_msgs::msg::SolidPrimitive & primitive,
-      double x, double y, double z)
-      {
-        frame.primitives.push_back(primitive);
-        frame.primitive_poses.push_back(
-          to_pose(
-            model * tf2::Transform(
-              tf2::Quaternion::getIdentity(), tf2::Vector3(x, y, z))));
-      };
-
-    // The front panel remains closed behind the controls.  The rear panel is
-    // represented by the articulated door below, so opening it exposes a
-    // genuinely empty cabinet volume.
-    add_panel(box(0.642, 2.210, 0.010), 0.331, 1.115, -0.025);
-    add_panel(box(0.010, 2.230, 0.600), 0.005, 1.115, -0.300);
-    add_panel(box(0.010, 2.230, 0.600), 0.657, 1.115, -0.300);
-    add_panel(box(0.642, 0.010, 0.600), 0.331, 0.005, -0.300);
-    add_panel(box(0.642, 0.010, 0.600), 0.331, 2.225, -0.300);
+    for (const auto & part : frame_parts_) {
+      frame.primitives.push_back(box(part.size));
+      frame.primitive_poses.push_back(
+        to_pose(
+          model * tf2::Transform(
+            tf2::Quaternion::getIdentity(), part.position)));
+    }
     return frame;
   }
 
-  tf2::Transform door_transform(double door_position) const
+  tf2::Transform door_transform(
+    const tf2::Transform & model,
+    double door_position) const
   {
     tf2::Quaternion hinge_rotation;
-    hinge_rotation.setRotation(tf2::Vector3(0.0, 1.0, 0.0), door_position);
-    const tf2::Transform hinge(
-      hinge_rotation, tf2::Vector3(0.010, 0.010, -0.600));
-    return model_transform() * hinge;
+    hinge_rotation.setRotation(door_axis_, door_position);
+    return model * tf2::Transform(hinge_rotation, door_hinge_position_);
   }
 
   moveit_msgs::msg::CollisionObject make_door_panel(
-    double door_position) const
+    const tf2::Transform & model,
+    double door_position)
   {
     moveit_msgs::msg::CollisionObject door;
     door.header.frame_id = frame_id_;
     door.header.stamp = now();
-    door.id = "cabinet_control_" + std::string(kDoorId);
+    door.id = "cabinet_control_" + door_control_id_;
     door.operation = moveit_msgs::msg::CollisionObject::ADD;
-    // The panel follows the visible URDF envelope and remains in MoveIt's
-    // world even while the door itself is the active control.
-    door.primitives.push_back(
-      box(kDoorPanelWidth, kDoorPanelHeight, kDoorPanelThickness));
-    const tf2::Transform panel_center(
-      tf2::Quaternion::getIdentity(),
-      tf2::Vector3(0.321, 1.105, kDoorPanelCenterZ));
+    door.primitives.push_back(box(door_panel_size_));
     door.primitive_poses.push_back(
       to_pose(
-        door_transform(door_position) * panel_center));
+        door_transform(model, door_position) * tf2::Transform(
+          tf2::Quaternion::getIdentity(), door_panel_position_)));
     return door;
   }
 
   moveit_msgs::msg::CollisionObject make_door_handle(
+    const tf2::Transform & model,
     double door_position,
-    bool remove) const
+    bool remove)
   {
     moveit_msgs::msg::CollisionObject handle;
     handle.header.frame_id = frame_id_;
     handle.header.stamp = now();
-    handle.id = "cabinet_control_" + std::string(kDoorId) + "_handle";
+    handle.id = "cabinet_control_" + door_control_id_ + "_handle";
     if (remove) {
       handle.operation = moveit_msgs::msg::CollisionObject::REMOVE;
       return handle;
     }
     handle.operation = moveit_msgs::msg::CollisionObject::ADD;
-    handle.primitives.push_back(box(0.025, 0.025, 0.070));
-    handle.primitives.push_back(box(0.025, 0.025, 0.070));
-    handle.primitives.push_back(box(0.025, 0.165, 0.025));
-    const auto transform = door_transform(door_position);
-    handle.primitive_poses.push_back(
-      to_pose(
-        transform * tf2::Transform(
-          tf2::Quaternion::getIdentity(),
-          tf2::Vector3(0.600, 1.035, -0.045))));
-    handle.primitive_poses.push_back(
-      to_pose(
-        transform * tf2::Transform(
-          tf2::Quaternion::getIdentity(),
-          tf2::Vector3(0.600, 1.175, -0.045))));
-    handle.primitive_poses.push_back(
-      to_pose(
-        transform * tf2::Transform(
-          tf2::Quaternion::getIdentity(),
-          tf2::Vector3(0.600, 1.105, -0.080))));
+    const auto transform = door_transform(model, door_position);
+    for (const auto & part : door_handle_parts_) {
+      handle.primitives.push_back(box(part.size));
+      handle.primitive_poses.push_back(
+        to_pose(
+          transform * tf2::Transform(
+            tf2::Quaternion::getIdentity(), part.position)));
+    }
     return handle;
   }
 
   moveit_msgs::msg::CollisionObject make_control(
+    const tf2::Transform & model,
     const ControlCollision & control,
-    bool remove) const
+    bool remove)
   {
     moveit_msgs::msg::CollisionObject object;
     object.header.frame_id = frame_id_;
     object.header.stamp = now();
-    object.id = "cabinet_control_" + std::string(control.id);
+    object.id = "cabinet_control_" + control.id;
     if (remove) {
       object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
       return object;
     }
     object.operation = moveit_msgs::msg::CollisionObject::ADD;
-    // The button primitive matches the physical URDF exactly.  A larger
-    // approximation makes the 35 mm-spaced buttons in modules 10 and 11
-    // artificially block the 20 mm-diameter press probe.
     object.primitives.push_back(
-      control.rotary ? cylinder(0.046, 0.050) :
-      cylinder(kButtonCollisionLength, kButtonCollisionRadius));
-    const double collision_z = control.rotary ? control.z + 0.013 :
-      control.z + kButtonCollisionCenterOffset;
+      control.rotary ?
+      cylinder(knob_collision_height_, knob_collision_radius_) :
+      cylinder(button_collision_height_, button_collision_radius_));
     object.primitive_poses.push_back(
       to_pose(
-        model_transform() * tf2::Transform(
-          tf2::Quaternion::getIdentity(),
-          tf2::Vector3(control.x, control.y, collision_z))));
+        model * tf2::Transform(
+          cylinder_rotation(control.axis), control.center)));
     return object;
   }
 
   moveit_msgs::msg::CollisionObject make_switch(
+    const tf2::Transform & model,
     double door_position,
     double switch_position,
-    bool remove) const
+    bool remove)
   {
     moveit_msgs::msg::CollisionObject object;
     object.header.frame_id = frame_id_;
     object.header.stamp = now();
-    object.id = "cabinet_control_" + std::string(kSwitchId);
+    object.id = "cabinet_control_" + switch_control_id_;
     if (remove) {
       object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
       return object;
     }
     object.operation = moveit_msgs::msg::CollisionObject::ADD;
-    object.primitives.push_back(box(0.020, 0.080, 0.020));
-
-    tf2::Quaternion hinge_rotation;
-    hinge_rotation.setRotation(tf2::Vector3(0.0, 1.0, 0.0), door_position);
-    const tf2::Transform hinge(
-      hinge_rotation, tf2::Vector3(0.010, 0.010, -0.600));
-    const tf2::Transform switch_pivot(
-      tf2::Quaternion::getIdentity(), tf2::Vector3(0.342, 1.680, -0.018));
+    object.primitives.push_back(box(switch_size_));
     tf2::Quaternion switch_rotation;
-    switch_rotation.setRotation(
-      tf2::Vector3(0.0, 0.0, 1.0), switch_position);
-    const tf2::Transform switch_handle(
-      switch_rotation, tf2::Vector3(0.0, 0.0, 0.0));
-    const tf2::Transform switch_center(
-      tf2::Quaternion::getIdentity(), tf2::Vector3(0.0, 0.0, 0.010));
+    switch_rotation.setRotation(switch_axis_, switch_position);
     object.primitive_poses.push_back(
       to_pose(
-        model_transform() * hinge * switch_pivot * switch_handle *
-        switch_center));
+        door_transform(model, door_position) *
+        tf2::Transform(
+          tf2::Quaternion::getIdentity(), switch_pivot_position_) *
+        tf2::Transform(switch_rotation, tf2::Vector3(0.0, 0.0, 0.0)) *
+        tf2::Transform(
+          tf2::Quaternion::getIdentity(), switch_center_offset_)));
     return object;
   }
 
   void publish_scene_if_needed()
   {
+    tf2::Transform observed_model;
+    if (!lookup_model_transform(observed_model)) {
+      return;
+    }
+
     std::string active_control;
+    std::string published_active_control;
+    tf2::Transform model;
     double door_position = 0.0;
     double switch_position = 0.0;
-    std::string published_active_control;
     std::uint64_t revision = 0U;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      // Collision objects and task geometry must use one latched cabinet pose
+      // for the whole manipulation.  Defer external pose updates until the
+      // active-control topic returns to idle.
+      if (!model_transform_received_ ||
+        (active_control_id_.empty() &&
+        transform_changed(model_transform_, observed_model)))
+      {
+        model_transform_ = observed_model;
+        model_transform_received_ = true;
+        ++scene_revision_;
+      }
       if (scene_published_ && published_revision_ == scene_revision_) {
         return;
       }
       active_control = active_control_id_;
+      published_active_control = published_active_control_id_;
+      model = model_transform_;
       door_position = door_position_;
       switch_position = switch_position_;
-      published_active_control = published_active_control_id_;
       revision = scene_revision_;
     }
 
     std::vector<moveit_msgs::msg::CollisionObject> objects;
-    objects.reserve(kControlCollisions.size() + 4U);
-    objects.push_back(make_frame());
-    for (const auto & control : kControlCollisions) {
+    objects.reserve(control_collisions_.size() + 4U);
+    objects.push_back(make_frame(model));
+    for (const auto & control : control_collisions_) {
       if (active_control == control.id) {
         if (published_active_control != active_control) {
-          objects.push_back(make_control(control, true));
+          objects.push_back(make_control(model, control, true));
         }
         continue;
       }
-      objects.push_back(make_control(control, false));
+      objects.push_back(make_control(model, control, false));
     }
-    if (active_control == kSwitchId) {
+    if (active_control == switch_control_id_) {
       if (published_active_control != active_control) {
-        objects.push_back(make_switch(door_position, switch_position, true));
+        objects.push_back(
+          make_switch(
+            model, door_position, switch_position, true));
       }
     } else {
-      objects.push_back(make_switch(door_position, switch_position, false));
+      objects.push_back(
+        make_switch(
+          model, door_position, switch_position, false));
     }
-    objects.push_back(make_door_panel(door_position));
-    if (active_control == kDoorId) {
+    objects.push_back(make_door_panel(model, door_position));
+    if (active_control == door_control_id_) {
       if (published_active_control != active_control) {
-        objects.push_back(make_door_handle(door_position, true));
+        objects.push_back(make_door_handle(model, door_position, true));
       }
     } else {
-      objects.push_back(make_door_handle(door_position, false));
+      objects.push_back(make_door_handle(model, door_position, false));
     }
 
     if (planning_scene_publisher_->get_subscription_count() == 0U) {
@@ -417,9 +611,11 @@ private:
     }
     RCLCPP_INFO_THROTTLE(
       get_logger(), *get_clock(), 5000,
-      "Cabinet frame, 31 front controls, rear switch and dynamic door "
-      "are synchronized in %s (active target: %s).",
-      frame_id_.c_str(), active_control.empty() ? "none" : active_control.c_str());
+      "Cabinet scene profile (%zu controls) is synchronized from TF %s -> "
+      "%s (active target: %s).",
+      control_collisions_.size() + 2U, frame_id_.c_str(),
+      cabinet_frame_.c_str(),
+      active_control.empty() ? "none" : active_control.c_str());
   }
 
   rclcpp::Publisher<moveit_msgs::msg::PlanningScene>::SharedPtr
@@ -427,27 +623,51 @@ private:
   rclcpp::TimerBase::SharedPtr retry_timer_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     active_control_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
+    pose_valid_subscription_;
   rclcpp::Subscription<CabinetControlState>::SharedPtr
     door_state_subscription_;
   rclcpp::Subscription<CabinetControlState>::SharedPtr
     switch_state_subscription_;
+  std::unique_ptr<tf2_ros::Buffer> transform_buffer_;
+  std::unique_ptr<tf2_ros::TransformListener> transform_listener_;
 
   mutable std::mutex state_mutex_;
   std::string active_control_id_;
   std::string published_active_control_id_;
+  tf2::Transform model_transform_{tf2::Transform::getIdentity()};
   double door_position_{0.0};
   double switch_position_{0.0};
+  bool pose_valid_{false};
+  bool pose_valid_received_{false};
+  bool model_transform_received_{false};
   bool scene_published_{false};
   std::uint64_t scene_revision_{1U};
   std::uint64_t published_revision_{0U};
 
   std::string frame_id_;
-  double cabinet_x_{2.0};
-  double cabinet_y_{0.33};
-  double cabinet_z_{0.0};
-  double cabinet_roll_{1.57079632679};
-  double cabinet_pitch_{0.0};
-  double cabinet_yaw_{-1.57079632679};
+  std::string cabinet_frame_;
+  bool require_pose_valid_{false};
+  std::vector<BoxPart> frame_parts_;
+  std::vector<ControlCollision> control_collisions_;
+  double button_collision_height_{0.0};
+  double button_collision_radius_{0.0};
+  double button_collision_center_offset_{0.0};
+  double knob_collision_height_{0.0};
+  double knob_collision_radius_{0.0};
+  double knob_collision_center_offset_{0.0};
+  std::string door_control_id_;
+  tf2::Vector3 door_hinge_position_;
+  tf2::Vector3 door_axis_;
+  tf2::Vector3 door_panel_size_;
+  tf2::Vector3 door_panel_position_;
+  std::vector<BoxPart> door_handle_parts_;
+  std::string switch_control_id_;
+  std::string switch_parent_control_id_;
+  tf2::Vector3 switch_pivot_position_;
+  tf2::Vector3 switch_axis_;
+  tf2::Vector3 switch_size_;
+  tf2::Vector3 switch_center_offset_;
 };
 
 }  // namespace xczs_inspection_robot_control

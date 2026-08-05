@@ -1,6 +1,7 @@
 string control_id
 string robot_model
 string robot_link
+string robot_base_link
 bool attach
 ---
 bool success

@@ -47,6 +47,13 @@ def generate_launch_description() -> LaunchDescription:
     cabinet_controls_config = (
         control_share / "config" / "cabinet_controls.yaml"
     )
+    cabinet_robot_adapter_config = (
+        control_share / "config" / "cabinet_robot_adapter.yaml"
+    )
+    cabinet_scene_config = (
+        control_share / "config" / "cabinet_scene.yaml"
+    )
+    cabinet_pose_config = control_share / "config" / "cabinet_pose.yaml"
     xacro_file = description_share / "urdf" / XACRO_FILENAME
     cabinet_urdf = (
         description_share / "urdf" / CABINET_URDF_FILENAME
@@ -163,6 +170,19 @@ def generate_launch_description() -> LaunchDescription:
         default_value="-1.57079632679",
         description="Control cabinet yaw angle in radians.",
     )
+    cabinet_pose_source_argument = DeclareLaunchArgument(
+        "cabinet_pose_source",
+        default_value="static",
+        description=(
+            "Cabinet pose adapter: static or topic. Topic mode never falls "
+            "back to the spawn coordinates."
+        ),
+    )
+    cabinet_pose_topic_argument = DeclareLaunchArgument(
+        "cabinet_pose_topic",
+        default_value="/xczs/cabinet/pose_measurement",
+        description="PoseWithCovarianceStamped input used in topic mode.",
+    )
 
     gazebo_server = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -256,29 +276,35 @@ def generate_launch_description() -> LaunchDescription:
             LaunchConfiguration("cabinet_yaw"),
         ],
     )
-    cabinet_truth_transform = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="control_cabinet_truth_transform",
+    cabinet_pose_authority = Node(
+        package=CONTROL_PACKAGE,
+        executable="cabinet_pose_authority",
+        name="xczs_cabinet_pose_authority",
         output="screen",
         condition=IfCondition(LaunchConfiguration("spawn_cabinet")),
-        arguments=[
-            "--x",
-            LaunchConfiguration("cabinet_x"),
-            "--y",
-            LaunchConfiguration("cabinet_y"),
-            "--z",
-            LaunchConfiguration("cabinet_z"),
-            "--roll",
-            CABINET_EXPORT_ROLL,
-            "--pitch",
-            "0.0",
-            "--yaw",
-            LaunchConfiguration("cabinet_yaw"),
-            "--frame-id",
-            "odom",
-            "--child-frame-id",
-            "control_cabinet_frame",
+        parameters=[
+            str(cabinet_pose_config),
+            {
+                "use_sim_time": True,
+                "pose_source": LaunchConfiguration("cabinet_pose_source"),
+                "measurement_topic": LaunchConfiguration(
+                    "cabinet_pose_topic"
+                ),
+                "static_pose.x": ParameterValue(
+                    LaunchConfiguration("cabinet_x"), value_type=float
+                ),
+                "static_pose.y": ParameterValue(
+                    LaunchConfiguration("cabinet_y"), value_type=float
+                ),
+                "static_pose.z": ParameterValue(
+                    LaunchConfiguration("cabinet_z"), value_type=float
+                ),
+                "static_pose.roll": float(CABINET_EXPORT_ROLL),
+                "static_pose.pitch": 0.0,
+                "static_pose.yaw": ParameterValue(
+                    LaunchConfiguration("cabinet_yaw"), value_type=float
+                ),
+            },
         ],
     )
 
@@ -349,26 +375,11 @@ def generate_launch_description() -> LaunchDescription:
         name="xczs_cabinet_planning_scene",
         output="screen",
         parameters=[
+            str(cabinet_controls_config),
+            str(cabinet_scene_config),
             {
                 "use_sim_time": True,
                 "frame_id": "odom",
-                "cabinet_x": ParameterValue(
-                    LaunchConfiguration("cabinet_x"),
-                    value_type=float,
-                ),
-                "cabinet_y": ParameterValue(
-                    LaunchConfiguration("cabinet_y"),
-                    value_type=float,
-                ),
-                "cabinet_z": ParameterValue(
-                    LaunchConfiguration("cabinet_z"),
-                    value_type=float,
-                ),
-                "cabinet_roll": float(CABINET_EXPORT_ROLL),
-                "cabinet_yaw": ParameterValue(
-                    LaunchConfiguration("cabinet_yaw"),
-                    value_type=float,
-                ),
             }
         ],
         condition=IfCondition(
@@ -391,6 +402,7 @@ def generate_launch_description() -> LaunchDescription:
         remappings=[("joint_states", "/xczs/joint_states")],
         parameters=[
             str(cabinet_controls_config),
+            str(cabinet_robot_adapter_config),
             moveit_client_config.robot_description,
             moveit_client_config.robot_description_semantic,
             moveit_client_config.robot_description_kinematics,
@@ -398,24 +410,6 @@ def generate_launch_description() -> LaunchDescription:
                 "use_sim_time": True,
                 "planning_frame": "odom",
                 "navigation_frame": "map",
-                "cabinet_x": ParameterValue(
-                    LaunchConfiguration("cabinet_x"),
-                    value_type=float,
-                ),
-                "cabinet_y": ParameterValue(
-                    LaunchConfiguration("cabinet_y"),
-                    value_type=float,
-                ),
-                "cabinet_z": ParameterValue(
-                    LaunchConfiguration("cabinet_z"),
-                    value_type=float,
-                ),
-                "cabinet_roll": float(CABINET_EXPORT_ROLL),
-                "cabinet_pitch": 0.0,
-                "cabinet_yaw": ParameterValue(
-                    LaunchConfiguration("cabinet_yaw"),
-                    value_type=float,
-                ),
             }
         ],
         condition=IfCondition(
@@ -469,12 +463,14 @@ def generate_launch_description() -> LaunchDescription:
             cabinet_y_argument,
             cabinet_z_argument,
             cabinet_yaw_argument,
+            cabinet_pose_source_argument,
+            cabinet_pose_topic_argument,
             gazebo_server,
             gazebo_client,
             robot_state_publisher,
             spawn_robot,
             spawn_cabinet,
-            cabinet_truth_transform,
+            cabinet_pose_authority,
             start_controllers_after_spawn,
             start_control_interfaces_after_ros2_control,
         ]

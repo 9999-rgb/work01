@@ -49,6 +49,7 @@ add_executable(
   cabinet_planning_scene
   src/cabinet_planning_scene.cpp
 )
+add_executable(cabinet_pose_authority src/cabinet_pose_authority.cpp)
 add_executable(moveit_planner src/moveit_planner.cpp)
 add_executable(cabinet_button_operator src/cabinet_button_operator.cpp)
 add_executable(base_command_router src/base_command_router.cpp)
@@ -98,6 +99,8 @@ ament_target_dependencies(
   shape_msgs
   std_msgs
   tf2
+  tf2_geometry_msgs
+  tf2_ros
 )
 rosidl_get_typesupport_target(
   cabinet_planning_scene_typesupport
@@ -107,6 +110,17 @@ rosidl_get_typesupport_target(
 target_link_libraries(
   cabinet_planning_scene
   "${cabinet_planning_scene_typesupport}"
+)
+
+target_compile_features(cabinet_pose_authority PUBLIC cxx_std_17)
+ament_target_dependencies(
+  cabinet_pose_authority
+  geometry_msgs
+  rclcpp
+  std_msgs
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
 )
 
 target_compile_features(moveit_planner PUBLIC cxx_std_17)
@@ -188,6 +202,7 @@ install(
     inspection_robot_gui
     legacy_trajectory_router
     cabinet_planning_scene
+    cabinet_pose_authority
     cabinet_button_operator
     moveit_planner
     base_command_router
