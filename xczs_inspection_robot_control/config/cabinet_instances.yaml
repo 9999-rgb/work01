@@ -1,0 +1,25 @@
+# 控制柜实例清单
+# 所有实例共用同一份 cabinet_controls.yaml 和 cabinet_scene.yaml
+# 启动时通过 launch 参数 cabinet_instances:=<path> 传入
+
+instances:
+  - name: "cabinet_a"
+    x: 2.0
+    y: 0.33
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
+
+  - name: "cabinet_b"
+    x: 4.0
+    y: 0.33
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
+
+  - name: "cabinet_c"
+    x: 6.0
+    y: 0.33
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
