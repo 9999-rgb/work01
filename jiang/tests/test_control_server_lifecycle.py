@@ -7,6 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
+from unittest.mock import patch
 
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
@@ -110,6 +111,24 @@ class _Context:
         self.shutdown_called = True
 
 
+class _RetiringNode(_BlockingNode):
+    def __init__(self) -> None:
+        super().__init__()
+        self.idle = False
+
+    def cancel_cabinet_button(
+        self,
+        allow_idle: bool = False,
+    ) -> Dict[str, str]:
+        del allow_idle
+        self.cabinet_cancel_count += 1
+        return {"status": "idle" if self.idle else "canceling"}
+
+    def wait_for_cabinet_idle(self, timeout_sec: float) -> bool:
+        del timeout_sec
+        return self.idle
+
+
 def _make_server(node: _BlockingNode) -> ControlServer:
     server = object.__new__(ControlServer)
     server._node = node
@@ -125,6 +144,35 @@ def _make_server(node: _BlockingNode) -> ControlServer:
 
 
 class ControlServerLifecycleTest(unittest.TestCase):
+    def test_second_stop_finishes_teardown_after_backend_retires(self) -> None:
+        node = _RetiringNode()
+        server = _make_server(node)
+
+        with patch(
+            "control_gateway.runner.CABINET_SHUTDOWN_TIMEOUT_SEC",
+            0.01,
+        ):
+            server.stop()
+            self.assertFalse(node.destroyed)
+            self.assertFalse(server._shutdown_report["ros_teardown_completed"])
+
+            node.idle = True
+            server.stop()
+
+        self.assertTrue(node.destroyed)
+        self.assertTrue(server._context.shutdown_called)
+        self.assertTrue(server._shutdown_report["ros_teardown_completed"])
+
+    def test_stop_accepts_an_executor_thread_that_was_never_started(self) -> None:
+        node = _BlockingNode()
+        server = _make_server(node)
+        server._executor_thread = threading.Thread(target=lambda: None)
+
+        server.stop()
+
+        self.assertTrue(node.destroyed)
+        self.assertTrue(server._shutdown_report["executor_stopped"])
+
     def test_stop_drains_entered_press_and_rejects_later_press(self) -> None:
         node = _BlockingNode()
         server = _make_server(node)

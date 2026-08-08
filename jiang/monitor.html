@@ -698,9 +698,15 @@
           id="navMapCanvas"
           width="700"
           height="700"></canvas>
-        <span class="map-hint">单击地图选择目标点，再点击“开始导航”</span>
+        <span class="map-hint">地图点击仅用于调试坐标；正式任务按柜体工位导航</span>
       </div>
       <div class="field-grid">
+        <div class="form-field">
+          <label for="navCabinetInstance">目标柜体</label>
+          <select id="navCabinetInstance" disabled>
+            <option value="">等待柜体 inventory</option>
+          </select>
+        </div>
         <div class="form-field">
           <label for="navGoalX">目标 X / m</label>
           <input id="navGoalX" type="number" step="0.05" value="0.00">
@@ -716,8 +722,9 @@
       </div>
       <div class="command-row">
         <button class="btn btn-outline" id="btnManualMode">切换手动模式</button>
-        <button class="btn btn-primary" id="btnNavSend">开始导航</button>
-        <button class="btn btn-danger" id="btnNavCancel">停止导航并转手动</button>
+        <button class="btn btn-primary" id="btnNavSend">导航到所选柜体</button>
+        <button class="btn btn-outline" id="btnNavDebug">调试：导航到地图坐标</button>
+        <button class="btn btn-danger" id="btnNavCancel">取消导航任务</button>
       </div>
       <div class="status-detail" id="navDetail">
         启动时使用 <strong>./run_all.sh --web</strong>
@@ -733,6 +740,13 @@
     <div class="autonomy-body">
       <div class="cabinet-operation-grid">
         <div>
+          <div class="cabinet-target">
+            <label for="cabinetInstance">柜体实例</label>
+            <select id="cabinetInstance" disabled>
+              <option value="">等待柜体 inventory</option>
+            </select>
+            <small id="cabinetInstanceHint">每个实例具有独立 TF、控制目录和操作 Action。</small>
+          </div>
           <div class="cabinet-target">
             <label for="cabinetTarget">操作目标</label>
             <select id="cabinetTarget" disabled>
@@ -750,12 +764,13 @@
               <label for="cabinetTargetPosition" id="cabinetPositionLabel">目标位置</label>
               <input id="cabinetTargetPosition" type="number" step="1" value="0">
             </div>
+            <div class="cabinet-command-field" id="cabinetForceField" hidden>
+              <label for="cabinetForce">按钮力道 / N</label>
+              <input id="cabinetForce" type="number" min="0.1" step="0.1" value="5.0">
+              <small id="cabinetForceHint">低于触发下限也会执行，并返回“力度不足”。</small>
+            </div>
           </div>
           <div class="cabinet-unavailable" id="cabinetUnavailable" hidden></div>
-          <label class="cabinet-option" for="cabinetNavigate">
-            <input id="cabinetNavigate" type="checkbox" checked>
-            先导航到控制柜操作工位
-          </label>
           <div class="command-row">
             <button class="btn btn-primary" id="btnCabinetPress" disabled>
               按下所选按钮
@@ -764,7 +779,7 @@
               取消操作
             </button>
             <button class="btn btn-outline" id="btnCabinetReset" disabled>
-              复位控制件
+              刷新控制目录
             </button>
           </div>
         </div>
@@ -908,6 +923,14 @@ let cabinetActiveFromHealth = false;
 let cabinetStatusCurrent = false;
 let cabinetInterlockWasActive = false;
 let selectedNavigationGoal = null;
+let cabinetInstances = [];
+let activeTaskId = null;
+let activeTaskType = null;
+let taskEventSource = null;
+let navigationTaskStatus = null;
+let cabinetCatalogRequestGeneration = 0;
+const cabinetStatusByName = new Map();
+const taskSnapshotVersions = new Map();
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -933,6 +956,8 @@ const baseControlHint = $('baseControlHint');
 const cabinetState = $('cabinetState');
 const cabinetDetail = $('cabinetDetail');
 const cabinetTarget = $('cabinetTarget');
+const cabinetInstance = $('cabinetInstance');
+const navCabinetInstance = $('navCabinetInstance');
 
 function defaultServiceUrl(port) {
   const host = window.location.hostname || 'localhost';
@@ -1394,10 +1419,8 @@ document.querySelectorAll('.topic-preset').forEach(btn => {
 });
 
 // ─── Joint Bar Rendering ──────────────────────────────────────
-const jointNames = ['body_arm_lift','body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
-const jointDisplayLimits = {
-  body_arm_lift: [0.0, 0.85]
-};
+const jointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const jointDisplayLimits = {};
 
 function displayLimitsForJoint(name) {
   return jointDisplayLimits[name] || [-2.80, 2.80];
@@ -1486,11 +1509,11 @@ setStatus('', '未连接');
 // ─── Control State ──────────────────────────────────────────
 let ctrlConnected = false;
 let ctrlBaseUrl = 'http://localhost:8090';
-const armJointNames = ['body_arm_lift','body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
-const armJointLimits = [
-  {min: 0.0, max: 0.85, step: 0.01},
-  ...Array.from({length: 6}, () => ({min: -2.80, max: 2.80, step: 0.10}))
-];
+const armJointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+const armJointLimits = Array.from(
+  {length: 6},
+  () => ({min: -2.80, max: 2.80, step: 0.10})
+);
 const gripperJointNames = ['end_worklink1','end_worklink2'];
 const allJointNames = [...armJointNames, ...gripperJointNames];
 const gripperOpenVal = 0.35;
@@ -1506,6 +1529,97 @@ let manualIntentGeneration = 0;
 let manualTakeoverState = 'idle';
 let manualTakeoverPromise = null;
 
+function applyTaskSnapshot(task) {
+  if (!task || typeof task.task_id !== 'string') return;
+  const terminal = ['success', 'failed', 'canceled'].includes(task.status);
+  const reservationActive = task.reservation_active === true;
+  const updatedAt = Number(task.updated_at ?? task.created_at ?? 0);
+  const previousVersion = taskSnapshotVersions.get(task.task_id);
+  if (previousVersion && (
+    (Number.isFinite(updatedAt) && updatedAt < previousVersion.updatedAt) ||
+    (previousVersion.terminal && !terminal)
+  )) return;
+  taskSnapshotVersions.set(task.task_id, {
+    updatedAt: Number.isFinite(updatedAt)
+      ? Math.max(updatedAt, previousVersion ? previousVersion.updatedAt : 0)
+      : (previousVersion ? previousVersion.updatedAt : 0),
+    terminal
+  });
+  if (!terminal || reservationActive) {
+    activeTaskId = task.task_id;
+    activeTaskType = task.type;
+  } else if (activeTaskId === task.task_id) {
+    activeTaskId = null;
+    activeTaskType = null;
+  }
+  if (task.type === 'navigate') {
+    navigationTaskStatus = task;
+    renderNavigationStatus();
+  } else if (task.type === 'operate') {
+    const request = task.request || {};
+    const result = task.result || {};
+    const business = task.business_data || {};
+    const taskCabinet = request.cabinet || '';
+    const state = task.status === 'success'
+      ? 'succeeded'
+      : task.status;
+    const operationPhase = String(task.phase || '').replace(/^operation_/, '');
+    const nextStatus = {
+      cabinet: taskCabinet,
+      active: !terminal || reservationActive,
+      reservation_active: reservationActive,
+      state,
+      message: task.failure_reason || task.message,
+      control_id: request.control_id,
+      button_id: request.control_id,
+      command: request.command,
+      target_state: request.target_state,
+      target_position: request.target_position,
+      requested_force: result.requested_force ?? request.force,
+      estimated_force: result.estimated_force,
+      button_triggered: result.button_triggered,
+      navigate_to_staging_pose: false,
+      phase: business.phase ?? operationPhase,
+      progress: task.progress,
+      ...business,
+      ...result,
+      success: task.status === 'success',
+      error_code: task.failure_code
+    };
+    if (taskCabinet) cabinetStatusByName.set(taskCabinet, nextStatus);
+    if (!taskCabinet || taskCabinet === selectedCabinetName()) {
+      cabinetStatus = nextStatus;
+      cabinetStatusCurrent = true;
+      renderCabinetStatus();
+    }
+  }
+  updateControlInterlocks();
+}
+
+function connectTaskEvents() {
+  if (taskEventSource) taskEventSource.close();
+  taskEventSource = new EventSource(`${ctrlBaseUrl}/task/events`);
+  [
+    'task_accepted',
+    'task_progress',
+    'task_completed',
+    'task_reservation_released'
+  ].forEach(eventName => {
+    taskEventSource.addEventListener(eventName, event => {
+      try {
+        const payload = JSON.parse(event.data);
+        applyTaskSnapshot(payload.task);
+      } catch (error) {
+        log('err', `任务事件解析失败: ${error.message}`);
+      }
+    });
+  });
+  taskEventSource.onerror = () => {
+    // EventSource 会自动携带 Last-Event-ID 重连；轮询继续作为 fallback。
+    log('info', '任务事件流暂时中断，正在自动重连');
+  };
+}
+
 // ─── Control Connection ──────────────────────────────────────
 async function testControlConnection() {
   const url = ($('ctrlUrl').value || 'http://localhost:8090').trim().replace(/\/+$/, '');
@@ -1518,36 +1632,43 @@ async function testControlConnection() {
     if (r.ok) {
       const health = await r.json();
       ctrlConnected = true;
-      cabinetAvailableFromHealth = Boolean(
-        health.cabinet_available ?? health.cabinet_operation_available
-      );
-      cabinetActiveFromHealth = Boolean(health.cabinet_active);
+      applyCabinetHealth(health);
+      if (health.active_task_id) {
+        activeTaskId = health.active_task_id;
+        activeTaskType = null;
+      } else {
+        activeTaskId = null;
+        activeTaskType = null;
+        navigationTaskStatus = null;
+        cabinetStatus = null;
+        cabinetStatusCurrent = false;
+        cabinetStatusByName.clear();
+        taskSnapshotVersions.clear();
+      }
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
 
-      // Read current state without changing the base routing mode.  Reloading
-      // the page must never cancel navigation or interrupt a cabinet action.
       try {
-        applyCabinetControls(
-          await controlRequestWithTimeout('/cabinet/controls')
-        );
+        applyCabinetInstances(await controlRequestWithTimeout('/cabinets'));
+        await loadSelectedCabinetControls();
       } catch (_) {
+        applyCabinetInstances({cabinets: []});
         applyCabinetControls({
           available: false,
           catalog_received: false,
           controls: []
         });
       }
-      try {
-        cabinetStatus = await controlRequestWithTimeout('/cabinet/status');
-        cabinetStatusCurrent = true;
-        renderCabinetStatus();
-      } catch (_) {
-        cabinetStatus = null;
-        cabinetStatusCurrent = false;
-        renderCabinetStatus();
+      if (health.active_task_id) {
+        try {
+          applyTaskSnapshot(await controlRequestWithTimeout(
+            `/task/${encodeURIComponent(health.active_task_id)}/status`
+          ));
+        } catch (_) {}
       }
+      connectTaskEvents();
+      renderCabinetStatus();
       startAutonomyPolling();
       if (!health.navigation_available) {
         log('info', 'Nav2 未启动；使用 --web 可启用网页地图导航');
@@ -1573,6 +1694,8 @@ async function testControlConnection() {
     st.className = 'ctrl-status err';
     log('err', '控制服务器连接失败: ' + e.message);
     stopAutonomyPolling();
+    if (taskEventSource) taskEventSource.close();
+    taskEventSource = null;
     renderCabinetStatus();
   }
 }
@@ -1584,10 +1707,8 @@ setInterval(async () => {
     const r = await fetch(ctrlBaseUrl + '/health');
     if (!r.ok) throw new Error();
     const health = await r.json();
-    cabinetAvailableFromHealth = Boolean(
-      health.cabinet_available ?? health.cabinet_operation_available
-    );
-    cabinetActiveFromHealth = Boolean(health.cabinet_active);
+    applyCabinetHealth(health);
+    await reconcileTaskOwnerFromHealth(health);
     renderCabinetStatus();
   } catch (_) {
     ctrlConnected = false;
@@ -1599,6 +1720,8 @@ setInterval(async () => {
     $('ctrlStatus').className = 'ctrl-status err';
     stopBase();
     stopAutonomyPolling();
+    if (taskEventSource) taskEventSource.close();
+    taskEventSource = null;
     renderCabinetStatus();
   }
 }, 5000);
@@ -1789,16 +1912,28 @@ const stateLabels = {
 };
 
 function isCabinetOperationActive(status = cabinetStatus) {
-  if (!cabinetStatusCurrent) return cabinetActiveFromHealth;
-  if (!status) return cabinetActiveFromHealth;
-  if (status.active === true) return true;
-  return cabinetActiveStates.has(String(status.state || '').toLowerCase());
+  const taskActive = Boolean(activeTaskId && activeTaskType === 'operate');
+  const visibleStatusActive = Boolean(
+    cabinetStatusCurrent && status && (
+      status.active === true ||
+      cabinetActiveStates.has(String(status.state || '').toLowerCase())
+    )
+  );
+  return taskActive || cabinetActiveFromHealth || visibleStatusActive;
 }
 
 function isNavigationActive() {
-  return Boolean(
-    navigationStatus && navActiveStates.has(navigationStatus.state)
+  const reservationActive = Boolean(
+    (activeTaskId && activeTaskType === 'navigate') ||
+    (navigationTaskStatus &&
+      navigationTaskStatus.type === 'navigate' &&
+      navigationTaskStatus.reservation_active === true)
   );
+  const taskActive = navigationTaskStatus &&
+    !['success', 'failed', 'canceled'].includes(navigationTaskStatus.status);
+  return Boolean(reservationActive || taskActive || (
+    navigationStatus && navActiveStates.has(navigationStatus.state)
+  ));
 }
 
 function hasRetiringNavigationGoals() {
@@ -1808,13 +1943,6 @@ function hasRetiringNavigationGoals() {
 }
 
 function isCabinetAvailable() {
-  if (
-    cabinetStatusCurrent &&
-    cabinetStatus &&
-    typeof cabinetStatus.available === 'boolean'
-  ) {
-    return cabinetStatus.available;
-  }
   return cabinetAvailableFromHealth;
 }
 
@@ -1844,7 +1972,119 @@ function cabinetControlSupports(control, command) {
   return Boolean(supported & cabinetCommandSupport[command]);
 }
 
+function selectedCabinetName() {
+  return cabinetInstance.value || navCabinetInstance.value || '';
+}
+
+function applyCabinetHealth(health) {
+  const selected = selectedCabinetName();
+  const instance = health && health.cabinets && selected
+    ? health.cabinets[selected]
+    : null;
+  if (instance) {
+    cabinetOperationAvailable = Boolean(instance.operation_available);
+    cabinetResetAvailable = Boolean(instance.reset_available);
+    cabinetAvailableFromHealth = Boolean(
+      instance.available ?? (
+        instance.catalog_received && instance.operation_available
+      )
+    );
+  } else {
+    cabinetAvailableFromHealth = Boolean(
+      health && (
+        health.cabinet_available ?? health.cabinet_operation_available
+      )
+    );
+  }
+  // One robot is shared by every cabinet.  An operation on any instance must
+  // interlock this page's manual base and arm controls.
+  cabinetActiveFromHealth = Boolean(health && health.cabinet_active);
+}
+
+function updateCabinetStationFields() {
+  const name = selectedCabinetName();
+  const cabinet = cabinetInstances.find(entry => entry.name === name);
+  const station = cabinet && cabinet.navigation_station;
+  if (!station) return;
+  $('navGoalX').value = Number(station.x).toFixed(2);
+  $('navGoalY').value = Number(station.y).toFixed(2);
+  $('navGoalYaw').value = (Number(station.yaw) * 180 / Math.PI).toFixed(1);
+  selectedNavigationGoal = {
+    x: Number(station.x),
+    y: Number(station.y),
+    yaw: Number(station.yaw)
+  };
+  drawNavigationMap();
+}
+
+function applyCabinetInstances(payload) {
+  const values = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload && payload.cabinets) ? payload.cabinets : [];
+  cabinetInstances = values.filter(entry => (
+    entry && typeof entry.name === 'string' && entry.name
+  ));
+  const previous = selectedCabinetName();
+  const options = cabinetInstances.map(entry => {
+    const option = document.createElement('option');
+    option.value = entry.name;
+    option.textContent = entry.name;
+    return option;
+  });
+  const navOptions = options.map(option => option.cloneNode(true));
+  if (!options.length) {
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = '未配置柜体';
+    options.push(empty);
+    navOptions.push(empty.cloneNode(true));
+  }
+  cabinetInstance.replaceChildren(...options);
+  navCabinetInstance.replaceChildren(...navOptions);
+  const preferred = cabinetInstances.some(entry => entry.name === previous)
+    ? previous
+    : (cabinetInstances[0] || {}).name || '';
+  cabinetInstance.value = preferred;
+  navCabinetInstance.value = preferred;
+  cabinetStatus = cabinetStatusByName.get(preferred) || null;
+  cabinetStatusCurrent = Boolean(cabinetStatus);
+  cabinetInstance.disabled = !cabinetInstances.length;
+  navCabinetInstance.disabled = !cabinetInstances.length;
+  updateCabinetStationFields();
+}
+
+async function loadSelectedCabinetControls() {
+  const name = selectedCabinetName();
+  const requestGeneration = ++cabinetCatalogRequestGeneration;
+  if (!name) {
+    applyCabinetControls({catalog_received: false, controls: []});
+    return;
+  }
+  try {
+    const catalog = await controlRequestWithTimeout(
+      `/cabinets/${encodeURIComponent(name)}/controls`
+    );
+    if (
+      requestGeneration !== cabinetCatalogRequestGeneration ||
+      name !== selectedCabinetName() ||
+      (catalog.cabinet && catalog.cabinet !== name)
+    ) return;
+    applyCabinetControls(catalog);
+  } catch (error) {
+    if (
+      requestGeneration !== cabinetCatalogRequestGeneration ||
+      name !== selectedCabinetName()
+    ) return;
+    applyCabinetControls({catalog_received: false, controls: []});
+    log('err', `读取 ${name} 控制目录失败: ${error.message}`);
+  }
+}
+
 function applyCabinetControls(payload) {
+  if (
+    payload && payload.cabinet &&
+    payload.cabinet !== selectedCabinetName()
+  ) return false;
   const receivedControls = Array.isArray(payload && payload.controls)
     ? payload.controls
     : [];
@@ -1887,7 +2127,10 @@ function applyCabinetControls(payload) {
       operable: control.operable !== false,
       unavailable_reason: typeof control.unavailable_reason === 'string'
         ? control.unavailable_reason
-        : ''
+        : '',
+      default_force: Number(control.default_force) || 5.0,
+      min_trigger_force: Number(control.min_trigger_force) || 0,
+      max_force: Number(control.max_force) || 0
     }));
 
   const nextControls = validControls;
@@ -1950,7 +2193,6 @@ function applyCabinetControls(payload) {
         option.textContent = control.operable
           ? control.display_name
           : `${control.display_name}（不可操作）`;
-        option.disabled = !control.operable;
         group.appendChild(option);
       });
       return group;
@@ -1975,6 +2217,7 @@ function applyCabinetControls(payload) {
     cabinetResetAvailable = payload.reset_available;
   }
   renderCabinetTarget();
+  return true;
 }
 
 function renderCabinetTarget() {
@@ -1991,6 +2234,7 @@ function renderCabinetTarget() {
 
   const stateField = $('cabinetStateField');
   const positionField = $('cabinetPositionField');
+  const forceField = $('cabinetForceField');
   const stateSelect = $('cabinetTargetState');
   const positionInput = $('cabinetTargetPosition');
   const previousStateSelection = (
@@ -1998,6 +2242,7 @@ function renderCabinetTarget() {
   ) ? stateSelect.value : '';
   stateField.hidden = true;
   positionField.hidden = true;
+  forceField.hidden = true;
   stateSelect.replaceChildren();
   if (!control) {
     delete stateSelect.dataset.controlId;
@@ -2013,6 +2258,20 @@ function renderCabinetTarget() {
     : [];
   const canSetState = cabinetControlSupports(control, 'set_state');
   const canSetPosition = cabinetControlSupports(control, 'set_position');
+  if (Number(control.control_type) === 0) {
+    forceField.hidden = false;
+    const forceInput = $('cabinetForce');
+    const maximumForce = Number(control.max_force);
+    forceInput.max = maximumForce > 0 ? String(maximumForce) : '';
+    if (forceInput.dataset.controlId !== control.control_id) {
+      forceInput.value = String(Number(control.default_force) || 5.0);
+      forceInput.dataset.controlId = control.control_id;
+    }
+    const triggerForce = Number(control.min_trigger_force);
+    $('cabinetForceHint').textContent = triggerForce > 0
+      ? `触发下限 ${triggerForce.toFixed(1)} N；更小力道仍会实际执行并返回力度不足。`
+      : '低于触发下限也会实际执行，并返回“力度不足”。';
+  }
   if (canSetState && stateIds.length) {
     stateIds.forEach((stateId, index) => {
       const option = document.createElement('option');
@@ -2127,6 +2386,38 @@ async function pollAutonomyEndpoint(
   }
 }
 
+async function reconcileTaskOwnerFromHealth(health) {
+  const serverTaskId = health && typeof health.active_task_id === 'string'
+    ? health.active_task_id
+    : null;
+  if (serverTaskId && serverTaskId !== activeTaskId) {
+    if (activeTaskType === 'operate' && cabinetStatus) {
+      cabinetStatus.active = false;
+      cabinetStatusCurrent = false;
+    } else if (activeTaskType === 'navigate') {
+      navigationTaskStatus = null;
+    }
+    activeTaskId = serverTaskId;
+    activeTaskType = null;
+  }
+  const taskId = serverTaskId || activeTaskId;
+  if (!taskId) return;
+  try {
+    const task = await controlRequestWithTimeout(
+      `/task/${encodeURIComponent(taskId)}/status`
+    );
+    // Never clear ownership from health alone: a null health owner can race
+    // the final task response.  The authoritative task snapshot carries both
+    // terminal status and reservation_active.
+    if (activeTaskId === taskId) {
+      applyTaskSnapshot(task);
+    }
+  } catch (_) {
+    // Fail closed. The normal task/SSE poll will retry, so a transient status
+    // failure cannot incorrectly unlock or permanently lose task tracking.
+  }
+}
+
 async function refreshAutonomyStatus(
   generation = autonomyStatusPollGeneration
 ) {
@@ -2137,6 +2428,8 @@ async function refreshAutonomyStatus(
   ) return;
 
   autonomyStatusPollInFlight = true;
+  const polledCabinet = selectedCabinetName();
+  const polledTaskId = activeTaskId;
   const requests = [
     pollAutonomyEndpoint(
       '/navigation/status',
@@ -2146,36 +2439,31 @@ async function refreshAutonomyStatus(
         renderNavigationStatus();
       }
     ),
-    pollAutonomyEndpoint(
-      '/cabinet/status',
-      generation,
-      status => {
-        cabinetStatus = status;
-        cabinetStatusCurrent = true;
-        renderCabinetStatus();
-      },
-      () => {
-        cabinetStatusCurrent = false;
-        renderCabinetStatus();
-      }
-    ),
-    pollAutonomyEndpoint(
-      '/cabinet/controls',
+    ...(polledCabinet ? [pollAutonomyEndpoint(
+      `/cabinets/${encodeURIComponent(polledCabinet)}/controls`,
       generation,
       catalog => {
+        if (
+          polledCabinet !== selectedCabinetName() ||
+          (catalog.cabinet && catalog.cabinet !== polledCabinet)
+        ) return;
         applyCabinetControls(catalog);
         renderCabinetStatus();
       }
-    ),
+    )] : []),
+    ...(polledTaskId ? [pollAutonomyEndpoint(
+      `/task/${encodeURIComponent(polledTaskId)}/status`,
+      generation,
+      task => {
+        if (activeTaskId === polledTaskId) applyTaskSnapshot(task);
+      }
+    )] : []),
     pollAutonomyEndpoint(
       '/health',
       generation,
       health => {
-        cabinetAvailableFromHealth = Boolean(
-          health.cabinet_available ??
-          health.cabinet_operation_available
-        );
-        cabinetActiveFromHealth = Boolean(health.cabinet_active);
+        applyCabinetHealth(health);
+        void reconcileTaskOwnerFromHealth(health);
         renderCabinetStatus();
       }
     )
@@ -2397,15 +2685,27 @@ navMapCanvas.addEventListener('click', event => {
 function renderNavigationStatus() {
   if (!navigationStatus) return;
   const available = Boolean(navigationStatus.available);
-  const state = navigationStatus.state || 'idle';
-  const active = navActiveStates.has(state);
+  const taskState = navigationTaskStatus && navigationTaskStatus.status;
+  const reservationActive = Boolean(
+    navigationTaskStatus &&
+    navigationTaskStatus.reservation_active === true
+  );
+  const state = taskState
+    ? (taskState === 'success' ? 'succeeded' : taskState)
+    : (navigationStatus.state || 'idle');
+  const active = reservationActive || navActiveStates.has(state);
   let stateClass = '';
-  if (!available || ['failed', 'rejected'].includes(state)) stateClass = 'err';
+  if (reservationActive) stateClass = 'busy';
+  else if (!available || ['failed', 'rejected'].includes(state)) stateClass = 'err';
   else if (active) stateClass = 'busy';
   else if (state === 'succeeded') stateClass = 'ok';
+  const stateText = reservationActive &&
+    ['success', 'failed', 'canceled'].includes(taskState)
+    ? `${stateLabels[state] || state}（等待后端停止确认）`
+    : (stateLabels[state] || state);
   setAutonomyState(
     navState,
-    available ? (stateLabels[state] || state) : 'Nav2 未启动',
+    available ? stateText : 'Nav2 未启动',
     stateClass
   );
 
@@ -2415,7 +2715,9 @@ function renderNavigationStatus() {
     ? navigationStatus.retirement_errors.filter(Boolean)
     : [];
   const detail = [
-    navigationStatus.message || '',
+    (navigationTaskStatus && (
+      navigationTaskStatus.failure_reason || navigationTaskStatus.message
+    )) || navigationStatus.message || '',
     `模式: ${navigationStatus.mode === true ? 'Nav2' :
       navigationStatus.mode === false ? '手动' : '未知'}`,
     `位置: ${pose ?
@@ -2426,6 +2728,9 @@ function renderNavigationStatus() {
       `恢复: ${navigationStatus.recoveries || 0}`,
     retiringGoals > 0
       ? `待确认停止的旧导航: ${retiringGoals}（自动任务暂时锁定）`
+      : '',
+    reservationActive
+      ? '任务资源占用: 等待 Nav2 后端确认停止（全局互锁保持）'
       : '',
     ...retirementErrors.map(error => `停止确认异常: ${error}`)
   ];
@@ -2565,6 +2870,9 @@ function renderCabinetStatus() {
   const available = isCabinetAvailable();
   const statusCurrent = Boolean(cabinetStatusCurrent && cabinetStatus);
   const lastState = cabinetStatus ? cabinetStatus.state || 'idle' : 'idle';
+  const reservationActive = Boolean(
+    cabinetStatus && cabinetStatus.reservation_active === true
+  );
   const active = isCabinetOperationActive();
   const actionTargetId = cabinetStatus && (
     cabinetStatus.control_id || cabinetStatus.button_id
@@ -2592,7 +2900,9 @@ function renderCabinetStatus() {
         ? '状态同步中'
         : '控制柜操作未就绪';
   } else {
-    if (!available || ['failed', 'rejected'].includes(lastState)) {
+    if (reservationActive) {
+      stateClass = 'busy';
+    } else if (!available || ['failed', 'rejected'].includes(lastState)) {
       stateClass = 'err';
     } else if (active) {
       stateClass = 'busy';
@@ -2600,7 +2910,9 @@ function renderCabinetStatus() {
       stateClass = 'ok';
     }
     stateText = available
-      ? (stateLabels[lastState] || lastState)
+      ? (reservationActive && ['succeeded', 'failed', 'canceled'].includes(lastState)
+          ? `${stateLabels[lastState] || lastState}（等待后端停止确认）`
+          : (stateLabels[lastState] || lastState))
       : '控制柜操作未就绪';
   }
   setAutonomyState(cabinetState, stateText, stateClass);
@@ -2669,6 +2981,7 @@ function renderCabinetStatus() {
     }`;
   const targetState = cabinetStatus && cabinetStatus.target_state;
   const targetPosition = cabinetStatus && cabinetStatus.target_position;
+  const actualDisplacement = cabinetFeedbackValue('actual_displacement');
   const maxTravel = cabinetFeedbackValue('max_travel', 'peak_position');
   let targetMetric = targetState
     ? cabinetStateLabel(metricControl, targetState)
@@ -2678,6 +2991,13 @@ function renderCabinetStatus() {
       : cabinetStatus && cabinetStatus.command === 'press'
         ? '按下后释放'
         : '-';
+  if (
+    metricControl && Number(metricControl.control_type) === 0 &&
+    actualDisplacement !== null && actualDisplacement !== undefined &&
+    Number.isFinite(Number(actualDisplacement))
+  ) {
+    targetMetric += ` · 实际位移 ${formatCabinetTravel(actualDisplacement)}`;
+  }
   if (
     metricControl && Number(metricControl.control_type) === 0 &&
     maxTravel !== null && maxTravel !== undefined &&
@@ -2725,6 +3045,18 @@ function renderCabinetStatus() {
       selectedControl.control_id !== statusTargetId && !active
       ? `当前选择: ${selectedControl.display_name} (${selectedControl.control_id})`
       : '';
+    const isButtonResult = Number(statusTarget && statusTarget.control_type) === 0;
+    const requestedForce = Number(cabinetStatus.requested_force);
+    const estimatedForce = Number(cabinetStatus.estimated_force);
+    const forceText = isButtonResult && Number.isFinite(requestedForce)
+      ? `请求力道: ${requestedForce.toFixed(2)} N  实际估算: ${
+          Number.isFinite(estimatedForce) ? `${estimatedForce.toFixed(2)} N` : '-'
+        }`
+      : '';
+    const triggeredText = isButtonResult &&
+      typeof cabinetStatus.button_triggered === 'boolean'
+      ? `按钮触发: ${cabinetStatus.button_triggered ? '是' : '否'}`
+      : '';
     cabinetDetail.textContent = [
       cabinetStatus.message || '',
       `动作目标: ${targetText}`,
@@ -2735,8 +3067,13 @@ function renderCabinetStatus() {
         ? `目标位置: ${formatCabinetPosition(targetPosition, statusTarget)}`
         : '',
       selectionText,
+      forceText,
+      triggeredText,
+      reservationActive
+        ? '任务资源占用: 等待控制柜后端确认停止（全局互锁保持）'
+        : '',
       `导航到工位: ${
-        cabinetStatus.navigate_to_staging_pose === false ? '否' : '是'
+        cabinetStatus.navigate_to_staging_pose === true ? '是' : '否'
       }`,
       `结果: ${resultText}  错误码: ${
         errorCode === null || errorCode === undefined ? '-' : errorCode
@@ -2762,6 +3099,14 @@ function updateControlInterlocks() {
   cabinetInterlockWasActive = cabinetActive;
 
   $('btnNavSend').disabled =
+    !ctrlConnected ||
+    !navigationAvailable ||
+    !selectedCabinetName() ||
+    navigationActive ||
+    navigationRetiring ||
+    cabinetActive ||
+    takingOver;
+  $('btnNavDebug').disabled =
     !ctrlConnected ||
     !navigationAvailable ||
     navigationActive ||
@@ -2826,16 +3171,17 @@ function updateControlInterlocks() {
     Boolean(cabinetStatus && cabinetStatus.state === 'resetting');
   $('btnCabinetReset').disabled =
     !ctrlConnected ||
-    !cabinetCatalogReceived ||
-    !cabinetResetAvailable ||
+    !selectedCabinetName() ||
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
     takingOver;
   cabinetTarget.disabled = cabinetActive || !cabinetCatalogReceived;
-  $('cabinetNavigate').disabled = cabinetActive || !cabinetCatalogReceived;
+  cabinetInstance.disabled = cabinetActive || !cabinetInstances.length;
+  navCabinetInstance.disabled = cabinetActive || !cabinetInstances.length;
   $('cabinetTargetState').disabled = cabinetActive || !cabinetCatalogReceived;
   $('cabinetTargetPosition').disabled = cabinetActive || !cabinetCatalogReceived;
+  $('cabinetForce').disabled = cabinetActive || !cabinetCatalogReceived;
   renderBaseControlStatus();
 }
 
@@ -2977,6 +3323,27 @@ async function sendNavigationGoal() {
     toast('手动接管尚未完成，请稍后再启动导航', 'err');
     return;
   }
+  const cabinet = selectedCabinetName();
+  if (!cabinet) {
+    toast('请选择目标柜体', 'err');
+    return;
+  }
+  await clearDirectionInputs();
+  manualTakeoverState = 'idle';
+  renderBaseControlStatus();
+  updateControlInterlocks();
+  try {
+    const task = await controlRequest('/task/navigate', 'POST', {cabinet});
+    applyTaskSnapshot(task.task || task);
+    toast(`已提交导航任务：${cabinet}`, 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`导航目标失败: ${error.message}`, 'err');
+  }
+}
+
+async function sendNavigationDebugGoal() {
+  if (isCabinetOperationActive() || isNavigationActive()) return;
   const x = Number($('navGoalX').value);
   const y = Number($('navGoalY').value);
   const yawDegrees = Number($('navGoalYaw').value);
@@ -2984,32 +3351,32 @@ async function sendNavigationGoal() {
     toast('导航目标必须是有效数字', 'err');
     return;
   }
-  selectedNavigationGoal = {
-    x,
-    y,
-    yaw: yawDegrees * Math.PI / 180
-  };
-  // Navigation always starts from a stopped base with no retained local
-  // direction intent.  A key/pointer release from the previous manual command
-  // therefore cannot affect the new navigation session.
+  navigationTaskStatus = null;
+  selectedNavigationGoal = {x, y, yaw: yawDegrees * Math.PI / 180};
   await clearDirectionInputs();
-  manualTakeoverState = 'idle';
-  renderBaseControlStatus();
-  updateControlInterlocks();
   try {
-    await controlRequest(
-      '/navigation/goal',
-      'POST',
-      selectedNavigationGoal
-    );
-    toast('Nav2 目标已提交', 'ok');
+    await controlRequest('/navigation/goal', 'POST', selectedNavigationGoal);
+    toast('调试坐标目标已提交；该入口不绑定柜体任务', 'ok');
     refreshAutonomyStatus();
   } catch (error) {
-    toast(`导航目标失败: ${error.message}`, 'err');
+    toast(`调试导航失败: ${error.message}`, 'err');
   }
 }
 
 async function cancelNavigation() {
+  if (activeTaskId && activeTaskType === 'navigate') {
+    try {
+      const task = await controlRequest(
+        `/task/${encodeURIComponent(activeTaskId)}/cancel`, 'POST', {}
+      );
+      applyTaskSnapshot(task.task || task);
+      toast('正在取消导航任务', 'ok');
+      return;
+    } catch (error) {
+      toast(`取消导航失败: ${error.message}`, 'err');
+      return;
+    }
+  }
   await requestStopAndManualTakeover(true);
 }
 
@@ -3027,16 +3394,35 @@ async function sendCabinetOperation() {
     return;
   }
   const target = selectedCabinetControl();
-  if (!target || target.operable === false) {
-    toast('请选择一个可操作的控制柜目标', 'err');
+  if (!target) {
+    toast('请选择一个控制柜目标', 'err');
+    return;
+  }
+  if (target.operable === false) {
+    toast(target.unavailable_reason || '该控制件当前不可操作', 'err');
     return;
   }
   const controlId = target.control_id;
+  const cabinet = selectedCabinetName();
+  if (!cabinet) {
+    toast('请选择柜体实例', 'err');
+    return;
+  }
   let command = 'toggle';
   let targetState = null;
   let targetPosition = null;
+  let force = 5.0;
   if (Number(target.control_type) === 0) {
     command = 'press';
+    force = Number($('cabinetForce').value);
+    if (!Number.isFinite(force) || force <= 0) {
+      toast('按钮力道必须是大于 0 的有效数字', 'err');
+      return;
+    }
+    if (Number(target.max_force) > 0 && force > Number(target.max_force)) {
+      toast(`当前按钮最大可设置 ${Number(target.max_force).toFixed(1)} N`, 'err');
+      return;
+    }
   } else if (!$('cabinetStateField').hidden) {
     command = 'set_state';
     targetState = $('cabinetTargetState').value;
@@ -3057,10 +3443,10 @@ async function sendCabinetOperation() {
   }
   const previousStatus = cabinetStatus;
   const previousStatusCurrent = cabinetStatusCurrent;
-  const navigateToStagingPose = $('cabinetNavigate').checked;
   cabinetStatus = {
     ...(cabinetStatus || {}),
-    available: true,
+    cabinet,
+    active: true,
     state: 'sending',
     message: '正在提交控制柜操作。',
     control_id: controlId,
@@ -3069,30 +3455,36 @@ async function sendCabinetOperation() {
     target_state: targetState,
     target_position: targetPosition,
     button_id: controlId,
-    navigate_to_staging_pose: navigateToStagingPose,
+    requested_force: Number(target.control_type) === 0 ? force : null,
+    navigate_to_staging_pose: false,
     progress: 0,
     success: null,
     error_code: null
   };
+  cabinetStatusByName.set(cabinet, cabinetStatus);
   cabinetStatusCurrent = true;
   renderCabinetStatus();
   try {
-    await controlRequest(
-      '/cabinet/operate',
+    const task = await controlRequest(
+      '/task/operate',
       'POST',
       {
+        cabinet,
         control_id: controlId,
         command,
+        ...(Number(target.control_type) === 0 ? {force} : {}),
         ...(targetState ? {target_state: targetState} : {}),
-        ...(targetPosition !== null ? {target_position: targetPosition} : {}),
-        navigate_to_staging_pose: navigateToStagingPose
+        ...(targetPosition !== null ? {target_position: targetPosition} : {})
       }
     );
+    applyTaskSnapshot(task.task || task);
     toast(`已提交：${target.display_name}`, 'ok');
     refreshAutonomyStatus();
   } catch (error) {
     cabinetStatus = previousStatus;
     cabinetStatusCurrent = previousStatusCurrent;
+    if (previousStatus) cabinetStatusByName.set(cabinet, previousStatus);
+    else cabinetStatusByName.delete(cabinet);
     renderCabinetStatus();
     toast(`控制柜操作提交失败: ${error.message}`, 'err');
   }
@@ -3104,19 +3496,29 @@ async function cancelCabinetOperation() {
   const previousStatusCurrent = cabinetStatusCurrent;
   cabinetStatus = {
     ...(cabinetStatus || {}),
-    available: isCabinetAvailable(),
+    active: true,
     state: 'canceling',
     message: '正在取消控制柜操作。'
   };
+  if (cabinetStatus.cabinet) {
+    cabinetStatusByName.set(cabinetStatus.cabinet, cabinetStatus);
+  }
   cabinetStatusCurrent = true;
   renderCabinetStatus();
   try {
-    await controlRequest('/cabinet/cancel', 'POST', {});
+    if (!activeTaskId) throw new Error('没有可取消的任务');
+    const task = await controlRequest(
+      `/task/${encodeURIComponent(activeTaskId)}/cancel`, 'POST', {}
+    );
+    applyTaskSnapshot(task.task || task);
     toast('正在取消控制柜操作', 'ok');
     refreshAutonomyStatus();
   } catch (error) {
     cabinetStatus = previousStatus;
     cabinetStatusCurrent = previousStatusCurrent;
+    if (previousStatus && previousStatus.cabinet) {
+      cabinetStatusByName.set(previousStatus.cabinet, previousStatus);
+    }
     renderCabinetStatus();
     toast(`取消控制柜操作失败: ${error.message}`, 'err');
   }
@@ -3124,13 +3526,8 @@ async function cancelCabinetOperation() {
 
 async function resetCabinetControls() {
   if (isCabinetOperationActive()) return;
-  try {
-    const result = await controlRequest('/cabinet/reset', 'POST', {});
-    toast(result.message || '控制柜控制件已复位', 'ok');
-    await refreshAutonomyStatus();
-  } catch (error) {
-    toast(`复位控制柜失败: ${error.message}`, 'err');
-  }
+  await loadSelectedCabinetControls();
+  toast('控制目录已刷新', 'ok');
 }
 
 showNavigationMapMessage('等待控制服务器');
@@ -3468,6 +3865,7 @@ $('btnGripperOpen').addEventListener('click', openGripper);
 $('btnGripperClose').addEventListener('click', closeGripper);
 $('btnManualMode').addEventListener('click', switchToManualMode);
 $('btnNavSend').addEventListener('click', sendNavigationGoal);
+$('btnNavDebug').addEventListener('click', sendNavigationDebugGoal);
 $('btnNavCancel').addEventListener('click', cancelNavigation);
 $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
@@ -3478,6 +3876,26 @@ cabinetTarget.addEventListener('change', () => {
   renderCabinetTarget();
   renderCabinetStatus();
 });
+async function selectCabinetInstance(name) {
+  cabinetInstance.value = name;
+  navCabinetInstance.value = name;
+  cabinetControls = [];
+  cabinetCatalogReceived = false;
+  cabinetAvailableFromHealth = false;
+  cabinetOperationAvailable = false;
+  cabinetResetAvailable = false;
+  cabinetStatus = cabinetStatusByName.get(name) || null;
+  cabinetStatusCurrent = Boolean(cabinetStatus);
+  updateCabinetStationFields();
+  await loadSelectedCabinetControls();
+  renderCabinetStatus();
+}
+cabinetInstance.addEventListener('change', () => {
+  selectCabinetInstance(cabinetInstance.value);
+});
+navCabinetInstance.addEventListener('change', () => {
+  selectCabinetInstance(navCabinetInstance.value);
+});
 $('cabinetTargetState').addEventListener('change', () => {
   renderCabinetTarget();
   renderCabinetStatus();
@@ -3486,6 +3904,7 @@ $('cabinetTargetPosition').addEventListener('input', function() {
   this.dataset.edited = 'true';
   renderCabinetStatus();
 });
+$('cabinetForce').addEventListener('input', renderCabinetStatus);
 $('spdLinear').addEventListener('input', function() {
   $('spdLinVal').textContent = parseFloat(this.value).toFixed(2);
 });

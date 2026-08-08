@@ -40,9 +40,29 @@ SENSOR_PORT="${SENSOR_PORT:-8003}"
 SENSOR_HOST="${SENSOR_HOST:-0.0.0.0}"
 CONTROL_PORT="${CONTROL_PORT:-8090}"
 CONTROL_HOST="${CONTROL_HOST:-127.0.0.1}"
+CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-http://localhost:$MONITOR_PORT,http://127.0.0.1:$MONITOR_PORT}"
 ROS2_SETUP="/opt/ros/humble/setup.bash"
 WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 PYTHON_BIN="/usr/bin/python3"
+CABINET_INSTANCES_PATH="${CABINET_INSTANCES_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_instances.yaml}"
+CABINET_CONTROLS_PATH="${CABINET_CONTROLS_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_controls.yaml}"
+CABINET_SCENE_PATH="${CABINET_SCENE_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_scene.yaml}"
+CABINET_POSE_PATH="${CABINET_POSE_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_pose.yaml}"
+CABINET_ROBOT_ADAPTER_PATH="${CABINET_ROBOT_ADAPTER_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_robot_adapter.yaml}"
+
+IFS=',' read -r -a CONTROL_ORIGINS <<< "$CONTROL_ALLOWED_ORIGINS"
+CONTROL_ORIGIN_ARGS=()
+for origin in "${CONTROL_ORIGINS[@]}"; do
+    origin="${origin#"${origin%%[![:space:]]*}"}"
+    origin="${origin%"${origin##*[![:space:]]}"}"
+    if [ -n "$origin" ]; then
+        CONTROL_ORIGIN_ARGS+=(--allowed-origin "$origin")
+    fi
+done
+if [ "${#CONTROL_ORIGIN_ARGS[@]}" -eq 0 ]; then
+    echo "ERROR: XCZS_CONTROL_ORIGINS 至少需要一个 Web Origin。"
+    exit 1
+fi
 
 # ── 选项 ──────────────────────────────────────────────────────────
 GAZEBO_GUI="true"
@@ -70,12 +90,6 @@ while [[ $# -gt 0 ]]; do
         *) echo "未知选项: $1"; exit 1 ;;
     esac
 done
-
-# Web mode is the unified operator interface: enable Nav2 without opening RViz.
-if [ "$CONTROL_MODE" = "web" ]; then
-    NAV2_ENABLED="true"
-    NAV2_RVIZ="false"
-fi
 
 # ── 清理函数 ──────────────────────────────────────────────────────
 cleanup() {
@@ -155,6 +169,11 @@ fi
 if [ "$GAZEBO_GUI" = "false" ] && [ "$CONTROL_MODE" = "manual" ]; then
     echo "  GUI 不可用，自动切换为浏览器控制"
     CONTROL_MODE="web"
+fi
+# Web 是统一操作界面，必须在 headless 模式切换之后再决定是否启动 Nav2。
+if [ "$CONTROL_MODE" = "web" ]; then
+    NAV2_ENABLED="true"
+    NAV2_RVIZ="false"
 fi
 
 echo "═══════════════════════════════════════════"
@@ -275,7 +294,10 @@ if [ "$CONTROL_MODE" = "web" ]; then
     echo "[4/6] 启动 Web 控制服务 (port $CONTROL_PORT)..."
     "$PYTHON_BIN" control_server.py \
         --host "$CONTROL_HOST" \
-        --port "$CONTROL_PORT" &
+        --port "$CONTROL_PORT" \
+        --cabinet-instances "$CABINET_INSTANCES_PATH" \
+        --cabinet-scene "$CABINET_SCENE_PATH" \
+        "${CONTROL_ORIGIN_ARGS[@]}" &
     CONTROL_PID=$!
     sleep 1
     _check_process "$CONTROL_PID" "Web 控制服务"
@@ -302,18 +324,33 @@ if [ "$CONTROL_MODE" = "keyboard" ]; then
         "control_gui:=false" \
         "teleop:=true" \
         "nav2:=$NAV2_ENABLED" \
-        "nav2_rviz:=$NAV2_RVIZ"
+        "nav2_rviz:=$NAV2_RVIZ" \
+        "cabinet_instances:=$CABINET_INSTANCES_PATH" \
+        "cabinet_controls:=$CABINET_CONTROLS_PATH" \
+        "cabinet_scene:=$CABINET_SCENE_PATH" \
+        "cabinet_pose:=$CABINET_POSE_PATH" \
+        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
 elif [ "$CONTROL_MODE" = "web" ]; then
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
         "control_gui:=false" \
         "teleop:=false" \
         "nav2:=$NAV2_ENABLED" \
-        "nav2_rviz:=$NAV2_RVIZ"
+        "nav2_rviz:=$NAV2_RVIZ" \
+        "cabinet_instances:=$CABINET_INSTANCES_PATH" \
+        "cabinet_controls:=$CABINET_CONTROLS_PATH" \
+        "cabinet_scene:=$CABINET_SCENE_PATH" \
+        "cabinet_pose:=$CABINET_POSE_PATH" \
+        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
 else
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "gui:=$GAZEBO_GUI" \
         "control_gui:=true" \
         "nav2:=$NAV2_ENABLED" \
-        "nav2_rviz:=$NAV2_RVIZ"
+        "nav2_rviz:=$NAV2_RVIZ" \
+        "cabinet_instances:=$CABINET_INSTANCES_PATH" \
+        "cabinet_controls:=$CABINET_CONTROLS_PATH" \
+        "cabinet_scene:=$CABINET_SCENE_PATH" \
+        "cabinet_pose:=$CABINET_POSE_PATH" \
+        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
 fi

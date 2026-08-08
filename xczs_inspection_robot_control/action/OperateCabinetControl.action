@@ -9,6 +9,7 @@ uint8 command
 string target_state
 float64 target_position
 bool use_target_position
+float64 force
 bool navigate_to_staging_pose
 ---
 # Result
@@ -24,6 +25,12 @@ uint8 TARGET_NOT_REACHED=8
 uint8 RELEASE_FAILED=9
 uint8 CANCELED=10
 uint8 INTERNAL_ERROR=11
+uint8 INVALID_FORCE=12
+uint8 INSUFFICIENT_FORCE=13
+uint8 UNREACHABLE=14
+uint8 CONTACT_DETECTION_TIMEOUT=15
+uint8 RESOURCE_BUSY=16
+uint8 LEASE_LOST=17
 
 bool success
 uint8 error_code
@@ -32,6 +39,9 @@ float64 initial_position
 float64 final_position
 float64 peak_position
 string final_state
+float64 requested_force
+float64 estimated_force
+bool button_triggered
 ---
 # Feedback
 uint8 WAITING_FOR_SYSTEM=0

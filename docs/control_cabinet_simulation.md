@@ -1,184 +1,142 @@
-# 控制柜自动操作仿真
+# 控制柜多实例仿真与 Web 任务
 
-本项目在 Gazebo、MoveIt 2、Nav2 和 Web 控制端之间提供控制柜自动操作闭环。自动操作必须由机械臂到达目标并触发 Gazebo 中的物理关节状态；仅完成轨迹规划不视为成功。
+本项目在 Gazebo、MoveIt 2、Nav2 和 Web 控制端之间提供控制柜物理操作闭环。轨迹规划本身不算成功：操作结果必须来自 Gazebo 控件关节、按钮触发状态或档位状态的反馈。
 
-## 控制件清单
+## 系统分层
 
-控制目录固定包含 33 个可操作件：
+- 通用任务层：Web 页面、HTTP/SSE、全局任务互斥、导航调度、取消和结果记录。
+- 机器人适配层：`config/cabinet_robot_adapter.yaml`，声明 MoveIt 组、工具、底盘帧、停靠参数和当前机器人的不可达控件。
+- 场景适配层：`config/cabinet_instances.yaml`、`cabinet_scene.yaml`、`cabinet_controls.yaml` 和柜体 Xacro。
 
-- 20 个按钮：行程 8 mm，超过 6 mm 进入 `pressed`，回到 3 mm 以下进入 `released`。
-- 11 个旋钮：仿真三档 `left=-45°`、`center=0°`、`right=45°`，默认 `center`。
-- 1 个背门总开关：仿真两档 `off=0°`、`on=90°`，默认 `off`。
-- 1 个背门：仿真两档 `closed=0°`、`open=90°`，默认 `closed`。
+更换机器人时主要替换机器人模型、MoveIt/Nav2 配置和机器人适配参数；更换场地或柜体时替换实例、地图、模型与控件几何。任务 API 和 Web 页面不需要按实例复制。
 
-旋钮档位、总开关角度和背门结构是现有 CAD 缺少业务定义或独立门板资产时采用的明确仿真假设，不代表真实设备的电气参数。柜壳因此使用可碰撞的程序化框体和独立背门；U 形把手保留可视几何及 MoveIt 碰撞几何，原模块网格继续用于前面板外观。
+## 多柜体实例
 
-原六轴机械臂的安装高度无法覆盖 2.23 m 柜体，因此仿真模型增加了
-`body_arm_lift` 竖直滑台，行程为 0～0.85 m。该轴属于明确的仿真假设，已同时接入 URDF、Gazebo、ros2_control 和 MoveIt；自动动作会由 MoveIt 联合规划，Web 手动调试区也可查看、调节并归零此轴。合成滑台与二号臂在设计包络内允许重叠，SRDF 中对此碰撞对有显式说明。
-滑台包含固定在底盘后侧的 1.15 m 浅灰钢色双导轨立柱、背板、底座、顶梁以及橙色移动托架；后置结构避开机械臂收拢包络，托架通过连接支架沿导轨升降，因此机械臂升高后仍有连续可见且可碰撞的承载结构，不再表现为悬空。
+`config/cabinet_instances.yaml` 是实例 inventory。每项包含唯一 `name` 和有限的 `x/y/z/roll/pitch/yaw`；`pitch` 可省略。统一 launch 在运行时为每项展开一份 Xacro，并创建：
 
-## 各组件职责
+- Gazebo entity：`<name>`
+- ROS namespace：`/xczs/cabinet/<name>`
+- TF：`odom -> <name>_frame`
+- 操作 Action：`/xczs/cabinet/<name>/operate_cabinet_control`
+- 控制目录：`/xczs/cabinet/<name>/control_catalog`
+- 控件状态：`/xczs/cabinet/<name>/<control_id>/state`
+- 位姿有效状态、复位和抓取服务：均位于同一实例 namespace
 
-- Gazebo 保存按钮、旋钮、开关和柜门的真实关节状态，并实现按钮弹簧、旋钮档位、开关/柜门锁止、近距工具约束和复位。
-- MoveIt 2 负责竖直滑台和六轴机械臂的联合碰撞检查、到位、接近、操作和安全回撤，是自动操作的必需组件。
-- Nav2 只负责把移动底盘送到控件所在柜面前的操作工位。Web 中可取消“先导航到操作工位”，此时机器人必须已经停在可达位置。
-- Web 端负责选择控件、命令和目标状态，显示物理位置、离散状态、动作阶段，提供取消与复位。
+MoveIt world 中每个碰撞对象带实例前缀，多个 planning-scene 节点不会互相覆盖。每柜独立的 `grasp_active` 由 `cabinet_grasp_aggregator` 做逻辑 OR，再发布全局机器人稳定器所需的话题。
 
-MoveIt 2 是控制柜动作节点的内部执行依赖，不再提供独立的 Web
-“MoveIt 2 面板”。用户只需在控制柜面板中提交完整操作；动作节点会自动调用
-MoveIt 2，Web 端仍保留通用机械臂手动调试区，供单独调节滑台、机械臂和夹爪使用。
+新增或删除柜体只修改 inventory。示例三柜及其导航工位均位于默认 10 m × 10 m 地图内。
 
-控制柜动作节点在启动时会直接接收本机器人对应的 URDF、SRDF 和运动学参数，不从全局 `robot_description` 话题猜测模型。因此同一 ROS 2 网络中即使还有相机或其他机器人的描述发布者，连续动作也不会在第二次初始化 MoveIt 客户端时误载其他模型。
+## 无升降轴机器人
 
-旋钮、总开关和柜门采用仿真工具锁扣：只有 `button_press_tip` 到达配置的操作点并处于允许距离内，Gazebo 才建立临时跨模型约束。随后关节角度由机械臂执行的旋转或门把手弧线带动；操作接口不会直接写目标关节角。按钮仍由探针真实接触压下。
+机器人已移除 `body_arm_lift`、导轨、托架及所有对应的 ros2_control、MoveIt 和 Web 接口。当前手动轨迹固定为 8 个数：六轴机械臂加两个夹爪关节。
 
-三个装饰把手部件不参与 Gazebo 接触，柜门可视外壳与固定柜框保留 3 mm 缝隙，实体碰撞体仅再向内缩进 1 mm，并覆盖可视门板的大部分厚度，因此接触会在发生明显视觉穿透前生效。柜门使用经过近距校验的单自由度柔顺耦合；门板、门上开关底座和开关手柄在抓取、运动、释放和回弹期间始终保留 Gazebo 碰撞，不再把整扇门临时变为无碰撞物体。
+移除升降轴后，不伪造无法实现的动作。当前标准工位的运动学筛查结果写在机器人适配参数中：
 
-自动导航使用距操作点 0.93 m 的工位。Nav2 先完成粗定位；进入 0.15 m
-安全接管距离且朝向误差不超过 0.35 rad 后，动作节点取消 Nav2 目标，转由里程计闭环精确停靠。接管距离使用 Nav2 反馈的 `current_pose` 与目标工位在同一坐标系下的二维欧氏直距；`distance_remaining` 仅用于显示，不参与安全判定。坐标系不一致、位置不是有限值或四元数无效时不会累计接管时间；机器人重新远离时会撤销已有许可，取消 Nav2 前后还会通过 TF 复核距离。若底盘已经持续处于安全距离内、但 Nav2 的末端朝向连续
-4.0 s 无法满足朝向门限，系统会主动进入同一里程计停靠流程，避免一直卡在
-Nav2 旋转阶段。统一入口启动期间 action server 可能早于 Nav2 生命周期激活；此时控制节点会在系统等待时限内重新提交被拒绝的工位目标，并持续响应取消，而不是把短暂的启动竞态报告为导航失败。精确停靠最多等待 45.0 s，角速度上限为 0.45 rad/s。该兜底只放宽粗定位的交接条件，最终位置和朝向仍必须通过里程计停靠容差，不能绕过精确停靠或 Gazebo 接触。
+- 不可达：1～4 号模块的 8 个按钮、1～6 号旋钮、`cabinet_main_switch`。
+- 可进入运行验证：5、6、7、8、10、11 号模块按钮，7～11 号旋钮和 `cabinet_rear_door`。
 
-AMCL 使用适配全向底盘的 `OmniMotionModel`。DWB 局部控制器允许 X/Y 双向平移，速度范围均为 ±0.25 m/s，加减速度范围均为 ±0.50 m/s²，`vx_samples` 和 `vy_samples` 均为 20；`velocity_smoother` 使用相同的 X/Y 限值。导航超时时动作节点会立即取消 Nav2 并切断导航速度，再进入机械臂恢复流程。
+不可达控件仍出现在目录中，并携带 `operable=false` 与具体 `unavailable_reason`。提交后任务以 `unreachable` 失败，不会启动机械臂。理论可达不等于必然成功；MoveIt 碰撞、当前姿态或环境变化仍可能使具体一次动作失败。
 
-0.93 m 工位为伸直机械臂和柜体碰撞包络保留余量。MoveIt 场景以单条可靠的规划场景差量同步柜框、33 个控件以及门/开关的动态姿态。操作柜门时仅移除独立的 U 形把手碰撞对象，门板始终保留并以 20 Hz 跟随物理门角；规划门板的深度包络覆盖可视体与 Gazebo 实体碰撞体的并集，避免规划允许但物理提前接触。其他操作仍只开放当前接触目标。背门总开关随背门一起运动；操作子控件时会解析并等待整条父关节链停稳，再以新的物理状态样本验收，避免把开门过程中的旧状态误判为操作成功。
+## 按钮力道
 
-机械臂进入导航前和每次操作完成后都会回到安全运输姿态。OMPL 偶尔会在普通目标或安全姿态的路径后处理后发现与相邻控件碰撞，动作节点会从最新关节状态重新规划，最多尝试 3 次；只有获得完整无碰撞路径并执行成功后才报告动作成功。
+按钮参数由一个 `cabinet_controls.yaml` 同时提供给执行器目录和 Gazebo 模型。launch 会在展开每个柜体 URDF 时注入 `button_defaults`，并对 `controls.<id>` 中的单按钮覆盖逐个同步关节行程、弹簧刚度和触发阈值：
 
-旋钮使用 Gazebo 固定约束模拟夹持；随门运动的总开关和大惯量后门使用由工具实际转角驱动的单自由度柔顺扭矩耦合，避免跨模型刚性闭环把机械臂拉离规划轨迹。探针沿控件表面法向分别保持 0.020 m、0.012 m 和 0.015 m 外偏置。旋钮和总开关由机械臂沿完整关节圆弧带到目标档位，独立停稳 0.30 s 后释放、撤离，再依据新的物理状态样本验收。
+- 弹簧刚度：800 N/m
+- 物理行程：0～8 mm
+- 触发阈值：6 mm
+- 默认请求：5.0 N
 
-后门采用过中心双档机构。开门时底盘正对关闭状态的初始把手；关门时则正对过中心释放角，避免完全打开的门把手离底盘过远。机械臂先从安全准备位规划到物理抓取点外侧 10 mm 的近抓取位；即使计入 MoveIt 的 5 mm 位置容差，仍保留至少约 5 mm 的直线最终接近，以筛除无法抵达把手的 IK 分支。机械臂只执行初始位置到目标位置行程的 56%，即开门带到约 50.4°、关门带回约 39.6°。每 2 个圆弧路径点组成一个必须完整求解并执行的短段；段与段之间从机械臂实际关节状态重新求解，并使用 2.0 的关节跳变检测因子拒绝不连续 IK 解。4°短段连同 20 Hz 门姿态同步，为关门端点保留约 20 mm 以上的动态规划余量。越过档位中点后，机械臂保持柔顺转角耦合，先沿门板外法向撤到距抓取点 0.30 m，再释放门板。把手抓取轴线自身位于门面外侧 0.080 m；叠加 0.30 m 外撤后，探针轴线距铰链约 0.710 m，扣除 10 mm 探针半径后仍比 0.639 m 门板扫掠包络保留约 61 mm 余量，同时不越过该工位的连续笛卡尔工作区。随后门档弹簧完成到 0°或 90°，不会追上正在撤离的机械臂。整个过程不跳过门板碰撞检查或直接写柜门关节。门档仅在近距物理约束已建立时按 0.02 rad 迟滞阈值切换；机械臂引导期间阻尼为 2.0、档位预载刚度为 0.5，释放后锁存目标档位，再切换到 25.0 的阻尼和 60.0 的刚度。系统最长等待 90 s，并以释放后的新状态样本和低速度状态验收。
+执行位移按 `位移 = force / 800` 计算。因此线性模型中的触发下限为 4.8 N，最大有效设置为 6.4 N。
 
-物理抓取期间底盘通过临时世界固定约束模拟驻车制动，机器人平面稳定器暂停位置回写；释放后两者同时恢复。跨模型约束在 ODE 中可能向柜体传播瞬时冲击，因此旋钮、总开关和柜门的档位目标只允许在“该控件本身已被近距抓取”时切换。其他控件即使短时受扰也会被原档位弹簧拉回，不会把冲击锁存成业务状态。
+- `4.8 N ≤ force ≤ 6.4 N`：执行物理按压并验证触发和释放。
+- `0 N < force < 4.8 N`：仍实际移动探针并安全回撤，终态返回 `insufficient_force`，同时给出请求力、实测峰值位移、估算力和 `button_triggered`。
+- `force ≤ 0`、非有限数值或 `force > 6.4 N`：返回 `invalid_force`，不执行超行程动作。
+- 旋钮、开关和门接受统一请求结构，但不应用 force。
 
-## 启动和 Web 验证
+## 导航和操作的关系
 
-先构建并启动统一入口：
+Nav2 只负责把机器人送到由柜体完整 RPY 和 `cabinet_scene.yaml/navigation_station` 计算出的工位。MoveIt 2 负责机械臂碰撞检查、接近、操作和撤回。
 
-```bash
-colcon build --symlink-install
-source install/setup.bash
-./run_all.sh --web --no-gui
-```
+`/task/operate` **绝不隐式导航**。需要完整流程时，Web 先提交 `/task/navigate`，等待成功后再提交 `/task/operate`。导航失败或取消时不会继续操作。手动方向输入仍可触发现有 Nav2 接管流程；对应导航任务会在 Nav2 确认取消后才释放全局任务锁。
 
-浏览器打开 `http://localhost:8080/monitor.html`，进入“控制柜自动操作”：
+标准 Nav2 `NavigateToPose` 的 ABORTED 结果无法可靠区分“碰撞”与“目标不可达”。没有独立碰撞监视器证据时，系统诚实返回 `target_unreachable`，不会伪造碰撞原因。
 
-1. 在按类型分组的目标列表中选择控制件。
-2. 选择按下、档位、ON/OFF 或 OPEN/CLOSED。
-3. 根据机器人当前位置决定是否勾选“先导航到控制柜操作工位”。
-4. 提交后观察动作阶段、当前位置、目标位置和物理状态。
-5. 可随时取消；复位仅在没有控制柜动作、Nav2 或普通 MoveIt 动作时允许。
+目标栅格检查会应用 OccupancyGrid `origin.yaw` 的逆变换。Nav2 报告成功后，网关只接受本次 goal 发送之后收到的 `map` 坐标系定位位姿，避免用陈旧 AMCL 缓存伪造到达。
 
-最短验证路径可选择“10 号模块红色按钮”，其控制件 ID 是
-`box_10_button_1`，命令选择“按下”。保留“先导航到控制柜操作工位”时会验证
-Nav2、里程计精确停靠、MoveIt 2 和 Gazebo 物理按压的完整链路；取消勾选时只验证机器人已在可达工位后的机械臂与物理闭环。成功结果应显示按钮先达到
-`pressed`，释放后回到 `released`，动作阶段最终变为成功，活动目标被清空。
+## Web API
 
-取消会停止本次 Nav2/里程计与 MoveIt 2 运动，释放可能已经建立的 Gazebo
-工具约束，并尽力安全撤离和收回机械臂。复位会把全部控制件恢复到确定的默认档位；它与控制柜动作互斥，不应用来替代取消正在执行的动作。
+主要接口：
 
-## ROS 2 接口
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/cabinets` | inventory 和每柜计算后的工位 |
+| GET | `/cabinets/<name>/controls` | 该实例的目录与实时状态 |
+| POST | `/task/navigate` | 按柜体名导航 |
+| POST | `/task/operate` | 操作指定实例的控件，不含导航 |
+| GET | `/task/<id>/status` | 状态轮询 fallback |
+| POST | `/task/<id>/cancel` | 请求取消 |
+| GET | `/task/events` | 可重连 SSE 事件流 |
+| POST | `/cmd_vel` | 手动底盘调试 |
+| POST | `/joint_trajectory` | 六轴机械臂和夹爪调试 |
 
-- 通用动作：`/xczs/operate_cabinet_control`，类型 `OperateCabinetControl`。
-- 按钮兼容动作：`/xczs/press_cabinet_button`，类型 `PressCabinetButton`。
-- 控制目录：`/xczs/cabinet/control_catalog`，可靠、持久化 QoS。
-- 单件状态：`/xczs/cabinet/<control_id>/state`，类型 `CabinetControlState`。
-- 活动目标：`/xczs/cabinet/active_control`，供 MoveIt 动态碰撞场景临时开放当前目标。
-- 安全复位：`/xczs/cabinet/reset_controls`，类型 `std_srvs/Trigger`。
-- Gazebo 内部复位：`/xczs/cabinet/reset_physics`。
-- Gazebo 工具约束：`/xczs/cabinet/grasp`，类型 `SetCabinetGrasp`。
-
-`SET_POSITION` 仅接受目录中的物理档位位置，不用于任意连续角度控制；Web
-界面因此直接展示档位/状态选项。需要按数值调用 API 时，数值应与
-`state_positions` 中的某一项一致。
-
-Web API 保留 `/cabinet/press`，并增加：
-
-- `POST /cabinet/operate`
-- `POST /cabinet/cancel`
-- `POST /cabinet/reset`
-- `GET /cabinet/controls`
-- `GET /cabinet/status`
-
-例如可直接通过 HTTP 提交并观察上述验证按钮：
+导航示例：
 
 ```bash
-curl -sS -X POST http://localhost:8090/cabinet/operate \
+curl -sS -X POST http://localhost:8090/task/navigate \
   -H 'Content-Type: application/json' \
-  -d '{"control_id":"box_10_button_1","command":"press","navigate_to_staging_pose":true}'
-curl -sS http://localhost:8090/cabinet/status
+  -d '{"cabinet":"cabinet_a"}'
 ```
 
-需要中止或在终态后恢复全部默认档位时分别调用：
+按钮示例（5 N）：
 
 ```bash
-curl -sS -X POST http://localhost:8090/cabinet/cancel \
-  -H 'Content-Type: application/json' -d '{}'
-curl -sS -X POST http://localhost:8090/cabinet/reset \
-  -H 'Content-Type: application/json' -d '{}'
+curl -sS -X POST http://localhost:8090/task/operate \
+  -H 'Content-Type: application/json' \
+  -d '{"cabinet":"cabinet_a","control_id":"box_10_button_1","command":"press","force":5.0}'
 ```
 
-## 自动验收
-
-通过真实 Web HTTP 接口依次验证按钮、旋钮、随门移动的总开关和后门，并核对每次操作后的 Gazebo 物理终态：
+力度不足验证（4 N）：
 
 ```bash
-scripts/validate_cabinet_web
+curl -sS -X POST http://localhost:8090/task/operate \
+  -H 'Content-Type: application/json' \
+  -d '{"cabinet":"cabinet_a","control_id":"box_10_button_1","command":"press","force":4.0}'
 ```
 
-附加验证非法请求、并发冲突、取消和复位互锁：
+有效请求立即返回 `{type}_{timestamp_ms}_{random6}` 格式的 `task_id`。同时只允许一个任务；并发请求返回 HTTP 409 和 `active_task_id`。后端 Action 暂不可用、规划失败或力度不足发生在任务接受之后，因此表现为该任务的 `failed` 终态，而不是丢失任务 ID。
+
+导航或操作超时后，Web 立即收到 `navigation_timeout` 或 `operation_timeout` 终态。如底层 Action 尚未确认退出，任务记录保持 `reservation_active=true`，新任务仍返回 409；只有收到底层终态后才释放全局资源，避免超时动作与新动作重叠。
+
+SSE 业务事件为 `task_accepted`、`task_progress` 和 `task_completed`，支持 `Last-Event-ID` 重放与 15 秒心跳。超时后底层资源退出时会额外发布 `task_reservation_released`。相同 JSON 还发布到：
+
+- `/xczs/task/<id>/progress`
+- `/xczs/task/<id>/result`（可靠、transient-local）
+
+## 启动与参数包接口
+
+统一入口：
 
 ```bash
-scripts/validate_cabinet_web --contract-tests
+./run_all.sh --web
 ```
 
-该脚本要求统一入口以 `--web` 启动，会等待最长 120 s，直到 Web 服务确认 Nav2、MoveIt 2 和控制柜动作均已就绪。默认给每次操作提交 Nav2 自动停靠请求，并要求验收序列的首个动作实际观察到导航及里程计精确停靠阶段；同一工位的后续 Nav2 目标可能在两次 HTTP 轮询之间立即完成，不把未采样到短暂阶段误报为失败。机器人已在操作工位时可使用 `--no-navigate`。脚本异常或中断时会尝试取消活动动作并恢复全部默认档位。
-
-只检查 33 项目录和所有物理状态话题：
+统一入口可以用环境变量替换全部三层适配参数包：
 
 ```bash
-source install/setup.bash
-scripts/validate_cabinet_simulation --inventory-only
+CABINET_INSTANCES_PATH=/path/to/instances.yaml \
+CABINET_CONTROLS_PATH=/path/to/controls.yaml \
+CABINET_SCENE_PATH=/path/to/scene.yaml \
+CABINET_POSE_PATH=/path/to/pose.yaml \
+CABINET_ROBOT_ADAPTER_PATH=/path/to/robot_adapter.yaml \
+./run_all.sh --web
 ```
 
-执行每个控制件的代表动作：
+Web 任务网关与仿真 launch 必须使用同一份 instances/scene 参数包。控制 API 默认且强制绑定 loopback，不会把未鉴权的机器人控制端口暴露到局域网。浏览器 Origin 默认限制为当前 monitor 端口；更换静态页面地址时可设置逗号分隔的 `XCZS_CONTROL_ORIGINS`。
 
-```bash
-scripts/validate_cabinet_simulation
-```
+## 安全与已知边界
 
-执行全部按钮，并让旋钮、总开关、柜门遍历后回到默认状态：
-
-```bash
-scripts/validate_cabinet_simulation --exhaustive
-```
-
-附加验证数值档位、切换、非法数值拒绝、抓取阶段取消、活动目标清理、
-复位互锁，以及“开门后操作随门移动的总开关”父子几何链：
-
-```bash
-scripts/validate_cabinet_simulation --contract-tests
-```
-
-让每次动作包含 Nav2 自动停靠：
-
-```bash
-scripts/validate_cabinet_simulation --navigate --exhaustive --contract-tests
-```
-
-也可用一个或多个 `--control <control_id>` 做定点回归。
-
-例如只验证 Web 界面默认展示的 10 号模块红色按钮及完整导航链：
-
-```bash
-scripts/validate_cabinet_simulation \
-  --control box_10_button_1 --navigate --timeout 300
-```
-
-`--exhaustive` 一轮共执行 57 次物理动作：20 次按钮按下/释放、11 个旋钮各遍历右/左/中三档、总开关开/关、后门开/关。脚本在每次动作后独立核对 Gazebo 状态、非目标控件未改变以及活动碰撞目标，并在异常或中断时尝试取消动作与复位。
-
-## 仿真边界
-
-控制柜位姿由启动参数和 `odom -> control_cabinet_frame` 静态变换提供，属于仿真真值定位。当前 RGB 相机没有深度、目标识别和手眼标定链路，因此本功能不宣称视觉定位；Gazebo 的近距约束与关节状态闭环也不等同于可直接迁移到真实机械臂的力控。
-
-Ubuntu 22.04 / ROS 2 Humble 当前二进制 MoveIt 2.5.9 在 `move_group` 收到 Ctrl-C 后可能于第三方析构路径退出为 `-11`。统一启动脚本仍会取消动作并清理所有子进程；升级或回溯修补 MoveIt 属于第三方版本变更，需单独评估。
+- 柜体位姿默认来自静态仿真真值；位置不固定时必须接入视觉/标记定位并向各实例 `pose_measurement` 发布可信位姿。
+- 位姿无效、状态过期、父控件运动中、MoveIt/Nav2 不可用、接触未触发、释放失败和取消都会返回明确失败。
+- 柜门操作始终保留门板碰撞体，只在实际抓取期间开放当前把手；门板、把手和门上开关以物理关节状态同步。
+- 机器人适配器中的不可达表来自当前模型与标准工位，换机器人后必须重新标定和验证。
+- 仿真中的“估算力”由弹簧刚度和物理位移得到，不等同于真实机械臂的力矩传感器闭环。迁移实机时应由硬件力控或末端力传感器替换该适配实现。

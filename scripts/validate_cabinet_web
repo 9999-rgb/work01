@@ -1,28 +1,36 @@
 #!/usr/bin/env bash
-# Validate the real Web -> ROS 2 -> Nav2/MoveIt -> Gazebo cabinet path.
+# Validate Web -> task manager -> namespaced ROS 2 -> Gazebo cabinet control.
 
 set -euo pipefail
 
 API_URL="${XCZS_CONTROL_API_URL:-http://127.0.0.1:8090}"
-OPERATION_TIMEOUT="${XCZS_CABINET_TIMEOUT:-360}"
-NAVIGATE="true"
+CABINET="cabinet_a"
+TASK_TIMEOUT="${XCZS_CABINET_TIMEOUT:-360}"
+RUN_NAVIGATION="true"
+RUN_EXHAUSTIVE="false"
 RUN_CONTRACT_TESTS="false"
 RESPONSE_BODY=""
-CLEANUP_REQUIRED="false"
-COMPLETED_OPERATIONS=0
+TASK_BODY=""
+ACTIVE_TASK_ID=""
+PENDING_CLEANUP_BODY=""
+SSE_FILE=""
+SSE_PID=""
+COMPLETED_TASKS=0
 
 usage() {
   cat <<'EOF'
 用法: scripts/validate_cabinet_web [选项]
 
-通过 Web HTTP API 真实执行按钮、旋钮、门上总开关和后门操作，并核对
-最终 Gazebo 物理状态。运行前需启动: ./run_all.sh --web --no-gui
+通过多柜体 Web 任务 API 验证独立导航、物理操作、力度判定和不可达失败。
+运行前需启动: ./run_all.sh --web --no-gui
 
 选项:
   --api URL           控制服务地址（默认 http://127.0.0.1:8090）
-  --timeout SECONDS   单次动作超时（默认 360）
-  --no-navigate       不执行 Nav2 工位导航，仅用于底盘已在对应工位时
-  --contract-tests    追加非法请求、冲突、取消和复位互锁检查
+  --cabinet NAME      柜体实例（默认 cabinet_a；全量验收时逐实例调用）
+  --timeout SECONDS   单个任务超时（默认 360）
+  --no-navigate       跳过独立的 /task/navigate 验证
+  --exhaustive        操作所有可达控件；明确跳过目录中的不可达项
+  --contract-tests    追加并发冲突和 /task/{id}/cancel 验证
   -h, --help          显示帮助
 EOF
 }
@@ -47,15 +55,22 @@ while [[ $# -gt 0 ]]; do
       API_URL="${2%/}"
       shift 2
       ;;
+    --cabinet)
+      [[ $# -ge 2 ]] || fail "--cabinet 缺少实例名"
+      CABINET="$2"
+      shift 2
+      ;;
     --timeout)
       [[ $# -ge 2 ]] || fail "--timeout 缺少秒数"
-      OPERATION_TIMEOUT="$2"
-      is_positive_integer "$OPERATION_TIMEOUT" ||
-        fail "--timeout 必须是正整数"
+      TASK_TIMEOUT="$2"
       shift 2
       ;;
     --no-navigate)
-      NAVIGATE="false"
+      RUN_NAVIGATION="false"
+      shift
+      ;;
+    --exhaustive)
+      RUN_EXHAUSTIVE="true"
       shift
       ;;
     --contract-tests)
@@ -72,10 +87,12 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-is_positive_integer "$OPERATION_TIMEOUT" ||
-  fail "--timeout 必须是正整数"
+[[ "$CABINET" =~ ^[A-Za-z][A-Za-z0-9_]{0,63}$ ]] ||
+  fail "--cabinet 必须以字母开头且只能包含字母、数字和下划线"
+is_positive_integer "$TASK_TIMEOUT" || fail "--timeout 必须是正整数"
 require_command curl
 require_command jq
+require_command mktemp
 
 request_json() {
   local method="$1"
@@ -87,18 +104,17 @@ request_json() {
 
   if [[ -n "$request_body" ]]; then
     raw_response="$(
-      curl -sS --connect-timeout 5 \
+      curl -sS --connect-timeout 5 --max-time 30 \
         -H 'Content-Type: application/json' \
         -X "$method" --data "$request_body" \
         -w $'\n%{http_code}' "$API_URL$path"
     )" || fail "$method $path 请求失败"
   else
     raw_response="$(
-      curl -sS --connect-timeout 5 \
+      curl -sS --connect-timeout 5 --max-time 30 \
         -X "$method" -w $'\n%{http_code}' "$API_URL$path"
     )" || fail "$method $path 请求失败"
   fi
-
   response_code="${raw_response##*$'\n'}"
   RESPONSE_BODY="${raw_response%$'\n'*}"
   jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
@@ -111,40 +127,86 @@ request_json() {
 
 get_json() {
   local path="$1"
-  RESPONSE_BODY="$(curl -fsS --connect-timeout 5 "$API_URL$path")" ||
-    fail "GET $path 请求失败"
+  RESPONSE_BODY="$(
+    curl -fsS --connect-timeout 5 --max-time 30 "$API_URL$path"
+  )" || fail "GET $path 请求失败"
   jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
     fail "GET $path 返回的不是有效 JSON"
+}
+
+task_is_terminal() {
+  case "$1" in
+    success|failed|canceled) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+best_effort_wait_terminal() {
+  local task_id="$1"
+  local deadline=$((SECONDS + 30))
+  local body=""
+  local status=""
+  while (( SECONDS < deadline )); do
+    body="$(
+      curl -fsS --connect-timeout 2 --max-time 5 \
+        "$API_URL/task/$task_id/status" 2>/dev/null || true
+    )"
+    if jq -e . >/dev/null 2>&1 <<<"$body"; then
+      status="$(jq -r '.status // ""' <<<"$body")"
+      task_is_terminal "$status" && return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 best_effort_cleanup() {
   local exit_code=$?
   local status_body=""
-  local active="false"
-  local deadline
+  local status=""
+  local cleanup_response=""
+  local cleanup_task=""
 
   trap - EXIT INT TERM
-  if [[ "$CLEANUP_REQUIRED" == "true" ]]; then
-    status_body="$(curl -fsS "$API_URL/cabinet/status" 2>/dev/null || true)"
-    if jq -e . >/dev/null 2>&1 <<<"$status_body"; then
-      active="$(jq -r '.active // false' <<<"$status_body")"
+  if [[ -n "$ACTIVE_TASK_ID" ]]; then
+    status_body="$(
+      curl -fsS --connect-timeout 2 --max-time 5 \
+        "$API_URL/task/$ACTIVE_TASK_ID/status" 2>/dev/null || true
+    )"
+    status="$(jq -r '.status // ""' <<<"$status_body" 2>/dev/null || true)"
+    if ! task_is_terminal "$status"; then
+      curl -sS --connect-timeout 2 --max-time 5 \
+        -H 'Content-Type: application/json' -X POST --data '{}' \
+        "$API_URL/task/$ACTIVE_TASK_ID/cancel" >/dev/null 2>&1 || true
+      best_effort_wait_terminal "$ACTIVE_TASK_ID" || true
     fi
-    if [[ "$active" == "true" ]]; then
-      curl -sS -H 'Content-Type: application/json' \
-        -X POST --data '{}' "$API_URL/cabinet/cancel" >/dev/null 2>&1 || true
-      deadline=$((SECONDS + 30))
-      while (( SECONDS < deadline )); do
-        status_body="$(
-          curl -fsS "$API_URL/cabinet/status" 2>/dev/null || true
-        )"
-        if jq -e '.active == false' >/dev/null 2>&1 <<<"$status_body"; then
-          break
-        fi
-        sleep 1
-      done
+    ACTIVE_TASK_ID=""
+  fi
+
+  # A failed test after moving a rotary control must not deliberately leave
+  # that control away from its initial detent.  Submit the saved inverse task
+  # only after the active task has reached a terminal state.
+  if [[ -n "$PENDING_CLEANUP_BODY" ]]; then
+    cleanup_response="$(
+      curl -fsS --connect-timeout 2 --max-time 10 \
+        -H 'Content-Type: application/json' -X POST \
+        --data "$PENDING_CLEANUP_BODY" \
+        "$API_URL/task/operate" 2>/dev/null || true
+    )"
+    cleanup_task="$(
+      jq -r '.task_id // ""' <<<"$cleanup_response" 2>/dev/null || true
+    )"
+    if [[ -n "$cleanup_task" ]]; then
+      best_effort_wait_terminal "$cleanup_task" || true
     fi
-    curl -sS -H 'Content-Type: application/json' \
-      -X POST --data '{}' "$API_URL/cabinet/reset" >/dev/null 2>&1 || true
+  fi
+
+  if [[ -n "$SSE_PID" ]]; then
+    kill "$SSE_PID" >/dev/null 2>&1 || true
+    wait "$SSE_PID" 2>/dev/null || true
+  fi
+  if [[ -n "$SSE_FILE" && -f "$SSE_FILE" ]]; then
+    rm -f -- "$SSE_FILE"
   fi
   exit "$exit_code"
 }
@@ -152,289 +214,507 @@ trap best_effort_cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-wait_for_defaults() {
-  local deadline=$((SECONDS + 60))
-  local controls_body=""
-
-  while (( SECONDS < deadline )); do
-    controls_body="$(curl -fsS "$API_URL/cabinet/controls")" ||
-      fail "无法读取控制柜目录"
-    if jq -e '
-      ([.controls[] | select(
-        .control_type == 0 and .valid == true and
-        .current_state == "released" and .in_motion == false
-      )] | length) == 20 and
-      ([.controls[] | select(
-        .control_type == 1 and .valid == true and
-        .current_state == "center" and .in_motion == false
-      )] | length) == 11 and
-      ([.controls[] | select(
-        .control_id == "cabinet_main_switch" and .valid == true and
-        .current_state == "off" and .in_motion == false
-      )] | length) == 1 and
-      ([.controls[] | select(
-        .control_id == "cabinet_rear_door" and .valid == true and
-        .current_state == "closed" and .in_motion == false
-      )] | length) == 1
-    ' <<<"$controls_body" >/dev/null; then
-      return
-    fi
-    sleep 1
-  done
-
-  jq . <<<"$controls_body" >&2
-  fail "控制件未在 60 秒内恢复默认状态"
-}
-
-reset_to_defaults() {
-  request_json POST /cabinet/reset 200 '{}'
-  jq -e '.status == "reset"' <<<"$RESPONSE_BODY" >/dev/null ||
-    fail "控制柜复位未返回 reset 状态"
-  wait_for_defaults
-}
-
-wait_for_result() {
-  local control_id="$1"
-  local expected_state="$2"
-  local expected_position="$3"
-  local minimum_peak="$4"
-  local deadline
-  local status_body=""
-  local operation_state
-  local signature
-  local previous_signature=""
-  local saw_navigation="false"
-  local saw_docking="false"
-
-  deadline="$((SECONDS + ${OPERATION_TIMEOUT%.*}))"
-  while (( SECONDS < deadline )); do
-    status_body="$(curl -fsS "$API_URL/cabinet/status")" ||
-      fail "无法读取 $control_id 的动作状态"
-    operation_state="$(jq -r '.state // ""' <<<"$status_body")"
-    if [[ "$(jq -r '.phase // -1' <<<"$status_body")" == "1" ]]; then
-      saw_navigation="true"
-    fi
-    if [[ "$(jq -r '.phase // -1' <<<"$status_body")" == "2" ]]; then
-      saw_docking="true"
-    fi
-    signature="$(
-      jq -r '[.state, (.phase // -1), (.message // "")] | @tsv' \
-        <<<"$status_body"
-    )"
-    if [[ "$signature" != "$previous_signature" ]]; then
-      jq -r '
-        "  state=\(.state) phase=\(.phase // -1) " +
-        "progress=\(((.progress // 0) * 100) | floor)% " +
-        "physical=\(.current_state // "unknown")@" +
-        "\((.current_position // 0) * 10000 | round / 10000) " +
-        "\(.message // "")"
-      ' <<<"$status_body"
-      previous_signature="$signature"
-    fi
-
-    case "$operation_state" in
-      succeeded)
-        jq -e \
-          --arg control_id "$control_id" \
-          --arg expected_state "$expected_state" \
-          --argjson expected_position "$expected_position" \
-          --argjson minimum_peak "$minimum_peak" '
-          def abs_value: if . < 0 then -. else . end;
-          .active == false and .success == true and .error_code == 0 and
-          .progress == 1 and .control_id == $control_id and
-          .final_state == $expected_state and
-          .current_state == $expected_state and
-          (((.final_position - $expected_position) | abs_value) <= 0.035) and
-          (((.current_position - $expected_position) | abs_value) <= 0.035) and
-          ($minimum_peak == null or (
-            (.peak_position // 0) >= $minimum_peak and
-            (.max_travel // 0) >= $minimum_peak
-          ))
-        ' <<<"$status_body" >/dev/null || {
-          jq . <<<"$status_body" >&2
-          fail "$control_id 的成功终态与物理期望不一致"
-        }
-        jq -c '{
-          control_id, state, final_state, final_position,
-          peak_position, success, error_code
-        }' <<<"$status_body"
-        if [[ "$NAVIGATE" == "true" && "$COMPLETED_OPERATIONS" -eq 0 &&
-          ("$saw_navigation" != "true" || "$saw_docking" != "true") ]]
-        then
-          fail "首个动作未观察到完整的 Nav2 导航和里程计停靠阶段"
-        fi
-        COMPLETED_OPERATIONS=$((COMPLETED_OPERATIONS + 1))
-        return
-        ;;
-      failed|canceled|rejected)
-        jq . <<<"$status_body" >&2
-        fail "$control_id 进入异常终态: $operation_state"
-        ;;
-    esac
-    sleep 1
-  done
-
-  jq . <<<"$status_body" >&2
-  fail "$control_id 未在 ${OPERATION_TIMEOUT}s 内完成"
-}
-
 wait_for_system_ready() {
-  local deadline="$((SECONDS + 120))"
+  local deadline=$((SECONDS + 120))
   local health_body=""
+  local controls_body=""
   while (( SECONDS < deadline )); do
     health_body="$(curl -fsS "$API_URL/health" 2>/dev/null || true)"
-    if jq -e '
-      .status == "ok" and .navigation_available == true and
-      .moveit_available == true and .cabinet_available == true
-    ' <<<"$health_body" >/dev/null 2>&1; then
-      RESPONSE_BODY="$health_body"
+    controls_body="$(
+      curl -fsS "$API_URL/cabinets/$CABINET/controls" 2>/dev/null || true
+    )"
+    if jq -e --arg cabinet "$CABINET" \
+      --argjson require_navigation "$RUN_NAVIGATION" '
+        .status == "ok" and
+        ($require_navigation == false or .navigation_available == true) and
+        (.cabinet_count >= 1)
+      ' <<<"$health_body" >/dev/null 2>&1 &&
+      jq -e --arg cabinet "$CABINET" '
+        .cabinet == $cabinet and .catalog_received == true and
+        .available == true and (.controls | length) == 33 and
+        ([.controls[] | select(.valid == true)] | length) == 33
+      ' <<<"$controls_body" >/dev/null 2>&1
+    then
+      RESPONSE_BODY="$controls_body"
       return
     fi
     sleep 1
   done
   [[ -z "$health_body" ]] || jq . <<<"$health_body" >&2
-  fail "Web 服务未在 120 秒内确认 Nav2、MoveIt 和控制柜可用"
+  [[ -z "$controls_body" ]] || jq . <<<"$controls_body" >&2
+  fail "Web/ROS 2 未在 120 秒内确认柜体目录、状态及所需 Nav2 可用"
 }
 
-run_operation() {
-  local path="$1"
-  local control_id="$2"
-  local expected_state="$3"
-  local expected_position="$4"
-  local minimum_peak="$5"
-  local request_body="$6"
+start_sse_capture() {
+  SSE_FILE="$(mktemp /tmp/xczs-task-events.XXXXXX)"
+  curl -sS -N --connect-timeout 5 "$API_URL/task/events" \
+    >"$SSE_FILE" 2>/dev/null &
+  SSE_PID=$!
+  sleep 1
+  kill -0 "$SSE_PID" >/dev/null 2>&1 || fail "无法连接任务 SSE 事件流"
+}
 
-  printf '\n[%d] %s -> %s\n' \
-    "$((COMPLETED_OPERATIONS + 1))" "$control_id" "$expected_state"
-  request_json POST "$path" 202 "$request_body"
-  jq -e --arg control_id "$control_id" '
-    .status == "accepted" and
-    ((.control_id // .button_id) == $control_id)
+submit_task() {
+  local task_type="$1"
+  local body="$2"
+  request_json POST "/task/$task_type" 202 "$body"
+  jq -e --arg type "$task_type" '
+    (.task_id | test("^" + $type + "_[0-9]+_[a-z0-9]{6}$")) and
+    (.type == $type) and
+    (.status == "accepted" or .status == "running")
   ' <<<"$RESPONSE_BODY" >/dev/null || {
     jq . <<<"$RESPONSE_BODY" >&2
-    fail "$control_id 未被 Web 控制服务接受"
+    fail "/task/$task_type 未返回合规 task_id/任务状态"
   }
-  wait_for_result \
-    "$control_id" "$expected_state" "$expected_position" "$minimum_peak"
+  ACTIVE_TASK_ID="$(jq -r '.task_id' <<<"$RESPONSE_BODY")"
 }
 
-expect_bad_request() {
-  local label="$1"
-  local path="$2"
-  local request_body="$3"
-
-  request_json POST "$path" 400 "$request_body"
-  printf '  PASS: %s 被正确拒绝\n' "$label"
-}
-
-wait_for_canceled() {
-  local deadline="$((SECONDS + ${OPERATION_TIMEOUT%.*}))"
-  local status_body=""
-  local operation_state=""
+wait_for_task() {
+  local task_id="$1"
+  local expected_status="$2"
+  local expected_failure_code="${3:-}"
+  local deadline=$((SECONDS + TASK_TIMEOUT))
+  local status=""
+  local signature=""
+  local previous_signature=""
 
   while (( SECONDS < deadline )); do
-    status_body="$(curl -fsS "$API_URL/cabinet/status")" ||
-      fail "无法读取取消状态"
-    operation_state="$(jq -r '.state // ""' <<<"$status_body")"
-    case "$operation_state" in
-      canceled)
-        jq -e '
-          .active == false and .success == false and .error_code == 10
-        ' <<<"$status_body" >/dev/null || {
-          jq . <<<"$status_body" >&2
-          fail "取消终态字段不一致"
+    get_json "/task/$task_id/status"
+    TASK_BODY="$RESPONSE_BODY"
+    status="$(jq -r '.status // ""' <<<"$TASK_BODY")"
+    signature="$(
+      jq -r '[.status, .phase, (.progress // 0), .message] | @tsv' \
+        <<<"$TASK_BODY"
+    )"
+    if [[ "$signature" != "$previous_signature" ]]; then
+      jq -r '
+        "  status=\(.status) phase=\(.phase) " +
+        "progress=\(((.progress // 0) * 100) | floor)% \(.message)"
+      ' <<<"$TASK_BODY"
+      previous_signature="$signature"
+    fi
+    if task_is_terminal "$status"; then
+      ACTIVE_TASK_ID=""
+      [[ "$status" == "$expected_status" ]] || {
+        jq . <<<"$TASK_BODY" >&2
+        fail "任务 $task_id 期望 $expected_status，实际 $status"
+      }
+      if [[ -n "$expected_failure_code" ]]; then
+        jq -e --arg code "$expected_failure_code" \
+          '.failure_code == $code and
+           (.failure_reason | type == "string" and length > 0)' \
+          <<<"$TASK_BODY" >/dev/null || {
+          jq . <<<"$TASK_BODY" >&2
+          fail "任务 $task_id 未返回 $expected_failure_code 结构化失败"
         }
-        return
-        ;;
-      succeeded|failed|rejected)
-        jq . <<<"$status_body" >&2
-        fail "取消测试进入非 canceled 终态: $operation_state"
-        ;;
-    esac
+      fi
+      return
+    fi
     sleep 1
   done
-  fail "取消动作未在 ${OPERATION_TIMEOUT}s 内结束"
+  fail "任务 $task_id 未在 ${TASK_TIMEOUT}s 内完成"
 }
 
-run_contract_tests() {
-  printf '\n[contract] 非法请求校验\n'
-  expect_bad_request \
-    "按钮 set_state" /cabinet/operate \
-    '{"control_id":"box_10_button_1","command":"set_state","target_state":"pressed"}'
-  expect_bad_request \
-    "旋钮非档位位置" /cabinet/operate \
-    '{"control_id":"box_1_knob","command":"set_position","target_position":0.2}'
-  expect_bad_request \
-    "后门非法状态" /cabinet/operate \
-    '{"control_id":"cabinet_rear_door","command":"set_state","target_state":"ajar"}'
-  expect_bad_request \
-    "带选项复位" /cabinet/reset \
-    '{"control_id":"cabinet_rear_door"}'
-
-  printf '\n[contract] 动作冲突、取消与复位互锁\n'
-  reset_to_defaults
-  request_json POST /cabinet/operate 202 \
-    "{\"control_id\":\"cabinet_rear_door\",\"command\":\"set_state\",\"target_state\":\"open\",\"navigate_to_staging_pose\":$NAVIGATE}"
-  jq -e '.status == "accepted"' <<<"$RESPONSE_BODY" >/dev/null ||
-    fail "取消测试动作未被接受"
-  request_json POST /cabinet/reset 409 '{}'
-  request_json POST /cabinet/operate 409 \
-    "{\"control_id\":\"box_1_knob\",\"command\":\"set_state\",\"target_state\":\"right\",\"navigate_to_staging_pose\":$NAVIGATE}"
-  request_json POST /cabinet/cancel 202 '{}'
-  jq -e '.status == "canceling"' <<<"$RESPONSE_BODY" >/dev/null ||
-    fail "Web 服务没有进入 canceling 状态"
-  wait_for_canceled
-  printf '  PASS: 冲突被拒绝，动作安全取消且活动目标已清空\n'
-  reset_to_defaults
+run_successful_operation() {
+  local control_id="$1"
+  local request_body="$2"
+  printf '\n[operate] %s\n' "$control_id"
+  submit_task operate "$request_body"
+  local task_id="$ACTIVE_TASK_ID"
+  wait_for_task "$task_id" success
+  jq -e --arg cabinet "$CABINET" --arg control "$control_id" '
+    .request.cabinet == $cabinet and
+    .request.control_id == $control and
+    .result.cabinet == $cabinet and
+    .result.control_id == $control and
+    (.result.duration_seconds >= 0)
+  ' <<<"$TASK_BODY" >/dev/null || {
+    jq . <<<"$TASK_BODY" >&2
+    fail "$control_id 成功结果缺少柜体、控件或耗时字段"
+  }
+  COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
 }
 
-printf 'XCZS 控制柜 Web 端到端验收\n'
+run_state_round_trip() {
+  local control_id="$1"
+  local initial_state="$2"
+  local target_state="$3"
+  [[ -n "$initial_state" && -n "$target_state" ]] || return
+  [[ "$initial_state" != "$target_state" ]] || return
+
+  PENDING_CLEANUP_BODY="$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+      --arg state "$initial_state" \
+      '{cabinet:$cabinet, control_id:$control,
+        command:"set_state", target_state:$state}'
+  )"
+  local outbound
+  outbound="$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+      --arg state "$target_state" \
+      '{cabinet:$cabinet, control_id:$control,
+        command:"set_state", target_state:$state}'
+  )"
+  run_successful_operation "$control_id" "$outbound"
+  run_successful_operation "$control_id" "$PENDING_CLEANUP_BODY"
+  PENDING_CLEANUP_BODY=""
+}
+
+validate_sse_capture() {
+  sleep 1
+  grep -q '^event: task_accepted$' "$SSE_FILE" ||
+    fail "SSE 未观察到 task_accepted"
+  grep -q '^event: task_progress$' "$SSE_FILE" ||
+    fail "SSE 未观察到 task_progress"
+  grep -q '^event: task_completed$' "$SSE_FILE" ||
+    fail "SSE 未观察到 task_completed"
+}
+
+printf 'XCZS 多柜体 Web 端到端验收\n'
 printf '  API: %s\n' "$API_URL"
-printf '  Nav2: %s\n' "$NAVIGATE"
+printf '  Cabinet: %s\n' "$CABINET"
+printf '  Independent Nav2 task: %s\n' "$RUN_NAVIGATION"
 
 wait_for_system_ready
 
-get_json /cabinet/controls
-jq -e '
-  .catalog_received == true and .source == "operator_catalog" and
-  .operation_available == true and .reset_available == true and
+get_json /cabinets
+CABINETS_BODY="$RESPONSE_BODY"
+jq -e --arg cabinet "$CABINET" '
+  .count == (.cabinets | length) and .count >= 1 and
+  ([.cabinets[].name] | unique | length) == .count and
+  ([.cabinets[].namespace] | unique | length) == .count and
+  ([.cabinets[].frame_id] | unique | length) == .count and
+  any(.cabinets[];
+    .name == $cabinet and
+    .namespace == ("/xczs/cabinet/" + $cabinet) and
+    .frame_id == ($cabinet + "_frame") and
+    .navigation_station.cabinet == $cabinet and
+    .navigation_station.frame_id == "map")
+' <<<"$CABINETS_BODY" >/dev/null || {
+  jq . <<<"$CABINETS_BODY" >&2
+  fail "/cabinets 未返回 $CABINET 的 namespace、TF 和导航工位"
+}
+
+get_json "/cabinets/$CABINET/controls"
+CONTROLS_BODY="$RESPONSE_BODY"
+jq -e --arg namespace "/xczs/cabinet/$CABINET/" '
+  .catalog_received == true and .available == true and
   (.controls | length) == 33 and
   ([.controls[] | select(.control_type == 0)] | length) == 20 and
   ([.controls[] | select(.control_type == 1)] | length) == 11 and
   ([.controls[] | select(.control_type == 2)] | length) == 1 and
-  ([.controls[] | select(.control_type == 3)] | length) == 1
-' <<<"$RESPONSE_BODY" >/dev/null || {
-  jq . <<<"$RESPONSE_BODY" >&2
-  fail "Web 控制目录不是预期的 20/11/1/1 共 33 项"
+  ([.controls[] | select(.control_type == 3)] | length) == 1 and
+  all(.controls[];
+    (.resolved_state_topic | startswith($namespace)) and
+    (.operable == true or
+      (.unavailable_reason | type == "string" and length > 0))) and
+  all(.controls[] | select(.control_type == 0);
+    .default_force == 5 and .min_trigger_force == 4.8 and
+    .max_force == 6.4)
+' <<<"$CONTROLS_BODY" >/dev/null || {
+  jq . <<<"$CONTROLS_BODY" >&2
+  fail "控件目录、实例话题、可达性或力度元数据不符合需求"
 }
 
-get_json /cabinet/status
-jq -e '.active == false' <<<"$RESPONSE_BODY" >/dev/null ||
-  fail "已有控制柜动作正在运行，拒绝接管"
+BUTTON_ID="$(
+  jq -r 'first(.controls[] |
+    select(.control_type == 0 and .operable == true) |
+    .control_id) // ""' <<<"$CONTROLS_BODY"
+)"
+UNREACHABLE_ID="$(
+  jq -r 'first(.controls[] |
+    select(.operable == false) | .control_id) // ""' \
+    <<<"$CONTROLS_BODY"
+)"
+UNREACHABLE_REASON="$(
+  jq -r --arg id "$UNREACHABLE_ID" \
+    '.controls[] | select(.control_id == $id) | .unavailable_reason' \
+    <<<"$CONTROLS_BODY"
+)"
+[[ -n "$BUTTON_ID" ]] || fail "目录中没有可达按钮，无法验证力度"
+[[ -n "$UNREACHABLE_ID" && -n "$UNREACHABLE_REASON" ]] ||
+  fail "目录中没有带具体原因的不可达控件"
 
-CLEANUP_REQUIRED="true"
-reset_to_defaults
-
-run_operation /cabinet/press box_10_button_1 released 0.0 0.006 \
-  "{\"button_id\":\"box_10_button_1\",\"navigate_to_staging_pose\":$NAVIGATE}"
-run_operation /cabinet/operate box_1_knob right 0.78539816339 null \
-  "{\"control_id\":\"box_1_knob\",\"command\":\"set_state\",\"target_state\":\"right\",\"navigate_to_staging_pose\":$NAVIGATE}"
-run_operation /cabinet/operate box_1_knob center 0.0 null \
-  "{\"control_id\":\"box_1_knob\",\"command\":\"set_state\",\"target_state\":\"center\",\"navigate_to_staging_pose\":$NAVIGATE}"
-run_operation /cabinet/operate cabinet_rear_door open 1.57079632679 null \
-  "{\"control_id\":\"cabinet_rear_door\",\"command\":\"set_state\",\"target_state\":\"open\",\"navigate_to_staging_pose\":$NAVIGATE}"
-run_operation /cabinet/operate cabinet_main_switch on 1.57079632679 null \
-  "{\"control_id\":\"cabinet_main_switch\",\"command\":\"set_state\",\"target_state\":\"on\",\"navigate_to_staging_pose\":$NAVIGATE}"
-run_operation /cabinet/operate cabinet_main_switch off 0.0 null \
-  "{\"control_id\":\"cabinet_main_switch\",\"command\":\"set_state\",\"target_state\":\"off\",\"navigate_to_staging_pose\":$NAVIGATE}"
-run_operation /cabinet/operate cabinet_rear_door closed 0.0 null \
-  "{\"control_id\":\"cabinet_rear_door\",\"command\":\"set_state\",\"target_state\":\"closed\",\"navigate_to_staging_pose\":$NAVIGATE}"
-
-if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
-  run_contract_tests
+PEER_CABINET="$(
+  jq -r --arg selected "$CABINET" '
+    first(.cabinets[] | select(.name != $selected) | .name) // ""
+  ' <<<"$CABINETS_BODY"
+)"
+PEER_BUTTON_STATE=""
+PEER_BUTTON_SEQUENCE=""
+if [[ -n "$PEER_CABINET" ]]; then
+  get_json "/cabinets/$PEER_CABINET/controls"
+  jq -e --arg cabinet "$PEER_CABINET" --arg control "$BUTTON_ID" \
+    --arg namespace "/xczs/cabinet/$PEER_CABINET/" '
+      .cabinet == $cabinet and .catalog_received == true and
+      any(.controls[];
+        .control_id == $control and .valid == true and
+        (.resolved_state_topic | startswith($namespace)))
+    ' <<<"$RESPONSE_BODY" >/dev/null || {
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "同型柜体 $PEER_CABINET 未提供隔离的 $BUTTON_ID 状态话题"
+  }
+  PEER_BUTTON_STATE="$(
+    jq -r --arg id "$BUTTON_ID" '
+      .controls[] | select(.control_id == $id) | .current_state
+    ' <<<"$RESPONSE_BODY"
+  )"
+  PEER_BUTTON_SEQUENCE="$(
+    jq -r --arg id "$BUTTON_ID" '
+      .controls[] | select(.control_id == $id) | .transition_sequence
+    ' <<<"$RESPONSE_BODY"
+  )"
 fi
 
-reset_to_defaults
-CLEANUP_REQUIRED="false"
-printf '\nPASS: Web 端到端验收完成；真实物理动作=%d，失败=0。\n' \
-  "$COMPLETED_OPERATIONS"
+start_sse_capture
+
+if [[ "$RUN_NAVIGATION" == "true" ]]; then
+  # This success-path check validates final pose/error.  Standard Nav2's
+  # aborted result does not reliably distinguish a collision-blocked route
+  # from another unreachable target, so this script does not claim that
+  # failure classification.
+  printf '\n[navigate] %s\n' "$CABINET"
+  submit_task navigate "$(
+    jq -cn --arg cabinet "$CABINET" '{cabinet:$cabinet}'
+  )"
+  NAVIGATION_TASK_ID="$ACTIVE_TASK_ID"
+  wait_for_task "$NAVIGATION_TASK_ID" success
+  jq -e --arg cabinet "$CABINET" '
+    .request.cabinet == $cabinet and
+    .result.cabinet == $cabinet and
+    (.result.final_pose.x | numbers) and
+    (.result.final_pose.y | numbers) and
+    (.result.final_pose.yaw | numbers) and
+    .result.error.position_m <= 0.20 and
+    .result.error.yaw_rad <= 0.25 and
+    (.result.duration_seconds >= 0)
+  ' <<<"$TASK_BODY" >/dev/null || {
+    jq . <<<"$TASK_BODY" >&2
+    fail "导航任务结果缺少终点、误差或耗时"
+  }
+  COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+fi
+
+# Omit force deliberately: the Web API must apply the documented 5 N default.
+DEFAULT_FORCE_BODY="$(
+  jq -cn --arg cabinet "$CABINET" --arg control "$BUTTON_ID" \
+    '{cabinet:$cabinet, control_id:$control, command:"press"}'
+)"
+run_successful_operation "$BUTTON_ID" "$DEFAULT_FORCE_BODY"
+jq -e '
+  .request.force == 5 and .result.requested_force == 5 and
+  .result.button_triggered == true and
+  .result.actual_displacement >= 0.006 and
+  .result.estimated_force >= 4.8
+' <<<"$TASK_BODY" >/dev/null || {
+  jq . <<<"$TASK_BODY" >&2
+  fail "默认 5 N 操作没有产生达到阈值的真实按钮位移"
+}
+
+printf '\n[force] %s -> 4 N structured failure\n' "$BUTTON_ID"
+LOW_FORCE_BODY="$(
+  jq -cn --arg cabinet "$CABINET" --arg control "$BUTTON_ID" \
+    '{cabinet:$cabinet, control_id:$control, command:"press", force:4}'
+)"
+submit_task operate "$LOW_FORCE_BODY"
+LOW_FORCE_TASK_ID="$ACTIVE_TASK_ID"
+wait_for_task "$LOW_FORCE_TASK_ID" failed insufficient_force
+jq -e '
+  .request.force == 4 and .result.requested_force == 4 and
+  .result.button_triggered == false and
+  .result.actual_displacement > 0 and
+  .result.actual_displacement < 0.006 and
+  (.failure_reason | contains("力度不足"))
+' <<<"$TASK_BODY" >/dev/null || {
+  jq . <<<"$TASK_BODY" >&2
+  fail "4 N 任务未返回实际位移、未触发和“力度不足”结果"
+}
+
+printf '\n[reachability] %s -> fast structured failure\n' "$UNREACHABLE_ID"
+UNREACHABLE_TYPE="$(
+  jq -r --arg id "$UNREACHABLE_ID" \
+    '.controls[] | select(.control_id == $id) | .control_type' \
+    <<<"$CONTROLS_BODY"
+)"
+if [[ "$UNREACHABLE_TYPE" == "0" ]]; then
+  UNREACHABLE_BODY="$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$UNREACHABLE_ID" \
+      '{cabinet:$cabinet, control_id:$control, command:"press"}'
+  )"
+else
+  UNREACHABLE_TARGET="$(
+    jq -r --arg id "$UNREACHABLE_ID" '
+      .controls[] | select(.control_id == $id) | .state_ids[0]
+    ' <<<"$CONTROLS_BODY"
+  )"
+  UNREACHABLE_BODY="$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$UNREACHABLE_ID" \
+      --arg state "$UNREACHABLE_TARGET" \
+      '{cabinet:$cabinet, control_id:$control,
+        command:"set_state", target_state:$state}'
+  )"
+fi
+UNREACHABLE_STARTED=$SECONDS
+submit_task operate "$UNREACHABLE_BODY"
+UNREACHABLE_TASK_ID="$ACTIVE_TASK_ID"
+wait_for_task "$UNREACHABLE_TASK_ID" failed unreachable
+(( SECONDS - UNREACHABLE_STARTED <= 10 )) ||
+  fail "不可达任务未在 10 秒内快速失败"
+jq -e --arg reason "$UNREACHABLE_REASON" '
+  (.failure_reason | contains($reason)) and
+  .result.control_id == .request.control_id
+' <<<"$TASK_BODY" >/dev/null || {
+  jq . <<<"$TASK_BODY" >&2
+  fail "不可达任务没有返回目录声明的具体原因"
+}
+
+if [[ -n "$PEER_CABINET" ]]; then
+  get_json "/cabinets/$PEER_CABINET/controls"
+  jq -e --arg id "$BUTTON_ID" --arg state "$PEER_BUTTON_STATE" \
+    --argjson sequence "$PEER_BUTTON_SEQUENCE" '
+      any(.controls[];
+        .control_id == $id and .valid == true and
+        .current_state == $state and .transition_sequence == $sequence)
+    ' <<<"$RESPONSE_BODY" >/dev/null || {
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "$CABINET 的同 ID Action 污染了 $PEER_CABINET 的物理状态"
+  }
+  printf '  PASS: %s 与 %s 的同 ID 控件状态保持隔离\n' \
+    "$CABINET" "$PEER_CABINET"
+fi
+
+run_representative_rotary_controls() {
+  local control_id=""
+  local initial_state=""
+  local target_state=""
+  local control_type
+  for control_type in 1 3; do
+    control_id="$(
+      jq -r --argjson type "$control_type" '
+        first(.controls[] |
+        select(.control_type == $type and .operable == true and
+               .valid == true and (.current_state | length) > 0) |
+        .control_id) // ""
+      ' <<<"$CONTROLS_BODY"
+    )"
+    [[ -n "$control_id" ]] || continue
+    initial_state="$(
+      jq -r --arg id "$control_id" '
+        .controls[] | select(.control_id == $id) | .current_state
+      ' <<<"$CONTROLS_BODY"
+    )"
+    target_state="$(
+      jq -r --arg id "$control_id" --arg current "$initial_state" '
+        first(.controls[] | select(.control_id == $id) |
+        .state_ids[] | select(. != $current)) // ""
+      ' <<<"$CONTROLS_BODY"
+    )"
+    run_state_round_trip "$control_id" "$initial_state" "$target_state"
+  done
+}
+
+run_exhaustive_controls() {
+  local control_id=""
+  local control_type=""
+  local initial_state=""
+  local target_state=""
+  local row
+  mapfile -t rows < <(
+    jq -r '.controls[] | select(.operable == true) |
+      [.control_id, (.control_type | tostring), .current_state] | @tsv' \
+      <<<"$CONTROLS_BODY"
+  )
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r control_id control_type initial_state <<<"$row"
+    if [[ "$control_type" == "0" ]]; then
+      [[ "$control_id" == "$BUTTON_ID" ]] && continue
+      run_successful_operation "$control_id" "$(
+        jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+          '{cabinet:$cabinet, control_id:$control, command:"press"}'
+      )"
+      continue
+    fi
+    while IFS= read -r target_state; do
+      [[ -n "$target_state" && "$target_state" != "$initial_state" ]] ||
+        continue
+      run_state_round_trip "$control_id" "$initial_state" "$target_state"
+    done < <(
+      jq -r --arg id "$control_id" '
+        .controls[] | select(.control_id == $id) | .state_ids[]
+      ' <<<"$CONTROLS_BODY"
+    )
+  done
+  while IFS=$'\t' read -r control_id reason; do
+    printf '  SKIP unreachable: %s — %s\n' "$control_id" "$reason"
+  done < <(
+    jq -r '.controls[] | select(.operable == false) |
+      [.control_id, .unavailable_reason] | @tsv' <<<"$CONTROLS_BODY"
+  )
+}
+
+if [[ "$RUN_EXHAUSTIVE" == "true" ]]; then
+  run_exhaustive_controls
+else
+  run_representative_rotary_controls
+fi
+
+if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
+  printf '\n[contract] global conflict and task cancellation\n'
+  CANCEL_CONTROL="$(
+    jq -r 'first(.controls[] |
+      select(.control_type == 3 and .operable == true) | .control_id) // ""' \
+      <<<"$CONTROLS_BODY"
+  )"
+  [[ -n "$CANCEL_CONTROL" ]] || fail "取消测试需要一个可达门控件"
+  CANCEL_INITIAL="$(
+    jq -r --arg id "$CANCEL_CONTROL" '
+      .controls[] | select(.control_id == $id) | .current_state
+    ' <<<"$CONTROLS_BODY"
+  )"
+  CANCEL_TARGET="$(
+    jq -r --arg id "$CANCEL_CONTROL" --arg current "$CANCEL_INITIAL" '
+      first(.controls[] | select(.control_id == $id) |
+      .state_ids[] | select(. != $current)) // ""
+    ' <<<"$CONTROLS_BODY"
+  )"
+  CANCEL_BODY="$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
+      --arg state "$CANCEL_TARGET" \
+      '{cabinet:$cabinet, control_id:$control,
+        command:"set_state", target_state:$state}'
+  )"
+  PENDING_CLEANUP_BODY="$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
+      --arg state "$CANCEL_INITIAL" \
+      '{cabinet:$cabinet, control_id:$control,
+        command:"set_state", target_state:$state}'
+  )"
+  submit_task operate "$CANCEL_BODY"
+  CANCEL_TASK_ID="$ACTIVE_TASK_ID"
+  request_json POST /task/navigate 409 "$(
+    jq -cn --arg cabinet "$CABINET" '{cabinet:$cabinet}'
+  )"
+  jq -e --arg active "$CANCEL_TASK_ID" \
+    '.details.active_task_id == $active' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "409 并发响应未包含当前活跃 task_id"
+  request_json POST "/task/$CANCEL_TASK_ID/cancel" 202 '{}'
+  wait_for_task "$CANCEL_TASK_ID" canceled canceled
+  # Recovery should restore the initial state.  The pending inverse operation
+  # remains armed for the EXIT trap if this confirmation fails.
+  sleep 1
+  get_json "/cabinets/$CABINET/controls"
+  if jq -e --arg id "$CANCEL_CONTROL" --arg state "$CANCEL_INITIAL" '
+    any(.controls[];
+      .control_id == $id and .valid == true and .in_motion == false and
+      .current_state == $state)
+  ' <<<"$RESPONSE_BODY" >/dev/null; then
+    PENDING_CLEANUP_BODY=""
+  else
+    run_successful_operation "$CANCEL_CONTROL" "$PENDING_CLEANUP_BODY"
+    PENDING_CLEANUP_BODY=""
+  fi
+fi
+
+validate_sse_capture
+printf '\nPASS: 多柜体 Web 任务验收完成；成功任务=%d；力度不足和不可达均按预期失败。\n' \
+  "$COMPLETED_TASKS"

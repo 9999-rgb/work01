@@ -2,6 +2,7 @@
 /build/
 /install/
 /log/
+/xczs_inspection_robot_description/urdf/generated/
 
 # SolidWorks URDF exporter generated logs
 export.log

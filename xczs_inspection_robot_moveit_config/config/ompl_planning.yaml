@@ -14,7 +14,7 @@ manipulator:
     - RRTConnect
     - RRTstar
     - PRMstar
-  projection_evaluator: joints(body_arm_lift,body_arm1)
+  projection_evaluator: joints(body_arm1,arm1_arm2)
   longest_valid_segment_fraction: 0.005
 
 gripper:
@@ -26,5 +26,5 @@ gripper:
 manipulator_with_gripper:
   planner_configs:
     - RRTConnect
-  projection_evaluator: joints(body_arm_lift,body_arm1)
+  projection_evaluator: joints(body_arm1,arm1_arm2)
   longest_valid_segment_fraction: 0.005

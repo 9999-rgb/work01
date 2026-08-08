@@ -1,10 +1,23 @@
-xczs_cabinet_planning_scene:
+/**/xczs_cabinet_planning_scene:
   ros__parameters:
-    # 场景适配层：所有尺寸和坐标均位于 control_cabinet_frame。
+    # 场景适配层：固定框架和 hinge_position 位于 cabinet_frame；门板、
+    # 门把手和门上开关的位置位于门铰链旋转后的局部坐标系。
+    # control_cabinet_frame 是单柜兼容默认值，多柜体由 launch 覆盖。
     # 更换柜体时应替换本文件和 cabinet_controls.yaml，无需修改 C++。
     cabinet_frame: control_cabinet_frame
+    # 多柜体启动时由 launch 覆盖为实例名；空值保留原单柜碰撞对象 ID。
+    collision_object_prefix: ""
     require_pose_valid: true
-    pose_valid_topic: /xczs/cabinet/pose_valid
+    pose_valid_topic: pose_valid
+
+    # 柜体局部坐标中的导航工位几何。Web inventory 会用完整 RPY
+    # 变换 anchor/outward_axis，再沿外法线退让 standoff 得到目标位姿。
+    navigation_station:
+      frame_id: map
+      local_anchor: [0.331, 1.115, 0.0]
+      outward_axis: [0.0, 0.0, 1.0]
+      standoff: 0.930
+      base_yaw_offset: 0.0
 
     frame_part_ids:
       - front_panel
@@ -39,7 +52,8 @@ xczs_cabinet_planning_scene:
       control_id: cabinet_rear_door
       hinge_position: [0.010, 0.010, -0.600]
       axis: [0.0, 1.0, 0.0]
-      # 包络可视门板和 Gazebo 物理门板的完整厚度。
+      # 以下 panel/handle position 均相对 hinge_position，而非 cabinet_frame。
+      # panel_size 包络可视门板和 Gazebo 物理门板的完整厚度。
       panel_size: [0.636, 2.204, 0.011]
       panel_position: [0.321, 1.105, -0.0085]
       handle_part_ids: [lower_mount, upper_mount, grip]
@@ -57,6 +71,7 @@ xczs_cabinet_planning_scene:
     switch:
       control_id: cabinet_main_switch
       parent_control_id: cabinet_rear_door
+      # 门上开关的 pivot 同样位于门铰链局部坐标系。
       pivot_position: [0.342, 1.680, -0.018]
       axis: [0.0, 0.0, 1.0]
       size: [0.020, 0.080, 0.020]

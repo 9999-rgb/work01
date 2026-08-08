@@ -24,6 +24,8 @@ XACRO = (
     / "urdf"
     / "control_cabinet.urdf.xacro"
 )
+CABINET_NAME = "control_cabinet"
+CABINET_NAMESPACE = f"/xczs/cabinet/{CABINET_NAME}"
 ROBOT_XACRO = (
     ROOT
     / "xczs_inspection_robot_description"
@@ -63,6 +65,7 @@ ROS2_CONTROLLERS = (
 MOVEIT_CONFIG = ROOT / "xczs_inspection_robot_moveit_config" / "config"
 MOVEIT_CONTROLLERS = MOVEIT_CONFIG / "moveit_controllers.yaml"
 JOINT_LIMITS = MOVEIT_CONFIG / "joint_limits.yaml"
+OMPL_PLANNING = MOVEIT_CONFIG / "ompl_planning.yaml"
 SRDF = MOVEIT_CONFIG / "xczs_inspection_robot.srdf"
 NAV2_CONFIG = ROOT / "xczs_inspection_robot_nav2" / "config" / "nav2_params.yaml"
 WEB_ROS_NODE = ROOT / "jiang" / "control_gateway" / "ros_node.py"
@@ -81,8 +84,13 @@ PLANAR_STABILIZER = (
     / "gazebo"
     / "planar_stabilizer_plugin.cpp"
 )
+LEGACY_TRAJECTORY_ROUTER = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "src"
+    / "legacy_trajectory_router.cpp"
+)
 ARM_JOINTS = [
-    "body_arm_lift",
     "body_arm1",
     "arm1_arm2",
     "arm2_arm3",
@@ -136,24 +144,6 @@ def close_lists(left: list[float], right: list[float]) -> bool:
     )
 
 
-def box_geometry(
-    element: ElementTree.Element,
-    field: str,
-) -> tuple[list[float], list[float]]:
-    """Return one URDF box origin and size after strict dimensional checks."""
-    origin = element.find("origin")
-    box = element.find("./geometry/box")
-    if origin is None or box is None:
-        fail(f"{field} is missing its origin or box geometry.")
-    origin_xyz = numbers(origin.attrib.get("xyz", ""), field)
-    box_size = numbers(box.attrib.get("size", ""), field)
-    if len(origin_xyz) != 3 or len(box_size) != 3:
-        fail(f"{field} must have three-dimensional geometry.")
-    if any(dimension <= 0.0 for dimension in box_size):
-        fail(f"{field} box dimensions must be positive.")
-    return origin_xyz, box_size
-
-
 def load_config() -> Dict[str, object]:
     with CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
@@ -170,9 +160,10 @@ def load_scene_config() -> Dict[str, object]:
     with SCENE_CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
     try:
-        parameters = document["xczs_cabinet_planning_scene"][
-            "ros__parameters"
-        ]
+        node_config = document.get("/**/xczs_cabinet_planning_scene")
+        if node_config is None:
+            node_config = document["xczs_cabinet_planning_scene"]
+        parameters = node_config["ros__parameters"]
     except (KeyError, TypeError) as error:
         fail(f"Invalid cabinet scene parameter file: {error}")
     if not isinstance(parameters, dict):
@@ -184,9 +175,10 @@ def load_robot_adapter_config() -> Dict[str, object]:
     with ROBOT_ADAPTER_CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
     try:
-        parameters = document["xczs_cabinet_button_operator"][
-            "ros__parameters"
-        ]
+        node_config = document.get("/**/xczs_cabinet_button_operator")
+        if node_config is None:
+            node_config = document["xczs_cabinet_button_operator"]
+        parameters = node_config["ros__parameters"]
     except (KeyError, TypeError) as error:
         fail(f"Invalid cabinet robot-adapter parameter file: {error}")
     if not isinstance(parameters, dict):
@@ -194,16 +186,30 @@ def load_robot_adapter_config() -> Dict[str, object]:
     return parameters
 
 
-def render_xacro(path: Path) -> str:
+def load_lease_coordinator_config() -> Dict[str, object]:
+    with ROBOT_ADAPTER_CONFIG.open("r", encoding="utf-8") as stream:
+        document = yaml.safe_load(stream)
+    try:
+        parameters = document["/xczs_operation_lease_coordinator"][
+            "ros__parameters"
+        ]
+    except (KeyError, TypeError) as error:
+        fail(f"Invalid operation-lease coordinator parameters: {error}")
+    if not isinstance(parameters, dict):
+        fail("Operation-lease coordinator parameters must be a mapping.")
+    return parameters
+
+
+def render_xacro(path: Path, *arguments: str) -> str:
     """Expand a Xacro document and return its serialized XML."""
     try:
         result = subprocess.run(
-            ["xacro", str(path)],
+            ["xacro", str(path), *arguments],
             check=True,
             capture_output=True,
             text=True,
         )
-    except FileNotFoundError as error:
+    except FileNotFoundError:
         fail("xacro is unavailable; source /opt/ros/humble/setup.bash first.")
     except subprocess.CalledProcessError as error:
         fail(f"xacro failed:\n{error.stderr}")
@@ -211,7 +217,8 @@ def render_xacro(path: Path) -> str:
 
 
 def expand_xacro(path: Path = XACRO) -> ElementTree.Element:
-    return ElementTree.fromstring(render_xacro(path))
+    arguments = (f"cabinet_name:={CABINET_NAME}",) if path == XACRO else ()
+    return ElementTree.fromstring(render_xacro(path, *arguments))
 
 
 def validate_rcl_parameter_value(robot_description: str) -> None:
@@ -266,6 +273,7 @@ def main() -> int:
         parameters = load_config()
         scene_parameters = load_scene_config()
         robot_parameters = load_robot_adapter_config()
+        lease_parameters = load_lease_coordinator_config()
         root = expand_xacro()
 
         control_ids = parameters.get("control_ids")
@@ -430,6 +438,62 @@ def main() -> int:
             fail(
                 "Precision docking angular speed must be in [0.2, 0.6] rad/s."
             )
+        for field in (
+            "planning_time",
+            "goal_position_tolerance",
+            "goal_orientation_tolerance",
+            "goal_joint_tolerance",
+        ):
+            value = float(robot_parameters.get(field, 0.0))
+            if not math.isfinite(value) or value <= 0.0:
+                fail(f"Robot adapter {field} must be positive.")
+        for field in (
+            "planning_velocity_scale",
+            "planning_acceleration_scale",
+        ):
+            value = float(robot_parameters.get(field, 0.0))
+            if not math.isfinite(value) or not 0.0 < value <= 1.0:
+                fail(f"Robot adapter {field} must be in (0, 1].")
+        planning_attempts = robot_parameters.get("planning_attempts")
+        if (
+            isinstance(planning_attempts, bool)
+            or not isinstance(planning_attempts, int)
+            or not 1 <= planning_attempts <= 100
+        ):
+            fail("Robot adapter planning_attempts must be in [1, 100].")
+        lease_service = str(
+            robot_parameters.get("operation_lease_service", "")
+        )
+        lease_duration = float(
+            robot_parameters.get("operation_lease_duration", 0.0)
+        )
+        lease_renew_period = float(
+            robot_parameters.get("operation_lease_renew_period", 0.0)
+        )
+        lease_request_timeout = float(
+            robot_parameters.get("operation_lease_request_timeout", 0.0)
+        )
+        maximum_lease_duration = float(
+            lease_parameters.get("maximum_lease_duration", 0.0)
+        )
+        if lease_service != lease_parameters.get("service_name"):
+            fail("Operator and coordinator lease service names differ.")
+        if not all(
+            math.isfinite(value) and value > 0.0
+            for value in (
+                lease_duration,
+                lease_renew_period,
+                lease_request_timeout,
+                maximum_lease_duration,
+            )
+        ):
+            fail("Global operation lease timing values must be positive.")
+        if (
+            lease_renew_period + lease_request_timeout >= lease_duration
+            or lease_duration > maximum_lease_duration
+            or lease_duration > 5.0
+        ):
+            fail("Global operation lease timing does not fail safe quickly.")
 
         type_counts = Counter()
         joints = {joint.attrib["name"]: joint for joint in root.findall("joint")}
@@ -501,17 +565,19 @@ def main() -> int:
         if plugin is None:
             fail("libxczs_cabinet_state.so is absent from expanded URDF.")
         grasp_active_topic = text(plugin, "grasp_active_topic")
-        if grasp_active_topic != "/xczs/cabinet/grasp_active":
+        if grasp_active_topic != f"{CABINET_NAMESPACE}/grasp_active":
             fail("Cabinet grasp-active topic must use its canonical name.")
         active_control_topic = text(plugin, "active_control_topic")
-        if active_control_topic != "/xczs/cabinet/active_control":
+        if active_control_topic != f"{CABINET_NAMESPACE}/active_control":
             fail("Cabinet active-control topic must use its canonical name.")
         if plugin.find("grasp_robot_base_link") is not None:
             fail(
                 "Cabinet model must not embed a robot-specific base link."
             )
         if not str(robot_parameters.get("docking_base_frame", "")):
-            fail("Robot adapter must provide the grasp brake/base frame.")
+            fail("Robot adapter must provide the precision-docking frame.")
+        if not str(robot_parameters.get("grasp_brake_link", "")):
+            fail("Robot adapter must provide the physical grasp brake link.")
         plugin_controls = plugin.findall("control")
         if len(plugin_controls) != 33:
             fail(f"Expected 33 plugin controls, got {len(plugin_controls)}.")
@@ -533,7 +599,7 @@ def main() -> int:
                 fail(f"{control_id} plugin/config control types differ.")
             if text(entry, "joint_name") != spec["joint_name"]:
                 fail(f"{control_id} plugin/config joint names differ.")
-            expected_prefix = f"/xczs/cabinet/{control_id}"
+            expected_prefix = f"{CABINET_NAMESPACE}/{control_id}"
             state_topic = text(entry, "state_topic")
             joint_topic = text(entry, "joint_state_topic")
             pressed_topic = text(entry, "pressed_topic")
@@ -880,160 +946,42 @@ def main() -> int:
         robot_description = render_xacro(ROBOT_XACRO)
         validate_rcl_parameter_value(robot_description)
         robot_root = ElementTree.fromstring(robot_description)
-        lift_joint = robot_root.find("./joint[@name='body_arm_lift']")
-        if lift_joint is None or lift_joint.attrib.get("type") != "prismatic":
-            fail("Robot URDF is missing the prismatic body_arm_lift joint.")
-        lift_limit = lift_joint.find("limit")
-        lift_axis = lift_joint.find("axis")
-        lift_parent = lift_joint.find("parent")
-        lift_child = lift_joint.find("child")
-        if lift_limit is None or lift_axis is None:
-            fail("body_arm_lift is missing its axis or limits.")
-        lift_lower = float(lift_limit.attrib.get("lower", "nan"))
-        lift_upper = float(lift_limit.attrib.get("upper", "nan"))
-        if not math.isclose(lift_lower, 0.0, abs_tol=1.0e-9) or not math.isclose(
-            lift_upper, 0.85, abs_tol=1.0e-9
-        ) or numbers(lift_axis.attrib.get("xyz", ""), "lift axis") != [
-            0.0,
-            0.0,
-            1.0,
-        ]:
-            fail("body_arm_lift must travel 0.0..0.85 m along +Z.")
-        if (
-            lift_parent is None
-            or lift_parent.attrib.get("link") != "body"
-            or lift_child is None
-            or lift_child.attrib.get("link") != "arm_lift"
-        ):
-            fail("body_arm_lift must connect body to arm_lift.")
-
-        mast_link = robot_root.find("./link[@name='arm_lift_mast']")
-        mast_joint = robot_root.find("./joint[@name='body_arm_lift_mast']")
-        mast_parent = None if mast_joint is None else mast_joint.find("parent")
-        mast_child = None if mast_joint is None else mast_joint.find("child")
-        if (
-            mast_link is None
-            or mast_joint is None
-            or mast_joint.attrib.get("type") != "fixed"
-            or mast_parent is None
-            or mast_parent.attrib.get("link") != "body"
-            or mast_child is None
-            or mast_child.attrib.get("link") != "arm_lift_mast"
-        ):
-            fail("The fixed arm lift mast must be attached directly to body.")
-        mast_visuals = mast_link.findall("visual")
-        if len(mast_visuals) < 5 or any(
-            "name" in visual.attrib for visual in mast_visuals
-        ):
-            fail(
-                "The mast needs at least five unnamed visuals so Gazebo "
-                "applies its "
-                "link material."
-            )
-        if any(
-            visual.find("material") is None
-            or visual.find("material").attrib.get("name") != "guide_steel"
-            for visual in mast_visuals
-        ):
-            fail("Every lift mast visual must use the light guide-steel color.")
-        required_mast_collisions = {
-            "lift_mast_backplate_collision",
-            "lift_mast_left_rail_collision",
-            "lift_mast_right_rail_collision",
-            "lift_mast_base_collision",
-            "lift_mast_top_collision",
+        forbidden_lift_links = {"arm_lift", "arm_lift_mast"}
+        robot_links = {
+            link.attrib.get("name", "") for link in robot_root.findall("./link")
         }
-        mast_collisions = {
-            collision.attrib.get("name", ""): collision
-            for collision in mast_link.findall("collision")
+        if forbidden_lift_links & robot_links:
+            fail("Robot URDF still contains an arm-lift link.")
+        forbidden_lift_joints = {"body_arm_lift", "body_arm_lift_mast"}
+        robot_joints = {
+            joint.attrib.get("name", "")
+            for joint in robot_root.findall("./joint")
         }
-        if not required_mast_collisions.issubset(mast_collisions):
-            fail("The arm lift mast collision structure is incomplete.")
-        mast_boxes = {
-            name: box_geometry(mast_collisions[name], name)
-            for name in required_mast_collisions
-        }
-        for rear_component_name in (
-            "lift_mast_backplate_collision",
-            "lift_mast_left_rail_collision",
-            "lift_mast_right_rail_collision",
-            "lift_mast_top_collision",
-        ):
-            origin_xyz, box_size = mast_boxes[rear_component_name]
-            component_front = origin_xyz[1] + box_size[1] / 2.0
-            if component_front > -0.25:
-                fail(
-                    "The mast, rails and top beam must remain behind the "
-                    "compact arm's 0.25 m clearance envelope."
-                )
-        for rail_name in (
-            "lift_mast_left_rail_collision",
-            "lift_mast_right_rail_collision",
-        ):
-            origin_xyz, box_size = mast_boxes[rail_name]
-            rail_bottom = origin_xyz[2] - box_size[2] / 2.0
-            rail_top = origin_xyz[2] + box_size[2] / 2.0
-            carriage_top_at_max_lift = lift_upper + 0.20
-            if rail_bottom > lift_lower + 1.0e-6 or rail_top < (
-                carriage_top_at_max_lift + 0.05
+        if forbidden_lift_joints & robot_joints:
+            fail("Robot URDF still contains an arm-lift joint.")
+        if robot_root.find("./material[@name='guide_steel']") is not None:
+            fail("Robot URDF still contains the unused arm-lift material.")
+        robot_component_directory = ROBOT_XACRO.parent / "components"
+        for component_path in robot_component_directory.glob("*.xacro"):
+            component_source = component_path.read_text(encoding="utf-8")
+            if (
+                "arm_lift" in component_source
+                or "guide_steel" in component_source
             ):
                 fail(
-                    "Both lift rails must cover the complete carriage travel "
-                    "with at least 0.05 m top clearance."
+                    "Robot component source still contains an arm-lift "
+                    f"artifact: {component_path.name}."
                 )
-        carriage = robot_root.find("./link[@name='arm_lift']")
-        if carriage is None:
-            fail("Robot URDF is missing the arm_lift carriage link.")
-        carriage_visuals = carriage.findall("visual")
-        carriage_collisions = {
-            collision.attrib.get("name", "")
-            for collision in carriage.findall("collision")
-        }
-        if (
-            len(carriage_visuals) < 3
-            or any("name" in visual.attrib for visual in carriage_visuals)
-            or not {
-                "lift_carriage_collision",
-                "lift_carriage_bracket_collision",
-            }.issubset(carriage_collisions)
-        ):
-            fail("The arm lift moving carriage geometry is incomplete.")
 
         gazebo_properties = {
             entry.attrib.get("reference", ""): entry
             for entry in robot_root.findall("./gazebo[@reference]")
         }
-        for link_name, expected_material in (
-            ("arm_lift_mast", "Gazebo/Grey"),
-            ("arm_lift", "Gazebo/Orange"),
-        ):
-            properties = gazebo_properties.get(link_name)
-            material = None if properties is None else properties.find("material")
-            gravity = None if properties is None else properties.find("gravity")
-            if (
-                material is None
-                or (material.text or "").strip() != expected_material
-                or gravity is None
-                or (gravity.text or "").strip()
-                != ("true" if link_name == "arm_lift" else "false")
-            ):
-                fail(
-                    f"{link_name} must have explicit Gazebo material and "
-                    "gravity properties."
-                )
-        mast_joint_properties = gazebo_properties.get("body_arm_lift_mast")
-        preserve_fixed_joint = (
-            None
-            if mast_joint_properties is None
-            else mast_joint_properties.find("preserveFixedJoint")
-        )
-        if (
-            preserve_fixed_joint is None
-            or (preserve_fixed_joint.text or "").strip() != "true"
+        if (forbidden_lift_links | forbidden_lift_joints) & set(
+            gazebo_properties
         ):
             fail(
-                "Gazebo must preserve body_arm_lift_mast so its gravity "
-                "setting is not merged into body."
+                "Robot Gazebo properties still reference the removed arm lift."
             )
 
         sdf_root = convert_urdf_to_sdf(robot_root)
@@ -1041,77 +989,46 @@ def main() -> int:
             link.attrib.get("name", ""): link
             for link in sdf_root.findall("./model/link")
         }
-        for link_name, expected_gravity, expected_material_minimum in (
-            ("body", "1", 1),
-            ("arm_lift", "1", 3),
-            ("arm_lift_mast", "0", 5),
-        ):
-            sdf_link = sdf_links.get(link_name)
-            gravity_values = (
-                []
-                if sdf_link is None
-                else [
-                    (gravity.text or "").strip()
-                    for gravity in sdf_link.findall("gravity")
-                ]
-            )
-            if gravity_values != [expected_gravity]:
-                fail(
-                    f"Gazebo SDF must preserve one gravity={expected_gravity} "
-                    f"setting for {link_name}; got {gravity_values}."
-                )
-            if link_name == "body":
-                continue
-            material_names = [
-                (material.text or "").strip()
-                for material in sdf_link.findall("./visual/material/script/name")
+        if forbidden_lift_links & set(sdf_links):
+            fail("Gazebo SDF still contains an arm-lift link.")
+        body_sdf = sdf_links.get("body")
+        body_gravity = (
+            []
+            if body_sdf is None
+            else [
+                (gravity.text or "").strip()
+                for gravity in body_sdf.findall("gravity")
             ]
-            expected_material = (
-                "Gazebo/Orange"
-                if link_name == "arm_lift"
-                else "Gazebo/Grey"
+        )
+        if body_gravity != ["1"]:
+            fail(
+                "Gazebo SDF must preserve one gravity=1 setting for body; "
+                f"got {body_gravity}."
             )
-            if (
-                len(material_names) < expected_material_minimum
-                or any(
-                    material != expected_material for material in material_names
-                )
-            ):
-                fail(f"Gazebo did not retain {link_name} visual materials.")
         shoulder_joint = robot_root.find("./joint[@name='body_arm1']")
         shoulder_parent = (
             None if shoulder_joint is None else shoulder_joint.find("parent")
         )
-        if shoulder_parent is None or shoulder_parent.attrib.get("link") != "arm_lift":
-            fail("The manipulator shoulder is not mounted on arm_lift.")
+        if (
+            shoulder_parent is None
+            or shoulder_parent.attrib.get("link") != "body"
+        ):
+            fail("The six-axis manipulator shoulder must be mounted on body.")
 
         ros2_control_entries = {
             entry.attrib.get("name", ""): entry
             for entry in robot_root.findall(".//ros2_control/joint")
         }
-        lift_control = ros2_control_entries.get("body_arm_lift")
-        if lift_control is None:
-            fail("ros2_control does not expose body_arm_lift.")
-        command_interfaces = {
-            entry.attrib.get("name", "")
-            for entry in lift_control.findall("command_interface")
-        }
-        state_interfaces = {
-            entry.attrib.get("name", "")
-            for entry in lift_control.findall("state_interface")
-        }
-        if command_interfaces != {"position"} or not {
-            "position",
-            "velocity",
-            "effort",
-        }.issubset(state_interfaces):
-            fail("body_arm_lift ros2_control interfaces are incomplete.")
+        if forbidden_lift_joints & set(ros2_control_entries):
+            fail("ros2_control still exposes a removed arm-lift joint.")
         hold_joints = {
             (entry.text or "").strip()
             for entry in robot_root.findall(".//plugin/hold_joint")
         }
-        if "body_arm_lift" not in hold_joints:
-            fail("Gazebo planar stabilizer does not hold body_arm_lift.")
+        if forbidden_lift_joints & hold_joints:
+            fail(
+                "Gazebo planar stabilizer still holds a removed arm-lift joint."
+            )
         stabilizer = next(
             (
                 candidate
@@ -1123,9 +1040,19 @@ def main() -> int:
         )
         if stabilizer is None:
             fail("Gazebo planar stabilizer plugin is absent.")
-        if text(stabilizer, "grasp_active_topic") != grasp_active_topic:
-            fail("Cabinet and planar stabilizer grasp-active topics differ.")
+        if text(stabilizer, "grasp_active_topic") != "/xczs/cabinet/grasp_active":
+            fail(
+                "Planar stabilizer must consume the aggregated grasp-active "
+                "topic."
+            )
         cmake_source = CONTROL_CMAKE.read_text(encoding="utf-8")
+        for lease_build_requirement in (
+            '"srv/ManageOperationLease.srv"',
+            "add_executable(\n  operation_lease_coordinator",
+            "operation_lease_state_test",
+        ):
+            if lease_build_requirement not in cmake_source:
+                fail("Global operation lease build/test wiring is incomplete.")
         stabilizer_dependencies = re.search(
             r"ament_target_dependencies\(\s*xczs_planar_stabilizer(.*?)\)",
             cmake_source,
@@ -1148,6 +1075,8 @@ def main() -> int:
             fail("Planar stabilizer does not pause joint restore while grasping.")
 
         launch_source = CONTROL_LAUNCH.read_text(encoding="utf-8")
+        if launch_source.count('executable="operation_lease_coordinator"') != 1:
+            fail("Unified launch must start exactly one lease coordinator.")
         if not re.search(
             r"\.planning_pipelines\(\s*"
             r"default_planning_pipeline=[\"']ompl[\"']\s*,\s*"
@@ -1179,8 +1108,8 @@ def main() -> int:
             fail("ros2_control arm joint order differs from the MoveIt chain.")
         if controller_config["/xczs/arm_controller"]["ros__parameters"].get(
             "allow_partial_joints_goal"
-        ) is not True:
-            fail("The arm controller must preserve six-axis legacy goals.")
+        ) is not False:
+            fail("The six-axis arm controller must reject partial joint goals.")
 
         with MOVEIT_CONTROLLERS.open("r", encoding="utf-8") as stream:
             moveit_controllers = yaml.safe_load(stream)
@@ -1191,17 +1120,21 @@ def main() -> int:
             fail("MoveIt controller joint order differs from ros2_control.")
         with JOINT_LIMITS.open("r", encoding="utf-8") as stream:
             moveit_limits = yaml.safe_load(stream)["joint_limits"]
-        lift_moveit_limit = moveit_limits.get("body_arm_lift", {})
-        if not math.isclose(
-            float(lift_moveit_limit.get("min_position", float("nan"))),
-            lift_lower,
-            abs_tol=1.0e-9,
-        ) or not math.isclose(
-            float(lift_moveit_limit.get("max_position", float("nan"))),
-            lift_upper,
-            abs_tol=1.0e-9,
-        ):
-            fail("MoveIt and URDF lift position limits differ.")
+        if "body_arm_lift" in moveit_limits:
+            fail("MoveIt joint limits still contain the removed arm lift.")
+        if not set(ARM_JOINTS).issubset(moveit_limits):
+            fail("MoveIt joint limits do not cover the complete six-axis arm.")
+        with OMPL_PLANNING.open("r", encoding="utf-8") as stream:
+            ompl_config = yaml.safe_load(stream)
+        expected_projection = "joints(body_arm1,arm1_arm2)"
+        for planning_group in ("manipulator", "manipulator_with_gripper"):
+            if ompl_config.get(planning_group, {}).get(
+                "projection_evaluator"
+            ) != expected_projection:
+                fail(
+                    f"MoveIt OMPL group {planning_group} does not project "
+                    "the first two six-axis arm joints."
+                )
 
         srdf_root = ElementTree.parse(SRDF).getroot()
         manipulator = srdf_root.find("./group[@name='manipulator']")
@@ -1213,7 +1146,7 @@ def main() -> int:
             or manipulator_chain.attrib.get("base_link") != "body"
             or manipulator_chain.attrib.get("tip_link") != "end"
         ):
-            fail("MoveIt manipulator chain must span body through the lift to end.")
+            fail("MoveIt manipulator chain must span body to end.")
         home = srdf_root.find("./group_state[@name='home']")
         home_joints = {
             entry.attrib.get("name", ""): float(entry.attrib.get("value", "nan"))
@@ -1235,10 +1168,29 @@ def main() -> int:
             frozenset((entry.attrib.get("link1"), entry.attrib.get("link2")))
             for entry in srdf_root.findall("disable_collisions")
         }
-        if frozenset(("arm_lift", "arm2")) not in disabled_pairs:
-            fail("Synthetic lift/arm2 design overlap is not documented in SRDF.")
-        if frozenset(("arm_lift_mast", "arm_lift")) not in disabled_pairs:
-            fail("Lift mast/carriage guide overlap is not documented in SRDF.")
+        if any(forbidden_lift_links & pair for pair in disabled_pairs):
+            fail("MoveIt SRDF still contains an arm-lift collision exemption.")
+        body_arm1_collision = next(
+            (
+                entry
+                for entry in srdf_root.findall("disable_collisions")
+                if {entry.attrib.get("link1"), entry.attrib.get("link2")}
+                == {"body", "arm1"}
+            ),
+            None,
+        )
+        if (
+            body_arm1_collision is None
+            or body_arm1_collision.attrib.get("reason") != "Adjacent"
+        ):
+            fail("MoveIt SRDF must mark body and arm1 as adjacent links.")
+        legacy_router_source = LEGACY_TRAJECTORY_ROUTER.read_text(
+            encoding="utf-8"
+        )
+        if "body_arm_lift" in legacy_router_source:
+            fail(
+                "Legacy trajectory routing still exposes the removed arm lift."
+            )
 
         with NAV2_CONFIG.open("r", encoding="utf-8") as stream:
             nav2_config = yaml.safe_load(stream)
@@ -1282,7 +1234,7 @@ def main() -> int:
                 ):
                     web_joint_names = ast.literal_eval(statement.value)
         if web_joint_names != ARM_JOINTS + ["end_worklink1", "end_worklink2"]:
-            fail("Web backend joint order does not expose the seven-axis arm.")
+            fail("Web backend joint order does not expose the six-axis arm.")
         arm_names_match = re.search(
             r"const armJointNames = \[([^;]+)\];", web_source
         )
@@ -1291,16 +1243,12 @@ def main() -> int:
         html_arm_joints = re.findall(r"['\"]([^'\"]+)['\"]", arm_names_match.group(1))
         if html_arm_joints != ARM_JOINTS:
             fail("Web monitor arm slider order differs from the controller.")
-        lift_limit_match = re.search(
-            r"body_arm_lift\s*:\s*\[\s*0(?:\.0)?\s*,\s*0\.85\s*\]",
-            web_source,
-        )
-        if lift_limit_match is None:
-            fail("Web monitor does not enforce the 0.85 m lift range.")
+        if "body_arm_lift" in web_node_source or "body_arm_lift" in web_source:
+            fail("Web manual control still exposes the removed arm lift.")
         print(
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
-            "topics, and a 0.85 m MoveIt lift."
+            "topics, and a six-axis MoveIt arm without a lift."
         )
         return 0
     except Exception as error:  # noqa: BLE001

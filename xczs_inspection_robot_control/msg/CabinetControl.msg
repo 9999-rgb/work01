@@ -25,3 +25,6 @@ float64[] state_positions
 bool requires_grasp
 bool operable
 string unavailable_reason
+float64 default_force
+float64 min_trigger_force
+float64 max_force

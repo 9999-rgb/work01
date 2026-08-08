@@ -1,3 +1,4 @@
 aiohttp>=3.8,<4
 eclipse-zenoh==1.9.0
 Pillow>=9,<13
+PyYAML>=5,<7

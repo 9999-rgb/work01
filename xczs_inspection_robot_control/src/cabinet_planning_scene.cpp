@@ -112,9 +112,11 @@ public:
     frame_id_ = required_string_parameter("frame_id", "odom");
     cabinet_frame_ = required_string_parameter(
       "cabinet_frame", "control_cabinet_frame");
+    collision_object_prefix_ = declare_parameter<std::string>(
+      "collision_object_prefix", "");
     require_pose_valid_ = declare_parameter<bool>("require_pose_valid", false);
     const auto pose_valid_topic = required_string_parameter(
-      "pose_valid_topic", "/xczs/cabinet/pose_valid");
+      "pose_valid_topic", "pose_valid");
 
     load_scene_profile();
     load_control_collisions();
@@ -127,7 +129,7 @@ public:
       "/planning_scene", rclcpp::QoS(1).reliable().transient_local());
 
     active_control_subscription_ = create_subscription<std_msgs::msg::String>(
-      "/xczs/cabinet/active_control",
+      "active_control",
       rclcpp::QoS(1).reliable().transient_local(),
       [this](const std_msgs::msg::String::SharedPtr message) {
         std::lock_guard<std::mutex> lock(state_mutex_);
@@ -168,6 +170,14 @@ public:
   }
 
 private:
+  std::string collision_object_id(const std::string & legacy_id) const
+  {
+    if (collision_object_prefix_.empty()) {
+      return legacy_id;
+    }
+    return collision_object_prefix_ + "__" + legacy_id;
+  }
+
   std::string required_string_parameter(
     const std::string & name,
     const std::string & default_value)
@@ -362,7 +372,7 @@ private:
     std::function<void(double)> update)
   {
     return create_subscription<CabinetControlState>(
-      "/xczs/cabinet/" + control_id + "/state",
+      control_id + "/state",
       rclcpp::QoS(1).reliable().transient_local(),
       [update = std::move(update)](
         const CabinetControlState::SharedPtr message) {
@@ -404,7 +414,7 @@ private:
     moveit_msgs::msg::CollisionObject frame;
     frame.header.frame_id = frame_id_;
     frame.header.stamp = now();
-    frame.id = "control_cabinet_frame";
+    frame.id = collision_object_id("control_cabinet_frame");
     frame.operation = moveit_msgs::msg::CollisionObject::ADD;
     for (const auto & part : frame_parts_) {
       frame.primitives.push_back(box(part.size));
@@ -432,7 +442,7 @@ private:
     moveit_msgs::msg::CollisionObject door;
     door.header.frame_id = frame_id_;
     door.header.stamp = now();
-    door.id = "cabinet_control_" + door_control_id_;
+    door.id = collision_object_id("cabinet_control_" + door_control_id_);
     door.operation = moveit_msgs::msg::CollisionObject::ADD;
     door.primitives.push_back(box(door_panel_size_));
     door.primitive_poses.push_back(
@@ -450,7 +460,8 @@ private:
     moveit_msgs::msg::CollisionObject handle;
     handle.header.frame_id = frame_id_;
     handle.header.stamp = now();
-    handle.id = "cabinet_control_" + door_control_id_ + "_handle";
+    handle.id = collision_object_id(
+      "cabinet_control_" + door_control_id_ + "_handle");
     if (remove) {
       handle.operation = moveit_msgs::msg::CollisionObject::REMOVE;
       return handle;
@@ -475,7 +486,7 @@ private:
     moveit_msgs::msg::CollisionObject object;
     object.header.frame_id = frame_id_;
     object.header.stamp = now();
-    object.id = "cabinet_control_" + control.id;
+    object.id = collision_object_id("cabinet_control_" + control.id);
     if (remove) {
       object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
       return object;
@@ -501,7 +512,8 @@ private:
     moveit_msgs::msg::CollisionObject object;
     object.header.frame_id = frame_id_;
     object.header.stamp = now();
-    object.id = "cabinet_control_" + switch_control_id_;
+    object.id = collision_object_id(
+      "cabinet_control_" + switch_control_id_);
     if (remove) {
       object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
       return object;
@@ -647,6 +659,7 @@ private:
 
   std::string frame_id_;
   std::string cabinet_frame_;
+  std::string collision_object_prefix_;
   bool require_pose_valid_{false};
   std::vector<BoxPart> frame_parts_;
   std::vector<ControlCollision> control_collisions_;

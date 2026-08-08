@@ -20,7 +20,18 @@
   <xacro:property name="cabinet_door_mass" value="20.0" />
 
   <!-- Shared physical parameters for all interactive controls. -->
-  <xacro:property name="cabinet_button_travel" value="0.008" />
+  <xacro:property
+    name="cabinet_button_travel"
+    value="$(arg button_max_travel)" />
+  <xacro:property
+    name="cabinet_button_spring_stiffness"
+    value="$(arg button_spring_stiffness)" />
+  <xacro:property
+    name="cabinet_button_press_threshold"
+    value="$(arg button_press_threshold)" />
+  <xacro:property
+    name="cabinet_button_release_threshold"
+    value="${0.5 * cabinet_button_press_threshold}" />
   <xacro:property name="cabinet_button_radius" value="0.015" />
   <xacro:property name="cabinet_button_collision_length" value="0.012" />
 

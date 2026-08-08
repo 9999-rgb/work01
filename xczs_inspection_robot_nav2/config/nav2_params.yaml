@@ -140,7 +140,10 @@ controller_server:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
       xy_goal_tolerance: 0.10
-      yaw_goal_tolerance: 0.10
+      # Close-range cabinet docking can make in-place rotation collide with
+      # the local inflated footprint.  Accept the same 0.20 rad bound that
+      # the task layer verifies instead of retrying forever a few degrees out.
+      yaw_goal_tolerance: 0.20
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false

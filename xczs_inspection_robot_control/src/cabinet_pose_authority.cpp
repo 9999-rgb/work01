@@ -34,8 +34,6 @@ using PoseWithCovarianceStamped =
 
 constexpr char kStaticSource[] = "static";
 constexpr char kTopicSource[] = "topic";
-constexpr char kValidityTopic[] = "/xczs/cabinet/pose_valid";
-
 bool finite_pose(const geometry_msgs::msg::Pose & pose)
 {
   return std::isfinite(pose.position.x) &&
@@ -106,7 +104,9 @@ public:
     cabinet_frame_ = declare_parameter<std::string>(
       "cabinet_frame", "control_cabinet_frame");
     measurement_topic_ = declare_parameter<std::string>(
-      "measurement_topic", "/xczs/cabinet/pose_measurement");
+      "measurement_topic", "pose_measurement");
+    const auto validity_topic = declare_parameter<std::string>(
+      "validity_topic", "pose_valid");
 
     measurement_timeout_ = positive_parameter(
       "limits.measurement_timeout_sec", 1.0);
@@ -135,7 +135,7 @@ public:
     }
 
     validity_publisher_ = create_publisher<std_msgs::msg::Bool>(
-      kValidityTopic,
+      validity_topic,
       rclcpp::QoS(1).reliable().transient_local());
 
     if (pose_source_ == kStaticSource) {
@@ -223,9 +223,9 @@ private:
 
   void configure_topic_source()
   {
-    if (measurement_topic_.empty() || measurement_topic_.front() != '/') {
+    if (measurement_topic_.empty()) {
       throw std::invalid_argument(
-              "Parameter 'measurement_topic' must be an absolute topic.");
+              "Parameter 'measurement_topic' must be a non-empty ROS topic.");
     }
 
     transform_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
@@ -344,7 +344,10 @@ private:
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       was_valid = pose_valid_;
-      if (pose_valid_ && has_accepted_pose_) {
+      // Keep the last accepted pose as the reacquisition reference even after
+      // the watchdog marks it stale.  Otherwise the first post-timeout sample
+      // could bypass the configured jump limits entirely.
+      if (has_accepted_pose_) {
         const double translation_jump = translation_distance(
           accepted_pose_, transformed.pose.pose);
         const double rotation_jump = rotation_distance(

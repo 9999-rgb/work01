@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -16,11 +17,14 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
+from rclpy.time import Time
 from action_msgs.msg import GoalStatus
 from moveit_msgs.msg import PlanningSceneComponents
 from moveit_msgs.srv import GetPlanningScene
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
+from tf2_ros import Buffer
+from tf2_ros import TransformListener
 from xczs_inspection_robot_control.action import OperateCabinetControl
 from xczs_inspection_robot_control.msg import CabinetControl
 from xczs_inspection_robot_control.msg import CabinetControlCatalog
@@ -33,6 +37,7 @@ EXPECTED_TYPE_COUNTS = {
     CabinetControl.TYPE_SWITCH: 1,
     CabinetControl.TYPE_DOOR: 1,
 }
+_CABINET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 
 
 @dataclass(frozen=True)
@@ -41,13 +46,18 @@ class Operation:
     command: int
     target_state: str = ""
     target_position: Optional[float] = None
+    force: float = 5.0
 
 
 class CabinetValidator(Node):
     """Discover the catalog, execute actions and retain physical states."""
 
-    def __init__(self) -> None:
-        super().__init__("xczs_cabinet_simulation_validator")
+    def __init__(self, cabinet: str) -> None:
+        self.cabinet = cabinet
+        self.namespace = f"/xczs/cabinet/{cabinet}"
+        self.cabinet_frame = f"{cabinet}_frame"
+        self.collision_prefix = f"{cabinet}__"
+        super().__init__(f"xczs_{cabinet}_simulation_validator")
         retained = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -61,18 +71,18 @@ class CabinetValidator(Node):
         self._state_subscriptions = []
         self.create_subscription(
             CabinetControlCatalog,
-            "/xczs/cabinet/control_catalog",
+            f"{self.namespace}/control_catalog",
             self._catalog_callback,
             retained,
         )
         self.client = ActionClient(
             self,
             OperateCabinetControl,
-            "/xczs/operate_cabinet_control",
+            f"{self.namespace}/operate_cabinet_control",
         )
         self.reset_client = self.create_client(
             Trigger,
-            "/xczs/cabinet/reset_controls",
+            f"{self.namespace}/reset_controls",
         )
         self.planning_scene_client = self.create_client(
             GetPlanningScene,
@@ -80,9 +90,15 @@ class CabinetValidator(Node):
         )
         self.create_subscription(
             String,
-            "/xczs/cabinet/active_control",
+            f"{self.namespace}/active_control",
             self._active_control_callback,
             retained,
+        )
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(
+            self.tf_buffer,
+            self,
+            spin_thread=False,
         )
         self._retained_qos = retained
 
@@ -91,15 +107,31 @@ class CabinetValidator(Node):
             return
         self.catalog = message
         for control in message.controls:
+            state_topic = self._resolve_cabinet_topic(control.state_topic)
             subscription = self.create_subscription(
                 CabinetControlState,
-                control.state_topic,
+                state_topic,
                 lambda state, selected_id=control.control_id: (
                     self._state_callback(selected_id, state)
                 ),
                 self._retained_qos,
             )
             self._state_subscriptions.append(subscription)
+
+    def _resolve_cabinet_topic(self, topic: str) -> str:
+        value = str(topic).strip()
+        if not value:
+            raise RuntimeError("Catalog contains an empty cabinet topic.")
+        if value.startswith("/"):
+            normalized = "/" + "/".join(
+                part for part in value.split("/") if part
+            )
+            if not normalized.startswith(f"{self.namespace}/"):
+                raise RuntimeError(
+                    f"Catalog topic escapes {self.namespace}: {normalized}."
+                )
+            return normalized
+        return f"{self.namespace}/{value.lstrip('/')}"
 
     def _state_callback(
         self,
@@ -136,6 +168,37 @@ class CabinetValidator(Node):
         )
         raise RuntimeError(
             "No fresh valid physical state for: " + ", ".join(invalid)
+        )
+
+    def verify_cabinet_transform(self, timeout: float) -> None:
+        """Require the selected instance's namespaced authority TF."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    "odom",
+                    self.cabinet_frame,
+                    Time(),
+                )
+            except Exception:  # noqa: BLE001 - retry until the deadline
+                rclpy.spin_once(self, timeout_sec=0.10)
+                continue
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            values = (
+                translation.x,
+                translation.y,
+                translation.z,
+                rotation.x,
+                rotation.y,
+                rotation.z,
+                rotation.w,
+            )
+            if all(math.isfinite(float(value)) for value in values):
+                return
+            rclpy.spin_once(self, timeout_sec=0.10)
+        raise RuntimeError(
+            f"Timed out waiting for finite TF odom -> {self.cabinet_frame}."
         )
 
     def _fresh_valid_state(
@@ -189,18 +252,23 @@ class CabinetValidator(Node):
     ) -> set[str]:
         assert self.catalog is not None
         expected = {
-            f"cabinet_control_{control.control_id}"
+            f"{self.collision_prefix}cabinet_control_{control.control_id}"
             for control in self.catalog.controls
         }
-        expected.add("control_cabinet_frame")
-        door_handle_id = "cabinet_control_cabinet_rear_door_handle"
+        expected.add(f"{self.collision_prefix}control_cabinet_frame")
+        door_handle_id = (
+            f"{self.collision_prefix}cabinet_control_"
+            "cabinet_rear_door_handle"
+        )
         expected.add(door_handle_id)
         if active_control_id == "cabinet_rear_door":
             # The active handle opens for grasping, but the articulated panel
             # must remain a collision object throughout the complete action.
             expected.discard(door_handle_id)
         elif active_control_id:
-            expected.discard(f"cabinet_control_{active_control_id}")
+            expected.discard(
+                f"{self.collision_prefix}cabinet_control_{active_control_id}"
+            )
         return expected
 
     def _planning_scene_ids(self, timeout: float) -> set[str]:
@@ -227,16 +295,26 @@ class CabinetValidator(Node):
         timeout: float,
     ) -> None:
         expected = self._expected_planning_scene_ids(active_control_id)
+        forbidden: set[str] = set()
+        if active_control_id == "cabinet_rear_door":
+            forbidden.add(
+                f"{self.collision_prefix}cabinet_control_"
+                "cabinet_rear_door_handle"
+            )
+        elif active_control_id:
+            forbidden.add(
+                f"{self.collision_prefix}cabinet_control_{active_control_id}"
+            )
         deadline = time.monotonic() + timeout
         actual: set[str] = set()
         while time.monotonic() < deadline:
             remaining = max(0.1, deadline - time.monotonic())
             actual = self._planning_scene_ids(min(remaining, 2.0))
-            if actual == expected:
+            if expected.issubset(actual) and forbidden.isdisjoint(actual):
                 return
             rclpy.spin_once(self, timeout_sec=0.05)
         missing = sorted(expected - actual)
-        unexpected = sorted(actual - expected)
+        unexpected = sorted(forbidden & actual)
         raise RuntimeError(
             "MoveIt planning scene does not match the cabinet state; "
             f"missing={missing}, unexpected={unexpected}."
@@ -491,7 +569,6 @@ class CabinetValidator(Node):
     def execute(
         self,
         operation: Operation,
-        navigate: bool,
         timeout: float,
     ) -> str:
         if self.current_goal_handle is not None:
@@ -529,7 +606,10 @@ class CabinetValidator(Node):
         goal.target_state = operation.target_state
         goal.use_target_position = operation.target_position is not None
         goal.target_position = operation.target_position or 0.0
-        goal.navigate_to_staging_pose = navigate
+        goal.force = operation.force
+        # OperateCabinetControl is intentionally manipulation-only.  Nav2 is
+        # validated independently through the Web task API.
+        goal.navigate_to_staging_pose = False
 
         last_feedback = {"at": 0.0}
 
@@ -682,6 +762,161 @@ class CabinetValidator(Node):
         )
         return str(result.message)
 
+    def execute_expected_failure(
+        self,
+        operation: Operation,
+        expected_error_code: int,
+        timeout: float,
+        *,
+        expected_reason: str = "",
+        maximum_duration: Optional[float] = None,
+    ) -> str:
+        """Require an accepted action to return one structured failure."""
+        if self.current_goal_handle is not None:
+            raise RuntimeError(
+                "A previous accepted goal has not reached a terminal state."
+            )
+        if not self.client.wait_for_server(timeout_sec=min(timeout, 15.0)):
+            raise RuntimeError("Cabinet action server is unavailable.")
+        assert self.catalog is not None
+        controls = {
+            entry.control_id: entry for entry in self.catalog.controls
+        }
+        control = controls[operation.control_id]
+        non_target_snapshot = self.snapshot_non_target_controls(
+            operation.control_id
+        )
+
+        goal = OperateCabinetControl.Goal()
+        goal.control_id = operation.control_id
+        goal.command = operation.command
+        goal.target_state = operation.target_state
+        goal.use_target_position = operation.target_position is not None
+        goal.target_position = operation.target_position or 0.0
+        goal.force = operation.force
+        goal.navigate_to_staging_pose = False
+
+        started = time.monotonic()
+        send_future = self.client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(self, send_future, timeout_sec=timeout)
+        if not send_future.done():
+            raise RuntimeError("Timed out while sending the failure-test goal.")
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            raise RuntimeError(
+                "Action rejected a request that must return a structured "
+                "terminal failure."
+            )
+        self.current_goal_handle = goal_handle
+        result_future = goal_handle.get_result_async()
+        rclpy.spin_until_future_complete(self, result_future, timeout_sec=timeout)
+        if not result_future.done():
+            self._cancel_and_wait(goal_handle, result_future, timeout)
+            raise RuntimeError("Structured-failure action timed out.")
+        wrapped = result_future.result()
+        self.current_goal_handle = None
+        elapsed = time.monotonic() - started
+        if wrapped is None or wrapped.status != GoalStatus.STATUS_ABORTED:
+            status = "missing" if wrapped is None else int(wrapped.status)
+            raise RuntimeError(
+                f"Expected ABORTED structured failure, got status {status}."
+            )
+        result = wrapped.result
+        if result is None:
+            raise RuntimeError("Structured failure returned no result.")
+        if result.success or int(result.error_code) != expected_error_code:
+            raise RuntimeError(
+                "Structured failure mismatch: "
+                f"success={result.success}, error={int(result.error_code)}, "
+                f"expected={expected_error_code}."
+            )
+        message = str(result.message).strip()
+        if not message:
+            raise RuntimeError("Structured failure did not include a reason.")
+        if expected_reason and expected_reason not in message:
+            raise RuntimeError(
+                f"Failure reason {message!r} does not include catalog reason "
+                f"{expected_reason!r}."
+            )
+        if maximum_duration is not None and elapsed > maximum_duration:
+            raise RuntimeError(
+                f"Failure took {elapsed:.2f}s; expected at most "
+                f"{maximum_duration:.2f}s."
+            )
+
+        if expected_error_code == OperateCabinetControl.Result.INSUFFICIENT_FORCE:
+            requested_force = float(result.requested_force)
+            estimated_force = float(result.estimated_force)
+            peak_position = float(result.peak_position)
+            threshold_force = float(control.min_trigger_force)
+            maximum_position = float(control.max_position)
+            maximum_force = float(control.max_force)
+            if maximum_position <= 0.0 or maximum_force <= 0.0:
+                raise RuntimeError(
+                    "Button catalog cannot derive a positive spring stiffness."
+                )
+            spring_stiffness = maximum_force / maximum_position
+            expected_displacement = operation.force / spring_stiffness
+            trigger_displacement = threshold_force / spring_stiffness
+            values = (requested_force, estimated_force, peak_position)
+            if not all(math.isfinite(value) for value in values):
+                raise RuntimeError(
+                    "Insufficient-force result contains non-finite data."
+                )
+            if abs(requested_force - operation.force) > 1.0e-6:
+                raise RuntimeError("Action did not preserve requested_force.")
+            if operation.force >= threshold_force:
+                raise RuntimeError(
+                    "Failure-test force is not below the advertised trigger "
+                    "force."
+                )
+            if result.button_triggered:
+                raise RuntimeError(
+                    "Insufficient-force result incorrectly reports a trigger."
+                )
+            if peak_position >= trigger_displacement:
+                raise RuntimeError(
+                    "Low-force press reached the advertised trigger travel."
+                )
+            if abs(peak_position - expected_displacement) > 0.002:
+                raise RuntimeError(
+                    "Low-force physical travel does not match force / 800 N/m: "
+                    f"peak={peak_position:.4f}, expected="
+                    f"{expected_displacement:.4f}."
+                )
+            if abs(estimated_force - operation.force) > 1.6:
+                raise RuntimeError(
+                    "Estimated low-force result is inconsistent with the "
+                    "requested force."
+                )
+            if not self._spin_until_stable(
+                lambda: (
+                    (state := self.states.get(operation.control_id)) is not None
+                    and self._fresh_valid_state(operation.control_id)
+                    and state.state_id == "released"
+                    and not state.in_motion
+                ),
+                0.20,
+                min(timeout, 5.0),
+            ):
+                raise RuntimeError(
+                    "Low-force failure did not safely retract and release."
+                )
+
+        if not self._spin_until(
+            lambda: self.active_control == "",
+            min(timeout, 5.0),
+        ):
+            raise RuntimeError(
+                "Structured failure did not clear the active-control target."
+            )
+        self.verify_planning_scene(None, min(timeout, 5.0))
+        self.verify_non_target_controls_unchanged(
+            non_target_snapshot,
+            min(timeout, 10.0),
+        )
+        return message
+
     def verify_invalid_position_rejected(
         self,
         control: CabinetControl,
@@ -698,6 +933,7 @@ class CabinetValidator(Node):
         goal.command = OperateCabinetControl.Goal.COMMAND_SET_POSITION
         goal.target_position = target
         goal.use_target_position = True
+        goal.force = 5.0
         goal.navigate_to_staging_pose = False
         send_future = self.client.send_goal_async(goal)
         rclpy.spin_until_future_complete(self, send_future, timeout_sec=timeout)
@@ -715,7 +951,6 @@ class CabinetValidator(Node):
     def verify_cancel_and_reset_interlock(
         self,
         control: CabinetControl,
-        navigate: bool,
         timeout: float,
     ) -> None:
         state = self.states[control.control_id]
@@ -730,7 +965,8 @@ class CabinetValidator(Node):
         goal.control_id = control.control_id
         goal.command = OperateCabinetControl.Goal.COMMAND_SET_STATE
         goal.target_state = state_ids[target_index]
-        goal.navigate_to_staging_pose = navigate
+        goal.force = 5.0
+        goal.navigate_to_staging_pose = False
         phase = {"value": -1}
 
         def feedback_callback(message: object) -> None:
@@ -814,7 +1050,6 @@ class CabinetValidator(Node):
         self,
         door: CabinetControl,
         switch: CabinetControl,
-        navigate: bool,
         timeout: float,
     ) -> None:
         sequence = [
@@ -846,7 +1081,7 @@ class CabinetValidator(Node):
             )
             print(
                 "    PASS: "
-                + self.execute(operation, navigate, timeout)
+                + self.execute(operation, timeout)
             )
 
     def best_effort_cleanup(
@@ -907,15 +1142,30 @@ def validate_catalog(catalog: CabinetControlCatalog) -> None:
                 f"received {actual}."
             )
     for entry in controls:
-        if not entry.operable:
-            raise RuntimeError(
-                f"{entry.control_id} is not operable: "
-                f"{entry.unavailable_reason}"
-            )
         if not entry.joint_name or not entry.state_topic:
             raise RuntimeError(
                 f"{entry.control_id} has incomplete physical metadata."
             )
+        if not entry.operable and not str(entry.unavailable_reason).strip():
+            raise RuntimeError(
+                f"{entry.control_id} is unavailable without a concrete reason."
+            )
+        if entry.control_type == CabinetControl.TYPE_BUTTON:
+            force_values = (
+                float(entry.default_force),
+                float(entry.min_trigger_force),
+                float(entry.max_force),
+            )
+            if (
+                not all(math.isfinite(value) for value in force_values)
+                or abs(force_values[0] - 5.0) > 1.0e-6
+                or abs(force_values[1] - 4.8) > 1.0e-6
+                or abs(force_values[2] - 6.4) > 1.0e-6
+            ):
+                raise RuntimeError(
+                    f"{entry.control_id} advertises an invalid force profile: "
+                    f"default/min/max={force_values}."
+                )
         if entry.control_type != CabinetControl.TYPE_BUTTON:
             if not entry.state_ids:
                 raise RuntimeError(
@@ -930,11 +1180,32 @@ def validate_catalog(catalog: CabinetControlCatalog) -> None:
 def selected_controls(
     catalog: CabinetControlCatalog,
     requested_ids: Iterable[str],
+    exhaustive: bool,
 ) -> List[CabinetControl]:
     by_id = {entry.control_id: entry for entry in catalog.controls}
     requested = list(requested_ids)
     if not requested:
-        return list(catalog.controls)
+        operable = [entry for entry in catalog.controls if entry.operable]
+        if exhaustive:
+            return operable
+        representatives = []
+        for control_type in (
+            CabinetControl.TYPE_BUTTON,
+            CabinetControl.TYPE_KNOB,
+            CabinetControl.TYPE_SWITCH,
+            CabinetControl.TYPE_DOOR,
+        ):
+            selected = next(
+                (
+                    entry
+                    for entry in operable
+                    if entry.control_type == control_type
+                ),
+                None,
+            )
+            if selected is not None:
+                representatives.append(selected)
+        return representatives
     missing = [control_id for control_id in requested if control_id not in by_id]
     if missing:
         raise RuntimeError("Unknown controls: " + ", ".join(missing))
@@ -977,9 +1248,12 @@ def operations_for(control: CabinetControl, exhaustive: bool) -> List[Operation]
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--navigate",
-        action="store_true",
-        help="Run Nav2 staging before every operation.",
+        "--cabinet",
+        default="cabinet_a",
+        help=(
+            "Cabinet instance name (default: cabinet_a); invoke once per "
+            "instance for full inventory coverage."
+        ),
     )
     parser.add_argument(
         "--exhaustive",
@@ -1008,6 +1282,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=180.0)
     args = parser.parse_args()
+    if _CABINET_NAME_PATTERN.fullmatch(args.cabinet) is None:
+        parser.error(
+            "--cabinet must start with a letter and contain only letters, "
+            "digits, and underscores"
+        )
     if args.cycles < 1:
         parser.error("--cycles must be at least 1")
     if args.timeout <= 0.0:
@@ -1018,20 +1297,26 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     args = parse_arguments()
     rclpy.init()
-    node = CabinetValidator()
+    node = CabinetValidator(args.cabinet)
     failures: List[str] = []
     completed = 0
     try:
         catalog = node.wait_for_catalog(args.timeout)
         validate_catalog(catalog)
         node.wait_for_all_states(min(args.timeout, 30.0))
-        controls = selected_controls(catalog, args.control)
+        node.verify_cabinet_transform(min(args.timeout, 10.0))
+        controls = selected_controls(catalog, args.control, args.exhaustive)
         print(
-            f"Cabinet inventory valid: {len(catalog.controls)} controls; "
+            f"Cabinet {args.cabinet} inventory valid: "
+            f"{len(catalog.controls)} controls; "
             f"{len(node.states)} live physical states."
         )
+        print(f"Cabinet TF valid: odom -> {node.cabinet_frame}.")
         node.verify_planning_scene(None, min(args.timeout, 10.0))
-        print("MoveIt planning scene valid: 34 cabinet collision objects.")
+        print(
+            "MoveIt planning scene valid: all 35 expected instance-prefixed "
+            "cabinet collision objects are present."
+        )
         if args.inventory_only:
             return 0
 
@@ -1039,25 +1324,110 @@ def main() -> int:
         print(f"  PASS: {node.reset(args.timeout)}")
         node.verify_defaults(min(args.timeout, 10.0))
 
+        operable_buttons = [
+            entry
+            for entry in catalog.controls
+            if entry.operable
+            and entry.control_type == CabinetControl.TYPE_BUTTON
+        ]
+        unavailable_controls = [
+            entry for entry in catalog.controls if not entry.operable
+        ]
+        if not operable_buttons:
+            raise RuntimeError(
+                "Force validation requires one reachable button."
+            )
+        if not unavailable_controls:
+            raise RuntimeError(
+                "Reachability validation requires one unavailable control."
+            )
+        force_button = operable_buttons[0]
+        print(
+            f"[force] default 5 N succeeds: {force_button.control_id}"
+        )
+        print(
+            "  PASS: "
+            + node.execute(
+                Operation(
+                    force_button.control_id,
+                    OperateCabinetControl.Goal.COMMAND_PRESS,
+                    force=5.0,
+                ),
+                args.timeout,
+            )
+        )
+        completed += 1
+        print(
+            f"[force] low 4 N fails after physical travel: "
+            f"{force_button.control_id}"
+        )
+        print(
+            "  PASS: "
+            + node.execute_expected_failure(
+                Operation(
+                    force_button.control_id,
+                    OperateCabinetControl.Goal.COMMAND_PRESS,
+                    force=4.0,
+                ),
+                OperateCabinetControl.Result.INSUFFICIENT_FORCE,
+                args.timeout,
+            )
+        )
+
+        unreachable = unavailable_controls[0]
+        if unreachable.control_type == CabinetControl.TYPE_BUTTON:
+            unreachable_operation = Operation(
+                unreachable.control_id,
+                OperateCabinetControl.Goal.COMMAND_PRESS,
+            )
+        else:
+            if not unreachable.state_ids:
+                raise RuntimeError(
+                    f"Unavailable control {unreachable.control_id} has no "
+                    "valid target state for the reachability check."
+                )
+            unreachable_operation = Operation(
+                unreachable.control_id,
+                OperateCabinetControl.Goal.COMMAND_SET_STATE,
+                target_state=str(unreachable.state_ids[0]),
+            )
+        print(
+            f"[reachability] structured fast failure: "
+            f"{unreachable.control_id}"
+        )
+        print(
+            "  PASS: "
+            + node.execute_expected_failure(
+                unreachable_operation,
+                OperateCabinetControl.Result.UNREACHABLE,
+                min(args.timeout, 15.0),
+                expected_reason=str(unreachable.unavailable_reason),
+                maximum_duration=5.0,
+            )
+        )
+
         if args.contract_tests:
             knobs = [
                 entry
                 for entry in catalog.controls
-                if entry.control_type == CabinetControl.TYPE_KNOB
+                if entry.operable
+                and entry.control_type == CabinetControl.TYPE_KNOB
             ]
             doors = [
                 entry
                 for entry in catalog.controls
-                if entry.control_type == CabinetControl.TYPE_DOOR
+                if entry.operable
+                and entry.control_type == CabinetControl.TYPE_DOOR
             ]
             switches = [
                 entry
                 for entry in catalog.controls
-                if entry.control_type == CabinetControl.TYPE_SWITCH
+                if entry.operable
+                and entry.control_type == CabinetControl.TYPE_SWITCH
             ]
-            if not knobs or not doors or not switches:
+            if not knobs or not doors:
                 raise RuntimeError(
-                    "Contract tests require a knob, switch and door."
+                    "Contract tests require a reachable knob and door."
                 )
             knob = knobs[0]
             print(f"[contract] reject non-detent position: {knob.control_id}")
@@ -1072,7 +1442,6 @@ def main() -> int:
                         OperateCabinetControl.Goal.COMMAND_SET_POSITION,
                         target_position=position,
                     ),
-                    args.navigate,
                     args.timeout,
                 )
             )
@@ -1083,27 +1452,32 @@ def main() -> int:
                         knob.control_id,
                         OperateCabinetControl.Goal.COMMAND_TOGGLE,
                     ),
-                    args.navigate,
                     args.timeout,
                 )
             )
             print("[contract] cancellation and reset interlock")
             node.verify_cancel_and_reset_interlock(
                 doors[0],
-                args.navigate,
                 args.timeout,
             )
             print("  PASS: cancel/interlock/active-target cleanup")
             print(f"  PASS: {node.reset(args.timeout)}")
             node.verify_defaults(min(args.timeout, 10.0))
-            print("[contract] articulated door -> parented switch chain")
-            node.verify_parented_switch(
-                doors[0],
-                switches[0],
-                args.navigate,
-                args.timeout,
-            )
-            print("  PASS: articulated parent geometry and operation chain")
+            if switches:
+                print("[contract] articulated door -> parented switch chain")
+                node.verify_parented_switch(
+                    doors[0],
+                    switches[0],
+                    args.timeout,
+                )
+                print(
+                    "  PASS: articulated parent geometry and operation chain"
+                )
+            else:
+                print(
+                    "  SKIP: parented switch is cataloged as unreachable "
+                    "for the lift-free robot."
+                )
             print(f"  PASS: {node.reset(args.timeout)}")
             node.verify_defaults(min(args.timeout, 10.0))
 
@@ -1115,7 +1489,21 @@ def main() -> int:
                 print(f"  PASS: {node.reset(args.timeout)}")
                 node.verify_defaults(min(args.timeout, 10.0))
             for control in controls:
+                if not control.operable:
+                    print(
+                        f"  SKIP: {control.control_id} unreachable: "
+                        f"{control.unavailable_reason}"
+                    )
+                    continue
                 for operation in operations_for(control, args.exhaustive):
+                    if (
+                        operation.control_id == force_button.control_id
+                        and operation.command
+                        == OperateCabinetControl.Goal.COMMAND_PRESS
+                    ):
+                        # The mandatory 5 N force contract above already
+                        # exercised this representative button.
+                        continue
                     label = operation.target_state or "press"
                     print(
                         f"[{cycle}/{args.cycles}] "
@@ -1124,7 +1512,6 @@ def main() -> int:
                     try:
                         message = node.execute(
                             operation,
-                            args.navigate,
                             args.timeout,
                         )
                         completed += 1

@@ -23,14 +23,14 @@
       <control_id>${control_id}</control_id>
       <control_type>button</control_type>
       <joint_name>${joint_name}</joint_name>
-      <joint_state_topic>/xczs/cabinet/${control_id}/joint_states</joint_state_topic>
-      <pressed_topic>/xczs/cabinet/${control_id}/pressed</pressed_topic>
-      <state_topic>/xczs/cabinet/${control_id}/state</state_topic>
+      <joint_state_topic>${cabinet_namespace}/${control_id}/joint_states</joint_state_topic>
+      <pressed_topic>${cabinet_namespace}/${control_id}/pressed</pressed_topic>
+      <state_topic>${cabinet_namespace}/${control_id}/state</state_topic>
       <state_ids>released pressed</state_ids>
-      <spring_stiffness>800.0</spring_stiffness>
+      <spring_stiffness>${cabinet_button_spring_stiffness}</spring_stiffness>
       <spring_damping>8.0</spring_damping>
-      <press_threshold>0.006</press_threshold>
-      <release_threshold>0.003</release_threshold>
+      <press_threshold>${cabinet_button_press_threshold}</press_threshold>
+      <release_threshold>${cabinet_button_release_threshold}</release_threshold>
       <reset_position>0.0</reset_position>
       <graspable>false</graspable>
     </control>
@@ -43,9 +43,9 @@
       <control_id>${control_id}</control_id>
       <control_type>knob</control_type>
       <joint_name>${joint_name}</joint_name>
-      <joint_state_topic>/xczs/cabinet/${control_id}/joint_states</joint_state_topic>
-      <pressed_topic>/xczs/cabinet/${control_id}/pressed</pressed_topic>
-      <state_topic>/xczs/cabinet/${control_id}/state</state_topic>
+      <joint_state_topic>${cabinet_namespace}/${control_id}/joint_states</joint_state_topic>
+      <pressed_topic>${cabinet_namespace}/${control_id}/pressed</pressed_topic>
+      <state_topic>${cabinet_namespace}/${control_id}/state</state_topic>
       <detents>-${cabinet_knob_limit} 0 ${cabinet_knob_limit}</detents>
       <state_ids>left center right</state_ids>
       <detent_stiffness>0.60</detent_stiffness>
@@ -60,13 +60,13 @@
   <xacro:macro name="control_cabinet_state_plugin" params="">
     <plugin name="xczs_cabinet_state" filename="libxczs_cabinet_state.so">
       <ros>
-        <namespace>/xczs/cabinet</namespace>
+        <namespace>${cabinet_namespace}</namespace>
       </ros>
       <state_publish_rate>20.0</state_publish_rate>
-      <reset_service>/xczs/cabinet/reset_physics</reset_service>
-      <grasp_service>/xczs/cabinet/grasp</grasp_service>
-      <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
-      <active_control_topic>/xczs/cabinet/active_control</active_control_topic>
+      <reset_service>${cabinet_namespace}/reset_physics</reset_service>
+      <grasp_service>${cabinet_namespace}/grasp</grasp_service>
+      <grasp_active_topic>${cabinet_namespace}/grasp_active</grasp_active_topic>
+      <active_control_topic>${cabinet_namespace}/active_control</active_control_topic>
       <grasp_distance_threshold>0.12</grasp_distance_threshold>
 
       <xacro:control_cabinet_button_state control_id="box_1_button_1" joint_name="box_1_box_1_button_1" />
@@ -106,9 +106,9 @@
         <control_id>cabinet_main_switch</control_id>
         <control_type>switch</control_type>
         <joint_name>cabinet_switch_base_cabinet_switch_handle</joint_name>
-        <joint_state_topic>/xczs/cabinet/cabinet_main_switch/joint_states</joint_state_topic>
-        <pressed_topic>/xczs/cabinet/cabinet_main_switch/pressed</pressed_topic>
-        <state_topic>/xczs/cabinet/cabinet_main_switch/state</state_topic>
+        <joint_state_topic>${cabinet_namespace}/cabinet_main_switch/joint_states</joint_state_topic>
+        <pressed_topic>${cabinet_namespace}/cabinet_main_switch/pressed</pressed_topic>
+        <state_topic>${cabinet_namespace}/cabinet_main_switch/state</state_topic>
         <detents>0 ${cabinet_switch_limit}</detents>
         <state_ids>off on</state_ids>
         <detent_stiffness>0.80</detent_stiffness>
@@ -138,9 +138,9 @@
         <control_id>cabinet_rear_door</control_id>
         <control_type>door</control_type>
         <joint_name>cabinet_body_cabinet_rear_door</joint_name>
-        <joint_state_topic>/xczs/cabinet/cabinet_rear_door/joint_states</joint_state_topic>
-        <pressed_topic>/xczs/cabinet/cabinet_rear_door/pressed</pressed_topic>
-        <state_topic>/xczs/cabinet/cabinet_rear_door/state</state_topic>
+        <joint_state_topic>${cabinet_namespace}/cabinet_rear_door/joint_states</joint_state_topic>
+        <pressed_topic>${cabinet_namespace}/cabinet_rear_door/pressed</pressed_topic>
+        <state_topic>${cabinet_namespace}/cabinet_rear_door/state</state_topic>
         <detents>0 ${cabinet_door_limit}</detents>
         <state_ids>closed open</state_ids>
         <detent_stiffness>60.00</detent_stiffness>

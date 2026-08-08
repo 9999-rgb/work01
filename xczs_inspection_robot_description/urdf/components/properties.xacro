@@ -32,15 +32,4 @@
   <xacro:property name="contact_min_depth" value="0.001" />
   <!-- Zero means that planar constraints are applied every physics update. -->
   <xacro:property name="planar_move_update_rate" value="0" />
-  <!-- Programmatic vertical carriage used to cover the full 2.2 m cabinet. -->
-  <xacro:property name="arm_lift_travel" value="0.85" />
-  <xacro:property name="arm_lift_velocity" value="0.25" />
-  <xacro:property name="arm_lift_effort" value="500" />
-  <!-- Fixed mast extends above the carriage at maximum lift. -->
-  <xacro:property
-    name="arm_lift_mast_height"
-    value="${arm_lift_travel + 0.30}" />
-  <xacro:property
-    name="arm_lift_mast_center_z"
-    value="${arm_lift_mast_height / 2.0}" />
 </robot>

@@ -243,6 +243,9 @@
       approach_normal: [0.0, 0.0, 1.0]
       min_position: 0.0
       max_position: 0.008
+      spring_stiffness: 800.0
+      press_threshold: 0.006
+      default_force: 5.0
       state_ids: ["released", "pressed"]
       state_labels: ["释放", "按下"]
       state_positions: [0.0, 0.006]
@@ -278,5 +281,3 @@
     cartesian_planning_attempts: 5
     door_cartesian_segment_waypoints: 2
     motion_planning_attempts: 3
-    grasp_service: /xczs/cabinet/grasp
-    reset_physics_service: /xczs/cabinet/reset_physics

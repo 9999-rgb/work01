@@ -2,6 +2,13 @@
 <robot
   xmlns:xacro="http://www.ros.org/wiki/xacro"
   name="control_cabinet">
+  <xacro:arg name="cabinet_name" default="control_cabinet" />
+  <xacro:arg name="button_max_travel" default="0.008" />
+  <xacro:arg name="button_spring_stiffness" default="800.0" />
+  <xacro:arg name="button_press_threshold" default="0.006" />
+  <xacro:property
+    name="cabinet_namespace"
+    value="/xczs/cabinet/$(arg cabinet_name)" />
   <!-- Shared cabinet definitions. -->
   <xacro:include filename="control_cabinet/components/properties.xacro" />
   <xacro:include filename="control_cabinet/components/materials.xacro" />

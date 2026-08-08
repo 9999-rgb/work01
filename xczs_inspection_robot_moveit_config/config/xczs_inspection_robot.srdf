@@ -21,7 +21,6 @@
   </group>
 
   <group_state name="home" group="manipulator">
-    <joint name="body_arm_lift" value="0" />
     <joint name="body_arm1" value="0" />
     <!-- Raise the long planar links vertically so the transport pose stays
          inside the Nav2 base footprint instead of sweeping front controls. -->
@@ -48,14 +47,7 @@
     group="gripper"
     parent_group="manipulator" />
 
-  <disable_collisions link1="body" link2="arm_lift" reason="Adjacent" />
-  <disable_collisions link1="body" link2="arm_lift_mast" reason="Adjacent" />
-  <!-- The carriage runs inside the fixed mast guide envelope. -->
-  <disable_collisions link1="arm_lift_mast" link2="arm_lift" reason="Default" />
-  <!-- The synthetic carriage encloses the original shoulder package; this
-       arm2 overlap is part of its intended guide envelope. -->
-  <disable_collisions link1="arm_lift" link2="arm2" reason="Default" />
-  <disable_collisions link1="body" link2="arm1" reason="Default" />
+  <disable_collisions link1="body" link2="arm1" reason="Adjacent" />
   <disable_collisions link1="body" link2="arm2" reason="Default" />
   <disable_collisions link1="body" link2="front_right_wheel" reason="Adjacent" />
   <disable_collisions link1="body" link2="front_left_wheel" reason="Adjacent" />
@@ -63,7 +55,6 @@
   <disable_collisions link1="body" link2="back_left_wheel" reason="Adjacent" />
   <disable_collisions link1="body" link2="body_lidar_link" reason="Adjacent" />
   <disable_collisions link1="arm1" link2="arm2" reason="Adjacent" />
-  <disable_collisions link1="arm_lift" link2="arm1" reason="Adjacent" />
   <disable_collisions link1="arm2" link2="arm3" reason="Adjacent" />
   <disable_collisions link1="arm3" link2="arm4" reason="Adjacent" />
   <disable_collisions link1="arm3" link2="arm5" reason="Default" />

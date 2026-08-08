@@ -1,13 +1,23 @@
-xczs_cabinet_button_operator:
+/**/xczs_cabinet_button_operator:
   ros__parameters:
     # 机器人适配层：更换机器人时只替换这些 MoveIt/Nav2/工具参数。
     robot_model_name: xczs_inspection_robot
     move_group: manipulator
+    move_group_namespace: /
     planning_tip_link: end
     contact_tool_link: button_press_tip
     transport_named_target: home
+    planning_time: 10.0
+    planning_attempts: 10
+    planning_velocity_scale: 0.20
+    planning_acceleration_scale: 0.20
+    goal_position_tolerance: 0.005
+    goal_orientation_tolerance: 0.01
+    goal_joint_tolerance: 0.001
+    allow_replanning: true
     navigation_base_frame: base_link
     docking_base_frame: body
+    grasp_brake_link: body
     base_link_yaw_offset: 1.57079632679
     navigation_takeover_distance: 0.15
     navigation_takeover_yaw_tolerance: 0.35
@@ -19,3 +29,33 @@ xczs_cabinet_button_operator:
     docking_max_angular_speed: 0.45
     docking_linear_gain: 0.8
     docking_angular_gain: 1.2
+    # 多柜体共用同一机械臂和底盘；任何实际运动前必须取得全局短租约。
+    operation_lease_service: /xczs/operation_lease
+    operation_lease_duration: 3.0
+    operation_lease_renew_period: 0.75
+    operation_lease_request_timeout: 0.50
+    # 移除升降轴后的当前六轴机械臂能力边界。更换机器人时仅需覆盖本清单。
+    unreachable_control_ids:
+      - box_1_button_1
+      - box_1_button_2
+      - box_2_button_1
+      - box_2_button_2
+      - box_3_button_1
+      - box_3_button_2
+      - box_4_button_1
+      - box_4_button_2
+      - box_1_knob
+      - box_2_knob
+      - box_3_knob
+      - box_4_knob
+      - box_5_knob
+      - box_6_knob
+      - cabinet_main_switch
+    unreachable_control_reason: >-
+      移除升降轴后，该控件超出当前六轴机械臂在标准工位的运动学工作空间。
+
+/xczs_operation_lease_coordinator:
+  ros__parameters:
+    service_name: /xczs/operation_lease
+    # operator 每 0.75 秒续租；崩溃后最多 3 秒自动释放，最大请求限制为 5 秒。
+    maximum_lease_duration: 5.0

@@ -13,6 +13,8 @@ uint8 PRESS_NOT_DETECTED=6
 uint8 RELEASE_NOT_DETECTED=7
 uint8 CANCELED=8
 uint8 INTERNAL_ERROR=9
+uint8 RESOURCE_BUSY=10
+uint8 LEASE_LOST=11
 bool success
 uint8 error_code
 string message

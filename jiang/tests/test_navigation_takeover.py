@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import sys
 import threading
 import unittest
@@ -143,6 +144,8 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
     }
     node._cabinet_state = {"state": "idle"}
     node._map_state = None
+    node._robot_pose = None
+    node._robot_pose_sequence = 0
     node._target_linear_y = 0.2
     node._target_angular_z = 0.4
     node._last_command_time = 0.0
@@ -155,6 +158,44 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
 
 
 class NavigationTakeoverTest(unittest.TestCase):
+    def test_rotated_occupancy_grid_goal_uses_inverse_origin_rotation(
+        self,
+    ) -> None:
+        node = _make_node()
+        node._map_state = {
+            "resolution": 1.0,
+            "width": 2,
+            "height": 2,
+            "origin": {"x": 10.0, "y": 20.0, "yaw": math.pi / 2.0},
+            "data": [0, 100, 0, 0],
+        }
+
+        node._validate_navigation_goal(9.8, 20.2)
+        with self.assertRaisesRegex(ControlRequestError, "occupied"):
+            node._validate_navigation_goal(9.8, 21.2)
+
+    def test_pose_snapshot_retains_frame_stamp_and_freshness(self) -> None:
+        node = _make_node()
+        message = SimpleNamespace(
+            header=SimpleNamespace(
+                frame_id="map",
+                stamp=SimpleNamespace(sec=12, nanosec=34),
+            ),
+            pose=SimpleNamespace(
+                pose=SimpleNamespace(
+                    position=SimpleNamespace(x=1.0, y=2.0),
+                    orientation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                )
+            ),
+        )
+
+        node._pose_callback(message)
+
+        self.assertEqual("map", node._robot_pose["frame_id"])
+        self.assertEqual({"sec": 12, "nanosec": 34}, node._robot_pose["stamp"])
+        self.assertEqual(1, node._robot_pose["sequence"])
+        self.assertGreater(node._robot_pose["received_monotonic"], 0.0)
+
     def test_old_enable_finishes_before_queued_manual_switch(self) -> None:
         node = _make_node(mode=False)
         node._navigation_state.update(

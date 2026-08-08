@@ -223,7 +223,7 @@ class CabinetStateCallbackTest(unittest.TestCase):
             node.press_cabinet_button("box_10_button_1", True)
         self.assertEqual(503, button_error.exception.status)
 
-    def test_manual_joint_target_supports_and_clamps_lift(self) -> None:
+    def test_manual_joint_target_supports_six_axis_arm(self) -> None:
         node = object.__new__(RosControlNode)
         node._lock = threading.RLock()
         node._cabinet_state = {"state": "idle"}
@@ -231,28 +231,29 @@ class CabinetStateCallbackTest(unittest.TestCase):
         node._pending_trajectory_repeats = 0
 
         result = node.set_joint_target(
-            [1.2, 3.0, -3.0, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5]
+            [3.0, -3.0, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5]
         )
 
-        self.assertEqual(0.85, result[0])
-        self.assertEqual(2.8, result[1])
-        self.assertEqual(-2.8, result[2])
-        self.assertEqual(0.35, result[7])
-        self.assertEqual(-0.35, result[8])
+        self.assertEqual(2.8, result[0])
+        self.assertEqual(-2.8, result[1])
+        self.assertEqual(0.35, result[6])
+        self.assertEqual(-0.35, result[7])
         self.assertEqual(
             list(node.JOINT_NAMES),
             node._pending_trajectory.joint_names,
         )
 
-        legacy = node.set_joint_target([0.0] * 8)
-        self.assertEqual([0.0] * 8, legacy)
+        zero = node.set_joint_target([0.0] * 8)
+        self.assertEqual([0.0] * 8, zero)
         self.assertNotIn(
             "body_arm_lift",
             node._pending_trajectory.joint_names,
         )
 
-        with self.assertRaisesRegex(ControlRequestError, "8 legacy or 9"):
+        with self.assertRaisesRegex(ControlRequestError, "six arm"):
             node.set_joint_target([0.0] * 7)
+        with self.assertRaisesRegex(ControlRequestError, "six arm"):
+            node.set_joint_target([0.0] * 9)
 
     def test_changed_catalog_topics_replace_dynamic_subscriptions(
         self,
@@ -519,6 +520,9 @@ class CabinetStateCallbackTest(unittest.TestCase):
             final_position=pi / 2,
             peak_position=pi / 2,
             final_state="right",
+            requested_force=0.0,
+            estimated_force=0.0,
+            button_triggered=False,
         )
         future = _CompletedFuture(
             SimpleNamespace(

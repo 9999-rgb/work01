@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import json
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -23,6 +24,7 @@ from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
+from std_msgs.msg import String
 from std_srvs.srv import SetBool
 from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory
@@ -39,9 +41,15 @@ from .velocity_profile import VelocityProfile
 class ControlRequestError(RuntimeError):
     """Validated request error that can be returned through the HTTP API."""
 
-    def __init__(self, message: str, status: int = 400) -> None:
+    def __init__(
+        self,
+        message: str,
+        status: int = 400,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
+        self.details = dict(details or {})
 
 
 class RosControlNode(Node):
@@ -80,7 +88,6 @@ class RosControlNode(Node):
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     JOINT_NAMES = [
-        "body_arm_lift",
         "body_arm1",
         "arm1_arm2",
         "arm2_arm3",
@@ -90,6 +97,7 @@ class RosControlNode(Node):
         "end_worklink1",
         "end_worklink2",
     ]
+    TASK_PUBLISHER_HISTORY_LIMIT = 256
     ACTIVE_NAVIGATION_STATES = {
         "enabling",
         "sending",
@@ -154,6 +162,7 @@ class RosControlNode(Node):
         self._cabinet_control_subscriptions: Dict[
             str, Dict[str, Any]
         ] = {}
+        self._task_publishers: Dict[str, Dict[str, Any]] = {}
 
         self._navigation_client = ActionClient(
             self,
@@ -238,7 +247,8 @@ class RosControlNode(Node):
             "updated_at": time.time(),
         }
         self._map_state: Optional[Dict[str, Any]] = None
-        self._robot_pose: Optional[Dict[str, float]] = None
+        self._robot_pose: Optional[Dict[str, Any]] = None
+        self._robot_pose_sequence = 0
         self._global_plan: List[Dict[str, float]] = []
 
         self._cabinet_goal_handle: Any = None
@@ -276,6 +286,62 @@ class RosControlNode(Node):
         }
         self.create_timer(0.02, self._update_manual_control)
 
+    def publish_task_event(self, event: Dict[str, Any]) -> None:
+        """Mirror one task event to its ROS 2 progress or result topic."""
+        data = event.get("data")
+        task_id = data.get("task_id") if isinstance(data, dict) else None
+        if not isinstance(task_id, str) or not task_id:
+            return
+        with self._lock:
+            publishers = self._task_publishers.get(task_id)
+            if publishers is None:
+                if (
+                    len(self._task_publishers)
+                    >= self.TASK_PUBLISHER_HISTORY_LIMIT
+                ):
+                    expired_task_id, expired = next(
+                        iter(self._task_publishers.items())
+                    )
+                    self._task_publishers.pop(expired_task_id)
+                    self.destroy_publisher(expired["progress"])
+                    self.destroy_publisher(expired["result"])
+                result_qos = QoSProfile(
+                    depth=1,
+                    reliability=ReliabilityPolicy.RELIABLE,
+                    durability=DurabilityPolicy.TRANSIENT_LOCAL,
+                )
+                publishers = {
+                    "progress": self.create_publisher(
+                        String,
+                        f"/xczs/task/{task_id}/progress",
+                        10,
+                    ),
+                    "result": self.create_publisher(
+                        String,
+                        f"/xczs/task/{task_id}/result",
+                        result_qos,
+                    ),
+                }
+                self._task_publishers[task_id] = publishers
+        message = String()
+        message.data = json.dumps(
+            event,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        event_type = event.get("event")
+        if event_type == "task_completed":
+            publishers["result"].publish(message)
+        elif event_type == "task_reservation_released":
+            # Replace the transient-local terminal snapshot as well as notify
+            # live progress listeners. A late subscriber must not believe the
+            # old reservation_active=true result still owns the robot.
+            publishers["progress"].publish(message)
+            publishers["result"].publish(message)
+        else:
+            publishers["progress"].publish(message)
+
     def set_base_target(
         self,
         linear_y: float,
@@ -305,31 +371,16 @@ class RosControlNode(Node):
 
     def set_joint_target(self, positions: List[float]) -> List[float]:
         """Queue one legacy manual joint target."""
-        if len(positions) == 9:
-            joint_names = list(self.JOINT_NAMES)
-            safe_positions = [max(0.0, min(0.85, positions[0]))]
-            safe_positions.extend(
-                max(-2.80, min(2.80, value))
-                for value in positions[1:7]
-            )
-            safe_positions.append(max(0.0, min(0.35, positions[7])))
-            safe_positions.append(max(-0.35, min(0.0, positions[8])))
-        elif len(positions) == 8:
-            # Backward-compatible six-axis command.  ros2_control keeps the
-            # current lift height because partial arm goals are enabled.
-            joint_names = list(self.JOINT_NAMES[1:7]) + list(
-                self.JOINT_NAMES[7:]
-            )
-            safe_positions = [
-                max(-2.80, min(2.80, value))
-                for value in positions[:6]
-            ]
-            safe_positions.append(max(0.0, min(0.35, positions[6])))
-            safe_positions.append(max(-0.35, min(0.0, positions[7])))
-        else:
+        if len(positions) != 8:
             raise ControlRequestError(
-                "positions must contain 8 legacy or 9 lift-aware values."
+                "positions must contain six arm and two gripper values."
             )
+        joint_names = list(self.JOINT_NAMES)
+        safe_positions = [
+            max(-2.80, min(2.80, value)) for value in positions[:6]
+        ]
+        safe_positions.append(max(0.0, min(0.35, positions[6])))
+        safe_positions.append(max(-0.35, min(0.0, positions[7])))
 
         trajectory = JointTrajectory()
         trajectory.header.frame_id = "world"
@@ -502,6 +553,7 @@ class RosControlNode(Node):
         target_state: Optional[str] = None,
         target_position: Optional[float] = None,
         navigate_to_staging_pose: bool = True,
+        force: float = 5.0,
     ) -> Dict[str, Any]:
         """Submit one generic, physically verified cabinet operation."""
         if not isinstance(control_id, str) or not control_id.strip():
@@ -514,6 +566,16 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "navigate_to_staging_pose must be a boolean."
             )
+        if isinstance(force, bool):
+            raise ControlRequestError("force must be a positive finite number.")
+        try:
+            force = float(force)
+        except (TypeError, ValueError) as error:
+            raise ControlRequestError(
+                "force must be a positive finite number."
+            ) from error
+        if not math.isfinite(force) or force <= 0.0:
+            raise ControlRequestError("force must be a positive finite number.")
         if target_state is not None:
             if not isinstance(target_state, str) or not target_state.strip():
                 raise ControlRequestError(
@@ -594,6 +656,9 @@ class RosControlNode(Node):
                     "final_state": None,
                     "success": None,
                     "error_code": None,
+                    "requested_force": force,
+                    "estimated_force": None,
+                    "button_triggered": None,
                     "updated_at": time.time(),
                 }
             )
@@ -607,6 +672,7 @@ class RosControlNode(Node):
         goal.target_position = (
             target_position if target_position is not None else 0.0
         )
+        goal.force = force
         goal.navigate_to_staging_pose = navigate_to_staging_pose
         try:
             future = operation_client.send_goal_async(
@@ -646,6 +712,7 @@ class RosControlNode(Node):
             "command": command_name,
             "target_state": target_state,
             "target_position": target_position,
+            "force": force,
             "navigate_to_staging_pose": navigate_to_staging_pose,
         }
 
@@ -1185,6 +1252,7 @@ class RosControlNode(Node):
                 self._cmd_vel_publisher.publish(command)
                 if trajectory is not None:
                     self._trajectory_publisher.publish(trajectory)
+
     def _request_navigation_mode_locked(
         self,
         enabled: bool,
@@ -2040,6 +2108,9 @@ class RosControlNode(Node):
                 "final_state": str(result.final_state),
                 "current_position": float(result.final_position),
                 "current_state": str(result.final_state),
+                "requested_force": float(result.requested_force),
+                "estimated_force": float(result.estimated_force),
+                "button_triggered": bool(result.button_triggered),
             }
             with self._lock:
                 if (
@@ -2356,6 +2427,13 @@ class RosControlNode(Node):
                 "unavailable_reason": str(
                     getattr(entry, "unavailable_reason", "")
                 ),
+                "default_force": float(
+                    getattr(entry, "default_force", 0.0)
+                ),
+                "min_trigger_force": float(
+                    getattr(entry, "min_trigger_force", 0.0)
+                ),
+                "max_force": float(getattr(entry, "max_force", 0.0)),
             }
 
         if not controls:
@@ -2662,12 +2740,21 @@ class RosControlNode(Node):
         message: PoseWithCovarianceStamped,
     ) -> None:
         with self._lock:
+            self._robot_pose_sequence += 1
             self._robot_pose = {
                 "x": float(message.pose.pose.position.x),
                 "y": float(message.pose.pose.position.y),
                 "yaw": self._quaternion_yaw(
                     message.pose.pose.orientation
                 ),
+                "frame_id": str(message.header.frame_id),
+                "stamp": {
+                    "sec": int(message.header.stamp.sec),
+                    "nanosec": int(message.header.stamp.nanosec),
+                },
+                "received_at": time.time(),
+                "received_monotonic": time.monotonic(),
+                "sequence": self._robot_pose_sequence,
             }
 
     def _plan_callback(self, message: Path) -> None:
@@ -2689,8 +2776,15 @@ class RosControlNode(Node):
         if map_state is None:
             return
         resolution = map_state["resolution"]
-        column = math.floor((x - map_state["origin"]["x"]) / resolution)
-        row = math.floor((y - map_state["origin"]["y"]) / resolution)
+        delta_x = x - map_state["origin"]["x"]
+        delta_y = y - map_state["origin"]["y"]
+        origin_yaw = map_state["origin"]["yaw"]
+        cosine = math.cos(origin_yaw)
+        sine = math.sin(origin_yaw)
+        local_x = cosine * delta_x + sine * delta_y
+        local_y = -sine * delta_x + cosine * delta_y
+        column = math.floor(local_x / resolution)
+        row = math.floor(local_y / resolution)
         if (
             column < 0
             or row < 0
@@ -2891,6 +2985,7 @@ class RosControlNode(Node):
                 "operating the cabinet.",
                 409,
             )
+
     @staticmethod
     def _action_server_ready(client: Any) -> bool:
         try:

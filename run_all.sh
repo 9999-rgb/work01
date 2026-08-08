@@ -10,7 +10,6 @@
 #   ./run_all.sh --with-proxy     # 附加 CDR→JSON 代理（精细化数据处理）
 #   ./run_all.sh --no-gui         # headless 模式
 #   ros2 launch xczs_inspection_robot_control inspection_robot.launch.py moveit_rviz:=true
-#   CONTROL_HOST=0.0.0.0 ./run_all.sh --web   # 供其他计算机访问 Web 控制
 #
 #
 # 启动后:

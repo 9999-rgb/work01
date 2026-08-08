@@ -35,6 +35,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CabinetControl.msg"
   "msg/CabinetControlCatalog.msg"
   "msg/CabinetControlState.msg"
+  "srv/ManageOperationLease.srv"
   "srv/SetCabinetGrasp.srv"
   DEPENDENCIES std_msgs
 )
@@ -52,7 +53,12 @@ add_executable(
 add_executable(cabinet_pose_authority src/cabinet_pose_authority.cpp)
 add_executable(moveit_planner src/moveit_planner.cpp)
 add_executable(cabinet_button_operator src/cabinet_button_operator.cpp)
+add_executable(
+  operation_lease_coordinator
+  src/operation_lease_coordinator.cpp
+)
 add_executable(base_command_router src/base_command_router.cpp)
+add_executable(cabinet_grasp_aggregator src/cabinet_grasp_aggregator.cpp)
 add_library(
   xczs_planar_stabilizer
   SHARED
@@ -158,6 +164,24 @@ target_link_libraries(
   "${cabinet_button_operator_typesupport}"
 )
 
+target_compile_features(operation_lease_coordinator PUBLIC cxx_std_17)
+target_include_directories(
+  operation_lease_coordinator
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include>"
+)
+ament_target_dependencies(operation_lease_coordinator rclcpp)
+rosidl_get_typesupport_target(
+  operation_lease_coordinator_typesupport
+  ${PROJECT_NAME}
+  "rosidl_typesupport_cpp"
+)
+target_link_libraries(
+  operation_lease_coordinator
+  "${operation_lease_coordinator_typesupport}"
+)
+
 target_compile_features(base_command_router PUBLIC cxx_std_17)
 ament_target_dependencies(
   base_command_router
@@ -166,6 +190,9 @@ ament_target_dependencies(
   std_msgs
   std_srvs
 )
+
+target_compile_features(cabinet_grasp_aggregator PUBLIC cxx_std_17)
+ament_target_dependencies(cabinet_grasp_aggregator rclcpp std_msgs)
 
 target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
 ament_target_dependencies(
@@ -204,8 +231,10 @@ install(
     cabinet_planning_scene
     cabinet_pose_authority
     cabinet_button_operator
+    operation_lease_coordinator
     moveit_planner
     base_command_router
+    cabinet_grasp_aggregator
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -228,4 +257,20 @@ ament_export_libraries(xczs_planar_stabilizer)
 ament_export_libraries(xczs_cabinet_state)
 ament_export_dependencies(gazebo_dev)
 ament_export_dependencies(rosidl_default_runtime)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(
+    operation_lease_state_test
+    test/operation_lease_state_test.cpp
+  )
+  target_compile_features(operation_lease_state_test PUBLIC cxx_std_17)
+  target_include_directories(
+    operation_lease_state_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+endif()
+
 ament_package()
