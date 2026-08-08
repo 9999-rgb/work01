@@ -22,6 +22,7 @@ from rclpy.qos import DurabilityPolicy
 from rclpy.qos import QoSProfile
 from rclpy.qos import ReliabilityPolicy
 from rclpy.qos import qos_profile_sensor_data
+from rclpy.time import Time as RosTime
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from std_msgs.msg import String
@@ -34,6 +35,9 @@ from xczs_inspection_robot_control.action import PressCabinetButton
 from xczs_inspection_robot_control.msg import CabinetControl
 from xczs_inspection_robot_control.msg import CabinetControlCatalog
 from xczs_inspection_robot_control.msg import CabinetControlState
+from tf2_ros import Buffer
+from tf2_ros import TransformException
+from tf2_ros import TransformListener
 
 from .velocity_profile import VelocityProfile
 
@@ -119,6 +123,7 @@ class RosControlNode(Node):
         max_angular_speed: float,
         command_timeout: float,
         context: Context,
+        navigation_base_frame: str = "base_link",
     ) -> None:
         super().__init__(
             "xczs_web_control_server",
@@ -148,6 +153,13 @@ class RosControlNode(Node):
         self._max_linear_speed = max_linear_speed
         self._max_angular_speed = max_angular_speed
         self._command_timeout = command_timeout
+        self._navigation_base_frame = navigation_base_frame
+        self._tf_buffer = Buffer(node=self)
+        self._tf_listener = TransformListener(
+            self._tf_buffer,
+            self,
+            spin_thread=False,
+        )
         self._linear_profile = VelocityProfile(0.50, 2.00)
         self._angular_profile = VelocityProfile(1.20, 4.80)
         self._target_linear_y = 0.0
@@ -240,6 +252,7 @@ class RosControlNode(Node):
             "state": "idle",
             "message": "No navigation goal has been sent.",
             "goal": None,
+            "goal_sent_ros_nanoseconds": None,
             "distance_remaining": None,
             "eta_seconds": None,
             "navigation_time_seconds": None,
@@ -412,6 +425,12 @@ class RosControlNode(Node):
 
     def navigation_snapshot(self) -> Dict[str, Any]:
         """Return current Nav2 availability, feedback and display overlays."""
+        # AMCL publishes ``amcl_pose`` only when its particle-filter estimate
+        # changes.  A robot that has stopped at the goal can therefore have a
+        # perfectly current map->base transform while the last amcl_pose
+        # message is many seconds old.  Query TF at snapshot time so task
+        # completion validates the pose Nav2 itself is using.
+        self._refresh_robot_pose_from_tf()
         with self._lock:
             snapshot = dict(self._navigation_state)
             manual_control_ready = self._manual_control_ready_locked()
@@ -440,6 +459,67 @@ class RosControlNode(Node):
                 }
             )
         return snapshot
+
+    def _refresh_robot_pose_from_tf(self) -> None:
+        """Refresh the localized SE(2) pose from the latest TF transform."""
+        tf_buffer = getattr(self, "_tf_buffer", None)
+        if tf_buffer is None:
+            return
+        try:
+            transform = tf_buffer.lookup_transform(
+                "map",
+                self._navigation_base_frame,
+                RosTime(),
+            )
+        except TransformException:
+            return
+
+        translation = transform.transform.translation
+        rotation = transform.transform.rotation
+        timing = self._localized_pose_timing(transform.header.stamp)
+        with self._lock:
+            self._robot_pose_sequence += 1
+            self._robot_pose = {
+                "x": float(translation.x),
+                "y": float(translation.y),
+                "yaw": self._quaternion_yaw(rotation),
+                "frame_id": str(transform.header.frame_id),
+                "stamp": {
+                    "sec": int(transform.header.stamp.sec),
+                    "nanosec": int(transform.header.stamp.nanosec),
+                },
+                **timing,
+                "received_at": time.time(),
+                "received_monotonic": time.monotonic(),
+                "sequence": self._robot_pose_sequence,
+                "source": "tf",
+                "child_frame_id": str(transform.child_frame_id),
+            }
+
+    def _localized_pose_timing(self, stamp: Any) -> Dict[str, Any]:
+        """Describe a localization stamp using this node's ROS clock.
+
+        Wall and monotonic time cannot be compared with timestamps produced
+        under ``use_sim_time``.  Keep both the source timestamp and the ROS
+        time at which it was observed so terminal navigation checks can
+        identify an old transform even when it was just read from TF cache.
+        """
+        stamp_ros_nanoseconds = (
+            int(stamp.sec) * 1_000_000_000 + int(stamp.nanosec)
+        )
+        observed_ros_nanoseconds = self._ros_clock_now_nanoseconds()
+        stamp_age_seconds = (
+            observed_ros_nanoseconds - stamp_ros_nanoseconds
+        ) / 1_000_000_000.0
+        return {
+            "stamp_ros_nanoseconds": stamp_ros_nanoseconds,
+            "observed_ros_nanoseconds": observed_ros_nanoseconds,
+            "stamp_age_seconds": stamp_age_seconds,
+        }
+
+    def _ros_clock_now_nanoseconds(self) -> int:
+        """Return the active ROS clock, including Gazebo simulation time."""
+        return int(self.get_clock().now().nanoseconds)
 
     def map_snapshot(self) -> Dict[str, Any]:
         """Return the latest transient-local occupancy map."""
@@ -1171,6 +1251,7 @@ class RosControlNode(Node):
                     "state": "enabling",
                     "message": "Enabling Nav2 base command mode.",
                     "goal": goal_description,
+                    "goal_sent_ros_nanoseconds": None,
                     "distance_remaining": None,
                     "eta_seconds": None,
                     "navigation_time_seconds": None,
@@ -1471,7 +1552,11 @@ class RosControlNode(Node):
 
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = "map"
-        goal.pose.header.stamp = self.get_clock().now().to_msg()
+        goal_stamp = self.get_clock().now()
+        goal.pose.header.stamp = goal_stamp.to_msg()
+        self._navigation_state["goal_sent_ros_nanoseconds"] = int(
+            goal_stamp.nanoseconds
+        )
         goal.pose.pose.position.x = goal_description["x"]
         goal.pose.pose.position.y = goal_description["y"]
         goal.pose.pose.orientation.z = math.sin(
@@ -2739,6 +2824,7 @@ class RosControlNode(Node):
         self,
         message: PoseWithCovarianceStamped,
     ) -> None:
+        timing = self._localized_pose_timing(message.header.stamp)
         with self._lock:
             self._robot_pose_sequence += 1
             self._robot_pose = {
@@ -2752,9 +2838,11 @@ class RosControlNode(Node):
                     "sec": int(message.header.stamp.sec),
                     "nanosec": int(message.header.stamp.nanosec),
                 },
+                **timing,
                 "received_at": time.time(),
                 "received_monotonic": time.monotonic(),
                 "sequence": self._robot_pose_sequence,
+                "source": "amcl",
             }
 
     def _plan_callback(self, message: Path) -> None:

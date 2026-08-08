@@ -37,19 +37,13 @@ def main() -> None:
         default=str(control_config / "cabinet_scene.yaml"),
         help="包含 navigation_station 的共用场景参数包。",
     )
+    parser.add_argument(
+        "--cabinet-robot-adapter",
+        default=str(control_config / "cabinet_robot_adapter.yaml"),
+        help="包含 navigation_base_frame 的机器人适配参数包。",
+    )
     args = parser.parse_args()
 
-    server = ControlServer(
-        host=args.host,
-        port=args.port,
-        max_linear_speed=args.max_linear_speed,
-        max_angular_speed=args.max_angular_speed,
-        command_timeout=args.command_timeout,
-        cabinet_instances_path=args.cabinet_instances,
-        cabinet_scene_path=args.cabinet_scene,
-        allowed_origins=args.allowed_origins,
-    ).start()
-    print(f"Control server: http://{args.host}:{args.port}")
     shutdown_event = threading.Event()
 
     def request_shutdown(
@@ -61,7 +55,22 @@ def main() -> None:
 
     signal.signal(signal.SIGINT, request_shutdown)
     signal.signal(signal.SIGTERM, request_shutdown)
+    server = ControlServer(
+        host=args.host,
+        port=args.port,
+        max_linear_speed=args.max_linear_speed,
+        max_angular_speed=args.max_angular_speed,
+        command_timeout=args.command_timeout,
+        cabinet_instances_path=args.cabinet_instances,
+        cabinet_scene_path=args.cabinet_scene,
+        cabinet_robot_adapter_path=args.cabinet_robot_adapter,
+        allowed_origins=args.allowed_origins,
+    )
     try:
+        if shutdown_event.is_set():
+            return
+        server.start()
+        print(f"Control server: http://{args.host}:{args.port}")
         while not shutdown_event.wait(timeout=1.0):
             continue
     finally:

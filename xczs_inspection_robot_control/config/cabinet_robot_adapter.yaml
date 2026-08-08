@@ -34,6 +34,112 @@
     operation_lease_duration: 3.0
     operation_lease_renew_period: 0.75
     operation_lease_request_timeout: 0.50
+    # 末端轨迹与 Gazebo 接触约束之间会有亚毫米误差；按物理关节反馈
+    # 小步补偿，保证请求力对应实际弹簧位移，而不是只相信规划位姿。
+    force_tracking_tolerance: 0.00005
+    force_tracking_max_compensation: 0.0010
+    force_tracking_settle_seconds: 0.15
+    force_tracking_attempts: 3
+    # 仅按压向内段可接受接近完整的候选路径，之后必须由真实关节位移
+    # 闭环补偿；接近和安全撤回仍使用代码默认的 99% 门槛。
+    button_press_minimum_cartesian_fraction: 0.95
+    # 后门把手位于柜体背面。当前任务目录只提供正面标准工位；从该工位
+    # 机械臂既无法越过柜体到达把手，现有三柜布局也没有无碰撞后侧工位。
+    # 这是机器人/场地能力限制，不写入共用的设备几何参数；增加经过 Nav2
+    # 验证的后侧工位后，可在新的适配参数包中重新启用。
+    controls:
+      cabinet_rear_door:
+        operable: false
+        unavailable_reason: >-
+          当前仅配置柜体正面操作工位，后门把手位于柜体背面且被柜体实体隔挡；
+          现有三柜布局没有经过 Nav2 验证的安全后侧工位。
+      # 以下按钮在几何候选筛查后，又逐项执行了 cabinet_a 标准工位的
+      # 完整 MoveIt 接近、按压和撤回流程；无碰撞路径运行验证均未通过。
+      # 它们不是下方“纯运动学工作空间外”清单的一部分，后续重新标定
+      # 并通过完整闭环验收后，可按控件在新的机器人适配包中重新启用。
+      box_5_button_1:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_5_button_2:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_6_button_1:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_6_button_2:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_7_button_1:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_7_button_2:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_8_button_1:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_8_button_2:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_10_button_2:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_11_button_1:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      box_11_button_2:
+        operable: false
+        unavailable_reason: >-
+          当前 cabinet_a 标准工位的完整 MoveIt 无碰撞接近、按压和撤回路径
+          未通过运行验证；重新标定并完成闭环验收前禁用。
+      # 7～11 号旋钮在几何上可达，但当前 Gazebo 位置控制后端的
+      # 刚性跨模型抓取会带动非目标控件。柔顺隔离方案虽消除了
+      # 误触，但尚未通过目标档位到达验证，因此在机器人适配层禁用。
+      box_7_knob:
+        operable: false
+        unavailable_reason: >-
+          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
+          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
+      box_8_knob:
+        operable: false
+        unavailable_reason: >-
+          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
+          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
+      box_9_knob:
+        operable: false
+        unavailable_reason: >-
+          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
+          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
+      box_10_knob:
+        operable: false
+        unavailable_reason: >-
+          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
+          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
+      box_11_knob:
+        operable: false
+        unavailable_reason: >-
+          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
+          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
     # 移除升降轴后的当前六轴机械臂能力边界。更换机器人时仅需覆盖本清单。
     unreachable_control_ids:
       - box_1_button_1

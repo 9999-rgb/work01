@@ -92,6 +92,10 @@ class _BlockingNode:
 class _Executor:
     def __init__(self) -> None:
         self.shutdown_called = False
+        self.wake_called = False
+
+    def wake(self) -> None:
+        self.wake_called = True
 
     def shutdown(self, timeout_sec: float) -> None:
         del timeout_sec
@@ -106,6 +110,9 @@ class _Thread:
 class _Context:
     def __init__(self) -> None:
         self.shutdown_called = False
+
+    def ok(self) -> bool:
+        return not self.shutdown_called
 
     def shutdown(self) -> None:
         self.shutdown_called = True
@@ -138,12 +145,54 @@ def _make_server(node: _BlockingNode) -> ControlServer:
     server._http_server = None
     server._http_thread = None
     server._executor = _Executor()
+    server._executor_stop_event = threading.Event()
     server._executor_thread = _Thread()
     server._context = _Context()
     return server
 
 
 class ControlServerLifecycleTest(unittest.TestCase):
+    def test_stop_joins_spin_thread_before_executor_cleanup(self) -> None:
+        node = _BlockingNode()
+        server = _make_server(node)
+
+        class _BlockingExecutor(_Executor):
+            def __init__(self) -> None:
+                super().__init__()
+                self.spin_started = threading.Event()
+                self.spin_released = threading.Event()
+                self.cleanup_overlapped_spin = False
+
+            def spin_once(self, timeout_sec: float) -> None:
+                del timeout_sec
+                self.spin_started.set()
+                self.spin_released.wait(timeout=2.0)
+
+            def wake(self) -> None:
+                super().wake()
+                self.spin_released.set()
+
+            def shutdown(self, timeout_sec: float) -> None:
+                if server._executor_thread.is_alive():
+                    self.cleanup_overlapped_spin = True
+                super().shutdown(timeout_sec)
+
+        executor = _BlockingExecutor()
+        server._executor = executor
+        server._executor_thread = threading.Thread(
+            target=server._spin_executor,
+        )
+        server._executor_thread.start()
+        self.assertTrue(executor.spin_started.wait(timeout=1.0))
+
+        server.stop()
+
+        self.assertTrue(executor.wake_called)
+        self.assertFalse(server._executor_thread.is_alive())
+        self.assertTrue(executor.shutdown_called)
+        self.assertFalse(executor.cleanup_overlapped_spin)
+        self.assertTrue(server._shutdown_report["executor_stopped"])
+
     def test_second_stop_finishes_teardown_after_backend_retires(self) -> None:
         node = _RetiringNode()
         server = _make_server(node)

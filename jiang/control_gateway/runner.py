@@ -14,8 +14,10 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import rclpy
+import yaml
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
+from rclpy.signals import SignalHandlerOptions
 
 from .cabinet_client import CabinetClient
 from .cabinet_client import CabinetClientError
@@ -49,8 +51,12 @@ NAVIGATION_FINAL_POSE_MAX_AGE_SEC = 1.0
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
 TASK_MONITOR_PERIOD_SEC = 0.10
+EXECUTOR_SPIN_PERIOD_SEC = 0.10
 NAVIGATION_POSITION_TOLERANCE_M = 0.20
-NAVIGATION_YAW_TOLERANCE_RAD = 0.20
+# Nav2's 0.20 rad goal checker and the following TF sample can differ by a
+# fraction of a degree while the base settles.  Keep a 5 mrad verification
+# margin without relaxing the controller's own stopping criterion.
+NAVIGATION_YAW_TOLERANCE_RAD = 0.205
 MAP_STATION_MARGIN_M = 0.05
 
 
@@ -68,6 +74,7 @@ class ControlServer:
         command_timeout: float = 0.30,
         cabinet_instances_path: Optional[str] = None,
         cabinet_scene_path: Optional[str] = None,
+        cabinet_robot_adapter_path: Optional[str] = None,
         allowed_origins: Optional[Iterable[str]] = None,
     ) -> None:
         if not self._is_loopback_host(host):
@@ -108,18 +115,30 @@ class ControlServer:
         scene_path = cabinet_scene_path or str(
             control_config / "cabinet_scene.yaml"
         )
+        robot_adapter_path = cabinet_robot_adapter_path or str(
+            control_config / "cabinet_robot_adapter.yaml"
+        )
         try:
             self._inventory = CabinetInventory.load(instances_path, scene_path)
         except InventoryError as error:
             raise RuntimeError(
                 f"Invalid cabinet inventory: {error}"
             ) from error
+        navigation_base_frame = self._load_navigation_base_frame(
+            robot_adapter_path
+        )
 
         self._port = port
         self._host = host
         self._allowed_origins = normalized_origins
         self._context = Context()
-        rclpy.init(context=self._context)
+        # The process entry point owns SIGINT/SIGTERM and requests an ordered
+        # shutdown through ``stop()``.  Explicitly keep rclpy from shutting
+        # this private context down underneath the executor thread.
+        rclpy.init(
+            context=self._context,
+            signal_handler_options=SignalHandlerOptions.NO,
+        )
         self._node = RosControlNode(
             cmd_vel_topic,
             joint_trajectory_topic,
@@ -127,6 +146,7 @@ class ControlServer:
             max_angular_speed,
             command_timeout,
             self._context,
+            navigation_base_frame=navigation_base_frame,
         )
         self._executor = SingleThreadedExecutor(context=self._context)
         self._executor.add_node(self._node)
@@ -161,8 +181,9 @@ class ControlServer:
         )
         self._event_bridge_thread.start()
 
+        self._executor_stop_event = threading.Event()
         self._executor_thread = threading.Thread(
-            target=self._executor.spin,
+            target=self._spin_executor,
             name="web-control-ros-executor",
             daemon=True,
         )
@@ -199,6 +220,11 @@ class ControlServer:
         self._http_thread.start()
         return self
 
+    def _spin_executor(self) -> None:
+        """Spin until the server requests a clean executor-thread exit."""
+        while self._context.ok() and not self._executor_stop_event.is_set():
+            self._executor.spin_once(timeout_sec=EXECUTOR_SPIN_PERIOD_SEC)
+
     @staticmethod
     def _is_loopback_host(host: str) -> bool:
         if not isinstance(host, str) or not host.strip():
@@ -210,6 +236,52 @@ class ControlServer:
             return ipaddress.ip_address(normalized).is_loopback
         except ValueError:
             return False
+
+    @staticmethod
+    def _load_navigation_base_frame(path_value: str) -> str:
+        """Read the Nav2 base frame from the shared robot adapter YAML."""
+        path = Path(path_value).expanduser().resolve()
+        try:
+            with path.open("r", encoding="utf-8") as stream:
+                document = yaml.safe_load(stream)
+        except OSError as error:
+            raise RuntimeError(
+                f"Cannot read cabinet robot adapter {path}: {error}"
+            ) from error
+        except yaml.YAMLError as error:
+            raise RuntimeError(
+                f"Invalid cabinet robot adapter YAML {path}: {error}"
+            ) from error
+        if not isinstance(document, Mapping):
+            raise RuntimeError(
+                f"Cabinet robot adapter {path} must contain a mapping."
+            )
+
+        matches: List[Any] = []
+        for node_config in document.values():
+            if not isinstance(node_config, Mapping):
+                continue
+            parameters = node_config.get("ros__parameters")
+            if not isinstance(parameters, Mapping):
+                continue
+            if "navigation_base_frame" in parameters:
+                matches.append(parameters["navigation_base_frame"])
+        if len(matches) != 1:
+            raise RuntimeError(
+                f"Cabinet robot adapter {path} must define exactly one "
+                "ros__parameters.navigation_base_frame."
+            )
+        frame = matches[0]
+        if (
+            not isinstance(frame, str)
+            or not frame.strip()
+            or frame.startswith("/")
+            or any(character.isspace() for character in frame)
+        ):
+            raise RuntimeError(
+                "navigation_base_frame must be a non-empty relative TF frame."
+            )
+        return frame.strip()
 
     def stop(self) -> None:
         """Stop streams, HTTP, action clients, and finally the ROS context."""
@@ -410,19 +482,36 @@ class ControlServer:
                 # ROS alive so a later stop() attempt can finish safely.
                 return
 
-            shutdown_result = self._executor.shutdown(timeout_sec=3.0)
+            # Humble's Executor.shutdown() destroys its internal guard
+            # conditions but does not join a concurrent spin() call.  Stop
+            # and join our bounded spin loop first so it cannot dereference a
+            # guard after shutdown has cleared it.
+            executor_stop_event = getattr(
+                self,
+                "_executor_stop_event",
+                None,
+            )
+            if executor_stop_event is not None:
+                executor_stop_event.set()
+                self._executor.wake()
             executor_thread_stopped = self._join_thread_for_shutdown(
                 getattr(self, "_executor_thread", None),
                 timeout=3.0,
             )
-            executor_stopped = (
-                shutdown_result is not False and executor_thread_stopped
-            )
+            if not executor_thread_stopped:
+                self._shutdown_report["executor_stopped"] = False
+                self._log_shutdown_warning(
+                    "The ROS executor thread did not stop before teardown; ROS "
+                    "objects remain intact for a later stop attempt."
+                )
+                return
+            shutdown_result = self._executor.shutdown(timeout_sec=3.0)
+            executor_stopped = shutdown_result is not False
             self._shutdown_report["executor_stopped"] = executor_stopped
             if not executor_stopped:
                 self._log_shutdown_warning(
-                    "The ROS executor did not stop before teardown; ROS "
-                    "objects remain intact for a later stop attempt."
+                    "The ROS executor did not finish cleanup before teardown; "
+                    "ROS objects remain intact for a later stop attempt."
                 )
                 return
             if cabinet_clients:
@@ -1065,6 +1154,9 @@ class ControlServer:
                         station,
                         snapshot,
                         elapsed,
+                        minimum_pose_stamp_ros_nanoseconds=snapshot.get(
+                            "goal_sent_ros_nanoseconds"
+                        ),
                         minimum_pose_received_monotonic=goal_sent_at,
                         observation_monotonic=now,
                     )
@@ -1294,6 +1386,7 @@ class ControlServer:
         snapshot: Mapping[str, Any],
         elapsed: float,
         *,
+        minimum_pose_stamp_ros_nanoseconds: Optional[int],
         minimum_pose_received_monotonic: Optional[float] = None,
         observation_monotonic: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -1328,6 +1421,82 @@ class ControlServer:
                 details={
                     "expected_frame": expected_frame,
                     "actual_frame": pose.get("frame_id"),
+                },
+            )
+        try:
+            goal_sent_ros_nanoseconds = int(
+                minimum_pose_stamp_ros_nanoseconds
+            )
+            stamp_ros_nanoseconds = int(pose["stamp_ros_nanoseconds"])
+            observed_ros_nanoseconds = int(
+                pose["observed_ros_nanoseconds"]
+            )
+        except (KeyError, TypeError, ValueError) as error:
+            raise TaskExecutionError(
+                "Nav2 succeeded but ROS-time pose freshness cannot be "
+                "verified.",
+                code="final_pose_stale",
+            ) from error
+        if goal_sent_ros_nanoseconds <= 0:
+            raise TaskExecutionError(
+                "Nav2 succeeded but its goal timestamp is invalid.",
+                code="final_pose_stale",
+                details={
+                    "goal_sent_ros_nanoseconds": goal_sent_ros_nanoseconds,
+                },
+            )
+        if stamp_ros_nanoseconds <= 0:
+            raise TaskExecutionError(
+                "Nav2 succeeded but the localized pose has a zero or "
+                "invalid dynamic timestamp.",
+                code="final_pose_stale",
+                details={
+                    "pose_stamp_ros_nanoseconds": stamp_ros_nanoseconds,
+                    "pose_source": pose.get("source"),
+                },
+            )
+        if observed_ros_nanoseconds <= 0:
+            raise TaskExecutionError(
+                "Nav2 succeeded but the active ROS clock is invalid.",
+                code="final_pose_stale",
+                details={
+                    "pose_observed_ros_nanoseconds": (
+                        observed_ros_nanoseconds
+                    ),
+                },
+            )
+        if stamp_ros_nanoseconds < goal_sent_ros_nanoseconds:
+            raise TaskExecutionError(
+                "Nav2 succeeded but the latest localized pose predates "
+                "the Nav2 goal in ROS time.",
+                code="final_pose_stale",
+                details={
+                    "pose_stamp_ros_nanoseconds": stamp_ros_nanoseconds,
+                    "goal_sent_ros_nanoseconds": goal_sent_ros_nanoseconds,
+                    "pose_source": pose.get("source"),
+                },
+            )
+        pose_ros_age = (
+            observed_ros_nanoseconds - stamp_ros_nanoseconds
+        ) / 1_000_000_000.0
+        if (
+            pose_ros_age < 0.0
+            or pose_ros_age > NAVIGATION_FINAL_POSE_MAX_AGE_SEC
+        ):
+            raise TaskExecutionError(
+                "Nav2 succeeded but the latest localized pose timestamp is "
+                "stale or inconsistent with the active ROS clock.",
+                code="final_pose_stale",
+                details={
+                    "pose_ros_age_seconds": pose_ros_age,
+                    "maximum_pose_age_seconds": (
+                        NAVIGATION_FINAL_POSE_MAX_AGE_SEC
+                    ),
+                    "pose_stamp_ros_nanoseconds": stamp_ros_nanoseconds,
+                    "pose_observed_ros_nanoseconds": (
+                        observed_ros_nanoseconds
+                    ),
+                    "pose_source": pose.get("source"),
                 },
             )
         if minimum_pose_received_monotonic is not None:

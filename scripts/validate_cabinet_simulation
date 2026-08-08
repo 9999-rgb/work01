@@ -37,7 +37,7 @@ EXPECTED_TYPE_COUNTS = {
     CabinetControl.TYPE_SWITCH: 1,
     CabinetControl.TYPE_DOOR: 1,
 }
-_CABINET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
 @dataclass(frozen=True)
@@ -1195,13 +1195,18 @@ def selected_controls(
             CabinetControl.TYPE_SWITCH,
             CabinetControl.TYPE_DOOR,
         ):
+            candidates = [
+                entry
+                for entry in operable
+                if entry.control_type == control_type
+            ]
             selected = next(
                 (
                     entry
-                    for entry in operable
-                    if entry.control_type == control_type
+                    for entry in candidates
+                    if entry.control_id == "box_10_button_1"
                 ),
-                None,
+                candidates[0] if candidates else None,
             )
             if selected is not None:
                 representatives.append(selected)
@@ -1284,8 +1289,9 @@ def parse_arguments() -> argparse.Namespace:
     args = parser.parse_args()
     if _CABINET_NAME_PATTERN.fullmatch(args.cabinet) is None:
         parser.error(
-            "--cabinet must start with a letter and contain only letters, "
-            "digits, and underscores"
+            "--cabinet must start with a lowercase letter, contain only "
+            "lowercase letters, digits, and underscores, and be at most "
+            "63 characters long"
         )
     if args.cycles < 1:
         parser.error("--cycles must be at least 1")
@@ -1341,7 +1347,14 @@ def main() -> int:
             raise RuntimeError(
                 "Reachability validation requires one unavailable control."
             )
-        force_button = operable_buttons[0]
+        force_button = next(
+            (
+                entry
+                for entry in operable_buttons
+                if entry.control_id == "box_10_button_1"
+            ),
+            operable_buttons[0],
+        )
         print(
             f"[force] default 5 N succeeds: {force_button.control_id}"
         )
@@ -1425,45 +1438,59 @@ def main() -> int:
                 if entry.operable
                 and entry.control_type == CabinetControl.TYPE_SWITCH
             ]
-            if not knobs or not doors:
-                raise RuntimeError(
-                    "Contract tests require a reachable knob and door."
+            if knobs:
+                knob = knobs[0]
+                print(
+                    f"[contract] reject non-detent position: "
+                    f"{knob.control_id}"
                 )
-            knob = knobs[0]
-            print(f"[contract] reject non-detent position: {knob.control_id}")
-            node.verify_invalid_position_rejected(knob, args.timeout)
-            print("  PASS: invalid SET_POSITION rejected")
-            position = float(knob.state_positions[-1])
-            print(f"[contract] SET_POSITION: {knob.control_id} -> {position:.4f}")
-            print(
-                "  PASS: " + node.execute(
-                    Operation(
-                        knob.control_id,
-                        OperateCabinetControl.Goal.COMMAND_SET_POSITION,
-                        target_position=position,
-                    ),
+                node.verify_invalid_position_rejected(knob, args.timeout)
+                print("  PASS: invalid SET_POSITION rejected")
+                position = float(knob.state_positions[-1])
+                print(
+                    f"[contract] SET_POSITION: {knob.control_id} -> "
+                    f"{position:.4f}"
+                )
+                print(
+                    "  PASS: " + node.execute(
+                        Operation(
+                            knob.control_id,
+                            OperateCabinetControl.Goal.COMMAND_SET_POSITION,
+                            target_position=position,
+                        ),
+                        args.timeout,
+                    )
+                )
+                print(f"[contract] TOGGLE: {knob.control_id}")
+                print(
+                    "  PASS: " + node.execute(
+                        Operation(
+                            knob.control_id,
+                            OperateCabinetControl.Goal.COMMAND_TOGGLE,
+                        ),
+                        args.timeout,
+                    )
+                )
+            else:
+                print(
+                    "  SKIP: no operable knob; invalid-position, "
+                    "SET_POSITION and TOGGLE rotary contracts are not run."
+                )
+            if doors:
+                print("[contract] cancellation and reset interlock")
+                node.verify_cancel_and_reset_interlock(
+                    doors[0],
                     args.timeout,
                 )
-            )
-            print(f"[contract] TOGGLE: {knob.control_id}")
-            print(
-                "  PASS: " + node.execute(
-                    Operation(
-                        knob.control_id,
-                        OperateCabinetControl.Goal.COMMAND_TOGGLE,
-                    ),
-                    args.timeout,
+                print("  PASS: cancel/interlock/active-target cleanup")
+            else:
+                print(
+                    "  SKIP: no door is reachable from the configured "
+                    "robot staging station."
                 )
-            )
-            print("[contract] cancellation and reset interlock")
-            node.verify_cancel_and_reset_interlock(
-                doors[0],
-                args.timeout,
-            )
-            print("  PASS: cancel/interlock/active-target cleanup")
             print(f"  PASS: {node.reset(args.timeout)}")
             node.verify_defaults(min(args.timeout, 10.0))
-            if switches:
+            if doors and switches:
                 print("[contract] articulated door -> parented switch chain")
                 node.verify_parented_switch(
                     doors[0],

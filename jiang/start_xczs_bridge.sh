@@ -297,6 +297,7 @@ if [ "$CONTROL_MODE" = "web" ]; then
         --port "$CONTROL_PORT" \
         --cabinet-instances "$CABINET_INSTANCES_PATH" \
         --cabinet-scene "$CABINET_SCENE_PATH" \
+        --cabinet-robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
         "${CONTROL_ORIGIN_ARGS[@]}" &
     CONTROL_PID=$!
     sleep 1

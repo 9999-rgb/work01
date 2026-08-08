@@ -195,6 +195,35 @@ struct ResolvedControlGeometry
   tf2::Vector3 approach_normal;
 };
 
+constexpr double clamp_button_press_depth(
+  double requested_depth, double max_position) noexcept
+{
+  return requested_depth < max_position ? requested_depth : max_position;
+}
+
+constexpr double button_force_tracking_limit(
+  double target_depth, double max_compensation,
+  double max_position) noexcept
+{
+  const double bounded_target = clamp_button_press_depth(
+    target_depth, max_position);
+  const double remaining_travel = max_position - bounded_target;
+  const double bounded_compensation =
+    max_compensation < remaining_travel ?
+    max_compensation : remaining_travel;
+  return bounded_target + bounded_compensation;
+}
+
+static_assert(
+  button_force_tracking_limit(0.008, 0.001, 0.008) == 0.008,
+  "Force compensation must stop at a button's maximum travel.");
+static_assert(
+  button_force_tracking_limit(0.0075, 0.001, 0.008) == 0.008,
+  "Force compensation must clamp partial remaining travel.");
+static_assert(
+  button_force_tracking_limit(0.006, 0.001, 0.008) == 0.007,
+  "Force compensation below the limit must preserve its configured range.");
+
 geometry_msgs::msg::Quaternion to_message(const tf2::Quaternion & quaternion)
 {
   geometry_msgs::msg::Quaternion message;
@@ -321,6 +350,27 @@ public:
     release_detection_timeout_ = positive_parameter(
       "release_detection_timeout", 3.0);
     press_hold_seconds_ = positive_parameter("press_hold_seconds", 0.5);
+    force_tracking_tolerance_ = positive_parameter(
+      "force_tracking_tolerance", 0.00005);
+    force_tracking_max_compensation_ = positive_parameter(
+      "force_tracking_max_compensation", 0.0010);
+    force_tracking_settle_seconds_ = positive_parameter(
+      "force_tracking_settle_seconds", 0.15);
+    force_tracking_attempts_ = declare_parameter<int>(
+      "force_tracking_attempts", 3);
+    if (force_tracking_attempts_ < 1 || force_tracking_attempts_ > 5) {
+      throw std::invalid_argument(
+              "Parameter 'force_tracking_attempts' must be in [1, 5].");
+    }
+    button_press_minimum_cartesian_fraction_ = unit_interval_parameter(
+      "button_press_minimum_cartesian_fraction", 0.95);
+    if (button_press_minimum_cartesian_fraction_ < 0.90 ||
+      button_press_minimum_cartesian_fraction_ > 0.99)
+    {
+      throw std::invalid_argument(
+              "Parameter 'button_press_minimum_cartesian_fraction' must be "
+              "in [0.90, 0.99].");
+    }
     target_tolerance_ = positive_parameter("target_tolerance", 0.035);
     stable_velocity_tolerance_ = positive_parameter(
       "stable_velocity_tolerance", 0.03);
@@ -1329,7 +1379,8 @@ private:
         goal_handle,
         {poses.pressed_pose},
         cartesian_velocity_scale_ * 0.5,
-        cartesian_acceleration_scale_ * 0.5);
+        cartesian_acceleration_scale_ * 0.5,
+        button_press_minimum_cartesian_fraction_);
 
       publish_feedback(
         goal_handle,
@@ -1673,7 +1724,10 @@ private:
         execute_cartesian_path(
           *move_group, goal_handle, {button_poses.pressed_pose},
           cartesian_velocity_scale_ * 0.5,
-          cartesian_acceleration_scale_ * 0.5);
+          cartesian_acceleration_scale_ * 0.5,
+          button_press_minimum_cartesian_fraction_);
+        track_button_force(
+          *move_group, goal_handle, *control, button_press_depth);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::VERIFYING,
@@ -2994,11 +3048,57 @@ private:
     return false;
   }
 
+  template<typename GoalHandleT>
+  void track_button_force(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & button,
+    double target_travel)
+  {
+    double commanded_depth = clamp_button_press_depth(
+      target_travel, button.max_position);
+    const double maximum_depth = button_force_tracking_limit(
+      target_travel, force_tracking_max_compensation_, button.max_position);
+    for (int attempt = 0; attempt < force_tracking_attempts_; ++attempt) {
+      interruptible_hold(goal_handle, force_tracking_settle_seconds_);
+      const auto measured = button_snapshot(button);
+      const double deficit = target_travel - measured.position;
+      if (deficit <= force_tracking_tolerance_) {
+        return;
+      }
+
+      const double next_depth = clamp_button_press_depth(
+        std::min(
+          maximum_depth,
+          commanded_depth + deficit + force_tracking_tolerance_),
+        button.max_position);
+      if (next_depth <= commanded_depth + 1.0e-6) {
+        return;
+      }
+      commanded_depth = next_depth;
+      publish_operate_feedback(
+        goal_handle,
+        OperateCabinetControl::Feedback::MANIPULATING,
+        0.70F, target_travel,
+        "Correcting the physical button travel to track the requested force.");
+      const auto corrected_poses = calculate_operation_poses(
+        button, false, commanded_depth);
+      execute_cartesian_path(
+        move_group, goal_handle, {corrected_poses.pressed_pose},
+        cartesian_velocity_scale_ * 0.35,
+        cartesian_acceleration_scale_ * 0.35,
+        button_press_minimum_cartesian_fraction_);
+    }
+    interruptible_hold(goal_handle, force_tracking_settle_seconds_);
+  }
+
   OperationPoses calculate_operation_poses(
     const ButtonSpec & button,
     bool include_staging_pose,
     double press_depth)
   {
+    const double bounded_press_depth = clamp_button_press_depth(
+      press_depth, button.max_position);
     const tf2::Transform cabinet_transform = resolve_cabinet_transform();
     const tf2::Quaternion cabinet_rotation = cabinet_transform.getRotation();
     const auto geometry = resolve_control_geometry(button);
@@ -3043,7 +3143,7 @@ private:
     OperationPoses poses;
     poses.prepress_pose = make_tool_pose(-prepress_distance_);
     poses.contact_pose = make_tool_pose(-contact_clearance_);
-    poses.pressed_pose = make_tool_pose(press_depth);
+    poses.pressed_pose = make_tool_pose(bounded_press_depth);
 
     if (include_staging_pose) {
       geometry_msgs::msg::PoseStamped staging_in_planning_frame;
@@ -3300,7 +3400,8 @@ private:
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const std::vector<geometry_msgs::msg::Pose> & waypoints,
     double velocity_scale,
-    double acceleration_scale)
+    double acceleration_scale,
+    double minimum_fraction = 0.99)
   {
     check_cancel(goal_handle);
     moveit_msgs::msg::RobotTrajectory trajectory_message;
@@ -3319,16 +3420,17 @@ private:
         best_fraction = fraction;
         trajectory_message = std::move(candidate);
       }
-      if (best_fraction >= 0.99) {
+      if (best_fraction >= minimum_fraction) {
         break;
       }
     }
-    if (best_fraction < 0.99) {
+    if (best_fraction < minimum_fraction) {
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
               "MoveIt completed only " +
               std::to_string(std::max(0.0, best_fraction) * 100.0) +
-              "% of the required Cartesian control path after " +
+              "% of the Cartesian control path; this segment requires " +
+              std::to_string(minimum_fraction * 100.0) + "% after " +
               std::to_string(cartesian_planning_attempts_) + " attempts.");
     }
     retime_cartesian_trajectory(
@@ -4579,6 +4681,11 @@ private:
   double press_detection_timeout_{3.0};
   double release_detection_timeout_{3.0};
   double press_hold_seconds_{0.5};
+  double force_tracking_tolerance_{0.00005};
+  double force_tracking_max_compensation_{0.0010};
+  double force_tracking_settle_seconds_{0.15};
+  int force_tracking_attempts_{3};
+  double button_press_minimum_cartesian_fraction_{0.95};
   double target_tolerance_{0.035};
   double stable_velocity_tolerance_{0.03};
   double stable_state_duration_{0.30};

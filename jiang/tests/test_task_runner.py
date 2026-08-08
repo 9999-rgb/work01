@@ -38,11 +38,13 @@ class _NavigationNode:
         self.joint_targets = []
         self.navigation_mode_requests = []
         self.task_events = []
+        self.ros_time_nanoseconds = 100_000_000_000
         self.state: Dict[str, Any] = {
             "available": True,
             "state": "idle",
             "message": "idle",
             "goal": None,
+            "goal_sent_ros_nanoseconds": None,
             "current_pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
             "distance_remaining": None,
             "eta_seconds": None,
@@ -72,6 +74,9 @@ class _NavigationNode:
                     "state": "navigating",
                     "message": "driving",
                     "goal": dict(self.goal),
+                    "goal_sent_ros_nanoseconds": (
+                        self.ros_time_nanoseconds
+                    ),
                     "distance_remaining": 1.0,
                 }
             )
@@ -98,8 +103,17 @@ class _NavigationNode:
                 }
             )
             if pose is not None:
+                self.ros_time_nanoseconds += 100_000_000
                 current_pose = dict(pose)
                 current_pose.setdefault("frame_id", "map")
+                current_pose.setdefault(
+                    "stamp_ros_nanoseconds",
+                    self.ros_time_nanoseconds,
+                )
+                current_pose.setdefault(
+                    "observed_ros_nanoseconds",
+                    self.ros_time_nanoseconds,
+                )
                 current_pose.setdefault(
                     "received_monotonic",
                     time.monotonic(),
@@ -295,6 +309,12 @@ class TaskRunnerTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "loopback"):
             ControlServer(host="0.0.0.0")
 
+    def test_loopback_host_validation_accepts_supported_forms(self) -> None:
+        self.assertTrue(ControlServer._is_loopback_host("127.0.0.1"))
+        self.assertTrue(ControlServer._is_loopback_host("::1"))
+        self.assertTrue(ControlServer._is_loopback_host("localhost"))
+        self.assertFalse(ControlServer._is_loopback_host("192.0.2.10"))
+
     def test_inventory_and_scoped_catalog(self) -> None:
         server, _node = _server()
 
@@ -348,6 +368,8 @@ class TaskRunnerTest(unittest.TestCase):
                 "y": 0.0,
                 "yaw": 0.0,
                 "frame_id": "map",
+                "stamp_ros_nanoseconds": 20_000_000_000,
+                "observed_ros_nanoseconds": 20_100_000_000,
                 "received_monotonic": 10.0,
             }
         }
@@ -357,11 +379,101 @@ class TaskRunnerTest(unittest.TestCase):
                 station,
                 snapshot,
                 2.0,
+                minimum_pose_stamp_ros_nanoseconds=19_000_000_000,
                 minimum_pose_received_monotonic=9.0,
                 observation_monotonic=11.1,
             )
 
         self.assertEqual("final_pose_stale", stale.exception.code)
+
+    def test_navigation_result_rejects_old_tf_cache_timestamp(self) -> None:
+        station = {
+            "cabinet": "cabinet_a",
+            "frame_id": "map",
+            "x": 1.0,
+            "y": 0.0,
+            "yaw": 0.0,
+        }
+        snapshot = {
+            "current_pose": {
+                "x": 1.0,
+                "y": 0.0,
+                "yaw": 0.0,
+                "frame_id": "map",
+                # The cache was queried now, but its transform is old.
+                "stamp_ros_nanoseconds": 20_000_000_000,
+                "observed_ros_nanoseconds": 21_100_000_000,
+                "received_monotonic": 10.0,
+                "source": "tf",
+            }
+        }
+
+        with self.assertRaises(TaskExecutionError) as stale:
+            ControlServer._navigation_result(
+                station,
+                snapshot,
+                2.0,
+                minimum_pose_stamp_ros_nanoseconds=19_000_000_000,
+                minimum_pose_received_monotonic=9.0,
+                observation_monotonic=10.1,
+            )
+
+        self.assertEqual("final_pose_stale", stale.exception.code)
+        self.assertGreater(
+            stale.exception.details["pose_ros_age_seconds"],
+            runner_module.NAVIGATION_FINAL_POSE_MAX_AGE_SEC,
+        )
+
+    def test_navigation_result_rejects_zero_or_predating_ros_stamp(
+        self,
+    ) -> None:
+        station = {
+            "cabinet": "cabinet_a",
+            "frame_id": "map",
+            "x": 1.0,
+            "y": 0.0,
+            "yaw": 0.0,
+        }
+        pose = {
+            "x": 1.0,
+            "y": 0.0,
+            "yaw": 0.0,
+            "frame_id": "map",
+            "stamp_ros_nanoseconds": 0,
+            "observed_ros_nanoseconds": 20_100_000_000,
+            "received_monotonic": 10.0,
+            "source": "tf",
+        }
+
+        with self.assertRaises(TaskExecutionError) as zero_stamp:
+            ControlServer._navigation_result(
+                station,
+                {"current_pose": pose},
+                2.0,
+                minimum_pose_stamp_ros_nanoseconds=20_000_000_000,
+                minimum_pose_received_monotonic=9.0,
+                observation_monotonic=10.1,
+            )
+        self.assertEqual("final_pose_stale", zero_stamp.exception.code)
+
+        pose.update(
+            stamp_ros_nanoseconds=19_900_000_000,
+            observed_ros_nanoseconds=20_000_000_000,
+        )
+        with self.assertRaises(TaskExecutionError) as predating:
+            ControlServer._navigation_result(
+                station,
+                {"current_pose": pose},
+                2.0,
+                minimum_pose_stamp_ros_nanoseconds=20_000_000_000,
+                minimum_pose_received_monotonic=9.0,
+                observation_monotonic=10.1,
+            )
+        self.assertEqual("final_pose_stale", predating.exception.code)
+        self.assertEqual(
+            20_000_000_000,
+            predating.exception.details["goal_sent_ros_nanoseconds"],
+        )
 
     def test_navigation_failure_is_honestly_classified_unreachable(
         self,

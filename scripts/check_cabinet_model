@@ -284,6 +284,112 @@ def main() -> int:
             fail(f"Expected 33 unique control_ids, got {len(control_ids)}.")
         if set(control_ids) != set(controls):
             fail("control_ids and controls keys differ.")
+        unreachable_control_ids = robot_parameters.get(
+            "unreachable_control_ids", []
+        )
+        if not isinstance(unreachable_control_ids, list) or any(
+            not isinstance(control_id, str) or not control_id.strip()
+            for control_id in unreachable_control_ids
+        ):
+            fail("Robot adapter unreachable_control_ids must be a string list.")
+        if len(unreachable_control_ids) != len(set(unreachable_control_ids)):
+            fail("Robot adapter unreachable_control_ids contains duplicates.")
+        adapter_controls = robot_parameters.get("controls", {})
+        if not isinstance(adapter_controls, dict):
+            fail("Robot adapter controls must be a mapping.")
+        unknown_adapter_ids = (
+            set(unreachable_control_ids) | set(adapter_controls)
+        ) - set(control_ids)
+        if unknown_adapter_ids:
+            fail(
+                "Robot adapter references unknown controls: "
+                + ", ".join(sorted(unknown_adapter_ids))
+                + "."
+            )
+        per_control_unreachable = []
+        for control_id, override in adapter_controls.items():
+            if not isinstance(override, dict):
+                fail(
+                    f"Robot adapter override for {control_id} must be a "
+                    "mapping."
+                )
+            operable = override.get("operable", True)
+            if not isinstance(operable, bool):
+                fail(f"Robot adapter {control_id}.operable must be boolean.")
+            if not operable:
+                per_control_unreachable.append(control_id)
+                if not str(override.get("unavailable_reason", "")).strip():
+                    fail(
+                        f"Robot adapter {control_id} requires a non-empty "
+                        "unavailable_reason."
+                    )
+        all_unreachable = unreachable_control_ids + per_control_unreachable
+        if len(all_unreachable) != len(set(all_unreachable)):
+            fail("Robot adapter declares an unreachable control more than once.")
+        if unreachable_control_ids and not str(
+            robot_parameters.get("unreachable_control_reason", "")
+        ).strip():
+            fail("Robot adapter unreachable controls require a shared reason.")
+        rear_door_override = adapter_controls.get("cabinet_rear_door")
+        if (
+            not isinstance(rear_door_override, dict)
+            or rear_door_override.get("operable") is not False
+            or not str(
+                rear_door_override.get("unavailable_reason", "")
+            ).strip()
+        ):
+            fail(
+                "Robot adapter rear door must be unavailable with a "
+                "per-control unavailable_reason."
+            )
+        safety_disabled_knobs = {
+            f"box_{box_index}_knob" for box_index in range(7, 12)
+        }
+        for control_id in sorted(safety_disabled_knobs):
+            override = adapter_controls.get(control_id)
+            if (
+                not isinstance(override, dict)
+                or override.get("operable") is not False
+                or not str(override.get("unavailable_reason", "")).strip()
+            ):
+                fail(
+                    f"Robot adapter {control_id} must be unavailable with "
+                    "a per-control unavailable_reason until safe rotary "
+                    "actuation passes runtime validation."
+                )
+        runtime_disabled_buttons = {
+            "box_5_button_1",
+            "box_5_button_2",
+            "box_6_button_1",
+            "box_6_button_2",
+            "box_7_button_1",
+            "box_7_button_2",
+            "box_8_button_1",
+            "box_8_button_2",
+            "box_10_button_2",
+            "box_11_button_1",
+            "box_11_button_2",
+        }
+        for control_id in sorted(runtime_disabled_buttons):
+            override = adapter_controls.get(control_id)
+            if (
+                not isinstance(override, dict)
+                or override.get("operable") is not False
+                or not str(override.get("unavailable_reason", "")).strip()
+            ):
+                fail(
+                    f"Robot adapter {control_id} must be unavailable with "
+                    "a per-control unavailable_reason until its complete "
+                    "collision-free MoveIt path passes runtime validation."
+                )
+        expected_operable_controls = {"box_10_button_1"}
+        operable_controls = set(control_ids) - set(all_unreachable)
+        if operable_controls != expected_operable_controls:
+            fail(
+                "Robot adapter runtime-validated operable controls differ: "
+                f"expected {sorted(expected_operable_controls)}, got "
+                f"{sorted(operable_controls)}."
+            )
         joint_names = [str(controls[control_id].get("joint_name", ""))
                        for control_id in control_ids]
         if "" in joint_names or len(set(joint_names)) != len(joint_names):

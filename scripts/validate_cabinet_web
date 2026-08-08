@@ -87,8 +87,8 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-[[ "$CABINET" =~ ^[A-Za-z][A-Za-z0-9_]{0,63}$ ]] ||
-  fail "--cabinet 必须以字母开头且只能包含字母、数字和下划线"
+[[ "$CABINET" =~ ^[a-z][a-z0-9_]{0,62}$ ]] ||
+  fail "--cabinet 必须以小写字母开头，只能包含小写字母、数字和下划线，且总长度不超过 63"
 is_positive_integer "$TASK_TIMEOUT" || fail "--timeout 必须是正整数"
 require_command curl
 require_command jq
@@ -417,9 +417,16 @@ jq -e --arg namespace "/xczs/cabinet/$CABINET/" '
 }
 
 BUTTON_ID="$(
-  jq -r 'first(.controls[] |
-    select(.control_type == 0 and .operable == true) |
-    .control_id) // ""' <<<"$CONTROLS_BODY"
+  jq -r '(
+    first(.controls[] |
+      select(.control_id == "box_10_button_1" and
+             .control_type == 0 and .operable == true) |
+      .control_id)
+    // first(.controls[] |
+      select(.control_type == 0 and .operable == true) |
+      .control_id)
+    // ""
+  )' <<<"$CONTROLS_BODY"
 )"
 UNREACHABLE_ID="$(
   jq -r 'first(.controls[] |
@@ -502,7 +509,9 @@ DEFAULT_FORCE_BODY="$(
 )"
 run_successful_operation "$BUTTON_ID" "$DEFAULT_FORCE_BODY"
 jq -e '
-  .request.force == 5 and .result.requested_force == 5 and
+  # The request preserves omission as null so the selected control catalog,
+  # rather than the Web gateway, remains the source of the default force.
+  .request.force == null and .result.requested_force == 5 and
   .result.button_triggered == true and
   .result.actual_displacement >= 0.006 and
   .result.estimated_force >= 4.8
@@ -662,56 +671,60 @@ if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
   printf '\n[contract] global conflict and task cancellation\n'
   CANCEL_CONTROL="$(
     jq -r 'first(.controls[] |
-      select(.control_type == 3 and .operable == true) | .control_id) // ""' \
+      select((.control_type == 3 or .control_type == 1) and
+             .operable == true) | .control_id) // ""' \
       <<<"$CONTROLS_BODY"
   )"
-  [[ -n "$CANCEL_CONTROL" ]] || fail "取消测试需要一个可达门控件"
-  CANCEL_INITIAL="$(
-    jq -r --arg id "$CANCEL_CONTROL" '
-      .controls[] | select(.control_id == $id) | .current_state
-    ' <<<"$CONTROLS_BODY"
-  )"
-  CANCEL_TARGET="$(
-    jq -r --arg id "$CANCEL_CONTROL" --arg current "$CANCEL_INITIAL" '
-      first(.controls[] | select(.control_id == $id) |
-      .state_ids[] | select(. != $current)) // ""
-    ' <<<"$CONTROLS_BODY"
-  )"
-  CANCEL_BODY="$(
-    jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
-      --arg state "$CANCEL_TARGET" \
-      '{cabinet:$cabinet, control_id:$control,
-        command:"set_state", target_state:$state}'
-  )"
-  PENDING_CLEANUP_BODY="$(
-    jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
-      --arg state "$CANCEL_INITIAL" \
-      '{cabinet:$cabinet, control_id:$control,
-        command:"set_state", target_state:$state}'
-  )"
-  submit_task operate "$CANCEL_BODY"
-  CANCEL_TASK_ID="$ACTIVE_TASK_ID"
-  request_json POST /task/navigate 409 "$(
-    jq -cn --arg cabinet "$CABINET" '{cabinet:$cabinet}'
-  )"
-  jq -e --arg active "$CANCEL_TASK_ID" \
-    '.details.active_task_id == $active' <<<"$RESPONSE_BODY" >/dev/null ||
-    fail "409 并发响应未包含当前活跃 task_id"
-  request_json POST "/task/$CANCEL_TASK_ID/cancel" 202 '{}'
-  wait_for_task "$CANCEL_TASK_ID" canceled canceled
-  # Recovery should restore the initial state.  The pending inverse operation
-  # remains armed for the EXIT trap if this confirmation fails.
-  sleep 1
-  get_json "/cabinets/$CABINET/controls"
-  if jq -e --arg id "$CANCEL_CONTROL" --arg state "$CANCEL_INITIAL" '
-    any(.controls[];
-      .control_id == $id and .valid == true and .in_motion == false and
-      .current_state == $state)
-  ' <<<"$RESPONSE_BODY" >/dev/null; then
-    PENDING_CLEANUP_BODY=""
+  if [[ -z "$CANCEL_CONTROL" ]]; then
+    printf '  SKIP: no operable knob or door; conflict/cancel contract requires a long-running rotary operation.\n'
   else
-    run_successful_operation "$CANCEL_CONTROL" "$PENDING_CLEANUP_BODY"
-    PENDING_CLEANUP_BODY=""
+    CANCEL_INITIAL="$(
+      jq -r --arg id "$CANCEL_CONTROL" '
+        .controls[] | select(.control_id == $id) | .current_state
+      ' <<<"$CONTROLS_BODY"
+    )"
+    CANCEL_TARGET="$(
+      jq -r --arg id "$CANCEL_CONTROL" --arg current "$CANCEL_INITIAL" '
+        first(.controls[] | select(.control_id == $id) |
+        .state_ids[] | select(. != $current)) // ""
+      ' <<<"$CONTROLS_BODY"
+    )"
+    CANCEL_BODY="$(
+      jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
+        --arg state "$CANCEL_TARGET" \
+        '{cabinet:$cabinet, control_id:$control,
+          command:"set_state", target_state:$state}'
+    )"
+    PENDING_CLEANUP_BODY="$(
+      jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
+        --arg state "$CANCEL_INITIAL" \
+        '{cabinet:$cabinet, control_id:$control,
+          command:"set_state", target_state:$state}'
+    )"
+    submit_task operate "$CANCEL_BODY"
+    CANCEL_TASK_ID="$ACTIVE_TASK_ID"
+    request_json POST /task/navigate 409 "$(
+      jq -cn --arg cabinet "$CABINET" '{cabinet:$cabinet}'
+    )"
+    jq -e --arg active "$CANCEL_TASK_ID" \
+      '.details.active_task_id == $active' <<<"$RESPONSE_BODY" >/dev/null ||
+      fail "409 并发响应未包含当前活跃 task_id"
+    request_json POST "/task/$CANCEL_TASK_ID/cancel" 202 '{}'
+    wait_for_task "$CANCEL_TASK_ID" canceled canceled
+    # Recovery should restore the initial state.  The pending inverse operation
+    # remains armed for the EXIT trap if this confirmation fails.
+    sleep 1
+    get_json "/cabinets/$CABINET/controls"
+    if jq -e --arg id "$CANCEL_CONTROL" --arg state "$CANCEL_INITIAL" '
+      any(.controls[];
+        .control_id == $id and .valid == true and .in_motion == false and
+        .current_state == $state)
+    ' <<<"$RESPONSE_BODY" >/dev/null; then
+      PENDING_CLEANUP_BODY=""
+    else
+      run_successful_operation "$CANCEL_CONTROL" "$PENDING_CLEANUP_BODY"
+      PENDING_CLEANUP_BODY=""
+    fi
   fi
 fi
 

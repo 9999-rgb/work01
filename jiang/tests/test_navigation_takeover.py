@@ -94,6 +94,16 @@ class _NavigationClient:
         return True
 
 
+class _TransformBuffer:
+    def __init__(self, transform: Any) -> None:
+        self.transform = transform
+        self.requests = []
+
+    def lookup_transform(self, target: str, source: str, stamp: Any) -> Any:
+        self.requests.append((target, source, stamp))
+        return self.transform
+
+
 class _GoalHandle:
     accepted = True
 
@@ -146,6 +156,8 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
     node._map_state = None
     node._robot_pose = None
     node._robot_pose_sequence = 0
+    node._navigation_base_frame = "base_link"
+    node._ros_clock_now_nanoseconds = lambda: 23_500_000_000
     node._target_linear_y = 0.2
     node._target_angular_z = 0.4
     node._last_command_time = 0.0
@@ -193,8 +205,62 @@ class NavigationTakeoverTest(unittest.TestCase):
 
         self.assertEqual("map", node._robot_pose["frame_id"])
         self.assertEqual({"sec": 12, "nanosec": 34}, node._robot_pose["stamp"])
+        self.assertEqual(
+            12_000_000_034,
+            node._robot_pose["stamp_ros_nanoseconds"],
+        )
+        self.assertEqual(
+            23_500_000_000,
+            node._robot_pose["observed_ros_nanoseconds"],
+        )
+        self.assertAlmostEqual(
+            11.499999966,
+            node._robot_pose["stamp_age_seconds"],
+        )
+        self.assertEqual("amcl", node._robot_pose["source"])
         self.assertEqual(1, node._robot_pose["sequence"])
         self.assertGreater(node._robot_pose["received_monotonic"], 0.0)
+
+    def test_tf_refresh_supplies_current_navigation_pose(self) -> None:
+        node = _make_node()
+        transform = SimpleNamespace(
+            header=SimpleNamespace(
+                frame_id="map",
+                stamp=SimpleNamespace(sec=23, nanosec=45),
+            ),
+            child_frame_id="base_link",
+            transform=SimpleNamespace(
+                translation=SimpleNamespace(x=1.25, y=-0.5),
+                rotation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=math.sin(0.2 / 2.0),
+                    w=math.cos(0.2 / 2.0),
+                ),
+            ),
+        )
+        node._tf_buffer = _TransformBuffer(transform)
+
+        node._refresh_robot_pose_from_tf()
+
+        self.assertEqual(("map", "base_link"), node._tf_buffer.requests[0][:2])
+        self.assertAlmostEqual(1.25, node._robot_pose["x"])
+        self.assertAlmostEqual(-0.5, node._robot_pose["y"])
+        self.assertAlmostEqual(0.2, node._robot_pose["yaw"])
+        self.assertEqual("tf", node._robot_pose["source"])
+        self.assertEqual("base_link", node._robot_pose["child_frame_id"])
+        self.assertEqual(
+            23_000_000_045,
+            node._robot_pose["stamp_ros_nanoseconds"],
+        )
+        self.assertEqual(
+            23_500_000_000,
+            node._robot_pose["observed_ros_nanoseconds"],
+        )
+        self.assertAlmostEqual(
+            0.499999955,
+            node._robot_pose["stamp_age_seconds"],
+        )
 
     def test_old_enable_finishes_before_queued_manual_switch(self) -> None:
         node = _make_node(mode=False)
