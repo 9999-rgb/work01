@@ -697,6 +697,7 @@ def main() -> int:
                 + "."
             )
         per_control_unreachable = []
+        navigation_frame = str(robot_parameters.get("navigation_frame", ""))
         for control_id, override in adapter_controls.items():
             if not isinstance(override, dict):
                 fail(
@@ -713,6 +714,79 @@ def main() -> int:
                         f"Robot adapter {control_id} requires a non-empty "
                         "unavailable_reason."
                     )
+            station = override.get("navigation_station")
+            if station is None:
+                continue
+            if not isinstance(station, dict):
+                fail(
+                    f"Robot adapter {control_id}.navigation_station must "
+                    "be a mapping."
+                )
+            allowed_station_fields = {
+                "local_anchor",
+                "outward_axis",
+                "standoff",
+                "base_yaw_offset",
+                "frame_id",
+            }
+            unknown_station_fields = set(station) - allowed_station_fields
+            if unknown_station_fields:
+                fail(
+                    f"Robot adapter {control_id}.navigation_station has "
+                    "unknown fields: "
+                    + ", ".join(sorted(unknown_station_fields))
+                    + "."
+                )
+            for vector_name in ("local_anchor", "outward_axis"):
+                vector = station.get(vector_name)
+                if (
+                    not isinstance(vector, list)
+                    or len(vector) != 3
+                    or any(
+                        isinstance(value, bool)
+                        or not isinstance(value, (int, float))
+                        or not math.isfinite(float(value))
+                        for value in vector
+                    )
+                ):
+                    fail(
+                        f"Robot adapter {control_id}.navigation_station."
+                        f"{vector_name} must contain three finite numbers."
+                    )
+            if sum(
+                float(value) * float(value)
+                for value in station["outward_axis"]
+            ) <= 1.0e-12:
+                fail(
+                    f"Robot adapter {control_id}.navigation_station."
+                    "outward_axis must not be zero."
+                )
+            standoff = station.get("standoff")
+            if (
+                isinstance(standoff, bool)
+                or not isinstance(standoff, (int, float))
+                or not math.isfinite(float(standoff))
+                or float(standoff) <= 0.0
+            ):
+                fail(
+                    f"Robot adapter {control_id}.navigation_station."
+                    "standoff must be a positive finite number."
+                )
+            yaw_offset = station.get("base_yaw_offset", 0.0)
+            if (
+                isinstance(yaw_offset, bool)
+                or not isinstance(yaw_offset, (int, float))
+                or not math.isfinite(float(yaw_offset))
+            ):
+                fail(
+                    f"Robot adapter {control_id}.navigation_station."
+                    "base_yaw_offset must be finite."
+                )
+            if station.get("frame_id", "map") != navigation_frame:
+                fail(
+                    f"Robot adapter {control_id}.navigation_station frame "
+                    "must match navigation_frame."
+                )
         all_unreachable = unreachable_control_ids + per_control_unreachable
         if len(all_unreachable) != len(set(all_unreachable)):
             fail("Robot adapter declares an unreachable control more than once.")
@@ -754,11 +828,6 @@ def main() -> int:
             "box_6_button_2",
             "box_7_button_1",
             "box_7_button_2",
-            "box_8_button_1",
-            "box_8_button_2",
-            "box_10_button_2",
-            "box_11_button_1",
-            "box_11_button_2",
         }
         for control_id in sorted(runtime_disabled_buttons):
             override = adapter_controls.get(control_id)
@@ -772,7 +841,14 @@ def main() -> int:
                     "a per-control unavailable_reason until its complete "
                     "collision-free MoveIt path passes runtime validation."
                 )
-        expected_operable_controls = {"box_10_button_1"}
+        expected_operable_controls = {
+            "box_8_button_1",
+            "box_8_button_2",
+            "box_10_button_1",
+            "box_10_button_2",
+            "box_11_button_1",
+            "box_11_button_2",
+        }
         operable_controls = set(control_ids) - set(all_unreachable)
         if operable_controls != expected_operable_controls:
             fail(

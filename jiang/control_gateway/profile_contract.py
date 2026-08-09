@@ -438,6 +438,19 @@ def validate_profile(
                 f"Navigation station for '{cabinet.name}' uses frame "
                 f"'{station.frame_id}', expected '{adapter.navigation_frame}'."
             )
+        for control_id, control_station in (
+            adapter.control_navigation_stations
+        ):
+            resolved = inventory.station_for(
+                cabinet.name,
+                control_station=control_station,
+            )
+            if resolved.frame_id != adapter.navigation_frame:
+                raise ProfileContractError(
+                    f"Navigation station for '{cabinet.name}/"
+                    f"{control_id}' uses frame '{resolved.frame_id}', "
+                    f"expected '{adapter.navigation_frame}'."
+                )
 
     _validate_robot_control_overrides(adapter_document, set(ordered_ids))
     counts = {

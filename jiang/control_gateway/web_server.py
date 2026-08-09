@@ -113,11 +113,16 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _handle_task_navigate(self) -> None:
         body = self._required_body()
-        self._reject_unknown_fields(body, {"cabinet"})
+        self._reject_unknown_fields(body, {"cabinet", "control_id"})
         cabinet = self._nonempty_string(body, "cabinet")
+        control_id = (
+            self._nonempty_string(body, "control_id")
+            if "control_id" in body
+            else None
+        )
         self._send_json(
             202,
-            self.control_server.submit_navigation_task(cabinet),
+            self.control_server.submit_navigation_task(cabinet, control_id),
         )
 
     def _handle_task_operate(self) -> None:

@@ -57,6 +57,7 @@ class _FakeControlServer:
         self.joint_request: Optional[list[float]] = None
         self.requested_cabinet: Optional[str] = None
         self.navigation_task_request: Optional[str] = None
+        self.navigation_task_control_id: Optional[str] = None
         self.operation_task_request: Optional[Dict[str, Any]] = None
         self.canceled_task_id: Optional[str] = None
         self.conflict_task_id: Optional[str] = None
@@ -314,9 +315,17 @@ class _FakeControlServer:
         self.tasks[task_id] = task
         return task
 
-    def submit_navigation_task(self, cabinet: str) -> Dict[str, Any]:
+    def submit_navigation_task(
+        self,
+        cabinet: str,
+        control_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         self.navigation_task_request = cabinet
-        return self._new_task("navigate", {"cabinet": cabinet})
+        self.navigation_task_control_id = control_id
+        request = {"cabinet": cabinet}
+        if control_id is not None:
+            request["control_id"] = control_id
+        return self._new_task("navigate", request)
 
     def submit_operation_task(
         self,
@@ -571,10 +580,12 @@ class ControlGatewayHttpTest(unittest.TestCase):
         status, accepted, _ = self.request(
             "/task/navigate",
             "POST",
-            {"cabinet": " cabinet_b "},
+            {"cabinet": " cabinet_b ", "control_id": " button_1 "},
         )
         self.assertEqual(202, status)
         self.assertEqual("cabinet_b", self.control_server.navigation_task_request)
+        self.assertEqual("button_1", self.control_server.navigation_task_control_id)
+        self.assertEqual("button_1", accepted["request"]["control_id"])
         self.assertRegex(
             accepted["task_id"],
             r"^navigate_[0-9]{13}_[a-z0-9]{6}$",
@@ -593,6 +604,15 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.assertEqual(202, status)
         self.assertEqual("canceling", task["status"])
         self.assertEqual(task_id, self.control_server.canceled_task_id)
+
+        status, accepted, _ = self.request(
+            "/task/navigate",
+            "POST",
+            {"cabinet": "cabinet_a"},
+        )
+        self.assertEqual(202, status)
+        self.assertIsNone(self.control_server.navigation_task_control_id)
+        self.assertNotIn("control_id", accepted["request"])
 
     def test_arbitrary_coordinate_navigation_routes_are_not_exposed(
         self,
@@ -751,6 +771,14 @@ class ControlGatewayHttpTest(unittest.TestCase):
         )
         self.assertEqual(400, status)
         self.assertIn("Unexpected request field", response["error"])
+
+        status, response, _ = self.request(
+            "/task/navigate",
+            "POST",
+            {"cabinet": "cabinet_a", "control_id": "  "},
+        )
+        self.assertEqual(400, status)
+        self.assertIn("control_id", response["error"])
 
     def test_task_conflict_includes_active_task_id(self) -> None:
         self.control_server.conflict_task_id = "operate_1700000000000_a1b2c3"

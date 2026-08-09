@@ -19,6 +19,8 @@
 
 Web 通过 `/robot/capabilities` 取得上述手动关节能力并动态生成控件，不再假定机器人一定是“六轴加双夹爪”。新适配包缺字段、关节重复、限位不完整、Topic 名非法或 frame 不一致时会在启动阶段失败，不会退回源码中的猜测值。
 
+柜体目录中的 33 个控件都会在 Web 中显示，并且都可以选择和提交任务。目录字段 `operable` 表示“当前机器人适配包是否已通过该控件的完整安全闭环验证”，不表示设备是否具有该功能。`operable=false` 的控件仍可提交；任务会立即进入 `failed/unreachable` 终态并返回 `unavailable_reason`，不向底层 ROS 2 `OperateCabinetControl` Action 发送 Goal，也不启动 Nav2 或 MoveIt 动作。
+
 ## 多柜体实例
 
 `config/cabinet_instances.yaml` 是实例 inventory。每项包含唯一 `name` 和有限的 `x/y/z/roll/pitch/yaw`；`pitch` 可省略。统一 launch 在运行时为每项展开一份 Xacro，并创建：
@@ -41,20 +43,21 @@ MoveIt world 中每个碰撞对象带实例前缀，多个 planning-scene 节点
 
 机器人已移除 `body_arm_lift`、导轨、托架及所有对应的 ros2_control、MoveIt 和 Web 接口。当前默认 profile 是六轴机械臂加两个夹爪关节，但手动轨迹长度和顺序不再固定在源码中：Web 从 `/robot/capabilities` 读取 `arm_joint_names`、`gripper_joint_names` 及逐关节限位，后端再按同一适配参数验证。
 
-移除升降轴后，不伪造无法实现或尚未通过安全验证的动作。当前标准工位的运动学与仿真执行筛查结果写在机器人适配参数中：
+移除升降轴后，不伪造无法实现或尚未通过安全验证的动作。当前机器人的运动学与仿真执行筛查结果写在机器人适配参数中：
 
-- 已通过完整运行验证：仅 `box_10_button_1`。
-- 不可操作：除 `box_10_button_1` 外的其余 32 个控件；目录仍会返回每项的能力状态和失败原因。
+- 已通过导航、MoveIt 接近、实际按压反馈和安全撤回完整闭环验证：`box_8_button_1`、`box_8_button_2`、`box_10_button_1`、`box_10_button_2`、`box_11_button_1` 和 `box_11_button_2`。
+- `box_5_button_1/2`、`box_6_button_1/2` 和 `box_7_button_1/2` 的逐控件导航工位已验证可到达，但当前六轴机械臂的无碰撞接触路径分别只完成 62.1%、66.7%、66.7%、65.6%、69.7% 和 78.1%，均低于 99% 安全门槛，因此当前为 `operable=false`。
+- `box_1_button_1/2` 至 `box_4_button_1/2`、`box_1_knob` 至 `box_6_knob` 以及 `cabinet_main_switch` 在移除升降轴后超出当前六轴机械臂从标准工位可覆盖的运动学工作空间。
 
-`box_5_button_1/2`、`box_6_button_1/2`、`box_7_button_1/2`、`box_8_button_1/2`、`box_10_button_2` 和 `box_11_button_1/2` 曾是几何候选，但在 `cabinet_a` 标准工位逐项执行完整 MoveIt 接近、按压和撤回流程时，无碰撞路径运行验证均未通过。它们因此按安全能力降级为 `operable=false`；这不等同于“纯运动学不可达”，后续重新标定并通过同一套闭环验收后可在适配参数中逐项重新启用。
+路径比例未达标不等同于设备没有按钮功能，也不等同于纯 IK 不可达；它表示当前机器人与当前碰撞场景无法通过完整安全操作验收。更换机器人、重新标定工位或优化无碰撞路径后，可逐项复测并在适配参数中重新启用。
 
-`cabinet_rear_door` 的把手位于柜体背面，而当前目录只配置了正面标准工位。从正面无法绕过柜体实体到达把手；当前三柜布局也没有无碰撞、地图内的安全后侧工位，所以适配层将它标记为不可操作并返回具体原因。后续增加按控件选择的后侧 Nav2 工位并重新验证场地后，可以只通过新的适配参数包重新启用，不需要删除柜门模型或改 Web 协议。
+`cabinet_rear_door` 已配置独立的柜后精确工位。实测中机器人能抓住把手并将门打开到 90°，但开门后安全脱离路径只完成 65.8%，关门预抓取也无法完成无碰撞规划。为避免留下半完成的柜门状态，在开门、关门和安全脱离全部通过前，它保持 `operable=false` 并快速返回上述原因。
 
 planning-scene 适配器不会再强制设备必须同时具有一个门和一个门上开关。纯按钮/旋钮设备、仅门设备、固定开关，以及带门和门上开关的当前柜体都使用同一节点；只有目录中实际出现对应类型时才要求其碰撞几何。若开关声明父控件，该父控件必须是目录中的门。
 
-7～11 号旋钮通过了几何可达与 IK 候选筛查，但当前 Gazebo 位置控制后端的刚性跨模型抓取会带动其他控件，产生可观测的非目标误触。隔离抓取碰撞的柔顺方案已能消除串扰，但在当前后端下无法把目标旋钮送到要求档位。因此适配层暂时将这 5 个旋钮标记为不可操作；将来更换通过验证的执行控制器或机器人适配包后，可在不改任务 API 的前提下重新启用。
+7～11 号旋钮通过了几何可达与 IK 候选筛查，但当前 Gazebo 位置控制后端的刚性跨模型抓取会带动其他控件，产生可观测的非目标误触。隔离抓取碰撞的柔顺方案已能消除串扰，但在当前后端下无法把目标旋钮送到要求档位。因此适配层暂时将这 5 个旋钮的当前机器人能力设为 `operable=false`；控件本身仍可在 Web 提交并取得失败原因。将来更换通过验证的执行控制器或机器人适配包后，可在不改任务 API 的前提下重新启用。
 
-上述不可操作控件仍出现在目录中，并携带 `operable=false` 与具体 `unavailable_reason`。提交后任务统一以适配层能力失败码 `unreachable` 结束，不会启动机械臂；该码既包含运动学不可达，也包含尚未通过安全验证的机器人能力。理论可达不等于必然成功；MoveIt 碰撞、当前姿态或环境变化仍可能使具体一次动作失败。
+上述未通过当前机器人验收的控件仍出现在 Web 目录中，并携带 `operable=false` 与具体 `unavailable_reason`。提交后任务统一以适配层能力失败码 `unreachable` 结束，且在网关预检阶段就完成，不向底层操作 Action 发送 Goal；该码既包含运动学不可达，也包含尚未通过安全验证的机器人能力。理论可达不等于必然成功；MoveIt 碰撞、当前姿态或环境变化仍可能使具体一次动作失败。
 
 ## 按钮力道
 
@@ -79,7 +82,7 @@ MoveIt 到达名义按压位姿后，执行器会读取 Gazebo 的实际按钮�
 
 ## 导航和操作的关系
 
-Nav2 只负责把机器人送到由柜体完整 RPY 和 `cabinet_scene.yaml/navigation_station` 计算出的工位。MoveIt 2 负责机械臂碰撞检查、接近、操作和撤回。
+Nav2 只负责把机器人送到指定柜体的操作工位，MoveIt 2 负责机械臂碰撞检查、接近、操作和撤回。当 `/task/navigate` 携带 `control_id` 时，任务层优先使用机器人适配参数中该控件的 `controls.<control_id>.navigation_station`；该控件没有专用工位时，回退到 `cabinet_scene.yaml/navigation_station` 的公共工位。两种配置都会结合目标柜体的完整 RPY 换算到地图坐标系，不会在 Web 中硬编码绝对位姿。省略 `control_id` 时直接使用公共工位，保持旧客户端兼容。
 
 `/task/operate` **绝不隐式导航**。需要完整流程时，Web 先提交 `/task/navigate`，等待成功后再提交 `/task/operate`。导航失败或取消时不会继续操作。手动方向输入仍可触发现有 Nav2 接管流程；对应导航任务会在 Nav2 确认取消后才释放全局任务锁。
 
@@ -110,7 +113,7 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 | GET | `/cabinets` | inventory 和每柜计算后的工位 |
 | GET | `/robot/capabilities` | 当前机器人 frame、手动关节分组与安全范围 |
 | GET | `/cabinets/<name>/controls` | 该实例的目录与实时状态 |
-| POST | `/task/navigate` | 按柜体名导航 |
+| POST | `/task/navigate` | 按柜体导航；可选 `control_id` 用于选择逐控件工位 |
 | POST | `/task/operate` | 操作指定实例的控件，不含导航 |
 | GET | `/task/<id>/status` | 状态轮询 fallback |
 | POST | `/task/<id>/cancel` | 请求取消 |
@@ -123,8 +126,10 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 ```bash
 curl -sS -X POST http://localhost:8090/task/navigate \
   -H 'Content-Type: application/json' \
-  -d '{"cabinet":"cabinet_a"}'
+  -d '{"cabinet":"cabinet_a","control_id":"box_11_button_1"}'
 ```
+
+其中 `control_id` 可省略；省略时导航到该柜体的公共工位。
 
 按钮示例（5 N）：
 

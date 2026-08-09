@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run deterministic end-to-end checks for every simulated cabinet control."""
+"""Run deterministic low-level checks for simulated cabinet controls.
+
+This validator does not run Nav2.  Physical operations therefore require the
+robot to be pre-positioned at the selected control's station.  Use
+``validate_cabinet_web --exhaustive`` for the complete autonomous workflow.
+"""
 
 from __future__ import annotations
 
@@ -1185,9 +1190,26 @@ def selected_controls(
     by_id = {entry.control_id: entry for entry in catalog.controls}
     requested = list(requested_ids)
     if not requested:
-        operable = [entry for entry in catalog.controls if entry.operable]
         if exhaustive:
-            return operable
+            # This low-level validator does not own Nav2, so one invocation
+            # cannot safely visit every robot-specific station.  It exhausts
+            # the capability-failure contract and retains one already-staged
+            # representative for the physical force checks below.  The Web
+            # validator owns the complete six-control navigation workflow.
+            unavailable = [
+                entry for entry in catalog.controls if not entry.operable
+            ]
+            force_button = next(
+                (
+                    entry
+                    for entry in catalog.controls
+                    if entry.control_id == "box_10_button_1"
+                    and entry.operable
+                ),
+                None,
+            )
+            return unavailable + ([force_button] if force_button else [])
+        operable = [entry for entry in catalog.controls if entry.operable]
         representatives = []
         for control_type in (
             CabinetControl.TYPE_BUTTON,
@@ -1250,6 +1272,25 @@ def operations_for(control: CabinetControl, exhaustive: bool) -> List[Operation]
     ]
 
 
+def unavailable_operation_for(control: CabinetControl) -> Operation:
+    """Build one valid request that must terminate as UNREACHABLE."""
+    if control.control_type == CabinetControl.TYPE_BUTTON:
+        return Operation(
+            control.control_id,
+            OperateCabinetControl.Goal.COMMAND_PRESS,
+        )
+    if not control.state_ids:
+        raise RuntimeError(
+            f"Unavailable control {control.control_id} has no valid target "
+            "state for the reachability check."
+        )
+    return Operation(
+        control.control_id,
+        OperateCabinetControl.Goal.COMMAND_SET_STATE,
+        target_state=str(control.state_ids[0]),
+    )
+
+
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -1263,7 +1304,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument(
         "--exhaustive",
         action="store_true",
-        help="Exercise all knob/switch/door states, returning to defaults.",
+        help=(
+            "Submit every unavailable control and require fast UNREACHABLE; "
+            "physical operations still require a pre-positioned robot. Use "
+            "validate_cabinet_web --exhaustive for autonomous full coverage."
+        ),
     )
     parser.add_argument(
         "--inventory-only",
@@ -1306,12 +1351,20 @@ def main() -> int:
     node = CabinetValidator(args.cabinet)
     failures: List[str] = []
     completed = 0
+    expected_failures = 0
     try:
         catalog = node.wait_for_catalog(args.timeout)
         validate_catalog(catalog)
         node.wait_for_all_states(min(args.timeout, 30.0))
         node.verify_cabinet_transform(min(args.timeout, 10.0))
         controls = selected_controls(catalog, args.control, args.exhaustive)
+        if args.exhaustive and not args.control:
+            print(
+                "NOTE: low-level exhaustive mode validates all capability "
+                "failures and one pre-staged force button; use "
+                "validate_cabinet_web --exhaustive to navigate to and "
+                "physically operate all six enabled controls."
+            )
         print(
             f"Cabinet {args.cabinet} inventory valid: "
             f"{len(catalog.controls)} controls; "
@@ -1343,10 +1396,6 @@ def main() -> int:
             raise RuntimeError(
                 "Force validation requires one reachable button."
             )
-        if not unavailable_controls:
-            raise RuntimeError(
-                "Reachability validation requires one unavailable control."
-            )
         force_button = next(
             (
                 entry
@@ -1370,6 +1419,7 @@ def main() -> int:
             )
         )
         completed += 1
+        validated_operable = {str(force_button.control_id)}
         print(
             f"[force] low 4 N fails after physical travel: "
             f"{force_button.control_id}"
@@ -1386,38 +1436,42 @@ def main() -> int:
                 args.timeout,
             )
         )
+        expected_failures += 1
 
-        unreachable = unavailable_controls[0]
-        if unreachable.control_type == CabinetControl.TYPE_BUTTON:
-            unreachable_operation = Operation(
-                unreachable.control_id,
-                OperateCabinetControl.Goal.COMMAND_PRESS,
-            )
+        selected_unavailable = [
+            entry for entry in controls if not entry.operable
+        ]
+        if args.exhaustive:
+            unavailable_to_validate = unavailable_controls
+        elif args.control and selected_unavailable:
+            unavailable_to_validate = selected_unavailable
         else:
-            if not unreachable.state_ids:
-                raise RuntimeError(
-                    f"Unavailable control {unreachable.control_id} has no "
-                    "valid target state for the reachability check."
+            unavailable_to_validate = unavailable_controls[:1]
+        validated_unavailable: set[str] = set()
+        for unavailable in unavailable_to_validate:
+            print(
+                f"[reachability] structured fast failure: "
+                f"{unavailable.control_id}"
+            )
+            print(
+                "  PASS: "
+                + node.execute_expected_failure(
+                    unavailable_operation_for(unavailable),
+                    OperateCabinetControl.Result.UNREACHABLE,
+                    min(args.timeout, 15.0),
+                    expected_reason=str(unavailable.unavailable_reason),
+                    maximum_duration=5.0,
                 )
-            unreachable_operation = Operation(
-                unreachable.control_id,
-                OperateCabinetControl.Goal.COMMAND_SET_STATE,
-                target_state=str(unreachable.state_ids[0]),
             )
-        print(
-            f"[reachability] structured fast failure: "
-            f"{unreachable.control_id}"
-        )
-        print(
-            "  PASS: "
-            + node.execute_expected_failure(
-                unreachable_operation,
-                OperateCabinetControl.Result.UNREACHABLE,
-                min(args.timeout, 15.0),
-                expected_reason=str(unreachable.unavailable_reason),
-                maximum_duration=5.0,
+            validated_unavailable.add(str(unavailable.control_id))
+            expected_failures += 1
+        if args.exhaustive and len(validated_unavailable) != len(
+            unavailable_controls
+        ):
+            raise RuntimeError(
+                "Exhaustive validation did not submit every unavailable "
+                "control."
             )
-        )
 
         if args.contract_tests:
             knobs = [
@@ -1473,8 +1527,9 @@ def main() -> int:
                 )
             else:
                 print(
-                    "  SKIP: no operable knob; invalid-position, "
-                    "SET_POSITION and TOGGLE rotary contracts are not run."
+                    "  NOT APPLICABLE: no operable knob for invalid-position, "
+                    "SET_POSITION or TOGGLE; unavailable knobs were still "
+                    "submitted as UNREACHABLE."
                 )
             if doors:
                 print("[contract] cancellation and reset interlock")
@@ -1485,8 +1540,8 @@ def main() -> int:
                 print("  PASS: cancel/interlock/active-target cleanup")
             else:
                 print(
-                    "  SKIP: no door is reachable from the configured "
-                    "robot staging station."
+                    "  NOT APPLICABLE: no operable door for cancellation; "
+                    "unavailable doors were still submitted as UNREACHABLE."
                 )
             print(f"  PASS: {node.reset(args.timeout)}")
             node.verify_defaults(min(args.timeout, 10.0))
@@ -1502,8 +1557,8 @@ def main() -> int:
                 )
             else:
                 print(
-                    "  SKIP: parented switch is cataloged as unreachable "
-                    "for the lift-free robot."
+                    "  NOT APPLICABLE: no operable door/switch parent chain; "
+                    "unavailable members were still submitted as UNREACHABLE."
                 )
             print(f"  PASS: {node.reset(args.timeout)}")
             node.verify_defaults(min(args.timeout, 10.0))
@@ -1517,8 +1572,13 @@ def main() -> int:
                 node.verify_defaults(min(args.timeout, 10.0))
             for control in controls:
                 if not control.operable:
+                    if control.control_id not in validated_unavailable:
+                        raise RuntimeError(
+                            f"{control.control_id} was not submitted for its "
+                            "structured UNREACHABLE result."
+                        )
                     print(
-                        f"  SKIP: {control.control_id} unreachable: "
+                        f"  PASS: {control.control_id} returned UNREACHABLE: "
                         f"{control.unavailable_reason}"
                     )
                     continue
@@ -1542,6 +1602,7 @@ def main() -> int:
                             args.timeout,
                         )
                         completed += 1
+                        validated_operable.add(str(control.control_id))
                         print(f"  PASS: {message}")
                     except Exception as error:  # noqa: BLE001
                         failure = (
@@ -1549,10 +1610,28 @@ def main() -> int:
                         )
                         failures.append(failure)
                         print(f"  FAIL: {failure}", file=sys.stderr)
+        if args.exhaustive:
+            expected_operable = {
+                str(control.control_id)
+                for control in controls
+                if control.operable
+            }
+            missing_operable = sorted(expected_operable - validated_operable)
+            if missing_operable:
+                failure = (
+                    "Operable controls without one successful physical "
+                    "operation: " + ", ".join(missing_operable)
+                )
+                failures.append(failure)
+                print(f"  FAIL: {failure}", file=sys.stderr)
         print("Returning all controls to deterministic defaults...")
         print(f"  PASS: {node.reset(args.timeout)}")
         node.verify_defaults(min(args.timeout, 10.0))
-        print(f"Completed {completed} operations; failures={len(failures)}.")
+        print(
+            f"Completed {completed} successful operations; "
+            f"expected failures={expected_failures}; "
+            f"unexpected failures={len(failures)}."
+        )
         if failures:
             for failure in failures:
                 print(f"- {failure}", file=sys.stderr)

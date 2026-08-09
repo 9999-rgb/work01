@@ -12,10 +12,14 @@ RUN_CONTRACT_TESTS="false"
 RESPONSE_BODY=""
 TASK_BODY=""
 ACTIVE_TASK_ID=""
+CURRENT_STATION_CONTROL=""
 PENDING_CLEANUP_BODY=""
 SSE_FILE=""
 SSE_PID=""
 COMPLETED_TASKS=0
+EXPECTED_FAILURE_TASKS=0
+UNREACHABLE_TASKS=0
+declare -A VALIDATED_OPERABLE_CONTROLS=()
 
 usage() {
   cat <<'EOF'
@@ -28,8 +32,8 @@ usage() {
   --api URL           控制服务地址（默认 http://127.0.0.1:8090）
   --cabinet NAME      柜体实例（默认 cabinet_a；全量验收时逐实例调用）
   --timeout SECONDS   单个任务超时（默认 360）
-  --no-navigate       跳过独立的 /task/navigate 验证
-  --exhaustive        操作所有可达控件；明确跳过目录中的不可达项
+  --no-navigate       仅跳过通用工位导航；实际操作仍执行逐控件导航
+  --exhaustive        验收全部 33 项：可操作项实操，不可操作项逐项失败
   --contract-tests    追加并发冲突和 /task/{id}/cancel 验证
   -h, --help          显示帮助
 EOF
@@ -223,10 +227,9 @@ wait_for_system_ready() {
     controls_body="$(
       curl -fsS "$API_URL/cabinets/$CABINET/controls" 2>/dev/null || true
     )"
-    if jq -e --arg cabinet "$CABINET" \
-      --argjson require_navigation "$RUN_NAVIGATION" '
+    if jq -e --arg cabinet "$CABINET" '
         .status == "ok" and
-        ($require_navigation == false or .navigation_available == true) and
+        .navigation_available == true and
         (.cabinet_count >= 1)
       ' <<<"$health_body" >/dev/null 2>&1 &&
       jq -e --arg cabinet "$CABINET" '
@@ -242,7 +245,7 @@ wait_for_system_ready() {
   done
   [[ -z "$health_body" ]] || jq . <<<"$health_body" >&2
   [[ -z "$controls_body" ]] || jq . <<<"$controls_body" >&2
-  fail "Web/ROS 2 未在 120 秒内确认柜体目录、状态及所需 Nav2 可用"
+  fail "Web/ROS 2 未在 120 秒内确认 33 项柜体目录、状态及 Nav2 可用"
 }
 
 start_sse_capture() {
@@ -315,9 +318,45 @@ wait_for_task() {
   fail "任务 $task_id 未在 ${TASK_TIMEOUT}s 内完成"
 }
 
+navigate_for_control() {
+  local control_id="$1"
+  local navigation_task_id=""
+
+  if [[ "$CURRENT_STATION_CONTROL" == "$control_id" ]]; then
+    return
+  fi
+
+  printf '\n[navigate-control] %s -> %s\n' "$CABINET" "$control_id"
+  submit_task navigate "$(
+    jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+      '{cabinet:$cabinet, control_id:$control}'
+  )"
+  navigation_task_id="$ACTIVE_TASK_ID"
+  wait_for_task "$navigation_task_id" success
+  jq -e --arg cabinet "$CABINET" --arg control "$control_id" '
+    .request.cabinet == $cabinet and
+    .request.control_id == $control and
+    .request.station.cabinet == $cabinet and
+    .result.cabinet == $cabinet and
+    .result.station.cabinet == $cabinet and
+    (.result.final_pose.x | numbers) and
+    (.result.final_pose.y | numbers) and
+    (.result.final_pose.yaw | numbers) and
+    .result.error.position_m <= 0.20 and
+    .result.error.yaw_rad <= 0.25 and
+    (.result.duration_seconds >= 0)
+  ' <<<"$TASK_BODY" >/dev/null || {
+    jq . <<<"$TASK_BODY" >&2
+    fail "$control_id 的逐控件导航结果缺少请求标识、工位、终点或误差"
+  }
+  CURRENT_STATION_CONTROL="$control_id"
+  COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+}
+
 run_successful_operation() {
   local control_id="$1"
   local request_body="$2"
+  navigate_for_control "$control_id"
   printf '\n[operate] %s\n' "$control_id"
   submit_task operate "$request_body"
   local task_id="$ACTIVE_TASK_ID"
@@ -332,6 +371,7 @@ run_successful_operation() {
     jq . <<<"$TASK_BODY" >&2
     fail "$control_id 成功结果缺少柜体、控件或耗时字段"
   }
+  VALIDATED_OPERABLE_CONTROLS["$control_id"]=1
   COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
 }
 
@@ -342,6 +382,10 @@ run_state_round_trip() {
   [[ -n "$initial_state" && -n "$target_state" ]] || return
   [[ "$initial_state" != "$target_state" ]] || return
 
+  # Only arm the inverse operation after the control-specific station has
+  # been reached.  A navigation failure must not trigger an unsafe cleanup
+  # manipulation from an unrelated base pose.
+  navigate_for_control "$control_id"
   PENDING_CLEANUP_BODY="$(
     jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
       --arg state "$initial_state" \
@@ -358,6 +402,67 @@ run_state_round_trip() {
   run_successful_operation "$control_id" "$outbound"
   run_successful_operation "$control_id" "$PENDING_CLEANUP_BODY"
   PENDING_CLEANUP_BODY=""
+}
+
+operation_body_for_control() {
+  local control_id="$1"
+  local control_type=""
+  local target_state=""
+
+  control_type="$(
+    jq -r --arg id "$control_id" '
+      .controls[] | select(.control_id == $id) | .control_type
+    ' <<<"$CONTROLS_BODY"
+  )"
+  if [[ "$control_type" == "0" ]]; then
+    jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+      '{cabinet:$cabinet, control_id:$control, command:"press"}'
+    return
+  fi
+  target_state="$(
+    jq -r --arg id "$control_id" '
+      .controls[] | select(.control_id == $id) | .state_ids[0] // ""
+    ' <<<"$CONTROLS_BODY"
+  )"
+  [[ -n "$target_state" ]] ||
+    fail "$control_id 没有可用于不可达验证的离散目标状态"
+  jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+    --arg state "$target_state" \
+    '{cabinet:$cabinet, control_id:$control,
+      command:"set_state", target_state:$state}'
+}
+
+run_unreachable_operation() {
+  local control_id="$1"
+  local expected_reason="$2"
+  local request_body=""
+  local task_id=""
+  local started=$SECONDS
+
+  [[ -n "$expected_reason" ]] ||
+    fail "$control_id 未在目录中声明机器人不可操作原因"
+  request_body="$(operation_body_for_control "$control_id")"
+  printf '\n[reachability] %s -> fast structured failure\n' "$control_id"
+  submit_task operate "$request_body"
+  task_id="$ACTIVE_TASK_ID"
+  wait_for_task "$task_id" failed unreachable
+  (( SECONDS - started <= 10 )) ||
+    fail "$control_id 的不可达任务未在 10 秒内快速失败"
+  jq -e --arg cabinet "$CABINET" --arg control "$control_id" \
+    --arg reason "$expected_reason" '
+      .request.cabinet == $cabinet and
+      .request.control_id == $control and
+      .failure_code == "unreachable" and
+      (.failure_reason | type == "string" and length > 0 and
+        contains($reason)) and
+      .result.cabinet == $cabinet and
+      .result.control_id == $control
+    ' <<<"$TASK_BODY" >/dev/null || {
+    jq . <<<"$TASK_BODY" >&2
+    fail "$control_id 没有返回目录声明的 failed/unreachable 具体原因"
+  }
+  EXPECTED_FAILURE_TASKS=$((EXPECTED_FAILURE_TASKS + 1))
+  UNREACHABLE_TASKS=$((UNREACHABLE_TASKS + 1))
 }
 
 validate_sse_capture() {
@@ -438,9 +543,18 @@ UNREACHABLE_REASON="$(
     '.controls[] | select(.control_id == $id) | .unavailable_reason' \
     <<<"$CONTROLS_BODY"
 )"
+UNAVAILABLE_COUNT="$(
+  jq '[.controls[] | select(.operable == false)] | length' \
+    <<<"$CONTROLS_BODY"
+)"
+OPERABLE_COUNT="$(
+  jq '[.controls[] | select(.operable == true)] | length' \
+    <<<"$CONTROLS_BODY"
+)"
 [[ -n "$BUTTON_ID" ]] || fail "目录中没有可达按钮，无法验证力度"
-[[ -n "$UNREACHABLE_ID" && -n "$UNREACHABLE_REASON" ]] ||
-  fail "目录中没有带具体原因的不可达控件"
+if [[ -n "$UNREACHABLE_ID" && -z "$UNREACHABLE_REASON" ]]; then
+  fail "$UNREACHABLE_ID 没有声明机器人不可操作的具体原因"
+fi
 
 PEER_CABINET="$(
   jq -r --arg selected "$CABINET" '
@@ -500,6 +614,7 @@ if [[ "$RUN_NAVIGATION" == "true" ]]; then
     fail "导航任务结果缺少终点、误差或耗时"
   }
   COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
+  CURRENT_STATION_CONTROL=""
 fi
 
 # Omit force deliberately: the Web API must apply the documented 5 N default.
@@ -521,6 +636,7 @@ jq -e '
 }
 
 printf '\n[force] %s -> 4 N structured failure\n' "$BUTTON_ID"
+navigate_for_control "$BUTTON_ID"
 LOW_FORCE_BODY="$(
   jq -cn --arg cabinet "$CABINET" --arg control "$BUTTON_ID" \
     '{cabinet:$cabinet, control_id:$control, command:"press", force:4}'
@@ -538,44 +654,11 @@ jq -e '
   jq . <<<"$TASK_BODY" >&2
   fail "4 N 任务未返回实际位移、未触发和“力度不足”结果"
 }
+EXPECTED_FAILURE_TASKS=$((EXPECTED_FAILURE_TASKS + 1))
 
-printf '\n[reachability] %s -> fast structured failure\n' "$UNREACHABLE_ID"
-UNREACHABLE_TYPE="$(
-  jq -r --arg id "$UNREACHABLE_ID" \
-    '.controls[] | select(.control_id == $id) | .control_type' \
-    <<<"$CONTROLS_BODY"
-)"
-if [[ "$UNREACHABLE_TYPE" == "0" ]]; then
-  UNREACHABLE_BODY="$(
-    jq -cn --arg cabinet "$CABINET" --arg control "$UNREACHABLE_ID" \
-      '{cabinet:$cabinet, control_id:$control, command:"press"}'
-  )"
-else
-  UNREACHABLE_TARGET="$(
-    jq -r --arg id "$UNREACHABLE_ID" '
-      .controls[] | select(.control_id == $id) | .state_ids[0]
-    ' <<<"$CONTROLS_BODY"
-  )"
-  UNREACHABLE_BODY="$(
-    jq -cn --arg cabinet "$CABINET" --arg control "$UNREACHABLE_ID" \
-      --arg state "$UNREACHABLE_TARGET" \
-      '{cabinet:$cabinet, control_id:$control,
-        command:"set_state", target_state:$state}'
-  )"
+if [[ "$RUN_EXHAUSTIVE" != "true" && -n "$UNREACHABLE_ID" ]]; then
+  run_unreachable_operation "$UNREACHABLE_ID" "$UNREACHABLE_REASON"
 fi
-UNREACHABLE_STARTED=$SECONDS
-submit_task operate "$UNREACHABLE_BODY"
-UNREACHABLE_TASK_ID="$ACTIVE_TASK_ID"
-wait_for_task "$UNREACHABLE_TASK_ID" failed unreachable
-(( SECONDS - UNREACHABLE_STARTED <= 10 )) ||
-  fail "不可达任务未在 10 秒内快速失败"
-jq -e --arg reason "$UNREACHABLE_REASON" '
-  (.failure_reason | contains($reason)) and
-  .result.control_id == .request.control_id
-' <<<"$TASK_BODY" >/dev/null || {
-  jq . <<<"$TASK_BODY" >&2
-  fail "不可达任务没有返回目录声明的具体原因"
-}
 
 if [[ -n "$PEER_CABINET" ]]; then
   get_json "/cabinets/$PEER_CABINET/controls"
@@ -654,7 +737,7 @@ run_exhaustive_controls() {
     )
   done
   while IFS=$'\t' read -r control_id reason; do
-    printf '  SKIP unreachable: %s — %s\n' "$control_id" "$reason"
+    run_unreachable_operation "$control_id" "$reason"
   done < <(
     jq -r '.controls[] | select(.operable == false) |
       [.control_id, .unavailable_reason] | @tsv' <<<"$CONTROLS_BODY"
@@ -663,6 +746,11 @@ run_exhaustive_controls() {
 
 if [[ "$RUN_EXHAUSTIVE" == "true" ]]; then
   run_exhaustive_controls
+  [[ "$UNREACHABLE_TASKS" == "$UNAVAILABLE_COUNT" ]] ||
+    fail "全量验收应提交 $UNAVAILABLE_COUNT 个不可达控件，实际 $UNREACHABLE_TASKS 个"
+  VALIDATED_OPERABLE_COUNT="${#VALIDATED_OPERABLE_CONTROLS[@]}"
+  [[ "$VALIDATED_OPERABLE_COUNT" == "$OPERABLE_COUNT" ]] ||
+    fail "全量验收应成功操作 $OPERABLE_COUNT 个可操作控件，实际 $VALIDATED_OPERABLE_COUNT 个"
 else
   run_representative_rotary_controls
 fi
@@ -676,7 +764,7 @@ if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
       <<<"$CONTROLS_BODY"
   )"
   if [[ -z "$CANCEL_CONTROL" ]]; then
-    printf '  SKIP: no operable knob or door; conflict/cancel contract requires a long-running rotary operation.\n'
+    printf '  NOT APPLICABLE: no operable knob or door for a long-running cancel task; all unavailable controls were still submitted above.\n'
   else
     CANCEL_INITIAL="$(
       jq -r --arg id "$CANCEL_CONTROL" '
@@ -695,6 +783,7 @@ if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
         '{cabinet:$cabinet, control_id:$control,
           command:"set_state", target_state:$state}'
     )"
+    navigate_for_control "$CANCEL_CONTROL"
     PENDING_CLEANUP_BODY="$(
       jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
         --arg state "$CANCEL_INITIAL" \
@@ -704,7 +793,8 @@ if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
     submit_task operate "$CANCEL_BODY"
     CANCEL_TASK_ID="$ACTIVE_TASK_ID"
     request_json POST /task/navigate 409 "$(
-      jq -cn --arg cabinet "$CABINET" '{cabinet:$cabinet}'
+      jq -cn --arg cabinet "$CABINET" --arg control "$CANCEL_CONTROL" \
+        '{cabinet:$cabinet, control_id:$control}'
     )"
     jq -e --arg active "$CANCEL_TASK_ID" \
       '.details.active_task_id == $active' <<<"$RESPONSE_BODY" >/dev/null ||
@@ -729,5 +819,5 @@ if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
 fi
 
 validate_sse_capture
-printf '\nPASS: 多柜体 Web 任务验收完成；成功任务=%d；力度不足和不可达均按预期失败。\n' \
-  "$COMPLETED_TASKS"
+printf '\nPASS: 多柜体 Web 任务验收完成；成功任务=%d；预期失败=%d；力度不足和不可达均按合同返回。\n' \
+  "$COMPLETED_TASKS" "$EXPECTED_FAILURE_TASKS"

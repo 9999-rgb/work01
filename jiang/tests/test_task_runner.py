@@ -19,6 +19,7 @@ sys.path.insert(0, str(JIANG_DIR))
 from control_gateway.cabinet_client import CabinetClientError  # noqa: E402
 from control_gateway.inventory import CabinetInstance  # noqa: E402
 from control_gateway.inventory import CabinetInventory  # noqa: E402
+from control_gateway.inventory import MapBounds  # noqa: E402
 from control_gateway.inventory import NavigationStationSpec  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway import runner as runner_module  # noqa: E402
@@ -164,6 +165,7 @@ class _CabinetClient:
         self.submissions = []
         self.cancel_count = 0
         self.submit_error: Optional[Exception] = None
+        self.submission_response: Optional[Dict[str, Any]] = None
         self.status = {
             "available": True,
             "active": False,
@@ -193,6 +195,9 @@ class _CabinetClient:
         if self.submit_error is not None:
             raise self.submit_error
         self.submissions.append((args, kwargs))
+        if self.submission_response is not None:
+            self.submit_event.set()
+            return dict(self.submission_response)
         self.status.update(active=True, state="operating")
         self.submit_event.set()
         self.listener(
@@ -277,7 +282,10 @@ def _inventory(count: int = 2) -> CabinetInventory:
 def _server(count: int = 2) -> tuple[ControlServer, _NavigationNode]:
     server = object.__new__(ControlServer)
     server._inventory = _inventory(count)
-    server._robot_adapter = SimpleNamespace(navigation_frame="map")
+    server._robot_adapter = SimpleNamespace(
+        navigation_frame="map",
+        control_navigation_station=lambda _control_id: None,
+    )
     server._node = _NavigationNode()
     server._task_manager = TaskManager()
     server._task_interlock_lock = threading.RLock()
@@ -355,6 +363,72 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertAlmostEqual(0.05, task["result"]["error"]["position_m"])
         self.assertAlmostEqual(0.03, task["result"]["error"]["yaw_rad"])
         self.assertEqual("cabinet_a", task["result"]["cabinet"])
+
+    def test_navigation_uses_control_specific_robot_station(self) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        self.assertTrue(node.goal_event.wait(timeout=1.0))
+        assert node.goal is not None
+        self.assertAlmostEqual(0.5, node.goal["x"])
+        self.assertAlmostEqual(2.0, node.goal["y"])
+        self.assertEqual("button_1", accepted["request"]["control_id"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": 2.0, "yaw": math.pi},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_control_navigation_rejects_unknown_catalog_id(self) -> None:
+        server, _node = _server()
+
+        with self.assertRaises(ControlRequestError) as unknown:
+            server.submit_navigation_task("cabinet_a", "missing")
+
+        self.assertEqual(404, unknown.exception.status)
+
+    def test_control_navigation_requires_ready_catalog(self) -> None:
+        server, _node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        client.snapshot_controls = lambda: {
+            "catalog_received": False,
+            "controls": [],
+        }
+
+        with self.assertRaises(ControlRequestError) as not_ready:
+            server.submit_navigation_task("cabinet_a", "button_1")
+
+        self.assertEqual(503, not_ready.exception.status)
+
+    def test_control_navigation_rejects_station_outside_live_map(self) -> None:
+        server, _node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(100.0, 0.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=1.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda _control_id: station
+        )
+        server._live_map_bounds = lambda: MapBounds(-5.0, -5.0, 5.0, 5.0)
+
+        with self.assertRaises(ControlRequestError) as outside:
+            server.submit_navigation_task("cabinet_a", "button_1")
+
+        self.assertEqual(400, outside.exception.status)
+        self.assertIn("outside the map", str(outside.exception))
 
     def test_navigation_result_rejects_pose_that_stopped_updating(self) -> None:
         station = {
@@ -576,6 +650,35 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("success", task["status"])
         self.assertAlmostEqual(0.00625, task["result"]["actual_displacement"])
         self.assertTrue(task["result"]["button_triggered"])
+
+    def test_synchronous_operation_failure_does_not_wait_for_listener(self) -> None:
+        server, _node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        client.submission_response = {
+            "status": "failed",
+            "generation": 1,
+            "failure_code": "unreachable",
+            "message": "robot workspace cannot reach this control",
+            "result": {"unavailable_reason": "workspace limit"},
+        }
+
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=1.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("unreachable", task["failure_code"])
+        self.assertEqual(
+            "robot workspace cannot reach this control",
+            task["failure_reason"],
+        )
+        self.assertEqual("workspace limit", task["result"]["unavailable_reason"])
 
     def test_operation_cancel_waits_for_action_terminal(self) -> None:
         server, _node = _server()

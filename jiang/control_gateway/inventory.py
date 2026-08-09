@@ -204,6 +204,19 @@ class NavigationStationSpec:
     ) -> "NavigationStationSpec":
         if not isinstance(value, Mapping):
             raise InventoryError(f"{context} must be a mapping.")
+        allowed = {
+            "local_anchor",
+            "outward_axis",
+            "standoff",
+            "base_yaw_offset",
+            "frame_id",
+        }
+        unknown = set(value) - allowed
+        if unknown:
+            raise InventoryError(
+                f"{context} has unknown fields: "
+                + ", ".join(sorted(str(field) for field in unknown))
+            )
         anchor = _vector3(value.get("local_anchor"), f"{context}.local_anchor")
         axis = _vector3(value.get("outward_axis"), f"{context}.outward_axis")
         norm = math.sqrt(sum(component * component for component in axis))
@@ -363,10 +376,15 @@ class CabinetInventory:
         self,
         name: str,
         *,
+        control_station: Optional[NavigationStationSpec] = None,
         boundary: Optional[Any] = None,
         margin: float = 0.0,
     ) -> NavigationStation:
         """Compute a station and optionally validate it against a live map.
+
+        ``control_station`` is a full robot-adapter override for the selected
+        control.  It replaces the common/per-instance station geometry while
+        retaining the cabinet instance's world transform.
 
         ``boundary`` may be a ``MapBounds``/object with a
         ``contains(x, y, margin=...)`` method, or a simple ``(x, y) -> bool``
@@ -377,6 +395,12 @@ class CabinetInventory:
             instance.station_override,
             cabinet=instance.name,
         )
+        if control_station is not None:
+            if not isinstance(control_station, NavigationStationSpec):
+                raise InventoryError(
+                    "control_station must be a NavigationStationSpec."
+                )
+            spec = control_station
         rotation = _rpy_rotation(instance.roll, instance.pitch, instance.yaw)
         local_position = tuple(
             spec.local_anchor[index] + spec.outward_axis[index] * spec.standoff

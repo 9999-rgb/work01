@@ -26,10 +26,12 @@ from control_gateway.inventory import CabinetInventory  # noqa: E402
 from control_gateway.inventory import CabinetNotFoundError  # noqa: E402
 from control_gateway.inventory import InventoryError  # noqa: E402
 from control_gateway.inventory import MapBounds  # noqa: E402
+from control_gateway.inventory import NavigationStationSpec  # noqa: E402
 from control_gateway.inventory import OccupancyGridBoundary  # noqa: E402
 from control_gateway.inventory import (  # noqa: E402
     NavigationStationOutOfBoundsError,
 )
+from control_gateway.robot_adapter import load as load_robot_adapter  # noqa: E402
 
 
 class CabinetInventoryTest(unittest.TestCase):
@@ -111,12 +113,30 @@ class CabinetInventoryTest(unittest.TestCase):
         self.assertEqual("cabinet_a", listed[0]["name"])
         self.assertEqual("map", listed[0]["navigation_station"]["frame_id"])
 
+    def test_control_station_replaces_common_geometry(self) -> None:
+        inventory = self._load({"instances": [self._instance()]})
+        station = inventory.station_for(
+            "cabinet_a",
+            control_station=NavigationStationSpec(
+                local_anchor=(0.5, 0.0, 0.0),
+                outward_axis=(1.0, 0.0, 0.0),
+                standoff=0.75,
+                base_yaw_offset=0.25,
+                frame_id="map",
+            ),
+        )
+
+        self.assertAlmostEqual(11.25, station.x)
+        self.assertAlmostEqual(20.0, station.y)
+        self.assertAlmostEqual(-math.pi + 0.25, station.yaw)
+
     def test_project_layout_reserves_front_rear_and_side_workspace(self) -> None:
         config = WORKSPACE / "xczs_inspection_robot_control" / "config"
         inventory = CabinetInventory.load(
             config / "cabinet_instances.yaml",
             config / "cabinet_scene.yaml",
         )
+        adapter = load_robot_adapter(config / "cabinet_robot_adapter.yaml")
         instances = {instance.name: instance for instance in inventory}
 
         expected_y = {
@@ -152,8 +172,9 @@ class CabinetInventoryTest(unittest.TestCase):
             self.assertGreaterEqual(front.y - 0.45, map_min)
             self.assertLessEqual(front.y + 0.45, map_max)
 
-            # Reserve a rear station 1.20 m behind the 0.60 m cabinet body.
-            # At yaw=pi its padded footprint occupies x=[3.35, 4.38].
+            # The layout reserves a collision-clear rear service corridor 1.20 m
+            # behind the 0.60 m cabinet body.  This is a layout allowance, not a
+            # claim that the current robot has a verified door trajectory there.
             rear_x = instances[name].x + 1.80
             rear_y = instances[name].y - cabinet_width / 2.0
             self.assertGreaterEqual(rear_x - 0.45, map_min)
@@ -164,6 +185,33 @@ class CabinetInventoryTest(unittest.TestCase):
             # A conservative 0.65 m rear-door sweep ends at x=3.25.
             door_sweep_max_x = instances[name].x + 0.60 + 0.65
             self.assertGreaterEqual(rear_x - 0.45 - door_sweep_max_x, 0.09)
+
+        # Every robot-specific control station is inside the usable map for all
+        # three instances.  The tested door candidate is retained for a future
+        # full-loop revalidation: its operation remains disabled until
+        # open/retreat/close is safe, so this test does not mislabel it as
+        # collision-clear.
+        configured_stations = dict(adapter.control_navigation_stations)
+        self.assertIn("cabinet_rear_door", configured_stations)
+        for control_id, control_station in configured_stations.items():
+            with self.subTest(control=control_id):
+                for name in expected_y:
+                    station = inventory.station_for(
+                        name,
+                        control_station=control_station,
+                    )
+                    self.assertGreaterEqual(station.x - 0.58, map_min)
+                    self.assertLessEqual(station.x + 0.58, map_max)
+                    self.assertGreaterEqual(station.y - 0.58, map_min)
+                    self.assertLessEqual(station.y + 0.58, map_max)
+
+        door_station = inventory.station_for(
+            "cabinet_a",
+            control_station=configured_stations["cabinet_rear_door"],
+        )
+        self.assertAlmostEqual(3.61, door_station.x, places=6)
+        self.assertAlmostEqual(-0.28, door_station.y, places=6)
+        self.assertAlmostEqual(math.pi, abs(door_station.yaw), places=6)
 
         # A 0.93 m side standoff plus the footprint's 0.58 m rear extent
         # still leaves more than 0.30 m before the adjacent cabinet.

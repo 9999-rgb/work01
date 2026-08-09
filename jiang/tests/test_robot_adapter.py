@@ -76,9 +76,20 @@ class RobotAdapterTest(unittest.TestCase):
         adapter = self._load_document(
             {
                 "/**": {"ros__parameters": _parameters()},
-                "/**/operator": {
+                "/**/xczs_cabinet_button_operator": {
                     "ros__parameters": {
-                        "navigation_base_frame": "ignored_base"
+                        "navigation_base_frame": "ignored_base",
+                        "controls": {
+                            "button_1": {
+                                "navigation_station": {
+                                    "local_anchor": [0.25, 1.0, 0.0],
+                                    "outward_axis": [0.0, 0.0, 2.0],
+                                    "standoff": 0.8,
+                                    "base_yaw_offset": 0.1,
+                                    "frame_id": "world_map",
+                                }
+                            }
+                        },
                     }
                 },
             }
@@ -93,8 +104,79 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("arm", adapter.manual_joints[0].group)
         self.assertEqual("gripper", adapter.manual_joints[1].group)
         self.assertEqual(0.5, adapter.manual_joints[1].open_position)
+        station = adapter.control_navigation_station("button_1")
+        self.assertIsNotNone(station)
+        assert station is not None
+        self.assertEqual((0.25, 1.0, 0.0), station.local_anchor)
+        self.assertEqual((0.0, 0.0, 1.0), station.outward_axis)
+        self.assertEqual("world_map", station.frame_id)
+        self.assertIsNone(adapter.control_navigation_station("missing"))
         with self.assertRaisesRegex(FrozenInstanceError, "cannot assign"):
             adapter.navigation_frame = "changed"  # type: ignore[misc]
+
+    def test_rejects_invalid_control_navigation_station(self) -> None:
+        with self.assertRaisesRegex(
+            RobotAdapterError,
+            "controls.button_1.navigation_station.standoff",
+        ):
+            self._load_document(
+                {
+                    "/**": {"ros__parameters": _parameters()},
+                    "/**/xczs_cabinet_button_operator": {
+                        "ros__parameters": {
+                            "controls": {
+                                "button_1": {
+                                    "navigation_station": {
+                                        "local_anchor": [0.0, 0.0, 0.0],
+                                        "outward_axis": [1.0, 0.0, 0.0],
+                                        "standoff": 0.0,
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            )
+
+        with self.assertRaisesRegex(RobotAdapterError, "unknown fields: frame"):
+            self._load_document(
+                {
+                    "/**": {"ros__parameters": _parameters()},
+                    "/**/xczs_cabinet_button_operator": {
+                        "ros__parameters": {
+                            "controls": {
+                                "button_1": {
+                                    "navigation_station": {
+                                        "local_anchor": [0.0, 0.0, 0.0],
+                                        "outward_axis": [1.0, 0.0, 0.0],
+                                        "standoff": 0.8,
+                                        "frame": "world_map",
+                                    }
+                                }
+                            }
+                        }
+                    },
+                }
+            )
+
+    def test_rejects_control_ids_duplicated_after_trimming(self) -> None:
+        with self.assertRaisesRegex(
+            RobotAdapterError,
+            "duplicate control ID after trimming whitespace: button_1",
+        ):
+            self._load_document(
+                {
+                    "/**": {"ros__parameters": _parameters()},
+                    "/**/xczs_cabinet_button_operator": {
+                        "ros__parameters": {
+                            "controls": {
+                                "button_1": {},
+                                " button_1 ": {},
+                            }
+                        }
+                    },
+                }
+            )
 
     def test_project_adapter_matches_typed_contract(self) -> None:
         path = (

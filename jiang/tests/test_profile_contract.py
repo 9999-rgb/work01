@@ -185,6 +185,27 @@ class ProfileContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ProfileContractError, "expected"):
             self._validate(documents)
 
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "controls"
+        ] = {
+            "start_button": {
+                "navigation_station": {
+                    "frame_id": "wrong_map",
+                    "local_anchor": [0.0, 0.0, 0.0],
+                    "outward_axis": [1.0, 0.0, 0.0],
+                    "standoff": 0.5,
+                }
+            }
+        }
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "device_a/start_button.*expected 'world_map'",
+        ):
+            self._validate(documents)
+
     def test_rejects_unknown_or_overlapping_robot_overrides(self) -> None:
         documents = _documents()
         adapter = documents["adapter"]

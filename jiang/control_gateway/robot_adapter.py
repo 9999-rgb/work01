@@ -6,9 +6,12 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, Tuple, Union
+from typing import Any, Mapping, Optional, Sequence, Tuple, Union
 
 import yaml
+
+from .inventory import InventoryError
+from .inventory import NavigationStationSpec
 
 
 _ABSOLUTE_ROS_NAME = re.compile(
@@ -104,6 +107,9 @@ class RobotAdapterConfig:
     gripper_controller_topic: Union[str, None]
     gripper_controller_status_topic: Union[str, None]
     manual_joints: Tuple[ManualJointConfig, ...]
+    control_navigation_stations: Tuple[
+        Tuple[str, NavigationStationSpec], ...
+    ]
 
     @property
     def manual_joint_names(self) -> Tuple[str, ...]:
@@ -125,6 +131,16 @@ class RobotAdapterConfig:
             for joint in self.manual_joints
             if joint.group == "gripper"
         )
+
+    def control_navigation_station(
+        self,
+        control_id: str,
+    ) -> Optional[NavigationStationSpec]:
+        """Return a robot-specific station for one control, if configured."""
+        for configured_id, station in self.control_navigation_stations:
+            if configured_id == control_id:
+                return station
+        return None
 
 
 def _relative_name(value: Any, field: str) -> str:
@@ -341,6 +357,81 @@ def _required(
     raise RobotAdapterError(f"Missing required robot adapter field: {field}.")
 
 
+def _operator_parameters(
+    document: Mapping[str, Any],
+    path: Path,
+) -> Optional[Mapping[str, Any]]:
+    """Return the optional cabinet-operator section from an adapter file."""
+    matches = []
+    for node_name, node_config in document.items():
+        if not isinstance(node_name, str) or not (
+            node_name == "xczs_cabinet_button_operator"
+            or node_name.endswith("/xczs_cabinet_button_operator")
+        ):
+            continue
+        if not isinstance(node_config, Mapping):
+            raise RobotAdapterError(
+                f"Robot adapter {path} operator entry must be a mapping."
+            )
+        parameters = node_config.get("ros__parameters")
+        if not isinstance(parameters, Mapping):
+            raise RobotAdapterError(
+                f"Robot adapter {path} operator entry must contain "
+                "ros__parameters."
+            )
+        matches.append(parameters)
+    if len(matches) > 1:
+        raise RobotAdapterError(
+            f"Robot adapter {path} defines multiple cabinet operator entries."
+        )
+    return matches[0] if matches else None
+
+
+def _control_navigation_stations(
+    document: Mapping[str, Any],
+    path: Path,
+) -> Tuple[Tuple[str, NavigationStationSpec], ...]:
+    """Load full per-control station profiles from the operator adapter."""
+    operator = _operator_parameters(document, path)
+    if operator is None:
+        return ()
+    controls = operator.get("controls", {})
+    if not isinstance(controls, Mapping):
+        raise RobotAdapterError(
+            f"Robot adapter {path} operator controls must be a mapping."
+        )
+    stations = []
+    normalized_ids = set()
+    for control_id, override in controls.items():
+        if not isinstance(control_id, str) or not control_id.strip():
+            raise RobotAdapterError(
+                f"Robot adapter {path} control IDs must be non-empty strings."
+            )
+        normalized_id = control_id.strip()
+        if normalized_id in normalized_ids:
+            raise RobotAdapterError(
+                f"Robot adapter {path} defines duplicate control ID after "
+                f"trimming whitespace: {normalized_id}."
+            )
+        normalized_ids.add(normalized_id)
+        if not isinstance(override, Mapping):
+            raise RobotAdapterError(
+                f"Robot adapter controls.{control_id} must be a mapping."
+            )
+        value = override.get("navigation_station")
+        if value is None:
+            continue
+        try:
+            station = NavigationStationSpec.from_mapping(
+                value,
+                context=f"controls.{control_id}.navigation_station",
+            )
+        except InventoryError as error:
+            raise RobotAdapterError(str(error)) from error
+        stations.append((normalized_id, station))
+    return tuple(stations)
+
+
 def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
     """Load and strictly validate a cabinet robot adapter YAML file."""
     path = Path(path_value).expanduser().resolve()
@@ -484,4 +575,8 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         gripper_controller_topic=gripper_topic,
         gripper_controller_status_topic=gripper_status_topic,
         manual_joints=manual_joints,
+        control_navigation_stations=_control_navigation_stations(
+            document,
+            path,
+        ),
     )

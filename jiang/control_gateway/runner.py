@@ -621,13 +621,42 @@ class ControlServer:
             # Old lifecycle/API compatibility; new servers always use clients.
             return self._node.cabinet_controls_snapshot()
 
-    def submit_navigation_task(self, cabinet: str) -> Dict[str, Any]:
-        """Accept a task that drives to a cabinet's configured station."""
+    def submit_navigation_task(
+        self,
+        cabinet: str,
+        control_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Drive to the cabinet or a robot-calibrated control station."""
         with self._request_scope():
             try:
                 self._inventory.get(cabinet)
+                control_station = None
+                if control_id is not None:
+                    client = self._client_for(cabinet)
+                    catalog = client.snapshot_controls()
+                    if catalog.get("catalog_received") is not True:
+                        raise ControlRequestError(
+                            f"Control catalog for {cabinet} is not ready.",
+                            503,
+                        )
+                    known_ids = {
+                        str(control.get("control_id", ""))
+                        for control in catalog.get("controls", ())
+                        if isinstance(control, Mapping)
+                    }
+                    if control_id not in known_ids:
+                        raise ControlRequestError(
+                            f"Unknown cabinet control: {control_id}",
+                            404,
+                        )
+                    control_station = (
+                        self._robot_adapter.control_navigation_station(
+                            control_id
+                        )
+                    )
                 station = self._inventory.station_for(
                     cabinet,
+                    control_station=control_station,
                     boundary=self._live_map_bounds(),
                     margin=MAP_STATION_MARGIN_M,
                 )
@@ -648,6 +677,8 @@ class ControlServer:
                 "cabinet": cabinet,
                 "station": station.to_dict(),
             }
+            if control_id is not None:
+                request["control_id"] = control_id
             with self._task_interlock_scope():
                 try:
                     return self._task_manager.submit(
@@ -1603,6 +1634,33 @@ class ControlServer:
                     ),
                     details=getattr(error, "details", {}),
                 ) from error
+
+            submission_status = str(submission.get("status", "accepted"))
+            if submission_status == "canceled":
+                raise TaskCanceledError(
+                    str(submission.get("message") or "Operation was canceled.")
+                )
+            if submission_status == "failed":
+                result = dict(submission.get("result") or {})
+                result.update(
+                    {
+                        "cabinet": cabinet,
+                        "control_id": control_id,
+                        "command": command,
+                        "duration_seconds": time.monotonic() - started,
+                    }
+                )
+                raise TaskExecutionError(
+                    str(
+                        submission.get("message")
+                        or "Cabinet operation failed."
+                    ),
+                    code=str(
+                        submission.get("failure_code")
+                        or "operation_failed"
+                    ),
+                    result=result,
+                )
 
             expected_generation = submission.get("generation")
 
