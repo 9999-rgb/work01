@@ -98,6 +98,12 @@ ament_target_dependencies(
 )
 
 target_compile_features(cabinet_planning_scene PUBLIC cxx_std_17)
+target_include_directories(
+  cabinet_planning_scene
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include>"
+)
 ament_target_dependencies(
   cabinet_planning_scene
   moveit_msgs
@@ -190,6 +196,19 @@ ament_target_dependencies(
   std_msgs
   std_srvs
 )
+foreach(
+  router_target
+  legacy_trajectory_router
+  base_command_router
+  cabinet_button_operator
+)
+  target_include_directories(
+    ${router_target}
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+endforeach()
 
 target_compile_features(cabinet_grasp_aggregator PUBLIC cxx_std_17)
 ament_target_dependencies(cabinet_grasp_aggregator rclcpp std_msgs)
@@ -267,6 +286,25 @@ if(BUILD_TESTING)
   target_compile_features(operation_lease_state_test PUBLIC cxx_std_17)
   target_include_directories(
     operation_lease_state_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+  ament_add_gtest(router_utils_test test/router_utils_test.cpp)
+  target_compile_features(router_utils_test PUBLIC cxx_std_17)
+  target_include_directories(
+    router_utils_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+  ament_add_gtest(
+    planning_scene_profile_test
+    test/planning_scene_profile_test.cpp
+  )
+  target_compile_features(planning_scene_profile_test PUBLIC cxx_std_17)
+  target_include_directories(
+    planning_scene_profile_test
     PUBLIC
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
       "$<INSTALL_INTERFACE:include>"

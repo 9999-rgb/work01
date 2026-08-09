@@ -6,7 +6,7 @@ import math
 import json
 import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import rclpy
 from action_msgs.msg import GoalStatus
@@ -39,6 +39,7 @@ from tf2_ros import Buffer
 from tf2_ros import TransformException
 from tf2_ros import TransformListener
 
+from .robot_adapter import ManualJointConfig
 from .velocity_profile import VelocityProfile
 
 
@@ -91,16 +92,6 @@ class RosControlNode(Node):
     CABINET_DETENT_TOLERANCE = 0.035
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
-    JOINT_NAMES = [
-        "body_arm1",
-        "arm1_arm2",
-        "arm2_arm3",
-        "arm3_arm4",
-        "arm4_arm5",
-        "arm5_end",
-        "end_worklink1",
-        "end_worklink2",
-    ]
     TASK_PUBLISHER_HISTORY_LIMIT = 256
     ACTIVE_NAVIGATION_STATES = {
         "enabling",
@@ -123,7 +114,16 @@ class RosControlNode(Node):
         max_angular_speed: float,
         command_timeout: float,
         context: Context,
+        navigation_frame: str = "map",
         navigation_base_frame: str = "base_link",
+        navigation_action: str = "/navigate_to_pose",
+        navigation_mode_service: str = "/xczs/set_navigation_mode",
+        navigation_mode_topic: str = "/xczs/navigation_mode",
+        map_topic: str = "/map",
+        localization_pose_topic: str = "/amcl_pose",
+        plan_topic: str = "/plan",
+        manual_linear_axis: str = "y",
+        manual_joints: Sequence[ManualJointConfig] = (),
     ) -> None:
         super().__init__(
             "xczs_web_control_server",
@@ -153,7 +153,14 @@ class RosControlNode(Node):
         self._max_linear_speed = max_linear_speed
         self._max_angular_speed = max_angular_speed
         self._command_timeout = command_timeout
+        self._navigation_frame = navigation_frame
         self._navigation_base_frame = navigation_base_frame
+        self._manual_joints = tuple(manual_joints)
+        if not self._manual_joints:
+            raise ValueError("manual_joints must not be empty.")
+        if manual_linear_axis not in {"x", "y"}:
+            raise ValueError("manual_linear_axis must be either x or y.")
+        self._manual_linear_axis = manual_linear_axis
         self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -179,11 +186,11 @@ class RosControlNode(Node):
         self._navigation_client = ActionClient(
             self,
             NavigateToPose,
-            "/navigate_to_pose",
+            navigation_action,
         )
         self._navigation_mode_client = self.create_client(
             SetBool,
-            "/xczs/set_navigation_mode",
+            navigation_mode_service,
         )
         self._cabinet_button_client = ActionClient(
             self,
@@ -206,25 +213,25 @@ class RosControlNode(Node):
         )
         self.create_subscription(
             Bool,
-            "/xczs/navigation_mode",
+            navigation_mode_topic,
             self._navigation_mode_callback,
             transient_qos,
         )
         self.create_subscription(
             OccupancyGrid,
-            "/map",
+            map_topic,
             self._map_callback,
             transient_qos,
         )
         self.create_subscription(
             PoseWithCovarianceStamped,
-            "/amcl_pose",
+            localization_pose_topic,
             self._pose_callback,
             10,
         )
         self.create_subscription(
             Path,
-            "/plan",
+            plan_topic,
             self._plan_callback,
             10,
         )
@@ -384,16 +391,16 @@ class RosControlNode(Node):
 
     def set_joint_target(self, positions: List[float]) -> List[float]:
         """Queue one legacy manual joint target."""
-        if len(positions) != 8:
+        if len(positions) != len(self._manual_joints):
             raise ControlRequestError(
-                "positions must contain six arm and two gripper values."
+                "positions must match the configured manual joint order "
+                f"({len(self._manual_joints)} values)."
             )
-        joint_names = list(self.JOINT_NAMES)
+        joint_names = [joint.name for joint in self._manual_joints]
         safe_positions = [
-            max(-2.80, min(2.80, value)) for value in positions[:6]
+            max(joint.min_position, min(joint.max_position, value))
+            for joint, value in zip(self._manual_joints, positions)
         ]
-        safe_positions.append(max(0.0, min(0.35, positions[6])))
-        safe_positions.append(max(-0.35, min(0.0, positions[7])))
 
         trajectory = JointTrajectory()
         trajectory.header.frame_id = "world"
@@ -467,7 +474,7 @@ class RosControlNode(Node):
             return
         try:
             transform = tf_buffer.lookup_transform(
-                "map",
+                self._navigation_frame,
                 self._navigation_base_frame,
                 RosTime(),
             )
@@ -1328,7 +1335,10 @@ class RosControlNode(Node):
                 # Publish while holding the state lock so a cabinet goal
                 # cannot become active between the active check and send.
                 command = Twist()
-                command.linear.y = linear_y
+                if self._manual_linear_axis == "x":
+                    command.linear.x = linear_y
+                else:
+                    command.linear.y = linear_y
                 command.angular.z = angular_z
                 self._cmd_vel_publisher.publish(command)
                 if trajectory is not None:
@@ -1551,7 +1561,7 @@ class RosControlNode(Node):
         )
 
         goal = NavigateToPose.Goal()
-        goal.pose.header.frame_id = "map"
+        goal.pose.header.frame_id = self._navigation_frame
         goal_stamp = self.get_clock().now()
         goal.pose.header.stamp = goal_stamp.to_msg()
         self._navigation_state["goal_sent_ros_nanoseconds"] = int(

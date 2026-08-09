@@ -27,6 +27,7 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
+#include "xczs_inspection_robot_control/planning_scene_profile.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -118,6 +119,7 @@ public:
     const auto pose_valid_topic = required_string_parameter(
       "pose_valid_topic", "pose_valid");
 
+    load_control_catalog();
     load_scene_profile();
     load_control_collisions();
 
@@ -147,22 +149,26 @@ public:
           ++scene_revision_;
         }
       });
-    door_state_subscription_ = create_control_state_subscription(
-      door_control_id_, [this](double position) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if (std::abs(door_position_ - position) > 1.0e-3) {
-          door_position_ = position;
-          ++scene_revision_;
-        }
-      });
-    switch_state_subscription_ = create_control_state_subscription(
-      switch_control_id_, [this](double position) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        if (std::abs(switch_position_ - position) > 1.0e-3) {
-          switch_position_ = position;
-          ++scene_revision_;
-        }
-      });
+    if (has_door()) {
+      door_state_subscription_ = create_control_state_subscription(
+        door_control_id_, [this](double position) {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          if (std::abs(door_position_ - position) > 1.0e-3) {
+            door_position_ = position;
+            ++scene_revision_;
+          }
+        });
+    }
+    if (has_switch()) {
+      switch_state_subscription_ = create_control_state_subscription(
+        switch_control_id_, [this](double position) {
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          if (std::abs(switch_position_ - position) > 1.0e-3) {
+            switch_position_ = position;
+            ++scene_revision_;
+          }
+        });
+    }
 
     retry_timer_ = create_wall_timer(
       std::chrono::milliseconds(50),
@@ -170,6 +176,16 @@ public:
   }
 
 private:
+  bool has_door() const
+  {
+    return !door_control_id_.empty();
+  }
+
+  bool has_switch() const
+  {
+    return !switch_control_id_.empty();
+  }
+
   std::string collision_object_id(const std::string & legacy_id) const
   {
     if (collision_object_prefix_.empty()) {
@@ -228,6 +244,43 @@ private:
     return {values[0], values[1]};
   }
 
+  void load_control_catalog()
+  {
+    const auto control_ids =
+      declare_parameter<std::vector<std::string>>(
+      "control_ids", std::vector<std::string>{});
+    if (control_ids.empty()) {
+      throw std::invalid_argument(
+              "Parameter 'control_ids' must contain the shared catalog.");
+    }
+    control_profiles_.reserve(control_ids.size());
+    for (const auto & id : control_ids) {
+      if (id.empty()) {
+        throw std::invalid_argument("Control IDs must not be empty.");
+      }
+      const auto prefix = "controls." + id + ".";
+      const auto type = required_string_parameter(prefix + "type", "");
+      const auto parent = type == "switch" ?
+        declare_parameter<std::string>(prefix + "parent_control_id", "") :
+        std::string{};
+      control_profiles_.push_back({id, type, parent});
+    }
+
+    const auto articulation = resolve_scene_articulation(control_profiles_);
+    door_control_id_ = articulation.door_control_id.value_or("");
+    switch_control_id_ = articulation.switch_control_id.value_or("");
+    switch_parent_control_id_ = articulation.switch_parent_control_id;
+  }
+
+  bool has_control_type(const std::string & type) const
+  {
+    return std::any_of(
+      control_profiles_.begin(), control_profiles_.end(),
+      [&type](const SceneControlProfile & control) {
+        return control.type == type;
+      });
+  }
+
   void load_scene_profile()
   {
     const auto frame_part_ids =
@@ -248,14 +301,18 @@ private:
           vector3_parameter(prefix + "position", {})});
     }
 
-    std::tie(button_collision_height_, button_collision_radius_) =
-      cylinder_size_parameter("control_collision.button_size", {});
-    button_collision_center_offset_ = declare_parameter<double>(
-      "control_collision.button_center_offset", 0.0);
-    std::tie(knob_collision_height_, knob_collision_radius_) =
-      cylinder_size_parameter("control_collision.knob_size", {});
-    knob_collision_center_offset_ = declare_parameter<double>(
-      "control_collision.knob_center_offset", 0.0);
+    if (has_control_type("button")) {
+      std::tie(button_collision_height_, button_collision_radius_) =
+        cylinder_size_parameter("control_collision.button_size", {});
+      button_collision_center_offset_ = declare_parameter<double>(
+        "control_collision.button_center_offset", 0.0);
+    }
+    if (has_control_type("knob")) {
+      std::tie(knob_collision_height_, knob_collision_radius_) =
+        cylinder_size_parameter("control_collision.knob_size", {});
+      knob_collision_center_offset_ = declare_parameter<double>(
+        "control_collision.knob_center_offset", 0.0);
+    }
     if (!std::isfinite(button_collision_center_offset_) ||
       !std::isfinite(knob_collision_center_offset_))
     {
@@ -263,93 +320,84 @@ private:
               "Control collision center offsets must be finite.");
     }
 
-    door_control_id_ = required_string_parameter("door.control_id", "");
-    door_hinge_position_ = vector3_parameter("door.hinge_position", {});
-    door_axis_ = vector3_parameter("door.axis", {});
-    door_panel_size_ = vector3_parameter("door.panel_size", {}, true);
-    door_panel_position_ = vector3_parameter("door.panel_position", {});
-    if (door_axis_.length2() < 1.0e-12) {
-      throw std::invalid_argument("Parameter 'door.axis' must be non-zero.");
-    }
-    door_axis_.normalize();
-    const auto handle_part_ids = declare_parameter<std::vector<std::string>>(
-      "door.handle_part_ids", std::vector<std::string>{});
-    if (handle_part_ids.empty()) {
-      throw std::invalid_argument(
-              "Parameter 'door.handle_part_ids' must not be empty.");
-    }
-    for (const auto & id : handle_part_ids) {
-      const auto prefix = "door.handle_parts." + id + ".";
-      door_handle_parts_.push_back(
-        {
-          vector3_parameter(prefix + "size", {}, true),
-          vector3_parameter(prefix + "position", {})});
+    if (has_door()) {
+      const auto configured_door = declare_parameter<std::string>(
+        "door.control_id", door_control_id_);
+      if (configured_door != door_control_id_) {
+        throw std::invalid_argument(
+                "Scene door differs from the shared control catalog.");
+      }
+      door_hinge_position_ = vector3_parameter("door.hinge_position", {});
+      door_axis_ = vector3_parameter("door.axis", {});
+      door_panel_size_ = vector3_parameter("door.panel_size", {}, true);
+      door_panel_position_ = vector3_parameter("door.panel_position", {});
+      if (door_axis_.length2() < 1.0e-12) {
+        throw std::invalid_argument("Parameter 'door.axis' must be non-zero.");
+      }
+      door_axis_.normalize();
+      const auto handle_part_ids = declare_parameter<std::vector<std::string>>(
+        "door.handle_part_ids", std::vector<std::string>{});
+      if (handle_part_ids.empty()) {
+        throw std::invalid_argument(
+                "Parameter 'door.handle_part_ids' must not be empty.");
+      }
+      for (const auto & id : handle_part_ids) {
+        if (id.empty()) {
+          throw std::invalid_argument("Door handle part IDs must not be empty.");
+        }
+        const auto prefix = "door.handle_parts." + id + ".";
+        door_handle_parts_.push_back(
+          {
+            vector3_parameter(prefix + "size", {}, true),
+            vector3_parameter(prefix + "position", {})});
+      }
     }
 
-    switch_control_id_ = required_string_parameter("switch.control_id", "");
-    switch_parent_control_id_ = required_string_parameter(
-      "switch.parent_control_id", "");
-    switch_pivot_position_ = vector3_parameter(
-      "switch.pivot_position", {});
-    switch_axis_ = vector3_parameter("switch.axis", {});
-    switch_size_ = vector3_parameter("switch.size", {}, true);
-    switch_center_offset_ = vector3_parameter("switch.center_offset", {});
-    if (switch_axis_.length2() < 1.0e-12) {
-      throw std::invalid_argument("Parameter 'switch.axis' must be non-zero.");
-    }
-    switch_axis_.normalize();
-    if (switch_parent_control_id_ != door_control_id_) {
-      throw std::invalid_argument(
-              "The current articulated scene adapter requires the switch "
-              "parent to match door.control_id.");
+    if (has_switch()) {
+      const auto configured_switch = declare_parameter<std::string>(
+        "switch.control_id", switch_control_id_);
+      if (configured_switch != switch_control_id_) {
+        throw std::invalid_argument(
+                "Scene switch differs from the shared control catalog.");
+      }
+      const auto configured_parent = declare_parameter<std::string>(
+        "switch.parent_control_id", switch_parent_control_id_);
+      if (configured_parent != switch_parent_control_id_) {
+        throw std::invalid_argument(
+                "Switch parent differs between scene and control profiles.");
+      }
+      switch_pivot_position_ = vector3_parameter(
+        "switch.pivot_position", {});
+      switch_axis_ = vector3_parameter("switch.axis", {});
+      switch_size_ = vector3_parameter("switch.size", {}, true);
+      switch_center_offset_ = vector3_parameter("switch.center_offset", {});
+      if (switch_axis_.length2() < 1.0e-12) {
+        throw std::invalid_argument(
+                "Parameter 'switch.axis' must be non-zero.");
+      }
+      switch_axis_.normalize();
     }
   }
 
   void load_control_collisions()
   {
-    const auto control_ids =
-      declare_parameter<std::vector<std::string>>(
-      "control_ids", std::vector<std::string>{});
-    if (control_ids.empty()) {
-      throw std::invalid_argument(
-              "Parameter 'control_ids' must contain the shared catalog.");
-    }
     const auto button_axis = vector3_parameter(
       "button_defaults.axis", {0.0, 0.0, -1.0});
     const auto knob_axis = vector3_parameter(
       "knob_defaults.axis", {0.0, 0.0, 1.0});
-    bool found_door = false;
-    bool found_switch = false;
-    for (const auto & id : control_ids) {
-      const auto prefix = "controls." + id + ".";
-      const auto type = required_string_parameter(prefix + "type", "");
-      if (id == door_control_id_) {
-        found_door = type == "door";
+    for (const auto & profile : control_profiles_) {
+      const auto prefix = "controls." + profile.id + ".";
+      if (profile.type == "door" || profile.type == "switch") {
         continue;
       }
-      if (id == switch_control_id_) {
-        found_switch = type == "switch";
-        const auto parent = required_string_parameter(
-          prefix + "parent_control_id", "");
-        if (parent != switch_parent_control_id_) {
-          throw std::invalid_argument(
-                  "Switch parent differs between scene and control profiles.");
-        }
-        continue;
-      }
-      if (type != "button" && type != "knob") {
-        throw std::invalid_argument(
-                "No collision adapter is configured for control '" + id +
-                "' of type '" + type + "'.");
-      }
-      const bool rotary = type == "knob";
+      const bool rotary = profile.type == "knob";
       auto axis = vector3_parameter(
         prefix + "axis", rotary ?
         std::vector<double>{knob_axis.x(), knob_axis.y(), knob_axis.z()} :
         std::vector<double>{button_axis.x(), button_axis.y(), button_axis.z()});
       if (axis.length2() < 1.0e-12) {
         throw std::invalid_argument(
-                "Control '" + id + "' has a zero collision axis.");
+                "Control '" + profile.id + "' has a zero collision axis.");
       }
       axis.normalize();
       const auto reference = vector3_parameter(
@@ -357,12 +405,7 @@ private:
       const double offset = rotary ?
         knob_collision_center_offset_ : button_collision_center_offset_;
       control_collisions_.push_back(
-        {id, reference + axis * offset, axis, rotary});
-    }
-    if (!found_door || !found_switch) {
-      throw std::invalid_argument(
-              "Scene door and switch IDs must exist with matching types in "
-              "the shared control catalog.");
+        {profile.id, reference + axis * offset, axis, rotary});
     }
   }
 
@@ -522,9 +565,11 @@ private:
     object.primitives.push_back(box(switch_size_));
     tf2::Quaternion switch_rotation;
     switch_rotation.setRotation(switch_axis_, switch_position);
+    const auto parent_transform = switch_parent_control_id_.empty() ?
+      model : door_transform(model, door_position);
     object.primitive_poses.push_back(
       to_pose(
-        door_transform(model, door_position) *
+        parent_transform *
         tf2::Transform(
           tf2::Quaternion::getIdentity(), switch_pivot_position_) *
         tf2::Transform(switch_rotation, tf2::Vector3(0.0, 0.0, 0.0)) *
@@ -571,7 +616,9 @@ private:
     }
 
     std::vector<moveit_msgs::msg::CollisionObject> objects;
-    objects.reserve(control_collisions_.size() + 4U);
+    objects.reserve(
+      control_collisions_.size() + (has_door() ? 2U : 0U) +
+      (has_switch() ? 1U : 0U) + 1U);
     objects.push_back(make_frame(model));
     for (const auto & control : control_collisions_) {
       if (active_control == control.id) {
@@ -582,24 +629,28 @@ private:
       }
       objects.push_back(make_control(model, control, false));
     }
-    if (active_control == switch_control_id_) {
-      if (published_active_control != active_control) {
+    if (has_switch()) {
+      if (active_control == switch_control_id_) {
+        if (published_active_control != active_control) {
+          objects.push_back(
+            make_switch(
+              model, door_position, switch_position, true));
+        }
+      } else {
         objects.push_back(
           make_switch(
-            model, door_position, switch_position, true));
+            model, door_position, switch_position, false));
       }
-    } else {
-      objects.push_back(
-        make_switch(
-          model, door_position, switch_position, false));
     }
-    objects.push_back(make_door_panel(model, door_position));
-    if (active_control == door_control_id_) {
-      if (published_active_control != active_control) {
-        objects.push_back(make_door_handle(model, door_position, true));
+    if (has_door()) {
+      objects.push_back(make_door_panel(model, door_position));
+      if (active_control == door_control_id_) {
+        if (published_active_control != active_control) {
+          objects.push_back(make_door_handle(model, door_position, true));
+        }
+      } else {
+        objects.push_back(make_door_handle(model, door_position, false));
       }
-    } else {
-      objects.push_back(make_door_handle(model, door_position, false));
     }
 
     if (planning_scene_publisher_->get_subscription_count() == 0U) {
@@ -625,7 +676,8 @@ private:
       get_logger(), *get_clock(), 5000,
       "Cabinet scene profile (%zu controls) is synchronized from TF %s -> "
       "%s (active target: %s).",
-      control_collisions_.size() + 2U, frame_id_.c_str(),
+      control_collisions_.size() + (has_door() ? 1U : 0U) +
+      (has_switch() ? 1U : 0U), frame_id_.c_str(),
       cabinet_frame_.c_str(),
       active_control.empty() ? "none" : active_control.c_str());
   }
@@ -662,6 +714,7 @@ private:
   std::string collision_object_prefix_;
   bool require_pose_valid_{false};
   std::vector<BoxPart> frame_parts_;
+  std::vector<SceneControlProfile> control_profiles_;
   std::vector<ControlCollision> control_collisions_;
   double button_collision_height_{0.0};
   double button_collision_radius_{0.0};

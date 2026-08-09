@@ -10,6 +10,15 @@
 
 更换机器人时主要替换机器人模型、MoveIt/Nav2 配置和机器人适配参数；更换场地或柜体时替换实例、地图、模型与控件几何。任务 API 和 Web 页面不需要按实例复制。
 
+`cabinet_robot_adapter.yaml` 的 `/**.ros__parameters` 是跨节点接口合同，Web 网关、底盘路由、手动轨迹路由和柜体 operator 必须读取同一份文件。当前合同包括：
+
+- MoveIt 规划坐标系、规划组、末端执行器、命名安全位姿和规划约束；
+- Nav2 Action、模式 Service/Topic、地图、定位、路径 Topic 和底盘 TF；
+- 手动底盘输入、Nav2 速度输入、实际底盘输出及两坐标系的平面旋转；
+- 机械臂与夹爪关节分组、逐关节安全范围、默认位置、夹爪打开位置和 controller Topic。
+
+Web 通过 `/robot/capabilities` 取得上述手动关节能力并动态生成控件，不再假定机器人一定是“六轴加双夹爪”。新适配包缺字段、关节重复、限位不完整、Topic 名非法或 frame 不一致时会在启动阶段失败，不会退回源码中的猜测值。
+
 ## 多柜体实例
 
 `config/cabinet_instances.yaml` 是实例 inventory。每项包含唯一 `name` 和有限的 `x/y/z/roll/pitch/yaw`；`pitch` 可省略。统一 launch 在运行时为每项展开一份 Xacro，并创建：
@@ -26,9 +35,11 @@ MoveIt world 中每个碰撞对象带实例前缀，多个 planning-scene 节点
 
 新增或删除柜体只修改 inventory。示例三柜及其导航工位均位于默认 10 m × 10 m 地图内。
 
+更换设备模型时可用 `CABINET_XACRO_PATH` 指向新的 Xacro，同时替换 `CABINET_CONTROLS_PATH` 和 `CABINET_SCENE_PATH`。设备模型需要实现统一物理合同：目录中的每个控件必须有对应关节和状态发布，实例 namespace 下提供 control catalog、state、reset 和 grasp 接口；按钮的行程、刚度和触发阈值必须与 controls 参数一致。设备内部几何可以不同，通用任务 API 不依赖 `box_*` 命名。
+
 ## 无升降轴机器人
 
-机器人已移除 `body_arm_lift`、导轨、托架及所有对应的 ros2_control、MoveIt 和 Web 接口。当前手动轨迹固定为 8 个数：六轴机械臂加两个夹爪关节。
+机器人已移除 `body_arm_lift`、导轨、托架及所有对应的 ros2_control、MoveIt 和 Web 接口。当前默认 profile 是六轴机械臂加两个夹爪关节，但手动轨迹长度和顺序不再固定在源码中：Web 从 `/robot/capabilities` 读取 `arm_joint_names`、`gripper_joint_names` 及逐关节限位，后端再按同一适配参数验证。
 
 移除升降轴后，不伪造无法实现或尚未通过安全验证的动作。当前标准工位的运动学与仿真执行筛查结果写在机器人适配参数中：
 
@@ -38,6 +49,8 @@ MoveIt world 中每个碰撞对象带实例前缀，多个 planning-scene 节点
 `box_5_button_1/2`、`box_6_button_1/2`、`box_7_button_1/2`、`box_8_button_1/2`、`box_10_button_2` 和 `box_11_button_1/2` 曾是几何候选，但在 `cabinet_a` 标准工位逐项执行完整 MoveIt 接近、按压和撤回流程时，无碰撞路径运行验证均未通过。它们因此按安全能力降级为 `operable=false`；这不等同于“纯运动学不可达”，后续重新标定并通过同一套闭环验收后可在适配参数中逐项重新启用。
 
 `cabinet_rear_door` 的把手位于柜体背面，而当前目录只配置了正面标准工位。从正面无法绕过柜体实体到达把手；当前三柜布局也没有无碰撞、地图内的安全后侧工位，所以适配层将它标记为不可操作并返回具体原因。后续增加按控件选择的后侧 Nav2 工位并重新验证场地后，可以只通过新的适配参数包重新启用，不需要删除柜门模型或改 Web 协议。
+
+planning-scene 适配器不会再强制设备必须同时具有一个门和一个门上开关。纯按钮/旋钮设备、仅门设备、固定开关，以及带门和门上开关的当前柜体都使用同一节点；只有目录中实际出现对应类型时才要求其碰撞几何。若开关声明父控件，该父控件必须是目录中的门。
 
 7～11 号旋钮通过了几何可达与 IK 候选筛查，但当前 Gazebo 位置控制后端的刚性跨模型抓取会带动其他控件，产生可观测的非目标误触。隔离抓取碰撞的柔顺方案已能消除串扰，但在当前后端下无法把目标旋钮送到要求档位。因此适配层暂时将这 5 个旋钮标记为不可操作；将来更换通过验证的执行控制器或机器人适配包后，可在不改任务 API 的前提下重新启用。
 
@@ -70,6 +83,8 @@ Nav2 只负责把机器人送到由柜体完整 RPY 和 `cabinet_scene.yaml/navi
 
 `/task/operate` **绝不隐式导航**。需要完整流程时，Web 先提交 `/task/navigate`，等待成功后再提交 `/task/operate`。导航失败或取消时不会继续操作。手动方向输入仍可触发现有 Nav2 接管流程；对应导航任务会在 Nav2 确认取消后才释放全局任务锁。
 
+同一原则也下沉到默认 operator 配置：`allow_embedded_navigation=false`。绕过 Web 直接向底层 Action 发送 `navigate_to_staging_pose=true` 时，会在任何 MoveIt、Nav2 或租约动作前返回明确的导航失败原因。旧客户端确实需要兼容算法时可以在专用适配包中显式开启，但该旧路径按控件位置计算工位，不属于通用任务合同。
+
 标准 Nav2 `NavigateToPose` 的 ABORTED 结果无法可靠区分“碰撞”与“目标不可达”。没有独立碰撞监视器证据时，系统诚实返回 `target_unreachable`，不会伪造碰撞原因。
 
 目标栅格检查会应用 OccupancyGrid `origin.yaw` 的逆变换。Nav2 报告成功后，网关主动查询最新 `map -> navigation_base_frame` TF，并只接受本次 goal 发送之后取得的位姿，避免用陈旧 AMCL 消息缓存伪造到达。`navigation_base_frame` 直接读取共用的机器人适配参数包，不在 Web 网关中重复硬编码。
@@ -81,6 +96,7 @@ Nav2 只负责把机器人送到由柜体完整 RPY 和 `cabinet_scene.yaml/navi
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/cabinets` | inventory 和每柜计算后的工位 |
+| GET | `/robot/capabilities` | 当前机器人 frame、手动关节分组与安全范围 |
 | GET | `/cabinets/<name>/controls` | 该实例的目录与实时状态 |
 | POST | `/task/navigate` | 按柜体名导航 |
 | POST | `/task/operate` | 操作指定实例的控件，不含导航 |
@@ -88,7 +104,7 @@ Nav2 只负责把机器人送到由柜体完整 RPY 和 `cabinet_scene.yaml/navi
 | POST | `/task/<id>/cancel` | 请求取消 |
 | GET | `/task/events` | 可重连 SSE 事件流 |
 | POST | `/cmd_vel` | 手动底盘调试 |
-| POST | `/joint_trajectory` | 六轴机械臂和夹爪调试 |
+| POST | `/joint_trajectory` | 按 adapter 声明的关节顺序进行手动调试 |
 
 导航示例：
 
@@ -141,8 +157,36 @@ CABINET_CONTROLS_PATH=/path/to/controls.yaml \
 CABINET_SCENE_PATH=/path/to/scene.yaml \
 CABINET_POSE_PATH=/path/to/pose.yaml \
 CABINET_ROBOT_ADAPTER_PATH=/path/to/robot_adapter.yaml \
+ROBOT_CONTROL_PATH=/path/to/robot_control.yaml \
+SIMULATION_WORLD_PATH=/path/to/world.sdf \
+CABINET_XACRO_PATH=/path/to/device.urdf.xacro \
+ROBOT_NAME=my_robot \
+ROBOT_XACRO_PATH=/path/to/robot.urdf.xacro \
+MOVEIT_CONFIG_PACKAGE=my_robot_moveit_config \
+MOVEIT_SRDF_PATH=/path/to/robot.srdf \
+MOVEIT_KINEMATICS_PATH=/path/to/kinematics.yaml \
+MOVEIT_JOINT_LIMITS_PATH=/path/to/joint_limits.yaml \
+MOVEIT_CONTROLLERS_PATH=/path/to/moveit_controllers.yaml \
+MOVEIT_LAUNCH_PATH=/path/to/move_group.launch.py \
+NAV2_LAUNCH_PATH=/path/to/navigation.launch.py \
+NAV2_MAP_PATH=/path/to/map.yaml \
+NAV2_PARAMS_FILE=/path/to/nav2_params.yaml \
 ./run_all.sh --web
 ```
+
+当前 XCZS 仿真 bringup 只是默认 profile，不是通用任务层的硬依赖。还可用 `USE_SIM_TIME`、`MOVEIT_ENABLED`、`CABINET_BRINGUP`、`SPAWN_CABINET`、`SPAWN_Z` 和 `CABINET_POSE_SOURCE` 控制启动边界。`XCZS_PREFLIGHT_ONLY=true` 只检查最终组合需要的文件、依赖和参数，不启动任何进程；被关闭的子系统不会再强制要求其模型文件存在。
+
+如果新机器人已有自己的 Gazebo、controller、MoveIt 和 Nav2 bringup，先启动它，再以 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false` 运行本入口。此时本项目仍可加载设备实例、位姿权威、碰撞场景、操作节点和 Web 任务层；新机器人必须提供适配文件中声明的 ROS 2 接口。内置 Qt/键盘控制在该模式下会明确拒绝启动，不会静默失效；请使用动态 Web 控制或外部机器人自己的手动界面。
+
+若外部 world 已经包含满足物理接口合同的设备实体，使用 `CABINET_BRINGUP=true SPAWN_CABINET=false`：本项目保留目录、位姿、碰撞场景和 operator，但不会重复生成 Gazebo entity。若连设备节点也由外部系统提供，则同时设置 `CABINET_BRINGUP=false SPAWN_CABINET=false`，Web 会按 inventory 中的 namespace 连接外部 Action/Topic/Service。
+
+迁移到新机器人/新设备时按以下顺序验收：
+
+1. 先独立验证新机器人的 `robot_description`、controller、MoveIt 规划组和 Nav2 `NavigateToPose`；
+2. 复制机器人 adapter，填写 frame、Topic/Service/Action、工具 link、关节分组与逐关节限位；
+3. 替换设备 Xacro、controls、scene 和 instances，检查目录控件与物理关节一一对应；
+4. 先运行与机型无关的 `scripts/check_adapter_contract`；当前 XCZS profile 还应运行 `scripts/check_cabinet_model` 和单元测试，再用统一入口做 launch 冒烟；
+5. 重新标定工位与控件能力，只有完整接近、操作、物理反馈和撤回均通过的控件才设为 `operable=true`。
 
 Web 任务网关与仿真 launch 必须使用同一份 instances/scene 参数包。控制 API 默认且强制绑定 loopback，不会把未鉴权的机器人控制端口暴露到局域网。浏览器 Origin 默认限制为当前 monitor 端口；更换静态页面地址时可设置逗号分隔的 `XCZS_CONTROL_ORIGINS`。
 
@@ -152,4 +196,5 @@ Web 任务网关与仿真 launch 必须使用同一份 instances/scene 参数包
 - 位姿无效、状态过期、父控件运动中、MoveIt/Nav2 不可用、接触未触发、释放失败和取消都会返回明确失败。
 - 柜门操作始终保留门板碰撞体，只在实际抓取期间开放当前把手；门板、把手和门上开关以物理关节状态同步。
 - 机器人适配器中的不可达表来自当前模型与标准工位，换机器人后必须重新标定和验证。
+- 当前精停实现通过速度 Topic 输出平面 `x/y/yaw` 修正，要求底盘路由能够执行全向速度。仅提供标准 Nav2 但不能横移的差速机器人不能直接宣称支持柜体操作；应提供兼容的精停适配器，或在重新验证前将控件标记为不可操作并返回原因。
 - 仿真中的“估算力”由弹簧刚度和物理位移得到，不等同于真实机械臂的力矩传感器闭环。迁移实机时应由硬件力控或末端力传感器替换该适配实现。

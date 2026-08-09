@@ -50,6 +50,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="false",
         description="Start RViz with the Nav2 panel.",
     )
+    use_sim_time_argument = DeclareLaunchArgument(
+        "use_sim_time",
+        default_value="true",
+        description="Use the simulation clock for all Nav2 nodes.",
+    )
 
     nav2_bringup = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -58,7 +63,7 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "map": LaunchConfiguration("map"),
             "params_file": LaunchConfiguration("nav2_params_file"),
-            "use_sim_time": "true",
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
             "autostart": LaunchConfiguration("autostart"),
             "slam": "False",
             "use_composition": "False",
@@ -71,7 +76,11 @@ def generate_launch_description() -> LaunchDescription:
         name="nav2_rviz",
         output="log",
         arguments=["-d", str(default_rviz)],
-        parameters=[{"use_sim_time": True}],
+        parameters=[
+            {
+                "use_sim_time": LaunchConfiguration("use_sim_time"),
+            }
+        ],
         condition=IfCondition(LaunchConfiguration("rviz")),
     )
 
@@ -81,6 +90,7 @@ def generate_launch_description() -> LaunchDescription:
             params_argument,
             autostart_argument,
             rviz_argument,
+            use_sim_time_argument,
             nav2_bringup,
             nav2_rviz,
         ]

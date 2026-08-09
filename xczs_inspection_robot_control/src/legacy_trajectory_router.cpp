@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <optional>
 #include <stdexcept>
@@ -11,9 +10,11 @@
 
 #include "action_msgs/msg/goal_status.hpp"
 #include "action_msgs/msg/goal_status_array.hpp"
+#include "rclcpp/expand_topic_or_service_name.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "trajectory_msgs/msg/joint_trajectory.hpp"
 #include "trajectory_msgs/msg/joint_trajectory_point.hpp"
+#include "xczs_inspection_robot_control/router_utils.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -25,20 +26,6 @@ using JointTrajectory = trajectory_msgs::msg::JointTrajectory;
 using JointTrajectoryPoint = trajectory_msgs::msg::JointTrajectoryPoint;
 using GoalStatus = action_msgs::msg::GoalStatus;
 using GoalStatusArray = action_msgs::msg::GoalStatusArray;
-
-const std::array<std::string, 6> kArmJoints = {
-  "body_arm1",
-  "arm1_arm2",
-  "arm2_arm3",
-  "arm3_arm4",
-  "arm4_arm5",
-  "arm5_end",
-};
-
-const std::array<std::string, 2> kGripperJoints = {
-  "end_worklink1",
-  "end_worklink2",
-};
 
 template<typename ContainerT>
 std::optional<std::vector<std::size_t>> find_joint_indices(
@@ -132,23 +119,25 @@ public:
   LegacyTrajectoryRouter()
   : Node("xczs_legacy_trajectory_router")
   {
-    const auto input_topic = declare_parameter<std::string>(
+    arm_joint_names_ = required_joint_group_parameter(
+      "arm_joint_names", false);
+    gripper_joint_names_ = required_joint_group_parameter(
+      "gripper_joint_names", true);
+    if (!groups_are_disjoint(arm_joint_names_, gripper_joint_names_)) {
+      throw std::invalid_argument(
+              "Parameters 'arm_joint_names' and 'gripper_joint_names' "
+              "must not overlap.");
+    }
+
+    const auto input_topic = absolute_ros_name_parameter(
       "joint_trajectory_topic", "/xczs/joint_trajectory");
-    const auto arm_topic = declare_parameter<std::string>(
+    const auto arm_topic = absolute_ros_name_parameter(
       "arm_controller_topic", "/xczs/arm_controller/joint_trajectory");
-    const auto gripper_topic = declare_parameter<std::string>(
-      "gripper_controller_topic",
-      "/xczs/gripper_controller/joint_trajectory");
-    const auto arm_status_topic = declare_parameter<std::string>(
-      "arm_action_status_topic",
+    const auto arm_status_topic = absolute_ros_name_parameter(
+      "arm_controller_status_topic",
       "/xczs/arm_controller/follow_joint_trajectory/_action/status");
-    const auto gripper_status_topic = declare_parameter<std::string>(
-      "gripper_action_status_topic",
-      "/xczs/gripper_controller/follow_joint_trajectory/_action/status");
 
     arm_publisher_ = create_publisher<JointTrajectory>(arm_topic, 10);
-    gripper_publisher_ = create_publisher<JointTrajectory>(
-      gripper_topic, 10);
     input_subscription_ = create_subscription<JointTrajectory>(
       input_topic,
       10,
@@ -161,12 +150,22 @@ public:
       [this](const GoalStatusArray::SharedPtr message) {
         arm_action_active_ = has_active_goal(*message);
       });
-    gripper_status_subscription_ = create_subscription<GoalStatusArray>(
-      gripper_status_topic,
-      10,
-      [this](const GoalStatusArray::SharedPtr message) {
-        gripper_action_active_ = has_active_goal(*message);
-      });
+    if (!gripper_joint_names_.empty()) {
+      const auto gripper_topic = absolute_ros_name_parameter(
+        "gripper_controller_topic",
+        "/xczs/gripper_controller/joint_trajectory");
+      const auto gripper_status_topic = absolute_ros_name_parameter(
+        "gripper_controller_status_topic",
+        "/xczs/gripper_controller/follow_joint_trajectory/_action/status");
+      gripper_publisher_ = create_publisher<JointTrajectory>(
+        gripper_topic, 10);
+      gripper_status_subscription_ = create_subscription<GoalStatusArray>(
+        gripper_status_topic,
+        10,
+        [this](const GoalStatusArray::SharedPtr message) {
+          gripper_action_active_ = has_active_goal(*message);
+        });
+    }
 
     RCLCPP_INFO(
       get_logger(),
@@ -175,6 +174,42 @@ public:
   }
 
 private:
+  std::vector<std::string> required_joint_group_parameter(
+    const std::string & name,
+    bool allow_empty)
+  {
+    const auto names = declare_parameter<std::vector<std::string>>(
+      name, std::vector<std::string>{});
+    if (!has_unique_nonempty_names(names, allow_empty)) {
+      throw std::invalid_argument(
+              "Parameter '" + name +
+              (allow_empty ?
+              "' must be empty or contain unique, nonempty joint names." :
+              "' must contain unique, nonempty joint names."));
+    }
+    return names;
+  }
+
+  std::string absolute_ros_name_parameter(
+    const std::string & name,
+    const std::string & default_value)
+  {
+    const auto value = declare_parameter<std::string>(name, default_value);
+    if (value.empty() || value.front() != '/') {
+      throw std::invalid_argument(
+              "Parameter '" + name + "' must be an absolute ROS name.");
+    }
+    try {
+      (void)rclcpp::expand_topic_or_service_name(
+        value, get_name(), get_namespace(), false);
+    } catch (const std::exception & error) {
+      throw std::invalid_argument(
+              "Parameter '" + name +
+              "' must be a valid absolute ROS name: " + error.what());
+    }
+    return value;
+  }
+
   void route(const JointTrajectory & input)
   {
     if (input.points.empty()) {
@@ -183,9 +218,13 @@ private:
     }
 
     try {
-      const auto arm_trajectory = extract_trajectory(input, kArmJoints);
-      const auto gripper_trajectory = extract_trajectory(
-        input, kGripperJoints);
+      const auto arm_trajectory = extract_trajectory(
+        input, arm_joint_names_);
+      std::optional<JointTrajectory> gripper_trajectory;
+      if (!gripper_joint_names_.empty()) {
+        gripper_trajectory = extract_trajectory(
+          input, gripper_joint_names_);
+      }
       if (!arm_trajectory && !gripper_trajectory) {
         RCLCPP_WARN(
           get_logger(),
@@ -202,7 +241,9 @@ private:
           2000,
           "Ignoring manual arm trajectory while MoveIt is executing.");
       }
-      if (gripper_trajectory && !gripper_action_active_) {
+      if (gripper_trajectory && gripper_publisher_ &&
+        !gripper_action_active_)
+      {
         gripper_publisher_->publish(*gripper_trajectory);
       } else if (gripper_trajectory) {
         RCLCPP_WARN_THROTTLE(
@@ -223,6 +264,8 @@ private:
   rclcpp::Subscription<GoalStatusArray>::SharedPtr arm_status_subscription_;
   rclcpp::Subscription<GoalStatusArray>::SharedPtr
     gripper_status_subscription_;
+  std::vector<std::string> arm_joint_names_;
+  std::vector<std::string> gripper_joint_names_;
   bool arm_action_active_{false};
   bool gripper_action_active_{false};
 };

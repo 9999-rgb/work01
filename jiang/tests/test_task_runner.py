@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
 from unittest.mock import patch
 
@@ -276,6 +277,7 @@ def _inventory(count: int = 2) -> CabinetInventory:
 def _server(count: int = 2) -> tuple[ControlServer, _NavigationNode]:
     server = object.__new__(ControlServer)
     server._inventory = _inventory(count)
+    server._robot_adapter = SimpleNamespace(navigation_frame="map")
     server._node = _NavigationNode()
     server._task_manager = TaskManager()
     server._task_interlock_lock = threading.RLock()

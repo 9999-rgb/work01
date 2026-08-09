@@ -9,9 +9,11 @@
 #include <string>
 
 #include "geometry_msgs/msg/twist.hpp"
+#include "rclcpp/expand_topic_or_service_name.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_srvs/srv/set_bool.hpp"
+#include "xczs_inspection_robot_control/router_utils.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -47,12 +49,18 @@ public:
   BaseCommandRouter()
   : Node("xczs_base_command_router")
   {
-    const auto manual_topic = declare_parameter<std::string>(
-      "manual_topic", "/xczs/manual_cmd_vel");
-    const auto navigation_topic = declare_parameter<std::string>(
-      "navigation_topic", "/cmd_vel");
-    const auto output_topic = declare_parameter<std::string>(
-      "output_topic", "/xczs/cmd_vel");
+    const auto manual_topic = absolute_ros_name_parameter(
+      "manual_cmd_vel_topic", "/xczs/manual_cmd_vel", false);
+    const auto navigation_topic = absolute_ros_name_parameter(
+      "navigation_cmd_vel_topic", "/cmd_vel", false);
+    const auto output_topic = absolute_ros_name_parameter(
+      "base_output_topic", "/xczs/cmd_vel", false);
+    const auto navigation_mode_topic = absolute_ros_name_parameter(
+      "navigation_mode_topic", "/xczs/navigation_mode", false);
+    const auto navigation_mode_service = absolute_ros_name_parameter(
+      "navigation_mode_service", "/xczs/set_navigation_mode", true);
+    navigation_velocity_yaw_offset_ = finite_parameter(
+      "navigation_velocity_yaw_offset", 1.57079632679);
     navigation_enabled_ = declare_parameter<bool>(
       "navigation_enabled", false);
     command_timeout_ = positive_parameter("command_timeout", 0.5);
@@ -62,7 +70,7 @@ public:
 
     output_publisher_ = create_publisher<Twist>(output_topic, 10);
     navigation_mode_publisher_ = create_publisher<std_msgs::msg::Bool>(
-      "/xczs/navigation_mode",
+      navigation_mode_topic,
       rclcpp::QoS(1).reliable().transient_local());
     manual_subscription_ = create_subscription<Twist>(
       manual_topic,
@@ -77,7 +85,7 @@ public:
         receive_navigation_command(*message);
       });
     mode_service_ = create_service<std_srvs::srv::SetBool>(
-      "/xczs/set_navigation_mode",
+      navigation_mode_service,
       [this](
         const std_srvs::srv::SetBool::Request::SharedPtr request,
         std_srvs::srv::SetBool::Response::SharedPtr response)
@@ -103,6 +111,39 @@ public:
   }
 
 private:
+  std::string absolute_ros_name_parameter(
+    const std::string & name,
+    const std::string & default_value,
+    bool is_service)
+  {
+    const auto value = declare_parameter<std::string>(name, default_value);
+    if (value.empty() || value.front() != '/') {
+      throw std::invalid_argument(
+              "Parameter '" + name + "' must be an absolute ROS name.");
+    }
+    try {
+      (void)rclcpp::expand_topic_or_service_name(
+        value, get_name(), get_namespace(), is_service);
+    } catch (const std::exception & error) {
+      throw std::invalid_argument(
+              "Parameter '" + name +
+              "' must be a valid absolute ROS name: " + error.what());
+    }
+    return value;
+  }
+
+  double finite_parameter(
+    const std::string & name,
+    double default_value)
+  {
+    const double value = declare_parameter<double>(name, default_value);
+    if (!std::isfinite(value)) {
+      throw std::invalid_argument(
+              "Parameter '" + name + "' must be finite.");
+    }
+    return value;
+  }
+
   double positive_parameter(
     const std::string & name,
     double default_value)
@@ -130,13 +171,14 @@ private:
   Twist navigation_to_model_frame(const Twist & navigation_command) const
   {
     const Twist sanitized = sanitize_command(navigation_command);
+    const auto rotated = rotate_planar_vector(
+      {sanitized.linear.x, sanitized.linear.y},
+      navigation_velocity_yaw_offset_);
     Twist output;
-
-    // base_link +X is body +Y, and base_link +Y is body -X.
-    output.linear.x = -sanitized.linear.y;
-    output.linear.y = sanitized.linear.x;
+    output.linear.x = rotated.x;
+    output.linear.y = rotated.y;
     output.angular.z = sanitized.angular.z;
-    return output;
+    return sanitize_command(output);
   }
 
   void receive_manual_command(const Twist & command)
@@ -255,6 +297,7 @@ private:
   double publish_rate_{50.0};
   double max_linear_speed_{0.5};
   double max_angular_speed_{1.2};
+  double navigation_velocity_yaw_offset_{1.57079632679};
   bool navigation_enabled_{false};
   bool has_manual_command_{false};
   bool has_navigation_command_{false};

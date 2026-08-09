@@ -364,6 +364,14 @@
 /* ── Gripper Controls ─────────────────────── */
 .gripper-btns { display: flex; gap: 8px; margin-top: 10px; }
 .gripper-btns .btn { flex: 1; text-align: center; }
+.gripper-joint-specs { display: flex; flex-direction: column; gap: 4px; }
+.gripper-joint-spec {
+  display: grid; grid-template-columns: minmax(90px, 1fr) 2fr;
+  gap: 8px; font-size: 10px; color: var(--text-dim);
+}
+.gripper-joint-spec strong {
+  color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace;
+}
 
 /* ── Control Connect Bar ──────────────────── */
 .ctrl-connect {
@@ -659,12 +667,15 @@
       <!-- Populated by JS -->
     </div>
     <div style="display:flex; gap:8px; margin-top:10px">
-      <button class="btn btn-outline" id="btnArmZero" style="flex:1">归零全部关节</button>
+      <button class="btn btn-outline" id="btnArmZero" style="flex:1">复位机械臂关节</button>
     </div>
-    <h4 style="margin-top:14px">🤖 夹爪控制</h4>
-    <div class="gripper-btns">
-      <button class="btn btn-primary" id="btnGripperOpen">打开夹爪 (0.35 rad)</button>
-      <button class="btn btn-danger" id="btnGripperClose">关闭夹爪 (0.0 rad)</button>
+    <div id="gripperControlSection">
+      <h4 style="margin-top:14px">🤖 夹爪控制</h4>
+      <div class="gripper-joint-specs" id="gripperJointSpecs"></div>
+      <div class="gripper-btns">
+        <button class="btn btn-primary" id="btnGripperOpen">打开夹爪</button>
+        <button class="btn btn-danger" id="btnGripperClose">复位夹爪</button>
+      </div>
     </div>
   </div>
 
@@ -824,8 +835,8 @@
       <h3>⚙️ 底盘与机械臂</h3>
       <button class="topic-preset" data-topic="xczs/cmd_vel/json">cmd_vel 底盘速度</button>
       <button class="topic-preset" data-topic="xczs/odom/json">odom 里程计</button>
-      <button class="topic-preset" data-topic="xczs/joint_states/json">joint_states 关节状态</button>
-      <button class="topic-preset" data-topic="xczs/joint_trajectory/json">joint_trajectory 关节指令</button>
+      <button class="topic-preset" id="jointStateTopicPreset" data-topic="xczs/joint_states/json">joint_states 关节状态</button>
+      <button class="topic-preset" id="jointTrajectoryTopicPreset" data-topic="xczs/joint_trajectory/json">joint_trajectory 关节指令</button>
     </div>
     <div class="topic-group">
       <h3>🧭 Nav2 导航</h3>
@@ -847,8 +858,8 @@
       <button class="btn btn-primary" onclick="
         subscribe('xczs/cmd_vel/json');
         subscribe('xczs/odom/json');
-        subscribe('xczs/joint_states/json');
-        subscribe('xczs/joint_trajectory/json');
+        subscribe(jointStateMonitorTopic);
+        subscribe(jointTrajectoryMonitorTopic);
         subscribe('amcl_pose/json');
         subscribe('plan/json');
         subscribe('xczs/navigation_mode/json');
@@ -886,7 +897,7 @@
 
     <!-- Joint Position Visualization -->
     <div class="joint-bars" id="jointBars">
-      <h3>🦾 机械臂关节角度</h3>
+      <h3>🦾 机器人手动关节状态</h3>
       <div id="jointBarContainer"></div>
     </div>
   </main>
@@ -1419,11 +1430,11 @@ document.querySelectorAll('.topic-preset').forEach(btn => {
 });
 
 // ─── Joint Bar Rendering ──────────────────────────────────────
-const jointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
+let jointNames = [];
 const jointDisplayLimits = {};
 
 function displayLimitsForJoint(name) {
-  return jointDisplayLimits[name] || [-2.80, 2.80];
+  return jointDisplayLimits[name] || [0.0, 0.0];
 }
 
 function buildJointBars() {
@@ -1431,11 +1442,16 @@ function buildJointBars() {
   if (!container) return;
   container.innerHTML = jointNames.map((name, i) => {
     const limits = displayLimitsForJoint(name);
-    const zeroPct = ((0.0 - limits[0]) / (limits[1] - limits[0])) * 100;
+    const spec = manualJointSpecs.find(joint => joint.name === name);
+    const initial = spec ? spec.default_position : 0.0;
+    const span = limits[1] - limits[0];
+    const zeroPct = span > 0
+      ? ((initial - limits[0]) / span) * 100
+      : 50;
     return `<div class="joint-row">
       <span class="joint-label">${name}</span>
       <div class="joint-track"><div class="joint-fill" id="jointFill${i}" style="width:${zeroPct}%"></div></div>
-      <span class="joint-val" id="jointVal${i}">0.00</span>
+      <span class="joint-val" id="jointVal${i}">${initial.toFixed(2)}</span>
     </div>`;
   }).join('');
   document.getElementById('jointBars').style.display = 'block';
@@ -1460,17 +1476,19 @@ function updateJointBars(data) {
     const val = positions[name];
     if (val === undefined) return;
     const limits = displayLimitsForJoint(name);
+    const span = limits[1] - limits[0];
     const pct = Math.max(0, Math.min(
       100,
-      ((val - limits[0]) / (limits[1] - limits[0])) * 100
+      span > 0 ? ((val - limits[0]) / span) * 100 : 50
     ));
     const fill = document.getElementById('jointFill' + i);
     const lbl  = document.getElementById('jointVal' + i);
     if (fill) fill.style.width = pct + '%';
     if (lbl)  lbl.textContent = val.toFixed(2);
-    const controlIndex = armJointNames.indexOf(name);
+    const manualIndex = manualJointSpecs.findIndex(joint => joint.name === name);
+    if (manualIndex >= 0) manualPositions[manualIndex] = val;
+    const controlIndex = armJointSpecs.findIndex(joint => joint.name === name);
     if (controlIndex >= 0) {
-      armPositions[controlIndex] = val;
       const slider = document.getElementById('armSlider' + controlIndex);
       const sliderValue = document.getElementById(
         'armSliderVal' + controlIndex
@@ -1497,7 +1515,7 @@ onData = function(topic, jsonStr) {
   } catch(e) { return; }
 
   // Joint state visualization
-  if (topic.includes('joint_states')) {
+  if (topic === jointStateMonitorTopic || topic.includes('joint_states')) {
     updateJointBars(payload);
   }
 };
@@ -1509,17 +1527,123 @@ setStatus('', '未连接');
 // ─── Control State ──────────────────────────────────────────
 let ctrlConnected = false;
 let ctrlBaseUrl = 'http://localhost:8090';
-const armJointNames = ['body_arm1','arm1_arm2','arm2_arm3','arm3_arm4','arm4_arm5','arm5_end'];
-const armJointLimits = Array.from(
-  {length: 6},
-  () => ({min: -2.80, max: 2.80, step: 0.10})
-);
-const gripperJointNames = ['end_worklink1','end_worklink2'];
-const allJointNames = [...armJointNames, ...gripperJointNames];
-const gripperOpenVal = 0.35;
+let robotCapabilities = null;
+let manualLinearAxis = '?';
+let manualJointSpecs = [];
+let armJointSpecs = [];
+let gripperJointSpecs = [];
+let manualPositions = [];
+let jointStateMonitorTopic = 'xczs/joint_states/json';
+let jointTrajectoryMonitorTopic = 'xczs/joint_trajectory/json';
 
-let armPositions = armJointNames.map(() => 0.0);
-let gripperPositions = [0.0, -0.0];
+function monitorTopicPath(rosTopic) {
+  return String(rosTopic || '').replace(/^\/+/, '') + '/json';
+}
+
+function jointStep(spec) {
+  const span = spec.max_position - spec.min_position;
+  if (span >= 2.0) return 0.1;
+  if (span >= 0.2) return 0.01;
+  return 0.001;
+}
+
+function normalizedRobotCapabilities(capabilities) {
+  const frames = capabilities && capabilities.frames;
+  const topics = capabilities && capabilities.topics;
+  if (!capabilities || !Array.isArray(capabilities.manual_joints) ||
+      capabilities.manual_joints.length === 0) {
+    throw new Error('机器人能力缺少 manual_joints');
+  }
+  if (!['x', 'y'].includes(capabilities.manual_linear_axis)) {
+    throw new Error('机器人能力的 manual_linear_axis 无效');
+  }
+  if (!frames || !['planning', 'navigation', 'navigation_base'].every(
+    name => typeof frames[name] === 'string' && frames[name]
+  )) {
+    throw new Error('机器人能力缺少必要坐标系');
+  }
+  if (!topics || !['joint_state', 'joint_trajectory'].every(
+    name => typeof topics[name] === 'string' && topics[name].startsWith('/')
+  )) {
+    throw new Error('机器人能力缺少必要关节话题');
+  }
+  const names = new Set();
+  const joints = capabilities.manual_joints.map((raw, index) => {
+    const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+    if (!name || names.has(name)) {
+      throw new Error(`manual_joints[${index}] 名称为空或重复`);
+    }
+    names.add(name);
+    if (!['arm', 'gripper'].includes(raw.group)) {
+      throw new Error(`manual_joints[${index}] 分组无效`);
+    }
+    const minimum = raw.min_position;
+    const maximum = raw.max_position;
+    const defaultPosition = raw.default_position;
+    const openPosition = raw.open_position;
+    if (![minimum, maximum, defaultPosition].every(Number.isFinite) ||
+        minimum > maximum || defaultPosition < minimum ||
+        defaultPosition > maximum) {
+      throw new Error(`manual_joints[${index}] 限位无效`);
+    }
+    if (openPosition !== null && openPosition !== undefined &&
+        (!Number.isFinite(openPosition) || openPosition < minimum ||
+         openPosition > maximum)) {
+      throw new Error(`manual_joints[${index}] 打开位置无效`);
+    }
+    return {
+      name,
+      group: raw.group,
+      min_position: minimum,
+      max_position: maximum,
+      default_position: defaultPosition,
+      open_position: openPosition ?? null
+    };
+  });
+  return {...capabilities, manual_joints: joints};
+}
+
+function applyRobotCapabilities(capabilities) {
+  robotCapabilities = normalizedRobotCapabilities(capabilities);
+  manualLinearAxis = robotCapabilities.manual_linear_axis;
+  manualJointSpecs = robotCapabilities.manual_joints;
+  armJointSpecs = manualJointSpecs.filter(joint => joint.group === 'arm');
+  gripperJointSpecs = manualJointSpecs.filter(
+    joint => joint.group === 'gripper'
+  );
+  jointNames = manualJointSpecs.map(joint => joint.name);
+  manualPositions = manualJointSpecs.map(joint => joint.default_position);
+
+  Object.keys(jointDisplayLimits).forEach(name => {
+    delete jointDisplayLimits[name];
+  });
+  manualJointSpecs.forEach(joint => {
+    jointDisplayLimits[joint.name] = [
+      joint.min_position,
+      joint.max_position
+    ];
+  });
+
+  const topics = robotCapabilities.topics || {};
+  jointStateMonitorTopic = monitorTopicPath(topics.joint_state);
+  jointTrajectoryMonitorTopic = monitorTopicPath(topics.joint_trajectory);
+  const statePreset = $('jointStateTopicPreset');
+  const trajectoryPreset = $('jointTrajectoryTopicPreset');
+  if (statePreset && jointStateMonitorTopic !== '/json') {
+    statePreset.dataset.topic = jointStateMonitorTopic;
+  }
+  if (trajectoryPreset && jointTrajectoryMonitorTopic !== '/json') {
+    trajectoryPreset.dataset.topic = jointTrajectoryMonitorTopic;
+  }
+
+  buildJointSliders();
+  buildGripperControls();
+  jointBarsBuilt = false;
+  buildJointBars();
+  jointBarsBuilt = true;
+  renderBaseControlStatus();
+  updateControlInterlocks();
+}
 let baseActive = false;
 let activeMotion = null;
 let controlInterval = null;
@@ -1645,9 +1769,18 @@ async function testControlConnection() {
         cabinetStatusByName.clear();
         taskSnapshotVersions.clear();
       }
+      const capabilities = await controlRequestWithTimeout(
+        '/robot/capabilities'
+      );
+      applyRobotCapabilities(capabilities);
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
+      log(
+        'info',
+        `机器人手动接口: ${manualJointSpecs.length} 关节，` +
+        `前后速度轴 linear.${manualLinearAxis}`
+      );
 
       try {
         applyCabinetInstances(await controlRequestWithTimeout('/cabinets'));
@@ -2797,7 +2930,8 @@ function renderBaseControlStatus() {
     hintText = '按住 D-Pad 或 W/A/S/D 移动，松开即停';
   }
   $('baseModeState').textContent = modeText;
-  baseControlHint.textContent = hintText;
+  baseControlHint.textContent =
+    `${hintText} · 前后轴 Twist.linear.${manualLinearAxis}`;
 
   const manualButton = $('btnManualMode');
   if (manualTakeoverState === 'taking_over') {
@@ -3147,9 +3281,15 @@ function updateControlInterlocks() {
   document.querySelectorAll('#jointSliders input').forEach(input => {
     input.disabled = !ctrlConnected || cabinetActive;
   });
-  $('btnArmZero').disabled = !ctrlConnected || cabinetActive;
-  $('btnGripperOpen').disabled = !ctrlConnected || cabinetActive;
-  $('btnGripperClose').disabled = !ctrlConnected || cabinetActive;
+  $('btnArmZero').disabled =
+    !ctrlConnected || cabinetActive || armJointSpecs.length === 0;
+  $('btnGripperOpen').disabled =
+    !ctrlConnected ||
+    cabinetActive ||
+    gripperJointSpecs.length === 0 ||
+    gripperJointSpecs.every(spec => spec.open_position === null);
+  $('btnGripperClose').disabled =
+    !ctrlConnected || cabinetActive || gripperJointSpecs.length === 0;
 
   $('btnCabinetPress').disabled =
     !ctrlConnected ||
@@ -3810,14 +3950,29 @@ stopButton.addEventListener('click', event => {
 // ─── Arm Joint Sliders ──────────────────────────────────────
 function buildJointSliders() {
   const ct = $('jointSliders'); if (!ct) return;
-  ct.innerHTML = armJointNames.map((name, i) => {
-    const limits = armJointLimits[i];
+  if (armJointSpecs.length === 0) {
+    ct.innerHTML = (
+      '<div style="color:var(--text-dim);font-size:11px">' +
+      '等待 /robot/capabilities…</div>'
+    );
+    return;
+  }
+  ct.innerHTML = armJointSpecs.map((spec, i) => {
+    const manualIndex = manualJointSpecs.findIndex(
+      joint => joint.name === spec.name
+    );
+    const value = manualPositions[manualIndex] ?? spec.default_position;
     return (
     '<div class="joint-slider-row">' +
-      '<span class="joint-slider-label">' + name + '</span>' +
-      '<input type="range" id="armSlider' + i + '" min="' + limits.min + '" max="' + limits.max + '" value="0.00" step="' + limits.step + '" ' +
+      '<span class="joint-slider-label">' + spec.name + '</span>' +
+      '<input type="range" id="armSlider' + i + '" min="' +
+        spec.min_position + '" max="' + spec.max_position + '" value="' +
+        value + '" step="' + jointStep(spec) + '" title="范围 [' +
+        spec.min_position + ', ' + spec.max_position + '] · 复位 ' +
+        spec.default_position + '" ' +
         'oninput="onArmSlider(' + i + ', this.value)">' +
-      '<span class="joint-slider-val" id="armSliderVal' + i + '">0.00</span>' +
+      '<span class="joint-slider-val" id="armSliderVal' + i + '">' +
+        value.toFixed(2) + '</span>' +
     '</div>'
     );
   }).join('');
@@ -3825,42 +3980,92 @@ function buildJointSliders() {
 
 function onArmSlider(idx, val) {
   if (isCabinetOperationActive()) return;
-  armPositions[idx] = parseFloat(val) || 0.0;
+  const spec = armJointSpecs[idx];
+  if (!spec) return;
+  const manualIndex = manualJointSpecs.findIndex(
+    joint => joint.name === spec.name
+  );
+  const parsed = Number.parseFloat(val);
+  if (!Number.isFinite(parsed) || manualIndex < 0) return;
+  manualPositions[manualIndex] = parsed;
   const ve = document.getElementById('armSliderVal' + idx);
-  if (ve) ve.textContent = armPositions[idx].toFixed(2);
-  postJointTrajectory([...armPositions, ...gripperPositions]);
+  if (ve) ve.textContent = parsed.toFixed(2);
+  postJointTrajectory([...manualPositions]);
 }
 
-function resetArmToZero() {
+function resetArmToDefaults() {
   if (isCabinetOperationActive()) {
     toast('控制柜操作进行中，手动关节控制已锁定', 'err');
     return;
   }
-  armPositions = armJointNames.map(() => 0.0);
-  armJointNames.forEach((_, i) => {
+  armJointSpecs.forEach((spec, i) => {
+    const manualIndex = manualJointSpecs.findIndex(
+      joint => joint.name === spec.name
+    );
+    if (manualIndex >= 0) {
+      manualPositions[manualIndex] = spec.default_position;
+    }
     const s = document.getElementById('armSlider' + i);
     const v = document.getElementById('armSliderVal' + i);
-    if (s) s.value = '0.00';
-    if (v) v.textContent = '0.00';
+    if (s) s.value = String(spec.default_position);
+    if (v) v.textContent = spec.default_position.toFixed(2);
   });
-  postJointTrajectory([...armPositions, ...gripperPositions]);
+  postJointTrajectory([...manualPositions]);
 }
 
 // ─── Gripper Control ────────────────────────────────────────
+function buildGripperControls() {
+  const section = $('gripperControlSection');
+  const specs = $('gripperJointSpecs');
+  if (!section || !specs) return;
+  section.style.display = gripperJointSpecs.length ? '' : 'none';
+  specs.innerHTML = gripperJointSpecs.map(spec => {
+    const openText = spec.open_position === null
+      ? '未配置'
+      : spec.open_position.toFixed(3);
+    return (
+      '<div class="gripper-joint-spec">' +
+        '<strong>' + spec.name + '</strong>' +
+        '<span>范围 [' + spec.min_position.toFixed(3) + ', ' +
+          spec.max_position.toFixed(3) + '] · 复位 ' +
+          spec.default_position.toFixed(3) + ' · 打开 ' + openText +
+        '</span>' +
+      '</div>'
+    );
+  }).join('');
+  $('btnGripperOpen').disabled = gripperJointSpecs.every(
+    spec => spec.open_position === null
+  );
+}
+
 function openGripper() {
   if (isCabinetOperationActive()) return;
-  gripperPositions = [gripperOpenVal, -gripperOpenVal];
-  postJointTrajectory([...armPositions, ...gripperPositions]);
+  gripperJointSpecs.forEach(spec => {
+    const manualIndex = manualJointSpecs.findIndex(
+      joint => joint.name === spec.name
+    );
+    if (manualIndex >= 0) {
+      manualPositions[manualIndex] = spec.open_position ?? spec.default_position;
+    }
+  });
+  postJointTrajectory([...manualPositions]);
 }
 function closeGripper() {
   if (isCabinetOperationActive()) return;
-  gripperPositions = [0.0, -0.0];
-  postJointTrajectory([...armPositions, ...gripperPositions]);
+  gripperJointSpecs.forEach(spec => {
+    const manualIndex = manualJointSpecs.findIndex(
+      joint => joint.name === spec.name
+    );
+    if (manualIndex >= 0) {
+      manualPositions[manualIndex] = spec.default_position;
+    }
+  });
+  postJointTrajectory([...manualPositions]);
 }
 
 // ─── Control Init ───────────────────────────────────────────
 $('btnCtrlTest').addEventListener('click', testControlConnection);
-$('btnArmZero').addEventListener('click', resetArmToZero);
+$('btnArmZero').addEventListener('click', resetArmToDefaults);
 $('btnGripperOpen').addEventListener('click', openGripper);
 $('btnGripperClose').addEventListener('click', closeGripper);
 $('btnManualMode').addEventListener('click', switchToManualMode);
@@ -3912,8 +4117,9 @@ $('spdAngular').addEventListener('input', function() {
   $('spdAngVal').textContent = parseFloat(this.value).toFixed(2);
 });
 
-// Build sliders on load
+// Joint controls stay disabled until the adapter capability contract loads.
 buildJointSliders();
+buildGripperControls();
 renderCabinetTarget();
 renderCabinetStatus();
 

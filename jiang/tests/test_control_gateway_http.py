@@ -65,6 +65,7 @@ class _FakeControlServer:
         self.sse_events: list[Any] = []
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self._task_sequence = 0
+        self.expected_joint_count = 3
 
     def cabinets(self) -> Dict[str, Any]:
         return {
@@ -90,10 +91,59 @@ class _FakeControlServer:
             "cabinet_active": False,
         }
 
+    def robot_capabilities(self) -> Dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "manual_linear_axis": "x",
+            "frames": {
+                "planning": "odom",
+                "navigation": "map",
+                "navigation_base": "base_link",
+            },
+            "topics": {
+                "manual_cmd_vel": "/robot/manual_cmd_vel",
+                "joint_state": "/robot/joint_states",
+                "joint_trajectory": "/robot/joint_trajectory",
+            },
+            "joint_count": 3,
+            "arm_joint_count": 2,
+            "gripper_joint_count": 1,
+            "manual_joints": [
+                {
+                    "name": "shoulder",
+                    "group": "arm",
+                    "min_position": -1.0,
+                    "max_position": 1.0,
+                    "default_position": 0.1,
+                    "open_position": None,
+                },
+                {
+                    "name": "elbow",
+                    "group": "arm",
+                    "min_position": -2.0,
+                    "max_position": 2.0,
+                    "default_position": 0.0,
+                    "open_position": None,
+                },
+                {
+                    "name": "finger",
+                    "group": "gripper",
+                    "min_position": 0.0,
+                    "max_position": 0.4,
+                    "default_position": 0.0,
+                    "open_position": 0.4,
+                },
+            ],
+        }
+
     def publish_joint_trajectory(
         self,
         positions: list[float],
     ) -> list[float]:
+        if len(positions) != self.expected_joint_count:
+            raise ControlRequestError(
+                "positions must match the configured manual joint order."
+            )
         self.joint_request = positions
         return positions
 
@@ -415,6 +465,7 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.control_server.sse_events = []
         self.control_server.tasks = {}
         self.control_server._task_sequence = 0
+        self.control_server.expected_joint_count = 3
 
     def request(
         self,
@@ -768,8 +819,24 @@ class ControlGatewayHttpTest(unittest.TestCase):
                 self.assertEqual(404, status)
                 self.assertEqual("not found", response["error"])
 
-    def test_joint_trajectory_accepts_exactly_eight_values(self) -> None:
-        manual_positions = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.2, -0.2]
+    def test_robot_capabilities_exposes_ordered_manual_contract(self) -> None:
+        status, capabilities, _ = self.request("/robot/capabilities")
+
+        self.assertEqual(200, status)
+        self.assertEqual("x", capabilities["manual_linear_axis"])
+        self.assertEqual("map", capabilities["frames"]["navigation"])
+        self.assertEqual(3, capabilities["joint_count"])
+        self.assertEqual(
+            ["shoulder", "elbow", "finger"],
+            [joint["name"] for joint in capabilities["manual_joints"]],
+        )
+        self.assertEqual(
+            0.4,
+            capabilities["manual_joints"][2]["open_position"],
+        )
+
+    def test_joint_trajectory_delegates_dynamic_length_to_backend(self) -> None:
+        manual_positions = [0.1, -0.2, 0.3]
         status, response, _ = self.request(
             "/joint_trajectory",
             "POST",
@@ -779,15 +846,33 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.assertEqual(manual_positions, response["positions"])
         self.assertEqual(manual_positions, self.control_server.joint_request)
 
-        for invalid in ([0.0] * 7, [0.0] * 9):
-            with self.subTest(length=len(invalid)):
+        for invalid in ([], "not-a-list", None):
+            with self.subTest(value=invalid):
                 status, response, _ = self.request(
                     "/joint_trajectory",
                     "POST",
                     {"positions": invalid},
                 )
                 self.assertEqual(400, status)
-                self.assertIn("six arm and two gripper", response["error"])
+                self.assertIn("non-empty list", response["error"])
+
+        for invalid in ([0.0, True], [0.0, float("nan")]):
+            with self.subTest(value=invalid):
+                status, response, _ = self.request(
+                    "/joint_trajectory",
+                    "POST",
+                    {"positions": invalid},
+                )
+                self.assertEqual(400, status)
+                self.assertIn("positions[1]", response["error"])
+
+        status, response, _ = self.request(
+            "/joint_trajectory",
+            "POST",
+            {"positions": [0.0, 0.0]},
+        )
+        self.assertEqual(400, status)
+        self.assertIn("configured manual joint order", response["error"])
 
     def test_cabinet_controls_lists_all_control_types_and_states(self) -> None:
         status, catalog, _ = self.request("/cabinet/controls")

@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import ast
 import math
 import re
 import subprocess
@@ -55,6 +54,18 @@ PLANNING_SCENE = (
     / "xczs_inspection_robot_control"
     / "src"
     / "cabinet_planning_scene.cpp"
+)
+CABINET_OPERATOR = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "src"
+    / "cabinet_button_operator.cpp"
+)
+BASE_COMMAND_ROUTER = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "src"
+    / "base_command_router.cpp"
 )
 ROS2_CONTROLLERS = (
     ROOT
@@ -110,10 +121,26 @@ EXPECTED_COUNTS = {
     "switch": 1,
     "door": 1,
 }
+ABSOLUTE_ROS_NAME_PATTERN = re.compile(
+    r"/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*"
+)
 
 
 def fail(message: str) -> None:
     raise RuntimeError(message)
+
+
+def configured_absolute_ros_name(
+    parameters: Dict[str, object], parameter_name: str
+) -> str:
+    value = parameters.get(parameter_name)
+    if not isinstance(value, str) or not ABSOLUTE_ROS_NAME_PATTERN.fullmatch(
+        value
+    ):
+        fail(
+            f"Robot adapter {parameter_name} must be an absolute ROS name."
+        )
+    return value
 
 
 def text(element: ElementTree.Element, name: str) -> str:
@@ -175,14 +202,21 @@ def load_robot_adapter_config() -> Dict[str, object]:
     with ROBOT_ADAPTER_CONFIG.open("r", encoding="utf-8") as stream:
         document = yaml.safe_load(stream)
     try:
+        common_parameters = document.get("/**", {}).get(
+            "ros__parameters", {}
+        )
         node_config = document.get("/**/xczs_cabinet_button_operator")
         if node_config is None:
             node_config = document["xczs_cabinet_button_operator"]
-        parameters = node_config["ros__parameters"]
+        node_parameters = node_config["ros__parameters"]
     except (KeyError, TypeError) as error:
         fail(f"Invalid cabinet robot-adapter parameter file: {error}")
-    if not isinstance(parameters, dict):
+    if not isinstance(common_parameters, dict) or not isinstance(
+        node_parameters, dict
+    ):
         fail("Cabinet robot-adapter ros__parameters must be a mapping.")
+    parameters = dict(common_parameters)
+    parameters.update(node_parameters)
     return parameters
 
 
@@ -275,6 +309,362 @@ def main() -> int:
         robot_parameters = load_robot_adapter_config()
         lease_parameters = load_lease_coordinator_config()
         root = expand_xacro()
+
+        operator_source = CABINET_OPERATOR.read_text(encoding="utf-8")
+        navigation_interfaces = {
+            "navigation_action": {
+                "default": "/navigate_to_pose",
+                "is_service": "false",
+                "client": (
+                    r"rclcpp_action::create_client<NavigateToPose>\("
+                    r"\s*this\s*,\s*navigation_action\s*\);"
+                ),
+            },
+            "navigation_mode_service": {
+                "default": "/xczs/set_navigation_mode",
+                "is_service": "true",
+                "client": (
+                    r"create_client<std_srvs::srv::SetBool>\("
+                    r"\s*navigation_mode_service\s*\);"
+                ),
+            },
+        }
+        for parameter_name, interface_contract in navigation_interfaces.items():
+            legacy_name = interface_contract["default"]
+            declaration_pattern = re.compile(
+                r"required_string_parameter\(\s*"
+                + re.escape(f'"{parameter_name}"')
+                + r"\s*,\s*"
+                + re.escape(f'"{legacy_name}"')
+                + r"\s*\)"
+            )
+            if not declaration_pattern.search(operator_source):
+                fail(
+                    "Cabinet operator must require robot-adapter parameter "
+                    f"'{parameter_name}' with its compatible default."
+                )
+            configured_absolute_ros_name(robot_parameters, parameter_name)
+            validation_pattern = re.compile(
+                r"require_absolute_ros_name\(\s*"
+                + re.escape(parameter_name)
+                + r"\s*,\s*"
+                + re.escape(f'"{parameter_name}"')
+                + r"\s*,\s*"
+                + interface_contract["is_service"]
+                + r"\s*\)"
+            )
+            if not validation_pattern.search(operator_source):
+                fail(
+                    "Cabinet operator must validate robot-adapter parameter "
+                    f"'{parameter_name}' as an absolute ROS name."
+                )
+            hardcoded_client_pattern = re.compile(
+                r"create_client(?:<[^;]+?>)?\(\s*(?:this\s*,\s*)?"
+                + re.escape(f'"{legacy_name}"')
+            )
+            if hardcoded_client_pattern.search(operator_source):
+                fail(
+                    "Cabinet operator must not hard-code Nav2 interface "
+                    f"'{legacy_name}' in a client."
+                )
+            parameter_client_pattern = re.compile(interface_contract["client"])
+            if not parameter_client_pattern.search(operator_source):
+                fail(
+                    "Cabinet operator must construct its Nav2 client from "
+                    f"'{parameter_name}'."
+                )
+
+        configured_absolute_ros_name(
+            robot_parameters, "manual_cmd_vel_topic"
+        )
+        if not re.search(
+            r"required_string_parameter\(\s*"
+            r'"manual_cmd_vel_topic"\s*,\s*'
+            r'"/xczs/manual_cmd_vel"\s*\)',
+            operator_source,
+        ) or not re.search(
+            r"require_absolute_ros_name\(\s*manual_cmd_vel_topic\s*,\s*"
+            r'"manual_cmd_vel_topic"\s*,\s*false\s*\)',
+            operator_source,
+        ):
+            fail(
+                "Cabinet operator must consume and validate the shared "
+                "manual_cmd_vel_topic."
+            )
+        if '"manual_base_topic"' in operator_source or not re.search(
+            r"create_publisher<geometry_msgs::msg::Twist>\(\s*"
+            r"manual_cmd_vel_topic\s*,\s*10\s*\)",
+            operator_source,
+        ):
+            fail(
+                "Cabinet operator precision docking must publish through "
+                "manual_cmd_vel_topic."
+            )
+
+        allow_embedded_navigation = robot_parameters.get(
+            "allow_embedded_navigation"
+        )
+        if allow_embedded_navigation is not False:
+            fail(
+                "Current robot adapter must disable legacy embedded cabinet "
+                "navigation."
+            )
+        if not re.search(
+            r"declare_parameter<bool>\(\s*"
+            r'"allow_embedded_navigation"\s*,\s*true\s*\)',
+            operator_source,
+        ):
+            fail(
+                "Cabinet operator must retain an explicit legacy-compatible "
+                "embedded-navigation switch."
+            )
+        if not re.search(
+            r'navigation is executed\s*"\s*'
+            r'"independently by the task layer',
+            operator_source,
+        ):
+            fail(
+                "Disabled embedded navigation must return a clear task-layer "
+                "reason."
+            )
+        press_execute_match = re.search(
+            r"void execute\(.*?\n  void execute_operate\(",
+            operator_source,
+            re.DOTALL,
+        )
+        operate_execute_match = re.search(
+            r"void execute_operate\(.*?\n  void publish_operate_feedback\(",
+            operator_source,
+            re.DOTALL,
+        )
+        for action_name, execute_match, error_constant in (
+            ("Press", press_execute_match, "PressCabinetButton"),
+            ("Operate", operate_execute_match, "OperateCabinetControl"),
+        ):
+            if execute_match is None:
+                fail(f"Could not inspect the {action_name} execution path.")
+            execute_source = execute_match.group(0)
+            gate_position = execute_source.find(
+                "embedded_navigation_request_is_supported("
+            )
+            lease_position = execute_source.find("acquire_operation_lease(")
+            if (
+                gate_position < 0
+                or lease_position < 0
+                or gate_position >= lease_position
+                or f"{error_constant}::Result::NAVIGATION_FAILED"
+                not in execute_source
+            ):
+                fail(
+                    f"{action_name} embedded-navigation rejection must return "
+                    "NAVIGATION_FAILED before acquiring the robot lease."
+                )
+
+        if "base_link_yaw_offset" in robot_parameters:
+            fail(
+                "Robot adapter must use navigation_velocity_yaw_offset as "
+                "the single frame-rotation source."
+            )
+        if not re.search(
+            r"finite_parameter\(\s*"
+            r'"navigation_velocity_yaw_offset"\s*,',
+            operator_source,
+        ) or not re.search(
+            r"navigation_yaw_in_model_frame\(\s*"
+            r"tf2::getYaw\(target_rotation\)\s*,\s*"
+            r"navigation_velocity_yaw_offset_\s*\)",
+            operator_source,
+        ):
+            fail(
+                "Cabinet precision docking must use the shared navigation "
+                "velocity yaw offset."
+            )
+        if not re.search(
+            r"parameter_overrides\.count\("
+            r'"base_link_yaw_offset"\)',
+            operator_source,
+        ):
+            fail(
+                "Cabinet operator must retain a bounded legacy yaw-offset "
+                "fallback."
+            )
+
+        base_router_source = BASE_COMMAND_ROUTER.read_text(encoding="utf-8")
+        base_topic_contracts = {
+            "manual_cmd_vel_topic": "/xczs/manual_cmd_vel",
+            "navigation_cmd_vel_topic": "/cmd_vel",
+            "base_output_topic": "/xczs/cmd_vel",
+            "navigation_mode_topic": "/xczs/navigation_mode",
+            "navigation_mode_service": "/xczs/set_navigation_mode",
+        }
+        for parameter_name, compatible_default in base_topic_contracts.items():
+            configured_absolute_ros_name(robot_parameters, parameter_name)
+            is_service = parameter_name == "navigation_mode_service"
+            declaration_pattern = re.compile(
+                r"absolute_ros_name_parameter\(\s*"
+                + re.escape(f'"{parameter_name}"')
+                + r"\s*,\s*"
+                + re.escape(f'"{compatible_default}"')
+                + r"\s*,\s*"
+                + ("true" if is_service else "false")
+                + r"\s*\)"
+            )
+            if not declaration_pattern.search(base_router_source):
+                fail(
+                    "Base command router must consume and validate adapter "
+                    f"parameter '{parameter_name}'."
+                )
+        for legacy_parameter in (
+            "manual_topic",
+            "navigation_topic",
+            "output_topic",
+        ):
+            if f'"{legacy_parameter}"' in base_router_source:
+                fail(
+                    "Base command router still declares legacy parameter "
+                    f"'{legacy_parameter}'."
+                )
+        yaw_offset = robot_parameters.get("navigation_velocity_yaw_offset")
+        if (
+            isinstance(yaw_offset, bool)
+            or not isinstance(yaw_offset, (int, float))
+            or not math.isfinite(float(yaw_offset))
+        ):
+            fail(
+                "Robot adapter navigation_velocity_yaw_offset must be finite."
+            )
+        if not re.search(
+            r"finite_parameter\(\s*"
+            r'"navigation_velocity_yaw_offset"\s*,',
+            base_router_source,
+        ) or "rotate_planar_vector(" not in base_router_source:
+            fail(
+                "Base command router must rotate Nav2 velocity through the "
+                "configured yaw offset."
+            )
+        if (
+            "output.linear.x = -sanitized.linear.y" in base_router_source
+            or "output.linear.y = sanitized.linear.x" in base_router_source
+        ):
+            fail("Base command router still hard-codes a 90-degree mapping.")
+        for wiring_pattern in (
+            r"create_publisher<Twist>\(\s*output_topic\s*,",
+            r"create_publisher<std_msgs::msg::Bool>\(\s*"
+            r"navigation_mode_topic\s*,",
+            r"create_subscription<Twist>\(\s*manual_topic\s*,",
+            r"create_subscription<Twist>\(\s*navigation_topic\s*,",
+            r"create_service<std_srvs::srv::SetBool>\(\s*"
+            r"navigation_mode_service\s*,",
+        ):
+            if not re.search(wiring_pattern, base_router_source):
+                fail("Base command router adapter-topic wiring is incomplete.")
+
+        legacy_router_source = LEGACY_TRAJECTORY_ROUTER.read_text(
+            encoding="utf-8"
+        )
+        arm_joint_names = robot_parameters.get("arm_joint_names")
+        gripper_joint_names = robot_parameters.get("gripper_joint_names")
+        for parameter_name, joint_names, allow_empty in (
+            ("arm_joint_names", arm_joint_names, False),
+            ("gripper_joint_names", gripper_joint_names, True),
+        ):
+            if (
+                not isinstance(joint_names, list)
+                or (not joint_names and not allow_empty)
+                or any(
+                    not isinstance(joint_name, str) or not joint_name
+                    for joint_name in joint_names
+                )
+                or len(joint_names) != len(set(joint_names))
+            ):
+                fail(
+                    f"Robot adapter {parameter_name} must contain unique, "
+                    "nonempty joint names."
+                )
+            if not re.search(
+                r"required_joint_group_parameter\(\s*"
+                + re.escape(f'"{parameter_name}"')
+                + r"\s*,\s*"
+                + ("true" if allow_empty else "false")
+                + r"\s*\)",
+                legacy_router_source,
+            ):
+                fail(
+                    "Legacy trajectory router must consume adapter group "
+                    f"'{parameter_name}'."
+                )
+        if set(arm_joint_names) & set(gripper_joint_names):
+            fail("Robot adapter arm and gripper joint groups must not overlap.")
+        if any(
+            f'"{joint_name}"' in legacy_router_source
+            for joint_name in arm_joint_names + gripper_joint_names
+        ):
+            fail("Legacy trajectory router still hard-codes robot joint names.")
+        trajectory_topic_contracts = {
+            "joint_trajectory_topic": "/xczs/joint_trajectory",
+            "arm_controller_topic": "/xczs/arm_controller/joint_trajectory",
+            "arm_controller_status_topic": (
+                "/xczs/arm_controller/follow_joint_trajectory/_action/status"
+            ),
+        }
+        if gripper_joint_names:
+            trajectory_topic_contracts.update(
+                {
+                    "gripper_controller_topic": (
+                        "/xczs/gripper_controller/joint_trajectory"
+                    ),
+                    "gripper_controller_status_topic": (
+                        "/xczs/gripper_controller/follow_joint_trajectory/"
+                        "_action/status"
+                    ),
+                }
+            )
+        for parameter_name, compatible_default in trajectory_topic_contracts.items():
+            configured_absolute_ros_name(robot_parameters, parameter_name)
+            if not re.search(
+                r"absolute_ros_name_parameter\(\s*"
+                + re.escape(f'"{parameter_name}"')
+                + r"\s*,\s*"
+                + re.escape(f'"{compatible_default}"')
+                + r"\s*\)",
+                legacy_router_source,
+            ):
+                fail(
+                    "Legacy trajectory router must consume adapter interface "
+                    f"'{parameter_name}'."
+                )
+        if (
+            '"arm_action_status_topic"' in legacy_router_source
+            or '"gripper_action_status_topic"' in legacy_router_source
+        ):
+            fail("Legacy trajectory router still declares legacy status keys.")
+        trajectory_wiring_patterns = [
+            r"create_publisher<JointTrajectory>\(\s*arm_topic\s*,",
+            r"create_subscription<JointTrajectory>\(\s*input_topic\s*,",
+            r"create_subscription<GoalStatusArray>\(\s*"
+            r"arm_status_topic\s*,",
+            r"extract_trajectory\(\s*input\s*,\s*arm_joint_names_\s*\)",
+        ]
+        if gripper_joint_names:
+            trajectory_wiring_patterns.extend(
+                [
+                    r"create_publisher<JointTrajectory>\(\s*"
+                    r"gripper_topic\s*,",
+                    r"create_subscription<GoalStatusArray>\(\s*"
+                    r"gripper_status_topic\s*,",
+                    r"extract_trajectory\(\s*input\s*,\s*"
+                    r"gripper_joint_names_\s*\)",
+                ]
+            )
+        for wiring_pattern in trajectory_wiring_patterns:
+            if not re.search(wiring_pattern, legacy_router_source):
+                fail(
+                    "Legacy trajectory router adapter wiring is incomplete."
+                )
+        if "router_utils_test" not in CONTROL_CMAKE.read_text(
+            encoding="utf-8"
+        ):
+            fail("Router adapter math and joint-group tests are not wired.")
 
         control_ids = parameters.get("control_ids")
         controls = parameters.get("controls")
@@ -1183,6 +1573,26 @@ def main() -> int:
         launch_source = CONTROL_LAUNCH.read_text(encoding="utf-8")
         if launch_source.count('executable="operation_lease_coordinator"') != 1:
             fail("Unified launch must start exactly one lease coordinator.")
+        for router_executable in (
+            "base_command_router",
+            "legacy_trajectory_router",
+        ):
+            router_launch = re.search(
+                r'executable=["\']'
+                + re.escape(router_executable)
+                + r'["\'].*?parameters=\[(.*?)\]\s*,',
+                launch_source,
+                re.DOTALL,
+            )
+            if router_launch is None or not re.search(
+                r"LaunchConfiguration\(\s*"
+                r'["\']cabinet_robot_adapter["\']\s*\)',
+                router_launch.group(1),
+            ):
+                fail(
+                    f"Unified launch must pass the robot adapter to "
+                    f"{router_executable}."
+                )
         if not re.search(
             r"\.planning_pipelines\(\s*"
             r"default_planning_pipeline=[\"']ompl[\"']\s*,\s*"
@@ -1324,31 +1734,38 @@ def main() -> int:
 
         web_node_source = WEB_ROS_NODE.read_text(encoding="utf-8")
         web_source = WEB_MONITOR.read_text(encoding="utf-8")
-        web_tree = ast.parse(web_node_source)
-        web_joint_names = None
-        for class_node in (
-            node for node in web_tree.body if isinstance(node, ast.ClassDef)
+        for backend_contract in (
+            "manual_joints: Sequence[ManualJointConfig]",
+            "self._manual_joints = tuple(manual_joints)",
+            "joint_names = [joint.name for joint in self._manual_joints]",
+            "trajectory.joint_names = joint_names",
         ):
-            for statement in class_node.body:
-                if (
-                    isinstance(statement, ast.Assign)
-                    and any(
-                        isinstance(target, ast.Name)
-                        and target.id == "JOINT_NAMES"
-                        for target in statement.targets
-                    )
-                ):
-                    web_joint_names = ast.literal_eval(statement.value)
-        if web_joint_names != ARM_JOINTS + ["end_worklink1", "end_worklink2"]:
-            fail("Web backend joint order does not expose the six-axis arm.")
-        arm_names_match = re.search(
-            r"const armJointNames = \[([^;]+)\];", web_source
-        )
-        if arm_names_match is None:
-            fail("Web monitor does not define armJointNames.")
-        html_arm_joints = re.findall(r"['\"]([^'\"]+)['\"]", arm_names_match.group(1))
-        if html_arm_joints != ARM_JOINTS:
-            fail("Web monitor arm slider order differs from the controller.")
+            if backend_contract not in web_node_source:
+                fail(
+                    "Web backend must build joint commands from the robot "
+                    "adapter capability contract."
+                )
+        if "JOINT_NAMES" in web_node_source:
+            fail("Web backend still hard-codes a robot joint order.")
+        for monitor_contract in (
+            "capabilities.manual_joints",
+            "joint.group === 'arm'",
+            "joint.group === 'gripper'",
+            "jointNames = manualJointSpecs.map(joint => joint.name)",
+        ):
+            if monitor_contract not in web_source:
+                fail(
+                    "Web monitor must render joint controls from adapter "
+                    "capabilities."
+                )
+        if "const armJointNames" in web_source:
+            fail("Web monitor still hard-codes an arm joint order.")
+        configured_joint_names = arm_joint_names + gripper_joint_names
+        if any(
+            joint_name in web_node_source or joint_name in web_source
+            for joint_name in configured_joint_names
+        ):
+            fail("Web manual control still embeds robot-specific joint names.")
         if "body_arm_lift" in web_node_source or "body_arm_lift" in web_source:
             fail("Web manual control still exposes the removed arm lift.")
         print(

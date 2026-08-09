@@ -29,6 +29,7 @@
 #include "moveit/trajectory_processing/time_optimal_trajectory_generation.h"
 #include "moveit_msgs/msg/robot_trajectory.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
+#include "rclcpp/expand_topic_or_service_name.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "rclcpp_action/rclcpp_action.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
@@ -49,6 +50,7 @@
 #include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_catalog.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
+#include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/srv/manage_operation_lease.hpp"
 #include "xczs_inspection_robot_control/srv/set_cabinet_grasp.hpp"
 
@@ -78,6 +80,9 @@ constexpr char kOperateActionName[] = "operate_cabinet_control";
 constexpr char kControlCatalogTopic[] = "control_catalog";
 constexpr char kActiveControlTopic[] = "active_control";
 constexpr char kResetControlsService[] = "reset_controls";
+constexpr char kEmbeddedNavigationDisabledMessage[] =
+  "Embedded cabinet navigation is disabled because navigation is executed "
+  "independently by the task layer.";
 
 class OperationError : public std::runtime_error
 {
@@ -276,6 +281,16 @@ public:
     allow_replanning_ = declare_parameter<bool>("allow_replanning", true);
     navigation_base_frame_ = required_string_parameter(
       "navigation_base_frame", "");
+    const auto navigation_action = required_string_parameter(
+      "navigation_action", "/navigate_to_pose");
+    require_absolute_ros_name(
+      navigation_action, "navigation_action", false);
+    const auto navigation_mode_service = required_string_parameter(
+      "navigation_mode_service", "/xczs/set_navigation_mode");
+    require_absolute_ros_name(
+      navigation_mode_service, "navigation_mode_service", true);
+    allow_embedded_navigation_ = declare_parameter<bool>(
+      "allow_embedded_navigation", true);
     docking_base_frame_ = required_string_parameter(
       "docking_base_frame", "");
     grasp_brake_link_ = required_string_parameter(
@@ -296,8 +311,10 @@ public:
       "grasp_service", "grasp");
     const auto reset_physics_service = declare_parameter<std::string>(
       "reset_physics_service", "reset_physics");
-    const auto manual_base_topic = declare_parameter<std::string>(
-      "manual_base_topic", "/xczs/manual_cmd_vel");
+    const auto manual_cmd_vel_topic = required_string_parameter(
+      "manual_cmd_vel_topic", "/xczs/manual_cmd_vel");
+    require_absolute_ros_name(
+      manual_cmd_vel_topic, "manual_cmd_vel_topic", false);
     const auto operation_lease_service = required_string_parameter(
       "operation_lease_service", "/xczs/operation_lease");
     operation_lease_duration_ = positive_parameter(
@@ -343,8 +360,25 @@ public:
       "docking_linear_gain", 0.8);
     docking_angular_gain_ = positive_parameter(
       "docking_angular_gain", 1.2);
-    base_link_yaw_offset_ = declare_parameter<double>(
-      "base_link_yaw_offset", 1.57079632679);
+    const auto & parameter_overrides =
+      get_node_parameters_interface()->get_parameter_overrides();
+    const bool navigation_yaw_offset_overridden =
+      parameter_overrides.count("navigation_velocity_yaw_offset") != 0U;
+    const bool legacy_yaw_offset_overridden =
+      parameter_overrides.count("base_link_yaw_offset") != 0U;
+    const double configured_navigation_yaw_offset = finite_parameter(
+      "navigation_velocity_yaw_offset", 1.57079632679);
+    const double legacy_yaw_offset = finite_parameter(
+      "base_link_yaw_offset", configured_navigation_yaw_offset);
+    navigation_velocity_yaw_offset_ =
+      !navigation_yaw_offset_overridden && legacy_yaw_offset_overridden ?
+      legacy_yaw_offset : configured_navigation_yaw_offset;
+    if (!navigation_yaw_offset_overridden && legacy_yaw_offset_overridden) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Parameter 'base_link_yaw_offset' is deprecated; use "
+        "'navigation_velocity_yaw_offset'.");
+    }
     press_detection_timeout_ = positive_parameter(
       "press_detection_timeout", 3.0);
     release_detection_timeout_ = positive_parameter(
@@ -459,9 +493,9 @@ public:
       rclcpp::QoS(1).reliable().transient_local());
 
     navigation_client_ = rclcpp_action::create_client<NavigateToPose>(
-      this, "/navigate_to_pose");
+      this, navigation_action);
     navigation_mode_client_ = create_client<std_srvs::srv::SetBool>(
-      "/xczs/set_navigation_mode");
+      navigation_mode_service);
     grasp_client_ =
       create_client<xczs_inspection_robot_control::srv::SetCabinetGrasp>(
       grasp_service);
@@ -476,7 +510,7 @@ public:
       operation_lease_service, rmw_qos_profile_services_default,
       operation_lease_client_callback_group_);
     manual_base_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
-      manual_base_topic, 10);
+      manual_cmd_vel_topic, 10);
     transform_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
     transform_listener_ =
       std::make_unique<tf2_ros::TransformListener>(*transform_buffer_);
@@ -567,6 +601,26 @@ private:
       throw std::invalid_argument("Parameter '" + name + "' must not be empty.");
     }
     return value;
+  }
+
+  void require_absolute_ros_name(
+    const std::string & value,
+    const std::string & parameter_name,
+    bool is_service) const
+  {
+    if (value.empty() || value.front() != '/') {
+      throw std::invalid_argument(
+              "Parameter '" + parameter_name +
+              "' must be an absolute ROS name.");
+    }
+    try {
+      (void)rclcpp::expand_topic_or_service_name(
+        value, get_name(), get_namespace(), is_service);
+    } catch (const std::exception & error) {
+      throw std::invalid_argument(
+              "Parameter '" + parameter_name +
+              "' must be a valid absolute ROS name: " + error.what());
+    }
   }
 
   void activate_goal(
@@ -1212,6 +1266,18 @@ private:
     return value;
   }
 
+  double finite_parameter(
+    const std::string & name,
+    double default_value)
+  {
+    const double value = declare_parameter<double>(name, default_value);
+    if (!std::isfinite(value)) {
+      throw std::invalid_argument(
+              "Parameter '" + name + "' must be finite.");
+    }
+    return value;
+  }
+
   double unit_interval_parameter(
     const std::string & name,
     double default_value)
@@ -1276,6 +1342,22 @@ private:
     OperationPoses poses;
     bool should_attempt_retreat = false;
     bool request_success = false;
+
+    if (!embedded_navigation_request_is_supported(
+        goal_handle->get_goal()->navigate_to_staging_pose,
+        allow_embedded_navigation_))
+    {
+      result->success = false;
+      result->error_code = PressCabinetButton::Result::NAVIGATION_FAILED;
+      result->message = kEmbeddedNavigationDisabledMessage;
+      result->max_travel = button ?
+        button_snapshot(*button).max_position : 0.0;
+      RCLCPP_WARN(get_logger(), "%s", result->message.c_str());
+      finish_goal_noexcept(goal_handle, result, false);
+      clear_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id());
+      operation_active_.store(false);
+      return;
+    }
 
     try {
       if (!button) {
@@ -1560,6 +1642,20 @@ private:
     bool is_button = false;
     std::string target_state;
     std::unordered_map<std::string, std::string> expected_parent_states;
+
+    if (!embedded_navigation_request_is_supported(
+        goal_handle->get_goal()->navigate_to_staging_pose,
+        allow_embedded_navigation_))
+    {
+      result->success = false;
+      result->error_code = OperateCabinetControl::Result::NAVIGATION_FAILED;
+      result->message = kEmbeddedNavigationDisabledMessage;
+      RCLCPP_WARN(get_logger(), "%s", result->message.c_str());
+      finish_operate_goal_noexcept(goal_handle, result, false);
+      clear_active_goal(ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+      operation_active_.store(false);
+      return;
+    }
 
     try {
       if (!control) {
@@ -3979,8 +4075,11 @@ private:
   {
     tf2::Quaternion target_rotation;
     tf2::fromMsg(target.pose.orientation, target_rotation);
-    const double target_body_yaw =
-      tf2::getYaw(target_rotation) - base_link_yaw_offset_;
+    // The base router transforms navigation velocity components with
+    // R(+offset). The physical docking frame yaw is therefore the desired
+    // navigation-base yaw minus that same shared frame offset.
+    const double target_body_yaw = navigation_yaw_in_model_frame(
+      tf2::getYaw(target_rotation), navigation_velocity_yaw_offset_);
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(docking_timeout_);
     auto last_feedback = std::chrono::steady_clock::time_point{};
@@ -4650,6 +4749,7 @@ private:
   double goal_orientation_tolerance_{0.01};
   double goal_joint_tolerance_{0.001};
   bool allow_replanning_{true};
+  bool allow_embedded_navigation_{true};
   std::string navigation_base_frame_;
   std::string docking_base_frame_;
   std::string grasp_brake_link_;
@@ -4677,7 +4777,7 @@ private:
   double docking_max_angular_speed_{0.45};
   double docking_linear_gain_{0.8};
   double docking_angular_gain_{1.2};
-  double base_link_yaw_offset_{1.57079632679};
+  double navigation_velocity_yaw_offset_{1.57079632679};
   double press_detection_timeout_{3.0};
   double release_detection_timeout_{3.0};
   double press_hold_seconds_{0.5};

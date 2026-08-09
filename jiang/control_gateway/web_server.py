@@ -41,6 +41,11 @@ class ControlHandler(BaseHTTPRequestHandler):
         try:
             if path == "/health":
                 self._send_json(200, self.control_server.health())
+            elif path == "/robot/capabilities":
+                self._send_json(
+                    200,
+                    self.control_server.robot_capabilities(),
+                )
             elif path == "/cabinets":
                 self._send_json(200, self.control_server.cabinets())
             elif path == "/task/events":
@@ -254,10 +259,11 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _handle_joint_trajectory(self) -> None:
         body = self._required_body()
+        self._reject_unknown_fields(body, {"positions"})
         raw_positions = body.get("positions")
-        if not isinstance(raw_positions, list) or len(raw_positions) != 8:
+        if not isinstance(raw_positions, list) or not raw_positions:
             raise ControlRequestError(
-                "positions must contain six arm and two gripper numbers."
+                "positions must be a non-empty list of numbers."
             )
         positions = [
             self._finite_number(
@@ -405,7 +411,8 @@ class ControlHandler(BaseHTTPRequestHandler):
     def _path_parameter(path: str, prefix: str, suffix: str) -> Optional[str]:
         if not path.startswith(prefix) or not path.endswith(suffix):
             return None
-        encoded = path[len(prefix) : len(path) - len(suffix) if suffix else None]
+        end = len(path) - len(suffix) if suffix else None
+        encoded = path[len(prefix):end]
         if not encoded or "/" in encoded:
             return None
         value = unquote(encoded)

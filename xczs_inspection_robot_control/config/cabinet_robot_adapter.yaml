@@ -1,3 +1,68 @@
+/**:
+  ros__parameters:
+    # 跨节点共享的机器人接口契约。更换机器人时，Web、Nav2 路由和
+    # 柜体操作节点统一从这里取得坐标系及 ROS 接口，避免各自硬编码。
+    planning_frame: odom
+    # Web 前后控制只暴露一个标量；当前全向底盘的模型前向为 +Y。
+    manual_linear_axis: y
+    # Nav2 使用常规 +X 前向，路由到当前 +Y 前向模型时旋转速度坐标。
+    navigation_velocity_yaw_offset: 1.57079632679
+    # Nav2 工位由通用任务层统一计算和执行；底层 Action 不再按控件位置
+    # 另算一套工位。只有兼容旧客户端时才应显式开启内嵌导航。
+    allow_embedded_navigation: false
+    navigation_frame: map
+    navigation_base_frame: base_link
+    navigation_action: /navigate_to_pose
+    navigation_mode_service: /xczs/set_navigation_mode
+    navigation_mode_topic: /xczs/navigation_mode
+    map_topic: /map
+    localization_pose_topic: /amcl_pose
+    plan_topic: /plan
+    manual_cmd_vel_topic: /xczs/manual_cmd_vel
+    navigation_cmd_vel_topic: /cmd_vel
+    base_output_topic: /xczs/cmd_vel
+    joint_trajectory_topic: /xczs/joint_trajectory
+    joint_state_topic: /xczs/joint_states
+    arm_controller_topic: /xczs/arm_controller/joint_trajectory
+    arm_controller_status_topic: /xczs/arm_controller/follow_joint_trajectory/_action/status
+    gripper_controller_topic: /xczs/gripper_controller/joint_trajectory
+    gripper_controller_status_topic: /xczs/gripper_controller/follow_joint_trajectory/_action/status
+    arm_joint_names:
+      - body_arm1
+      - arm1_arm2
+      - arm2_arm3
+      - arm3_arm4
+      - arm4_arm5
+      - arm5_end
+    gripper_joint_names:
+      - end_worklink1
+      - end_worklink2
+    # Web 手动关节命令按上方顺序传递；每个范围都是适配器合同的一部分，
+    # 控制层不得再根据位置或关节名称猜测机械臂/夹爪限位。
+    manual_joint_limits:
+      body_arm1:
+        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      arm1_arm2:
+        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      arm2_arm3:
+        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      arm3_arm4:
+        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      arm4_arm5:
+        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      arm5_end:
+        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      end_worklink1:
+        min_position: 0.0
+        max_position: 0.35
+        default_position: 0.0
+        open_position: 0.35
+      end_worklink2:
+        min_position: -0.35
+        max_position: 0.0
+        default_position: 0.0
+        open_position: -0.35
+
 /**/xczs_cabinet_button_operator:
   ros__parameters:
     # 机器人适配层：更换机器人时只替换这些 MoveIt/Nav2/工具参数。
@@ -15,10 +80,8 @@
     goal_orientation_tolerance: 0.01
     goal_joint_tolerance: 0.001
     allow_replanning: true
-    navigation_base_frame: base_link
     docking_base_frame: body
     grasp_brake_link: body
-    base_link_yaw_offset: 1.57079632679
     navigation_takeover_distance: 0.15
     navigation_takeover_yaw_tolerance: 0.35
     navigation_takeover_stall_timeout: 4.0

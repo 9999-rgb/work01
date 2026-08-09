@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import sys
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ JIANG_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(JIANG_DIR))
 
 from action_msgs.msg import GoalStatus  # noqa: E402
+from builtin_interfaces.msg import Time as TimeMessage  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway.ros_node import RosControlNode  # noqa: E402
 
@@ -81,13 +83,19 @@ class _Profile:
     def reset(self) -> None:
         self.reset_count += 1
 
+    def update(self, target: float, period: float) -> float:
+        del period
+        return target
+
 
 class _NavigationClient:
     def __init__(self) -> None:
         self.send_count = 0
+        self.goal: Any = None
 
-    def send_goal_async(self, *_args: Any, **_kwargs: Any) -> Any:
+    def send_goal_async(self, *args: Any, **_kwargs: Any) -> Any:
         self.send_count += 1
+        self.goal = args[0]
         return _DeferredFuture()
 
     def server_is_ready(self) -> bool:
@@ -156,7 +164,9 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
     node._map_state = None
     node._robot_pose = None
     node._robot_pose_sequence = 0
+    node._navigation_frame = "map"
     node._navigation_base_frame = "base_link"
+    node._manual_linear_axis = "y"
     node._ros_clock_now_nanoseconds = lambda: 23_500_000_000
     node._target_linear_y = 0.2
     node._target_angular_z = 0.4
@@ -170,6 +180,44 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
 
 
 class NavigationTakeoverTest(unittest.TestCase):
+    def test_navigation_goal_uses_configured_frame(self) -> None:
+        node = _make_node(mode=True)
+        node._navigation_frame = "robot_map"
+        node._navigation_state.update(
+            {
+                "state": "enabling",
+                "goal": {"x": 1.0, "y": 2.0, "yaw": 0.3},
+            }
+        )
+        now = SimpleNamespace(
+            nanoseconds=123,
+            to_msg=lambda: TimeMessage(sec=0, nanosec=123),
+        )
+        node.get_clock = lambda: SimpleNamespace(now=lambda: now)
+
+        with node._lock:
+            node._send_navigation_goal_locked(generation=1)
+
+        self.assertEqual(
+            "robot_map",
+            node._navigation_client.goal.pose.header.frame_id,
+        )
+
+    def test_manual_linear_axis_selects_twist_component(self) -> None:
+        node = _make_node()
+        node._manual_linear_axis = "x"
+        node._command_timeout = 10.0
+        node._last_command_time = time.monotonic()
+        node._last_update_time = time.monotonic()
+        node._pending_trajectory = None
+        node._pending_trajectory_repeats = 0
+
+        node._update_manual_control()
+
+        command = node._cmd_vel_publisher.messages[-1]
+        self.assertAlmostEqual(0.2, command.linear.x)
+        self.assertAlmostEqual(0.0, command.linear.y)
+
     def test_rotated_occupancy_grid_goal_uses_inverse_origin_rotation(
         self,
     ) -> None:
@@ -223,9 +271,10 @@ class NavigationTakeoverTest(unittest.TestCase):
 
     def test_tf_refresh_supplies_current_navigation_pose(self) -> None:
         node = _make_node()
+        node._navigation_frame = "robot_map"
         transform = SimpleNamespace(
             header=SimpleNamespace(
-                frame_id="map",
+                frame_id="robot_map",
                 stamp=SimpleNamespace(sec=23, nanosec=45),
             ),
             child_frame_id="base_link",
@@ -243,7 +292,10 @@ class NavigationTakeoverTest(unittest.TestCase):
 
         node._refresh_robot_pose_from_tf()
 
-        self.assertEqual(("map", "base_link"), node._tf_buffer.requests[0][:2])
+        self.assertEqual(
+            ("robot_map", "base_link"),
+            node._tf_buffer.requests[0][:2],
+        )
         self.assertAlmostEqual(1.25, node._robot_pose["x"])
         self.assertAlmostEqual(-0.5, node._robot_pose["y"])
         self.assertAlmostEqual(0.2, node._robot_pose["yaw"])

@@ -14,7 +14,6 @@ from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 import rclpy
-import yaml
 from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
@@ -28,6 +27,8 @@ from .inventory import NavigationStationOutOfBoundsError
 from .inventory import OccupancyGridBoundary
 from .ros_node import ControlRequestError
 from .ros_node import RosControlNode
+from .robot_adapter import RobotAdapterError
+from .robot_adapter import load as load_robot_adapter
 from .task_manager import EventHubClosed
 from .task_manager import TaskCanceledError
 from .task_manager import TaskConflictError
@@ -66,8 +67,8 @@ class ControlServer:
     def __init__(
         self,
         port: int = 8090,
-        cmd_vel_topic: str = "/xczs/manual_cmd_vel",
-        joint_trajectory_topic: str = "/xczs/joint_trajectory",
+        cmd_vel_topic: Optional[str] = None,
+        joint_trajectory_topic: Optional[str] = None,
         host: str = "127.0.0.1",
         max_linear_speed: float = 0.25,
         max_angular_speed: float = 0.60,
@@ -124,9 +125,22 @@ class ControlServer:
             raise RuntimeError(
                 f"Invalid cabinet inventory: {error}"
             ) from error
-        navigation_base_frame = self._load_navigation_base_frame(
-            robot_adapter_path
+        try:
+            self._robot_adapter = load_robot_adapter(robot_adapter_path)
+        except RobotAdapterError as error:
+            raise RuntimeError(f"Invalid robot adapter: {error}") from error
+        resolved_cmd_vel_topic = (
+            cmd_vel_topic
+            if cmd_vel_topic is not None
+            else self._robot_adapter.manual_cmd_vel_topic
         )
+        resolved_joint_trajectory_topic = (
+            joint_trajectory_topic
+            if joint_trajectory_topic is not None
+            else self._robot_adapter.joint_trajectory_topic
+        )
+        self._manual_cmd_vel_topic = resolved_cmd_vel_topic
+        self._joint_trajectory_topic = resolved_joint_trajectory_topic
 
         self._port = port
         self._host = host
@@ -140,13 +154,26 @@ class ControlServer:
             signal_handler_options=SignalHandlerOptions.NO,
         )
         self._node = RosControlNode(
-            cmd_vel_topic,
-            joint_trajectory_topic,
+            resolved_cmd_vel_topic,
+            resolved_joint_trajectory_topic,
             max_linear_speed,
             max_angular_speed,
             command_timeout,
             self._context,
-            navigation_base_frame=navigation_base_frame,
+            navigation_frame=self._robot_adapter.navigation_frame,
+            navigation_base_frame=self._robot_adapter.navigation_base_frame,
+            navigation_action=self._robot_adapter.navigation_action,
+            navigation_mode_service=(
+                self._robot_adapter.navigation_mode_service
+            ),
+            navigation_mode_topic=self._robot_adapter.navigation_mode_topic,
+            map_topic=self._robot_adapter.map_topic,
+            localization_pose_topic=(
+                self._robot_adapter.localization_pose_topic
+            ),
+            plan_topic=self._robot_adapter.plan_topic,
+            manual_linear_axis=self._robot_adapter.manual_linear_axis,
+            manual_joints=self._robot_adapter.manual_joints,
         )
         self._executor = SingleThreadedExecutor(context=self._context)
         self._executor.add_node(self._node)
@@ -236,52 +263,6 @@ class ControlServer:
             return ipaddress.ip_address(normalized).is_loopback
         except ValueError:
             return False
-
-    @staticmethod
-    def _load_navigation_base_frame(path_value: str) -> str:
-        """Read the Nav2 base frame from the shared robot adapter YAML."""
-        path = Path(path_value).expanduser().resolve()
-        try:
-            with path.open("r", encoding="utf-8") as stream:
-                document = yaml.safe_load(stream)
-        except OSError as error:
-            raise RuntimeError(
-                f"Cannot read cabinet robot adapter {path}: {error}"
-            ) from error
-        except yaml.YAMLError as error:
-            raise RuntimeError(
-                f"Invalid cabinet robot adapter YAML {path}: {error}"
-            ) from error
-        if not isinstance(document, Mapping):
-            raise RuntimeError(
-                f"Cabinet robot adapter {path} must contain a mapping."
-            )
-
-        matches: List[Any] = []
-        for node_config in document.values():
-            if not isinstance(node_config, Mapping):
-                continue
-            parameters = node_config.get("ros__parameters")
-            if not isinstance(parameters, Mapping):
-                continue
-            if "navigation_base_frame" in parameters:
-                matches.append(parameters["navigation_base_frame"])
-        if len(matches) != 1:
-            raise RuntimeError(
-                f"Cabinet robot adapter {path} must define exactly one "
-                "ros__parameters.navigation_base_frame."
-            )
-        frame = matches[0]
-        if (
-            not isinstance(frame, str)
-            or not frame.strip()
-            or frame.startswith("/")
-            or any(character.isspace() for character in frame)
-        ):
-            raise RuntimeError(
-                "navigation_base_frame must be a non-empty relative TF frame."
-            )
-        return frame.strip()
 
     def stop(self) -> None:
         """Stop streams, HTTP, action clients, and finally the ROS context."""
@@ -593,6 +574,40 @@ class ControlServer:
             values = self._inventory.list_cabinets(include_station=True)
             return {"count": len(values), "cabinets": values}
 
+    def robot_capabilities(self) -> Dict[str, Any]:
+        """Return the ordered manual-control contract used by the Web UI."""
+        with self._request_scope():
+            adapter = self._robot_adapter
+            joints = [
+                {
+                    "name": joint.name,
+                    "group": joint.group,
+                    "min_position": joint.min_position,
+                    "max_position": joint.max_position,
+                    "default_position": joint.default_position,
+                    "open_position": joint.open_position,
+                }
+                for joint in adapter.manual_joints
+            ]
+            return {
+                "schema_version": 1,
+                "manual_linear_axis": adapter.manual_linear_axis,
+                "frames": {
+                    "planning": adapter.planning_frame,
+                    "navigation": adapter.navigation_frame,
+                    "navigation_base": adapter.navigation_base_frame,
+                },
+                "topics": {
+                    "manual_cmd_vel": self._manual_cmd_vel_topic,
+                    "joint_state": adapter.joint_state_topic,
+                    "joint_trajectory": self._joint_trajectory_topic,
+                },
+                "joint_count": len(joints),
+                "arm_joint_count": len(adapter.arm_joint_names),
+                "gripper_joint_count": len(adapter.gripper_joint_names),
+                "manual_joints": joints,
+            }
+
     def cabinet_controls(self, name: Optional[str] = None) -> Dict[str, Any]:
         """Return one instance's catalog and live physical state."""
         with self._request_scope():
@@ -623,10 +638,11 @@ class ControlServer:
                 raise ControlRequestError(str(error), 400) from error
             except InventoryError as error:
                 raise ControlRequestError(str(error), 400) from error
-            if station.frame_id != "map":
+            if station.frame_id != self._robot_adapter.navigation_frame:
                 raise ControlRequestError(
-                    "Navigation stations must currently use the map frame; "
-                    f"{cabinet} uses {station.frame_id}.",
+                    "Navigation station frame must match the robot adapter; "
+                    f"expected {self._robot_adapter.navigation_frame}, "
+                    f"but {cabinet} uses {station.frame_id}.",
                     400,
                 )
             request = {
@@ -1159,6 +1175,7 @@ class ControlServer:
                         ),
                         minimum_pose_received_monotonic=goal_sent_at,
                         observation_monotonic=now,
+                        expected_frame=self._robot_adapter.navigation_frame,
                     )
                 except TaskExecutionError as error:
                     if (
@@ -1389,6 +1406,7 @@ class ControlServer:
         minimum_pose_stamp_ros_nanoseconds: Optional[int],
         minimum_pose_received_monotonic: Optional[float] = None,
         observation_monotonic: Optional[float] = None,
+        expected_frame: Optional[str] = None,
     ) -> Dict[str, Any]:
         pose = snapshot.get("current_pose")
         if not isinstance(pose, Mapping):
@@ -1412,7 +1430,9 @@ class ControlServer:
                 "Nav2 succeeded but the final localized pose is invalid.",
                 code="final_pose_unavailable",
             )
-        expected_frame = str(station.get("frame_id") or "map")
+        expected_frame = expected_frame or str(
+            station.get("frame_id") or "map"
+        )
         if pose.get("frame_id") != expected_frame:
             raise TaskExecutionError(
                 "Nav2 succeeded but the localized pose uses an unexpected "

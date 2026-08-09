@@ -49,6 +49,30 @@ CABINET_CONTROLS_PATH="${CABINET_CONTROLS_PATH:-$WORK_DIR/xczs_inspection_robot_
 CABINET_SCENE_PATH="${CABINET_SCENE_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_scene.yaml}"
 CABINET_POSE_PATH="${CABINET_POSE_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_pose.yaml}"
 CABINET_ROBOT_ADAPTER_PATH="${CABINET_ROBOT_ADAPTER_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_robot_adapter.yaml}"
+ROBOT_CONTROL_PATH="${ROBOT_CONTROL_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/robot_control.yaml}"
+SIMULATION_WORLD_PATH="${SIMULATION_WORLD_PATH:-$WORK_DIR/xczs_inspection_robot_description/worlds/inspection_robot.world}"
+CABINET_XACRO_PATH="${CABINET_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/control_cabinet.urdf.xacro}"
+ROBOT_NAME="${ROBOT_NAME:-xczs_inspection_robot}"
+ROBOT_XACRO_PATH="${ROBOT_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/xczs_inspection_robot.urdf.xacro}"
+MOVEIT_CONFIG_PACKAGE="${MOVEIT_CONFIG_PACKAGE:-xczs_inspection_robot_moveit_config}"
+MOVEIT_SRDF_PATH="${MOVEIT_SRDF_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/xczs_inspection_robot.srdf}"
+MOVEIT_KINEMATICS_PATH="${MOVEIT_KINEMATICS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/kinematics.yaml}"
+MOVEIT_JOINT_LIMITS_PATH="${MOVEIT_JOINT_LIMITS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/joint_limits.yaml}"
+MOVEIT_CONTROLLERS_PATH="${MOVEIT_CONTROLLERS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/moveit_controllers.yaml}"
+MOVEIT_RVIZ_CONFIG_PATH="${MOVEIT_RVIZ_CONFIG_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/moveit.rviz}"
+MOVEIT_LAUNCH_PATH="${MOVEIT_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/launch/move_group.launch.py}"
+NAV2_LAUNCH_PATH="${NAV2_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/launch/navigation.launch.py}"
+NAV2_MAP_PATH="${NAV2_MAP_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/maps/inspection_map.yaml}"
+NAV2_PARAMS_FILE="${NAV2_PARAMS_FILE:-$WORK_DIR/xczs_inspection_robot_nav2/config/nav2_params.yaml}"
+ROBOT_BRINGUP="${ROBOT_BRINGUP:-true}"
+GAZEBO_ENABLED="${GAZEBO_ENABLED:-true}"
+USE_SIM_TIME="${USE_SIM_TIME:-true}"
+MOVEIT_ENABLED="${MOVEIT_ENABLED:-true}"
+CABINET_BRINGUP="${CABINET_BRINGUP:-true}"
+SPAWN_CABINET="${SPAWN_CABINET:-true}"
+SPAWN_Z="${SPAWN_Z:-0.515}"
+CABINET_POSE_SOURCE="${CABINET_POSE_SOURCE:-static}"
+PREFLIGHT_ONLY="${XCZS_PREFLIGHT_ONLY:-false}"
 
 IFS=',' read -r -a CONTROL_ORIGINS <<< "$CONTROL_ALLOWED_ORIGINS"
 CONTROL_ORIGIN_ARGS=()
@@ -59,6 +83,7 @@ for origin in "${CONTROL_ORIGINS[@]}"; do
         CONTROL_ORIGIN_ARGS+=(--allowed-origin "$origin")
     fi
 done
+
 if [ "${#CONTROL_ORIGIN_ARGS[@]}" -eq 0 ]; then
     echo "ERROR: XCZS_CONTROL_ORIGINS 至少需要一个 Web Origin。"
     exit 1
@@ -90,6 +115,26 @@ while [[ $# -gt 0 ]]; do
         *) echo "未知选项: $1"; exit 1 ;;
     esac
 done
+
+# ── 解析最终运行模式 ──────────────────────────────────────────────
+if [ "$GAZEBO_ENABLED" = "false" ]; then
+    GAZEBO_GUI="false"
+fi
+if [ -z "${DISPLAY:-}" ]; then
+    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，自动切换为 headless 模式"
+    GAZEBO_GUI="false"
+    NAV2_RVIZ="false"
+fi
+if [ "$GAZEBO_GUI" = "false" ] && [ "$CONTROL_MODE" = "manual" ]; then
+    echo "  GUI 不可用，自动切换为浏览器控制"
+    CONTROL_MODE="web"
+fi
+# Web 是统一操作界面，任务导航需要 Nav2；外接完整机器人栈模式由外部
+# 提供相同 Action/Service 合同，本 launch 不重复启动 Nav2。
+if [ "$CONTROL_MODE" = "web" ]; then
+    NAV2_ENABLED="true"
+    NAV2_RVIZ="false"
+fi
 
 # ── 清理函数 ──────────────────────────────────────────────────────
 cleanup() {
@@ -141,11 +186,98 @@ if [ ! -x "$PYTHON_BIN" ]; then
     echo "ERROR: System Python not found at $PYTHON_BIN"
     exit 1
 fi
+for boolean_value in \
+    "$ROBOT_BRINGUP" \
+    "$GAZEBO_ENABLED" \
+    "$USE_SIM_TIME" \
+    "$MOVEIT_ENABLED" \
+    "$CABINET_BRINGUP" \
+    "$SPAWN_CABINET" \
+    "$PREFLIGHT_ONLY"; do
+    if [ "$boolean_value" != "true" ] && [ "$boolean_value" != "false" ]; then
+        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
+        exit 1
+    fi
+done
+if [ "$CABINET_POSE_SOURCE" != "static" ] && [ "$CABINET_POSE_SOURCE" != "topic" ]; then
+    echo "ERROR: CABINET_POSE_SOURCE 必须为 static 或 topic。"
+    exit 1
+fi
+if [ "$SPAWN_CABINET" = "true" ] && [ "$CABINET_BRINGUP" = "false" ]; then
+    echo "ERROR: SPAWN_CABINET=true 需要 CABINET_BRINGUP=true。"
+    exit 1
+fi
+if ! "$PYTHON_BIN" -c \
+    "import math,sys; value=float(sys.argv[1]); assert math.isfinite(value)" \
+    "$SPAWN_Z" 2>/dev/null; then
+    echo "ERROR: SPAWN_Z 必须是有限数字。"
+    exit 1
+fi
+if [ "$ROBOT_BRINGUP" = "false" ] && \
+    { [ "$CONTROL_MODE" = "manual" ] || [ "$CONTROL_MODE" = "keyboard" ]; }; then
+    echo "ERROR: ROBOT_BRINGUP=false 表示外部提供完整机器人栈，内置 GUI/键盘控制不会启动。"
+    echo "请使用 --web，或由外部机器人栈提供自己的手动控制界面。"
+    exit 1
+fi
+
+_require_file() {
+    local path="$1"
+    if [ ! -f "$path" ]; then
+        echo "ERROR: 配置或模型文件不存在: $path"
+        exit 1
+    fi
+}
+
+_require_file "$CABINET_ROBOT_ADAPTER_PATH"
+if [ "$CONTROL_MODE" = "web" ]; then
+    _require_file "$CABINET_INSTANCES_PATH"
+    _require_file "$CABINET_SCENE_PATH"
+fi
+if [ "$CABINET_BRINGUP" = "true" ]; then
+    _require_file "$CABINET_INSTANCES_PATH"
+    _require_file "$CABINET_CONTROLS_PATH"
+    _require_file "$CABINET_SCENE_PATH"
+    _require_file "$CABINET_POSE_PATH"
+    if [ "$MOVEIT_ENABLED" = "true" ]; then
+        _require_file "$ROBOT_XACRO_PATH"
+        _require_file "$MOVEIT_SRDF_PATH"
+        _require_file "$MOVEIT_KINEMATICS_PATH"
+    fi
+fi
+if [ "$SPAWN_CABINET" = "true" ]; then
+    _require_file "$CABINET_XACRO_PATH"
+fi
+if [ "$ROBOT_BRINGUP" = "true" ]; then
+    _require_file "$ROBOT_CONTROL_PATH"
+    _require_file "$ROBOT_XACRO_PATH"
+    if [ "$MOVEIT_ENABLED" = "true" ]; then
+        _require_file "$MOVEIT_SRDF_PATH"
+        _require_file "$MOVEIT_KINEMATICS_PATH"
+        _require_file "$MOVEIT_JOINT_LIMITS_PATH"
+        _require_file "$MOVEIT_CONTROLLERS_PATH"
+        _require_file "$MOVEIT_RVIZ_CONFIG_PATH"
+        _require_file "$MOVEIT_LAUNCH_PATH"
+    fi
+    if [ "$NAV2_ENABLED" = "true" ]; then
+        _require_file "$NAV2_LAUNCH_PATH"
+        _require_file "$NAV2_MAP_PATH"
+        _require_file "$NAV2_PARAMS_FILE"
+    fi
+fi
+if [ "$GAZEBO_ENABLED" = "true" ]; then
+    _require_file "$SIMULATION_WORLD_PATH"
+fi
 
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"
+if [ "$MOVEIT_ENABLED" = "true" ] && [ "$CABINET_BRINGUP" = "true" ] && \
+    ! ros2 pkg prefix "$MOVEIT_CONFIG_PACKAGE" >/dev/null 2>&1; then
+    echo "ERROR: MoveIt 配置包不存在: $MOVEIT_CONFIG_PACKAGE"
+    exit 1
+fi
 if [ "$NAV2_ENABLED" = "true" ] &&
+    [ "$ROBOT_BRINGUP" = "true" ] &&
     ! ros2 pkg prefix nav2_bringup >/dev/null 2>&1; then
     echo "ERROR: Nav2 binary packages are not installed."
     echo "Run: sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup"
@@ -158,22 +290,6 @@ if ! "$PYTHON_BIN" -c \
     echo "Run colcon build, source install/setup.bash, then install:"
     echo "  $PYTHON_BIN -m pip install -r $JIANG_DIR/requirements.txt"
     exit 1
-fi
-
-# ── 自动检测 headless 环境 ─────────────────────────────────────────
-if [ -z "${DISPLAY:-}" ]; then
-    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，自动切换为 headless 模式"
-    GAZEBO_GUI="false"
-    NAV2_RVIZ="false"
-fi
-if [ "$GAZEBO_GUI" = "false" ] && [ "$CONTROL_MODE" = "manual" ]; then
-    echo "  GUI 不可用，自动切换为浏览器控制"
-    CONTROL_MODE="web"
-fi
-# Web 是统一操作界面，必须在 headless 模式切换之后再决定是否启动 Nav2。
-if [ "$CONTROL_MODE" = "web" ]; then
-    NAV2_ENABLED="true"
-    NAV2_RVIZ="false"
 fi
 
 echo "═══════════════════════════════════════════"
@@ -190,6 +306,12 @@ echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
 echo "  Nav2 导航: $(if [ "$NAV2_ENABLED" = "true" ]; then echo '启用'; else echo '禁用'; fi)"
 echo ""
+
+if [ "$PREFLIGHT_ONLY" = "true" ]; then
+    echo "  启动配置预检通过（XCZS_PREFLIGHT_ONLY=true，未启动进程）。"
+    CLEANUP_DONE="true"
+    exit 0
+fi
 
 # ── 函数：启动 Zenoh Bridge ────────────────────────────────────────
 _start_bridge() {
@@ -319,39 +441,48 @@ echo ""
 # ── 6. 启动 Gazebo + 机器人 ───────────────────────────────────────
 echo "[6/6] 启动 Gazebo + XCZS 机器人..."
 
+TELEOP_ENABLED="false"
+CONTROL_GUI_ENABLED="false"
 if [ "$CONTROL_MODE" = "keyboard" ]; then
-    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
-        "gui:=$GAZEBO_GUI" \
-        "control_gui:=false" \
-        "teleop:=true" \
-        "nav2:=$NAV2_ENABLED" \
-        "nav2_rviz:=$NAV2_RVIZ" \
-        "cabinet_instances:=$CABINET_INSTANCES_PATH" \
-        "cabinet_controls:=$CABINET_CONTROLS_PATH" \
-        "cabinet_scene:=$CABINET_SCENE_PATH" \
-        "cabinet_pose:=$CABINET_POSE_PATH" \
-        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
-elif [ "$CONTROL_MODE" = "web" ]; then
-    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
-        "gui:=$GAZEBO_GUI" \
-        "control_gui:=false" \
-        "teleop:=false" \
-        "nav2:=$NAV2_ENABLED" \
-        "nav2_rviz:=$NAV2_RVIZ" \
-        "cabinet_instances:=$CABINET_INSTANCES_PATH" \
-        "cabinet_controls:=$CABINET_CONTROLS_PATH" \
-        "cabinet_scene:=$CABINET_SCENE_PATH" \
-        "cabinet_pose:=$CABINET_POSE_PATH" \
-        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
-else
-    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
-        "gui:=$GAZEBO_GUI" \
-        "control_gui:=true" \
-        "nav2:=$NAV2_ENABLED" \
-        "nav2_rviz:=$NAV2_RVIZ" \
-        "cabinet_instances:=$CABINET_INSTANCES_PATH" \
-        "cabinet_controls:=$CABINET_CONTROLS_PATH" \
-        "cabinet_scene:=$CABINET_SCENE_PATH" \
-        "cabinet_pose:=$CABINET_POSE_PATH" \
-        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
+    TELEOP_ENABLED="true"
+elif [ "$CONTROL_MODE" = "manual" ]; then
+    CONTROL_GUI_ENABLED="true"
 fi
+
+LAUNCH_ARGS=(
+    "gui:=$GAZEBO_GUI"
+    "gazebo:=$GAZEBO_ENABLED"
+    "robot_bringup:=$ROBOT_BRINGUP"
+    "use_sim_time:=$USE_SIM_TIME"
+    "control_gui:=$CONTROL_GUI_ENABLED"
+    "teleop:=$TELEOP_ENABLED"
+    "moveit:=$MOVEIT_ENABLED"
+    "nav2:=$NAV2_ENABLED"
+    "nav2_rviz:=$NAV2_RVIZ"
+    "robot_name:=$ROBOT_NAME"
+    "robot_xacro:=$ROBOT_XACRO_PATH"
+    "moveit_config_package:=$MOVEIT_CONFIG_PACKAGE"
+    "moveit_srdf:=$MOVEIT_SRDF_PATH"
+    "moveit_kinematics:=$MOVEIT_KINEMATICS_PATH"
+    "moveit_joint_limits:=$MOVEIT_JOINT_LIMITS_PATH"
+    "moveit_controllers:=$MOVEIT_CONTROLLERS_PATH"
+    "moveit_rviz_config:=$MOVEIT_RVIZ_CONFIG_PATH"
+    "moveit_launch:=$MOVEIT_LAUNCH_PATH"
+    "nav2_launch:=$NAV2_LAUNCH_PATH"
+    "nav2_map:=$NAV2_MAP_PATH"
+    "nav2_params_file:=$NAV2_PARAMS_FILE"
+    "world:=$SIMULATION_WORLD_PATH"
+    "robot_control:=$ROBOT_CONTROL_PATH"
+    "cabinet_instances:=$CABINET_INSTANCES_PATH"
+    "cabinet_controls:=$CABINET_CONTROLS_PATH"
+    "cabinet_scene:=$CABINET_SCENE_PATH"
+    "cabinet_pose:=$CABINET_POSE_PATH"
+    "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
+    "cabinet_xacro:=$CABINET_XACRO_PATH"
+    "cabinet_bringup:=$CABINET_BRINGUP"
+    "spawn_cabinet:=$SPAWN_CABINET"
+    "spawn_z:=$SPAWN_Z"
+    "cabinet_pose_source:=$CABINET_POSE_SOURCE"
+)
+ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+    "${LAUNCH_ARGS[@]}"

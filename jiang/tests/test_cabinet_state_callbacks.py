@@ -16,6 +16,7 @@ sys.path.insert(0, str(JIANG_DIR))
 from action_msgs.msg import GoalStatus  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway.ros_node import RosControlNode  # noqa: E402
+from control_gateway.robot_adapter import ManualJointConfig  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
 from std_msgs.msg import Bool  # noqa: E402
 from xczs_inspection_robot_control.action import (  # noqa: E402
@@ -229,6 +230,20 @@ class CabinetStateCallbackTest(unittest.TestCase):
         node._cabinet_state = {"state": "idle"}
         node._pending_trajectory = None
         node._pending_trajectory_repeats = 0
+        node._manual_joints = (
+            ManualJointConfig("body_arm1", "arm", -2.8, 2.8, 0.0, None),
+            ManualJointConfig("arm1_arm2", "arm", -2.8, 2.8, 0.0, None),
+            ManualJointConfig("arm2_arm3", "arm", -2.8, 2.8, 0.0, None),
+            ManualJointConfig("arm3_arm4", "arm", -2.8, 2.8, 0.0, None),
+            ManualJointConfig("arm4_arm5", "arm", -2.8, 2.8, 0.0, None),
+            ManualJointConfig("arm5_end", "arm", -2.8, 2.8, 0.0, None),
+            ManualJointConfig(
+                "end_worklink1", "gripper", 0.0, 0.35, 0.0, 0.35
+            ),
+            ManualJointConfig(
+                "end_worklink2", "gripper", -0.35, 0.0, 0.0, -0.35
+            ),
+        )
 
         result = node.set_joint_target(
             [3.0, -3.0, 0.1, 0.2, 0.3, 0.4, 0.5, -0.5]
@@ -239,7 +254,7 @@ class CabinetStateCallbackTest(unittest.TestCase):
         self.assertEqual(0.35, result[6])
         self.assertEqual(-0.35, result[7])
         self.assertEqual(
-            list(node.JOINT_NAMES),
+            [joint.name for joint in node._manual_joints],
             node._pending_trajectory.joint_names,
         )
 
@@ -250,9 +265,9 @@ class CabinetStateCallbackTest(unittest.TestCase):
             node._pending_trajectory.joint_names,
         )
 
-        with self.assertRaisesRegex(ControlRequestError, "six arm"):
+        with self.assertRaisesRegex(ControlRequestError, "manual joint order"):
             node.set_joint_target([0.0] * 7)
-        with self.assertRaisesRegex(ControlRequestError, "six arm"):
+        with self.assertRaisesRegex(ControlRequestError, "manual joint order"):
             node.set_joint_target([0.0] * 9)
 
     def test_changed_catalog_topics_replace_dynamic_subscriptions(

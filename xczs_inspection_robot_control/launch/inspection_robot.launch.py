@@ -10,8 +10,10 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import IncludeLaunchDescription
+from launch.actions import LogInfo
 from launch.actions import OpaqueFunction
 from launch.actions import RegisterEventHandler
+from launch.actions import SetLaunchConfiguration
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.event_handlers import OnShutdown
@@ -36,6 +38,13 @@ XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_XACRO_FILENAME = "control_cabinet.urdf.xacro"
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
+
+
+def _launch_boolean(context, name):
+    value = LaunchConfiguration(name).perform(context).lower()
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"{name} must be true or false.")
+    return value == "true"
 
 
 def _finite_number(instance, field, default=None):
@@ -140,29 +149,34 @@ def _read_button_profiles(path):
 
     try:
         parameters = document["/**"]["ros__parameters"]
-        defaults = parameters["button_defaults"]
         controls = parameters["controls"]
         control_ids = parameters["control_ids"]
     except (KeyError, TypeError) as error:
         raise RuntimeError(
-            "Cabinet controls must define /**.ros__parameters.button_defaults."
+            "Cabinet controls must define control_ids and controls."
         ) from error
-    if not isinstance(defaults, dict):
-        raise RuntimeError("button_defaults must be a mapping.")
     if not isinstance(controls, dict) or not isinstance(control_ids, list):
         raise RuntimeError("Cabinet controls and control_ids must be defined.")
 
-    default_profile = _validated_button_profile(
-        defaults,
-        "button_defaults",
-    )
-    profiles = {}
+    button_ids = []
     for control_id in control_ids:
         spec = controls.get(control_id)
         if not isinstance(control_id, str) or not isinstance(spec, dict):
             raise RuntimeError("Every control_id must reference a mapping.")
-        if spec.get("type") != "button":
-            continue
+        if spec.get("type") == "button":
+            button_ids.append(control_id)
+    if not button_ids:
+        return None, {}
+
+    defaults = parameters.get("button_defaults")
+    if not isinstance(defaults, dict):
+        raise RuntimeError(
+            "button_defaults must be a mapping when buttons are configured."
+        )
+    default_profile = _validated_button_profile(defaults, "button_defaults")
+    profiles = {}
+    for control_id in button_ids:
+        spec = controls.get(control_id)
         effective = dict(default_profile)
         for field in effective:
             if field in spec:
@@ -176,9 +190,84 @@ def _read_button_profiles(path):
             raise RuntimeError(f"controls.{control_id}.joint_name is required.")
         profile["joint_name"] = joint_name
         profiles[control_id] = profile
-    if not profiles:
-        raise RuntimeError("Cabinet controls must contain at least one button.")
     return default_profile, profiles
+
+
+def _read_robot_adapter_interfaces(path):
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        parameters = document["/**"]["ros__parameters"]
+    except (OSError, yaml.YAMLError, KeyError, TypeError) as error:
+        raise RuntimeError(
+            f"Could not read robot adapter interfaces '{path}': {error}"
+        ) from error
+    if not isinstance(parameters, dict):
+        raise RuntimeError(
+            "Robot adapter /**.ros__parameters must be a mapping."
+        )
+    required = (
+        "planning_frame",
+        "navigation_frame",
+        "joint_state_topic",
+    )
+    interfaces = {}
+    for field in required:
+        value = parameters.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise RuntimeError(
+                f"Robot adapter field '{field}' must be a non-empty string."
+            )
+        interfaces[field] = value.strip()
+    if interfaces["planning_frame"].startswith("/"):
+        raise RuntimeError("planning_frame must be a relative TF frame.")
+    if interfaces["navigation_frame"].startswith("/"):
+        raise RuntimeError("navigation_frame must be a relative TF frame.")
+    if not interfaces["joint_state_topic"].startswith("/"):
+        raise RuntimeError("joint_state_topic must be an absolute ROS name.")
+    return interfaces
+
+
+def _configure_robot_adapter(context):
+    adapter_path = Path(
+        LaunchConfiguration("cabinet_robot_adapter").perform(context)
+    ).expanduser()
+    interfaces = _read_robot_adapter_interfaces(adapter_path)
+    robot_bringup = _launch_boolean(context, "robot_bringup")
+    if not robot_bringup:
+        local_only_flags = (
+            "teleop",
+            "control_gui",
+            "moveit_rviz",
+            "nav2_rviz",
+        )
+        enabled = [
+            name
+            for name in local_only_flags
+            if _launch_boolean(context, name)
+        ]
+        if enabled:
+            raise RuntimeError(
+                "robot_bringup=false means an external complete robot stack "
+                "provides controllers, routers, MoveIt and Nav2; local-only "
+                "features must be false: "
+                + ", ".join(enabled)
+            )
+    actions = [
+        SetLaunchConfiguration(
+            "adapter_joint_state_topic",
+            interfaces["joint_state_topic"],
+        )
+    ]
+    if not robot_bringup:
+        actions.append(
+            LogInfo(
+                msg=(
+                    "Using an external complete robot stack; local robot "
+                    "spawn, controllers, routers, MoveIt and Nav2 are skipped."
+                )
+            )
+        )
+    return actions
 
 
 def _element_text(element, tag_name):
@@ -234,85 +323,126 @@ def _apply_button_profiles(document, profiles):
         )
 
 
-def _cabinet_nodes(context, *, cabinet_xacro, moveit_client_config):
+def _cabinet_nodes(context, *, cabinet_xacro):
+    cabinet_bringup = _launch_boolean(context, "cabinet_bringup")
+    spawn_cabinet = _launch_boolean(context, "spawn_cabinet")
+    if spawn_cabinet and not cabinet_bringup:
+        raise RuntimeError(
+            "spawn_cabinet=true requires cabinet_bringup=true."
+        )
+    if not cabinet_bringup:
+        return []
+    moveit_enabled = _launch_boolean(context, "moveit")
+    if spawn_cabinet:
+        if hasattr(cabinet_xacro, "perform"):
+            cabinet_xacro = cabinet_xacro.perform(context)
+        cabinet_xacro = Path(str(cabinet_xacro)).expanduser()
+        if not cabinet_xacro.is_file():
+            raise RuntimeError(
+                f"Cabinet Xacro does not exist: {cabinet_xacro}"
+            )
+    moveit_client_config = None
+    if moveit_enabled:
+        robot_name = LaunchConfiguration("robot_name").perform(context)
+        robot_xacro = LaunchConfiguration("robot_xacro").perform(context)
+        moveit_config_package = LaunchConfiguration(
+            "moveit_config_package"
+        ).perform(context)
+        moveit_srdf = LaunchConfiguration("moveit_srdf").perform(context)
+        moveit_kinematics = LaunchConfiguration(
+            "moveit_kinematics"
+        ).perform(context)
+        moveit_client_config = (
+            MoveItConfigsBuilder(
+                robot_name,
+                package_name=moveit_config_package,
+            )
+            .robot_description(file_path=robot_xacro)
+            .robot_description_semantic(file_path=moveit_srdf)
+            .robot_description_kinematics(file_path=moveit_kinematics)
+            .planning_pipelines(
+                default_planning_pipeline="ompl",
+                pipelines=["ompl"],
+            )
+            .to_moveit_configs()
+        )
     inventory_path = Path(
         LaunchConfiguration("cabinet_instances").perform(context)
     ).expanduser()
     instances = _read_instances(inventory_path)
-    generated_directory = Path(tempfile.mkdtemp(prefix="xczs_cabinets_"))
-    _GENERATED_DIRECTORIES.append(generated_directory)
-
     controls_config = LaunchConfiguration("cabinet_controls").perform(context)
-    button_defaults, button_profiles = _read_button_profiles(
-        Path(controls_config).expanduser()
-    )
+    generated_directory = None
+    button_defaults = None
+    button_profiles = {}
+    if spawn_cabinet:
+        generated_directory = Path(
+            tempfile.mkdtemp(prefix="xczs_cabinets_")
+        )
+        _GENERATED_DIRECTORIES.append(generated_directory)
+        button_defaults, button_profiles = _read_button_profiles(
+            Path(controls_config).expanduser()
+        )
     scene_config = LaunchConfiguration("cabinet_scene").perform(context)
     pose_config = LaunchConfiguration("cabinet_pose").perform(context)
-    adapter_config = LaunchConfiguration("cabinet_robot_adapter").perform(
-        context
+    adapter_config = LaunchConfiguration("cabinet_robot_adapter").perform(context)
+    adapter_interfaces = _read_robot_adapter_interfaces(
+        Path(adapter_config).expanduser()
     )
     nodes = []
     grasp_topics = []
-    moveit_and_cabinet = IfCondition(
-        PythonExpression(
-            [
-                "'",
-                LaunchConfiguration("moveit"),
-                "' == 'true' and '",
-                LaunchConfiguration("spawn_cabinet"),
-                "' == 'true'",
-            ]
-        )
-    )
-
     for instance in instances:
         name = instance["name"]
         namespace = f"/xczs/cabinet/{name}"
         cabinet_frame = f"{name}_frame"
-        urdf_path = generated_directory / f"{name}.urdf"
-        try:
-            document = xacro.process_file(
-                str(cabinet_xacro),
-                mappings={
-                    "cabinet_name": name,
-                    "button_max_travel": str(
-                        button_defaults["max_position"]
-                    ),
-                    "button_spring_stiffness": str(
-                        button_defaults["spring_stiffness"]
-                    ),
-                    "button_press_threshold": str(
-                        button_defaults["press_threshold"]
-                    ),
-                },
-            )
-            _apply_button_profiles(document, button_profiles)
-            urdf_path.write_text(document.toxml(), encoding="utf-8")
-        except Exception as error:
-            raise RuntimeError(
-                f"Could not generate URDF for cabinet '{name}': {error}"
-            ) from error
+        if spawn_cabinet:
+            assert generated_directory is not None
+            urdf_path = generated_directory / f"{name}.urdf"
+            try:
+                xacro_mappings = {"cabinet_name": name}
+                if button_defaults is not None:
+                    xacro_mappings.update(
+                        {
+                            "button_max_travel": str(
+                                button_defaults["max_position"]
+                            ),
+                            "button_spring_stiffness": str(
+                                button_defaults["spring_stiffness"]
+                            ),
+                            "button_press_threshold": str(
+                                button_defaults["press_threshold"]
+                            ),
+                        }
+                    )
+                document = xacro.process_file(
+                    str(cabinet_xacro),
+                    mappings=xacro_mappings,
+                )
+                _apply_button_profiles(document, button_profiles)
+                urdf_path.write_text(document.toxml(), encoding="utf-8")
+            except Exception as error:
+                raise RuntimeError(
+                    f"Could not generate URDF for cabinet '{name}': {error}"
+                ) from error
 
-        nodes.append(
-            Node(
-                package="gazebo_ros",
-                executable="spawn_entity.py",
-                name=f"spawn_{name}",
-                output="screen",
-                prefix="/usr/bin/python3",
-                condition=IfCondition(LaunchConfiguration("spawn_cabinet")),
-                arguments=[
-                    "-entity", name,
-                    "-file", str(urdf_path),
-                    "-x", str(instance["x"]),
-                    "-y", str(instance["y"]),
-                    "-z", str(instance["z"]),
-                    "-R", str(instance["roll"]),
-                    "-P", str(instance["pitch"]),
-                    "-Y", str(instance["yaw"]),
-                ],
+            nodes.append(
+                Node(
+                    package="gazebo_ros",
+                    executable="spawn_entity.py",
+                    name=f"spawn_{name}",
+                    output="screen",
+                    prefix="/usr/bin/python3",
+                    arguments=[
+                        "-entity", name,
+                        "-file", str(urdf_path),
+                        "-x", str(instance["x"]),
+                        "-y", str(instance["y"]),
+                        "-z", str(instance["z"]),
+                        "-R", str(instance["roll"]),
+                        "-P", str(instance["pitch"]),
+                        "-Y", str(instance["yaw"]),
+                    ],
+                )
             )
-        )
         nodes.append(
             Node(
                 package=CONTROL_PACKAGE,
@@ -320,14 +450,19 @@ def _cabinet_nodes(context, *, cabinet_xacro, moveit_client_config):
                 namespace=namespace,
                 name="xczs_cabinet_pose_authority",
                 output="screen",
-                condition=IfCondition(LaunchConfiguration("spawn_cabinet")),
                 parameters=[
                     pose_config,
                     {
-                        "use_sim_time": True,
+                        "use_sim_time": ParameterValue(
+                            LaunchConfiguration("use_sim_time"),
+                            value_type=bool,
+                        ),
                         "pose_source": LaunchConfiguration(
                             "cabinet_pose_source"
                         ),
+                        "parent_frame": adapter_interfaces[
+                            "planning_frame"
+                        ],
                         "cabinet_frame": cabinet_frame,
                         "static_pose.x": instance["x"],
                         "static_pose.y": instance["y"],
@@ -339,68 +474,81 @@ def _cabinet_nodes(context, *, cabinet_xacro, moveit_client_config):
                 ],
             )
         )
-        nodes.append(
-            Node(
-                package=CONTROL_PACKAGE,
-                executable="cabinet_planning_scene",
-                namespace=namespace,
-                name="xczs_cabinet_planning_scene",
-                output="screen",
-                condition=moveit_and_cabinet,
-                parameters=[
-                    controls_config,
-                    scene_config,
-                    {
-                        "use_sim_time": True,
-                        "frame_id": "odom",
-                        "cabinet_frame": cabinet_frame,
-                        "collision_object_prefix": name,
-                    },
-                ],
+        if moveit_enabled:
+            nodes.append(
+                Node(
+                    package=CONTROL_PACKAGE,
+                    executable="cabinet_planning_scene",
+                    namespace=namespace,
+                    name="xczs_cabinet_planning_scene",
+                    output="screen",
+                    parameters=[
+                        controls_config,
+                        scene_config,
+                        {
+                            "use_sim_time": ParameterValue(
+                                LaunchConfiguration("use_sim_time"),
+                                value_type=bool,
+                            ),
+                            "frame_id": adapter_interfaces[
+                                "planning_frame"
+                            ],
+                            "cabinet_frame": cabinet_frame,
+                            "collision_object_prefix": name,
+                        },
+                    ],
+                )
             )
-        )
-        nodes.append(
-            Node(
-                package=CONTROL_PACKAGE,
-                executable="cabinet_button_operator",
-                namespace=namespace,
-                name="xczs_cabinet_button_operator",
-                output="screen",
-                condition=moveit_and_cabinet,
-                remappings=[("joint_states", "/xczs/joint_states")],
-                parameters=[
-                    controls_config,
-                    adapter_config,
-                    moveit_client_config.robot_description,
-                    moveit_client_config.robot_description_semantic,
-                    moveit_client_config.robot_description_kinematics,
-                    {
-                        "use_sim_time": True,
-                        "planning_frame": "odom",
-                        "navigation_frame": "map",
-                        "cabinet_frame": cabinet_frame,
-                    },
-                ],
+            nodes.append(
+                Node(
+                    package=CONTROL_PACKAGE,
+                    executable="cabinet_button_operator",
+                    namespace=namespace,
+                    name="xczs_cabinet_button_operator",
+                    output="screen",
+                    remappings=[
+                        (
+                            "joint_states",
+                            adapter_interfaces["joint_state_topic"],
+                        )
+                    ],
+                    parameters=[
+                        controls_config,
+                        adapter_config,
+                        moveit_client_config.robot_description,
+                        moveit_client_config.robot_description_semantic,
+                        moveit_client_config.robot_description_kinematics,
+                        {
+                            "use_sim_time": ParameterValue(
+                                LaunchConfiguration("use_sim_time"),
+                                value_type=bool,
+                            ),
+                            "cabinet_frame": cabinet_frame,
+                        },
+                    ],
+                )
             )
-        )
-        grasp_topics.append(f"{namespace}/grasp_active")
+            grasp_topics.append(f"{namespace}/grasp_active")
 
-    nodes.append(
-        Node(
-            package=CONTROL_PACKAGE,
-            executable="cabinet_grasp_aggregator",
-            name="xczs_cabinet_grasp_aggregator",
-            output="screen",
-            condition=IfCondition(LaunchConfiguration("spawn_cabinet")),
-            parameters=[
-                {
-                    "use_sim_time": True,
-                    "input_topics": grasp_topics,
-                    "output_topic": "/xczs/cabinet/grasp_active",
-                }
-            ],
+    if moveit_enabled:
+        nodes.append(
+            Node(
+                package=CONTROL_PACKAGE,
+                executable="cabinet_grasp_aggregator",
+                name="xczs_cabinet_grasp_aggregator",
+                output="screen",
+                parameters=[
+                    {
+                        "use_sim_time": ParameterValue(
+                            LaunchConfiguration("use_sim_time"),
+                            value_type=bool,
+                        ),
+                        "input_topics": grasp_topics,
+                        "output_topic": "/xczs/cabinet/grasp_active",
+                    }
+                ],
+            )
         )
-    )
     return nodes
 
 
@@ -422,24 +570,21 @@ def generate_launch_description() -> LaunchDescription:
     cabinet_xacro = description_share / "urdf" / CABINET_XACRO_FILENAME
 
     robot_description = ParameterValue(
-        Command([FindExecutable(name="xacro"), " ", str(xacro_file)]),
+        Command(
+            [
+                FindExecutable(name="xacro"),
+                " ",
+                LaunchConfiguration("robot_xacro"),
+            ]
+        ),
         value_type=str,
-    )
-    moveit_client_config = (
-        MoveItConfigsBuilder(ROBOT_NAME, package_name=MOVEIT_CONFIG_PACKAGE)
-        .robot_description(file_path=str(xacro_file))
-        .robot_description_semantic(
-            file_path="config/xczs_inspection_robot.srdf"
-        )
-        .robot_description_kinematics(file_path="config/kinematics.yaml")
-        .planning_pipelines(
-            default_planning_pipeline="ompl", pipelines=["ompl"]
-        )
-        .to_moveit_configs()
     )
 
     arguments = [
         DeclareLaunchArgument("gui", default_value="true"),
+        DeclareLaunchArgument("gazebo", default_value="true"),
+        DeclareLaunchArgument("robot_bringup", default_value="true"),
+        DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("paused", default_value="false"),
         DeclareLaunchArgument("teleop", default_value="false"),
         DeclareLaunchArgument("control_gui", default_value="true"),
@@ -451,7 +596,63 @@ def generate_launch_description() -> LaunchDescription:
             "nav2_map",
             default_value=str(nav2_share / "maps" / "inspection_map.yaml"),
         ),
+        DeclareLaunchArgument(
+            "nav2_params_file",
+            default_value=str(nav2_share / "config" / "nav2_params.yaml"),
+        ),
+        DeclareLaunchArgument(
+            "world",
+            default_value=str(
+                description_share / "worlds" / "inspection_robot.world"
+            ),
+        ),
+        DeclareLaunchArgument("robot_name", default_value=ROBOT_NAME),
+        DeclareLaunchArgument(
+            "robot_xacro",
+            default_value=str(xacro_file),
+        ),
+        DeclareLaunchArgument(
+            "moveit_config_package",
+            default_value=MOVEIT_CONFIG_PACKAGE,
+        ),
+        DeclareLaunchArgument(
+            "moveit_srdf",
+            default_value="config/xczs_inspection_robot.srdf",
+        ),
+        DeclareLaunchArgument(
+            "moveit_kinematics",
+            default_value="config/kinematics.yaml",
+        ),
+        DeclareLaunchArgument(
+            "moveit_joint_limits",
+            default_value="config/joint_limits.yaml",
+        ),
+        DeclareLaunchArgument(
+            "moveit_controllers",
+            default_value="config/moveit_controllers.yaml",
+        ),
+        DeclareLaunchArgument(
+            "moveit_rviz_config",
+            default_value=str(moveit_share / "config" / "moveit.rviz"),
+        ),
+        DeclareLaunchArgument(
+            "moveit_launch",
+            default_value=str(moveit_share / "launch" / "move_group.launch.py"),
+        ),
+        DeclareLaunchArgument(
+            "nav2_launch",
+            default_value=str(nav2_share / "launch" / "navigation.launch.py"),
+        ),
+        DeclareLaunchArgument(
+            "robot_control",
+            default_value=str(control_config),
+        ),
+        DeclareLaunchArgument(
+            "cabinet_xacro",
+            default_value=str(cabinet_xacro),
+        ),
         DeclareLaunchArgument("spawn_z", default_value="0.515"),
+        DeclareLaunchArgument("cabinet_bringup", default_value="true"),
         DeclareLaunchArgument("spawn_cabinet", default_value="true"),
         DeclareLaunchArgument("cabinet_pose_source", default_value="static"),
         DeclareLaunchArgument(
@@ -484,29 +685,64 @@ def generate_launch_description() -> LaunchDescription:
         ),
         launch_arguments={
             "pause": LaunchConfiguration("paused"),
-            "world": str(description_share / "worlds" / "inspection_robot.world"),
+            "world": LaunchConfiguration("world"),
         }.items(),
+        condition=IfCondition(LaunchConfiguration("gazebo")),
     )
     gazebo_client = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             str(gazebo_ros_share / "launch" / "gzclient.launch.py")
         ),
-        condition=IfCondition(LaunchConfiguration("gui")),
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("gazebo"),
+                    "' == 'true' and '",
+                    LaunchConfiguration("gui"),
+                    "' == 'true'",
+                ]
+            )
+        ),
     )
     move_group = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            str(moveit_share / "launch" / "move_group.launch.py")
+            LaunchConfiguration("moveit_launch")
         ),
-        launch_arguments={"rviz": LaunchConfiguration("moveit_rviz")}.items(),
+        launch_arguments={
+            "rviz": LaunchConfiguration("moveit_rviz"),
+            "robot_name": LaunchConfiguration("robot_name"),
+            "moveit_config_package": LaunchConfiguration(
+                "moveit_config_package"
+            ),
+            "robot_xacro": LaunchConfiguration("robot_xacro"),
+            "moveit_srdf": LaunchConfiguration("moveit_srdf"),
+            "moveit_kinematics": LaunchConfiguration(
+                "moveit_kinematics"
+            ),
+            "moveit_joint_limits": LaunchConfiguration(
+                "moveit_joint_limits"
+            ),
+            "moveit_controllers": LaunchConfiguration(
+                "moveit_controllers"
+            ),
+            "joint_state_topic": LaunchConfiguration(
+                "adapter_joint_state_topic"
+            ),
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
+            "rviz_config": LaunchConfiguration("moveit_rviz_config"),
+        }.items(),
         condition=IfCondition(LaunchConfiguration("moveit")),
     )
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            str(nav2_share / "launch" / "navigation.launch.py")
+            LaunchConfiguration("nav2_launch")
         ),
         launch_arguments={
             "map": LaunchConfiguration("nav2_map"),
+            "nav2_params_file": LaunchConfiguration("nav2_params_file"),
             "rviz": LaunchConfiguration("nav2_rviz"),
+            "use_sim_time": LaunchConfiguration("use_sim_time"),
         }.items(),
         condition=IfCondition(LaunchConfiguration("nav2")),
     )
@@ -515,8 +751,19 @@ def generate_launch_description() -> LaunchDescription:
         executable="robot_state_publisher",
         name="robot_state_publisher",
         output="screen",
-        parameters=[{"robot_description": robot_description, "use_sim_time": True}],
-        remappings=[("joint_states", "/xczs/joint_states")],
+        parameters=[
+            {
+                "robot_description": robot_description,
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
+            }
+        ],
+        remappings=[
+            ("joint_states", LaunchConfiguration("adapter_joint_state_topic"))
+        ],
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
     spawn_robot = Node(
         package="gazebo_ros",
@@ -525,10 +772,11 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
         prefix="/usr/bin/python3",
         arguments=[
-            "-entity", ROBOT_NAME,
+            "-entity", LaunchConfiguration("robot_name"),
             "-topic", "robot_description",
             "-z", LaunchConfiguration("spawn_z"),
         ],
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
     controllers = Node(
         package="controller_manager",
@@ -542,6 +790,7 @@ def generate_launch_description() -> LaunchDescription:
             "--switch-timeout", "30",
             "--activate-as-group",
         ],
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
     base_router = Node(
         package=CONTROL_PACKAGE,
@@ -549,9 +798,13 @@ def generate_launch_description() -> LaunchDescription:
         name="xczs_base_command_router",
         output="screen",
         parameters=[
-            str(control_config),
+            LaunchConfiguration("robot_control"),
+            LaunchConfiguration("cabinet_robot_adapter"),
             {
-                "use_sim_time": True,
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                ),
                 "navigation_enabled": ParameterValue(
                     LaunchConfiguration("nav2"), value_type=bool
                 ),
@@ -563,7 +816,16 @@ def generate_launch_description() -> LaunchDescription:
         executable="legacy_trajectory_router",
         name="xczs_legacy_trajectory_router",
         output="screen",
-        parameters=[str(control_config), {"use_sim_time": True}],
+        parameters=[
+            LaunchConfiguration("robot_control"),
+            LaunchConfiguration("cabinet_robot_adapter"),
+            {
+                "use_sim_time": ParameterValue(
+                    LaunchConfiguration("use_sim_time"),
+                    value_type=bool,
+                )
+            },
+        ],
     )
     keyboard = Node(
         package=CONTROL_PACKAGE,
@@ -571,7 +833,7 @@ def generate_launch_description() -> LaunchDescription:
         name="xczs_keyboard_teleop",
         output="screen",
         prefix="xfce4-terminal --disable-server --execute",
-        parameters=[str(control_config)],
+        parameters=[LaunchConfiguration("robot_control")],
         condition=IfCondition(LaunchConfiguration("teleop")),
     )
     control_gui = Node(
@@ -579,7 +841,7 @@ def generate_launch_description() -> LaunchDescription:
         executable="inspection_robot_gui",
         name="xczs_inspection_robot_gui",
         output="screen",
-        parameters=[str(control_config)],
+        parameters=[LaunchConfiguration("robot_control")],
         condition=IfCondition(LaunchConfiguration("control_gui")),
     )
     operation_lease_coordinator = Node(
@@ -593,7 +855,7 @@ def generate_launch_description() -> LaunchDescription:
                     "'",
                     LaunchConfiguration("moveit"),
                     "' == 'true' and '",
-                    LaunchConfiguration("spawn_cabinet"),
+                    LaunchConfiguration("cabinet_bringup"),
                     "' == 'true'",
                 ]
             )
@@ -619,9 +881,11 @@ def generate_launch_description() -> LaunchDescription:
     cabinet_loader = OpaqueFunction(
         function=_cabinet_nodes,
         kwargs={
-            "cabinet_xacro": cabinet_xacro,
-            "moveit_client_config": moveit_client_config,
+            "cabinet_xacro": LaunchConfiguration("cabinet_xacro"),
         },
+    )
+    adapter_configuration = OpaqueFunction(
+        function=_configure_robot_adapter,
     )
     cleanup = RegisterEventHandler(
         OnShutdown(on_shutdown=[OpaqueFunction(function=_cleanup_generated_files)])
@@ -630,6 +894,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         arguments
         + [
+            adapter_configuration,
             gazebo_server,
             gazebo_client,
             robot_state_publisher,

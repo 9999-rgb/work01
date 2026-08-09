@@ -1,0 +1,77 @@
+#!/usr/bin/python3
+"""Validate the portable robot and cabinet profile contract."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+JIANG = WORKSPACE / "jiang"
+sys.path.insert(0, str(JIANG))
+
+from control_gateway.profile_contract import ProfileContractError  # noqa: E402
+from control_gateway.profile_contract import validate_profile  # noqa: E402
+
+
+CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Check the cross-file robot, navigation, cabinet catalog, scene, "
+            "pose, and instance contract without starting ROS."
+        )
+    )
+    parser.add_argument(
+        "--robot-adapter",
+        default=str(CONTROL_CONFIG / "cabinet_robot_adapter.yaml"),
+    )
+    parser.add_argument(
+        "--instances",
+        default=str(CONTROL_CONFIG / "cabinet_instances.yaml"),
+    )
+    parser.add_argument(
+        "--controls",
+        default=str(CONTROL_CONFIG / "cabinet_controls.yaml"),
+    )
+    parser.add_argument(
+        "--scene",
+        default=str(CONTROL_CONFIG / "cabinet_scene.yaml"),
+    )
+    parser.add_argument(
+        "--pose",
+        default=str(CONTROL_CONFIG / "cabinet_pose.yaml"),
+    )
+    return parser
+
+
+def main() -> int:
+    arguments = _parser().parse_args()
+    try:
+        report = validate_profile(
+            robot_adapter_path=arguments.robot_adapter,
+            instances_path=arguments.instances,
+            controls_path=arguments.controls,
+            scene_path=arguments.scene,
+            pose_path=arguments.pose,
+        )
+    except ProfileContractError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    print(
+        "PASS: adapter contract; "
+        f"cabinets={report.cabinet_count}, controls={report.control_count} "
+        f"(buttons={report.button_count}, knobs={report.knob_count}, "
+        f"switches={report.switch_count}, doors={report.door_count}), "
+        f"joints={report.arm_joint_count}+{report.gripper_joint_count}, "
+        f"frames={report.planning_frame}/{report.navigation_frame}"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
