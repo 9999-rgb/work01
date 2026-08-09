@@ -65,11 +65,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                     200,
                     self.control_server.navigation_status(),
                 )
-            elif path == "/navigation/map":
-                self._send_json(
-                    200,
-                    self.control_server.navigation_map(),
-                )
             elif path == "/cabinet/status":
                 self._send_json(
                     200,
@@ -97,7 +92,6 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/task/navigate": self._handle_task_navigate,
                 "/task/operate": self._handle_task_operate,
                 "/navigation/mode": self._handle_navigation_mode,
-                "/navigation/goal": self._handle_navigation_goal,
                 "/navigation/cancel": self._handle_navigation_cancel,
                 "/navigation/takeover": self._handle_navigation_takeover,
                 "/cabinet/operate": self._handle_cabinet_operate,
@@ -286,16 +280,6 @@ class ControlHandler(BaseHTTPRequestHandler):
         self._send_json(
             202,
             self.control_server.set_navigation_mode(enabled),
-        )
-
-    def _handle_navigation_goal(self) -> None:
-        body = self._required_body()
-        x = self._finite_number(body, "x")
-        y = self._finite_number(body, "y")
-        yaw = self._finite_number(body, "yaw")
-        self._send_json(
-            202,
-            self.control_server.send_navigation_goal(x, y, yaw),
         )
 
     def _handle_navigation_cancel(self) -> None:

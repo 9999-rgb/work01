@@ -171,7 +171,6 @@ class ControlServer:
             localization_pose_topic=(
                 self._robot_adapter.localization_pose_topic
             ),
-            plan_topic=self._robot_adapter.plan_topic,
             manual_linear_axis=self._robot_adapter.manual_linear_axis,
             manual_joints=self._robot_adapter.manual_joints,
         )
@@ -797,11 +796,6 @@ class ControlServer:
         with self._request_scope():
             return self._node.navigation_snapshot()
 
-    def navigation_map(self) -> Dict[str, Any]:
-        """Return the latest occupancy map."""
-        with self._request_scope():
-            return self._node.map_snapshot()
-
     def set_navigation_mode(self, enabled: bool) -> Dict[str, Any]:
         """Switch manual/Nav2 base routing."""
         with self._request_scope():
@@ -811,21 +805,6 @@ class ControlServer:
                     "The legacy navigation-mode route",
                 )
                 return self._node.set_navigation_mode(enabled)
-
-    def send_navigation_goal(
-        self,
-        x: float,
-        y: float,
-        yaw: float,
-    ) -> Dict[str, Any]:
-        """Send one map-frame Nav2 goal."""
-        with self._request_scope():
-            with self._task_interlock_scope():
-                self._reject_active_task_types(
-                    {"navigate", "operate"},
-                    "The legacy navigation-goal route",
-                )
-                return self._node.send_navigation_goal(x, y, yaw)
 
     def cancel_navigation(self) -> Dict[str, Any]:
         """Cancel active Nav2 navigation."""

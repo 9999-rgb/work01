@@ -35,7 +35,6 @@ def _parameters() -> dict[str, object]:
         "navigation_mode_topic": "/robot/navigation_mode",
         "map_topic": "/robot/map",
         "localization_pose_topic": "/robot/localization_pose",
-        "plan_topic": "/robot/plan",
         "manual_cmd_vel_topic": "/robot/manual_cmd_vel",
         "navigation_cmd_vel_topic": "/robot/navigation_cmd_vel",
         "base_output_topic": "/robot/base_output",
@@ -319,7 +318,6 @@ class RobotAdapterTest(unittest.TestCase):
             "/robot/localization_pose",
             captured_keywords[0]["localization_pose_topic"],
         )
-        self.assertEqual("/robot/plan", captured_keywords[0]["plan_topic"])
         self.assertEqual("x", captured_keywords[0]["manual_linear_axis"])
 
     def test_runner_serializes_capabilities_without_losing_joint_order(

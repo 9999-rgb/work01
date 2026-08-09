@@ -664,7 +664,6 @@ class TaskRunnerTest(unittest.TestCase):
             lambda: server.publish_joint_trajectory([0.0] * 8),
             lambda: server.set_navigation_mode(True),
             lambda: server.set_navigation_mode(False),
-            lambda: server.send_navigation_goal(1.0, 2.0, 0.3),
             server.takeover_navigation,
             lambda: server.press_cabinet_button("button_1", False),
             lambda: server.operate_cabinet_control(
@@ -699,7 +698,7 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual("canceled", terminal["status"])
 
-    def test_navigation_task_blocks_legacy_goal_and_mode_but_allows_cancel(
+    def test_navigation_task_blocks_legacy_mode_but_allows_cancel(
         self,
     ) -> None:
         server, node = _server()
@@ -713,10 +712,6 @@ class TaskRunnerTest(unittest.TestCase):
         self.assert_task_conflict(
             accepted["task_id"],
             lambda: server.set_navigation_mode(False),
-        )
-        self.assert_task_conflict(
-            accepted["task_id"],
-            lambda: server.send_navigation_goal(3.0, 4.0, 0.5),
         )
         self.assert_task_conflict(
             accepted["task_id"],

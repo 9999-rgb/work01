@@ -3,12 +3,10 @@
 # XCZS 巡操机器人 — 仿真 + Zenoh 桥 + 监控面板 一键启动脚本
 #
 # 用法:
-#   ./start_xczs_bridge.sh                   # 启动全部（含 Gazebo GUI）
-#   ./start_xczs_bridge.sh --no-gui          # 无 Gazebo 界面（headless）
-#   ./start_xczs_bridge.sh --with-proxy      # 同时启动 CDR→JSON 代理
-#   ./start_xczs_bridge.sh --manual          # 使用 GUI 手动控制
-#   ./start_xczs_bridge.sh --web             # 浏览器统一控制（含 Nav2 与控制柜自动操作）
-#   ./start_xczs_bridge.sh --nav2            # 使用 Nav2 自主导航
+#   ./run_all.sh                  # 统一 Web 控制（含 Nav2 和控制柜任务）
+#   ./run_all.sh --web            # 兼容写法，与无参数启动相同
+#   ./run_all.sh --with-proxy     # 同时启动 CDR→JSON 代理
+#   ./run_all.sh --keyboard       # 键盘调试控制（不启动 Web 控制服务）
 #
 # 启动后:
 #   - 监控面板: http://localhost:8080/monitor.html
@@ -92,22 +90,14 @@ fi
 # ── 选项 ──────────────────────────────────────────────────────────
 GAZEBO_GUI="true"
 WITH_PROXY="false"
-CONTROL_MODE="manual"
+CONTROL_MODE="web"
 NAV2_ENABLED="false"
-NAV2_RVIZ="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --no-gui)    GAZEBO_GUI="false"; shift ;;
         --with-proxy) WITH_PROXY="true"; shift ;;
-        --manual)    CONTROL_MODE="manual"; shift ;;
         --web)       CONTROL_MODE="web"; shift ;;
         --keyboard)  CONTROL_MODE="keyboard"; shift ;;
-        --nav2)
-            NAV2_ENABLED="true"
-            NAV2_RVIZ="true"
-            shift
-            ;;
         -h|--help)
             sed -n '3,15p' "$0" | sed 's/^# *//'
             exit 0
@@ -121,19 +111,17 @@ if [ "$GAZEBO_ENABLED" = "false" ]; then
     GAZEBO_GUI="false"
 fi
 if [ -z "${DISPLAY:-}" ]; then
-    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，自动切换为 headless 模式"
+    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，已禁用 Gazebo 图形界面"
     GAZEBO_GUI="false"
-    NAV2_RVIZ="false"
 fi
-if [ "$GAZEBO_GUI" = "false" ] && [ "$CONTROL_MODE" = "manual" ]; then
-    echo "  GUI 不可用，自动切换为浏览器控制"
-    CONTROL_MODE="web"
+if [ "$CONTROL_MODE" = "keyboard" ] && [ -z "${DISPLAY:-}" ]; then
+    echo "ERROR: 键盘调试控制需要 DISPLAY 和终端界面。"
+    exit 1
 fi
 # Web 是统一操作界面，任务导航需要 Nav2；外接完整机器人栈模式由外部
 # 提供相同 Action/Service 合同，本 launch 不重复启动 Nav2。
-if [ "$CONTROL_MODE" = "web" ]; then
+if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "true" ]; then
     NAV2_ENABLED="true"
-    NAV2_RVIZ="false"
 fi
 
 # ── 清理函数 ──────────────────────────────────────────────────────
@@ -213,10 +201,9 @@ if ! "$PYTHON_BIN" -c \
     echo "ERROR: SPAWN_Z 必须是有限数字。"
     exit 1
 fi
-if [ "$ROBOT_BRINGUP" = "false" ] && \
-    { [ "$CONTROL_MODE" = "manual" ] || [ "$CONTROL_MODE" = "keyboard" ]; }; then
-    echo "ERROR: ROBOT_BRINGUP=false 表示外部提供完整机器人栈，内置 GUI/键盘控制不会启动。"
-    echo "请使用 --web，或由外部机器人栈提供自己的手动控制界面。"
+if [ "$ROBOT_BRINGUP" = "false" ] && [ "$CONTROL_MODE" = "keyboard" ]; then
+    echo "ERROR: ROBOT_BRINGUP=false 表示外部提供完整机器人栈，内置键盘控制不会启动。"
+    echo "请使用默认 Web 入口，或由外部机器人栈提供自己的手动控制界面。"
     exit 1
 fi
 
@@ -298,13 +285,19 @@ echo "════════════════════════�
 echo ""
 case "$CONTROL_MODE" in
     keyboard) MODE_LABEL="键盘遥控" ;;
-    web) MODE_LABEL="浏览器控制" ;;
-    *) MODE_LABEL="GUI 手动控制" ;;
+    *) MODE_LABEL="浏览器统一控制" ;;
 esac
 echo "  模式:       $MODE_LABEL"
 echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
-echo "  Nav2 导航: $(if [ "$NAV2_ENABLED" = "true" ]; then echo '启用'; else echo '禁用'; fi)"
+if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "false" ]; then
+    NAV2_LABEL="由外部机器人栈提供"
+elif [ "$NAV2_ENABLED" = "true" ]; then
+    NAV2_LABEL="启用"
+else
+    NAV2_LABEL="禁用"
+fi
+echo "  Nav2 导航: $NAV2_LABEL"
 echo ""
 
 if [ "$PREFLIGHT_ONLY" = "true" ]; then
@@ -442,11 +435,8 @@ echo ""
 echo "[6/6] 启动 Gazebo + XCZS 机器人..."
 
 TELEOP_ENABLED="false"
-CONTROL_GUI_ENABLED="false"
 if [ "$CONTROL_MODE" = "keyboard" ]; then
     TELEOP_ENABLED="true"
-elif [ "$CONTROL_MODE" = "manual" ]; then
-    CONTROL_GUI_ENABLED="true"
 fi
 
 LAUNCH_ARGS=(
@@ -454,11 +444,11 @@ LAUNCH_ARGS=(
     "gazebo:=$GAZEBO_ENABLED"
     "robot_bringup:=$ROBOT_BRINGUP"
     "use_sim_time:=$USE_SIM_TIME"
-    "control_gui:=$CONTROL_GUI_ENABLED"
+    "control_gui:=false"
     "teleop:=$TELEOP_ENABLED"
     "moveit:=$MOVEIT_ENABLED"
     "nav2:=$NAV2_ENABLED"
-    "nav2_rviz:=$NAV2_RVIZ"
+    "nav2_rviz:=false"
     "robot_name:=$ROBOT_NAME"
     "robot_xacro:=$ROBOT_XACRO_PATH"
     "moveit_config_package:=$MOVEIT_CONFIG_PACKAGE"

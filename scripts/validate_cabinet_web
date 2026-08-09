@@ -22,7 +22,7 @@ usage() {
 用法: scripts/validate_cabinet_web [选项]
 
 通过多柜体 Web 任务 API 验证独立导航、物理操作、力度判定和不可达失败。
-运行前需启动: ./run_all.sh --web --no-gui
+运行前需启动: ./run_all.sh
 
 选项:
   --api URL           控制服务地址（默认 http://127.0.0.1:8090）

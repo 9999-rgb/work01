@@ -420,23 +420,12 @@
 .autonomy-state.busy { color: var(--yellow); border-color: var(--yellow); }
 .autonomy-state.err { color: var(--red); border-color: var(--red); }
 .autonomy-body { padding: 14px; }
-.nav-map-wrap {
-  position: relative; background: #080c11; border: 1px solid var(--border);
-  border-radius: 8px; overflow: hidden;
-}
-.nav-map-canvas {
-  display: block; width: 100%; height: auto; aspect-ratio: 1 / 1;
-  cursor: crosshair; image-rendering: pixelated;
-}
-.map-hint {
-  position: absolute; left: 8px; bottom: 8px;
-  padding: 4px 8px; border-radius: 4px;
-  background: rgba(8,12,17,0.82); color: var(--text-dim);
-  font-size: 10px; pointer-events: none;
-}
 .field-grid {
   display: grid; grid-template-columns: repeat(3, minmax(80px, 1fr));
   gap: 8px; margin-top: 10px;
+}
+.field-grid.navigation-target-grid {
+  grid-template-columns: minmax(180px, 1fr);
 }
 .field-grid.quaternion-grid {
   grid-template-columns: repeat(3, minmax(72px, 1fr));
@@ -699,46 +688,25 @@
 <div class="autonomy-grid">
   <section class="autonomy-card navigation-card">
     <div class="autonomy-header">
-      <h3>🧭 Nav2 地图导航</h3>
+      <h3>🧭 Nav2 控制柜导航</h3>
       <span class="autonomy-state" id="navState">等待服务</span>
     </div>
     <div class="autonomy-body">
-      <div class="nav-map-wrap">
-        <canvas
-          class="nav-map-canvas"
-          id="navMapCanvas"
-          width="700"
-          height="700"></canvas>
-        <span class="map-hint">地图点击仅用于调试坐标；正式任务按柜体工位导航</span>
-      </div>
-      <div class="field-grid">
+      <div class="field-grid navigation-target-grid">
         <div class="form-field">
           <label for="navCabinetInstance">目标柜体</label>
           <select id="navCabinetInstance" disabled>
             <option value="">等待柜体 inventory</option>
           </select>
         </div>
-        <div class="form-field">
-          <label for="navGoalX">目标 X / m</label>
-          <input id="navGoalX" type="number" step="0.05" value="0.00">
-        </div>
-        <div class="form-field">
-          <label for="navGoalY">目标 Y / m</label>
-          <input id="navGoalY" type="number" step="0.05" value="1.00">
-        </div>
-        <div class="form-field">
-          <label for="navGoalYaw">朝向 / deg</label>
-          <input id="navGoalYaw" type="number" step="5" value="90">
-        </div>
       </div>
       <div class="command-row">
         <button class="btn btn-outline" id="btnManualMode">切换手动模式</button>
         <button class="btn btn-primary" id="btnNavSend">导航到所选柜体</button>
-        <button class="btn btn-outline" id="btnNavDebug">调试：导航到地图坐标</button>
         <button class="btn btn-danger" id="btnNavCancel">取消导航任务</button>
       </div>
       <div class="status-detail" id="navDetail">
-        启动时使用 <strong>./run_all.sh --web</strong>
+        启动时使用 <strong>./run_all.sh</strong>
       </div>
     </div>
   </section>
@@ -841,7 +809,6 @@
     <div class="topic-group">
       <h3>🧭 Nav2 导航</h3>
       <button class="topic-preset" data-topic="amcl_pose/json">amcl_pose 定位</button>
-      <button class="topic-preset" data-topic="plan/json">plan 全局路径</button>
       <button class="topic-preset" data-topic="xczs/navigation_mode/json">navigation_mode</button>
     </div>
     <div class="topic-group">
@@ -861,7 +828,6 @@
         subscribe(jointStateMonitorTopic);
         subscribe(jointTrajectoryMonitorTopic);
         subscribe('amcl_pose/json');
-        subscribe('plan/json');
         subscribe('xczs/navigation_mode/json');
         subscribe('robot_description/json');
         subscribe('tf/json');
@@ -918,11 +884,8 @@ let lidarSocket = null;
 let lidarReconnectTimer = null;
 let sensorHealthTimer = null;
 let autonomyStatusTimer = null;
-let autonomyMapTimer = null;
 let autonomyStatusPollInFlight = false;
 let autonomyStatusPollGeneration = 0;
-let navigationMap = null;
-let navigationMapImage = null;
 let navigationStatus = null;
 let cabinetStatus = null;
 let cabinetControls = [];
@@ -933,7 +896,6 @@ let cabinetResetAvailable = false;
 let cabinetActiveFromHealth = false;
 let cabinetStatusCurrent = false;
 let cabinetInterlockWasActive = false;
-let selectedNavigationGoal = null;
 let cabinetInstances = [];
 let activeTaskId = null;
 let activeTaskType = null;
@@ -960,7 +922,6 @@ const cameraStream = $('cameraStream');
 const cameraState = $('cameraState');
 const lidarState = $('lidarState');
 const lidarCanvas = $('lidarCanvas');
-const navMapCanvas = $('navMapCanvas');
 const navState = $('navState');
 const navDetail = $('navDetail');
 const baseControlHint = $('baseControlHint');
@@ -1804,7 +1765,7 @@ async function testControlConnection() {
       renderCabinetStatus();
       startAutonomyPolling();
       if (!health.navigation_available) {
-        log('info', 'Nav2 未启动；使用 --web 可启用网页地图导航');
+        log('info', 'Nav2 未就绪；请确认统一入口或外部机器人栈已提供导航');
       } else {
         log('info', '已保留当前底盘模式；方向输入可随时手动接管');
       }
@@ -2134,22 +2095,6 @@ function applyCabinetHealth(health) {
   cabinetActiveFromHealth = Boolean(health && health.cabinet_active);
 }
 
-function updateCabinetStationFields() {
-  const name = selectedCabinetName();
-  const cabinet = cabinetInstances.find(entry => entry.name === name);
-  const station = cabinet && cabinet.navigation_station;
-  if (!station) return;
-  $('navGoalX').value = Number(station.x).toFixed(2);
-  $('navGoalY').value = Number(station.y).toFixed(2);
-  $('navGoalYaw').value = (Number(station.yaw) * 180 / Math.PI).toFixed(1);
-  selectedNavigationGoal = {
-    x: Number(station.x),
-    y: Number(station.y),
-    yaw: Number(station.yaw)
-  };
-  drawNavigationMap();
-}
-
 function applyCabinetInstances(payload) {
   const values = Array.isArray(payload)
     ? payload
@@ -2183,7 +2128,6 @@ function applyCabinetInstances(payload) {
   cabinetStatusCurrent = Boolean(cabinetStatus);
   cabinetInstance.disabled = !cabinetInstances.length;
   navCabinetInstance.disabled = !cabinetInstances.length;
-  updateCabinetStationFields();
 }
 
 async function loadSelectedCabinetControls() {
@@ -2477,19 +2421,15 @@ function startAutonomyPolling() {
   stopAutonomyPolling();
   const generation = autonomyStatusPollGeneration;
   refreshAutonomyStatus(generation);
-  loadNavigationMap();
   autonomyStatusTimer = setInterval(
     () => refreshAutonomyStatus(generation),
     autonomyPollIntervalMs
   );
-  autonomyMapTimer = setInterval(loadNavigationMap, 10000);
 }
 
 function stopAutonomyPolling() {
   if (autonomyStatusTimer) clearInterval(autonomyStatusTimer);
-  if (autonomyMapTimer) clearInterval(autonomyMapTimer);
   autonomyStatusTimer = null;
-  autonomyMapTimer = null;
   autonomyStatusPollGeneration += 1;
   autonomyStatusPollInFlight = false;
 }
@@ -2613,208 +2553,6 @@ async function refreshAutonomyStatus(
   }
 }
 
-async function loadNavigationMap() {
-  if (!ctrlConnected) return;
-  try {
-    const map = await controlRequest('/navigation/map');
-    const changed = !navigationMap ||
-      navigationMap.width !== map.width ||
-      navigationMap.height !== map.height ||
-      navigationMap.resolution !== map.resolution;
-    navigationMap = map;
-    if (changed || !navigationMapImage) buildNavigationMapImage();
-    drawNavigationMap();
-  } catch (_) {
-    if (!navigationMap) showNavigationMapMessage('等待 Nav2 地图');
-  }
-}
-
-function buildNavigationMapImage() {
-  if (!navigationMap) return;
-  const width = navigationMap.width;
-  const height = navigationMap.height;
-  const offscreen = document.createElement('canvas');
-  offscreen.width = width;
-  offscreen.height = height;
-  const context = offscreen.getContext('2d');
-  const image = context.createImageData(width, height);
-  for (let row = 0; row < height; row++) {
-    for (let column = 0; column < width; column++) {
-      const occupancy = navigationMap.data[row * width + column];
-      const pixelRow = height - row - 1;
-      const offset = (pixelRow * width + column) * 4;
-      let color;
-      if (occupancy < 0) color = [63, 74, 88];
-      else if (occupancy >= 65) color = [16, 20, 25];
-      else color = [222, 229, 235];
-      image.data[offset] = color[0];
-      image.data[offset + 1] = color[1];
-      image.data[offset + 2] = color[2];
-      image.data[offset + 3] = 255;
-    }
-  }
-  context.putImageData(image, 0, 0);
-  navigationMapImage = offscreen;
-}
-
-function worldToMapCanvas(x, y) {
-  if (!navigationMap) return null;
-  const origin = navigationMap.origin;
-  const yaw = Number(origin.yaw) || 0;
-  const dx = x - origin.x;
-  const dy = y - origin.y;
-  const localX = Math.cos(yaw) * dx + Math.sin(yaw) * dy;
-  const localY = -Math.sin(yaw) * dx + Math.cos(yaw) * dy;
-  return {
-    x: localX / (navigationMap.width * navigationMap.resolution) *
-      navMapCanvas.width,
-    y: navMapCanvas.height -
-      localY / (navigationMap.height * navigationMap.resolution) *
-      navMapCanvas.height
-  };
-}
-
-function mapCanvasToWorld(canvasX, canvasY) {
-  if (!navigationMap) return null;
-  const localX = canvasX / navMapCanvas.width *
-    navigationMap.width * navigationMap.resolution;
-  const localY = (navMapCanvas.height - canvasY) / navMapCanvas.height *
-    navigationMap.height * navigationMap.resolution;
-  const yaw = Number(navigationMap.origin.yaw) || 0;
-  return {
-    x: navigationMap.origin.x +
-      Math.cos(yaw) * localX - Math.sin(yaw) * localY,
-    y: navigationMap.origin.y +
-      Math.sin(yaw) * localX + Math.cos(yaw) * localY
-  };
-}
-
-function drawPoseMarker(context, pose, color, radius = 11) {
-  const point = worldToMapCanvas(pose.x, pose.y);
-  if (!point) return;
-  const mapYaw = Number(navigationMap.origin.yaw) || 0;
-  context.save();
-  context.translate(point.x, point.y);
-  context.rotate(-(pose.yaw - mapYaw));
-  context.fillStyle = color;
-  context.strokeStyle = '#0d1117';
-  context.lineWidth = 2;
-  context.beginPath();
-  context.moveTo(radius, 0);
-  context.lineTo(-radius * 0.7, -radius * 0.65);
-  context.lineTo(-radius * 0.7, radius * 0.65);
-  context.closePath();
-  context.fill();
-  context.stroke();
-  context.restore();
-}
-
-function drawNavigationMap() {
-  const context = navMapCanvas.getContext('2d');
-  if (!navigationMap || !navigationMapImage) {
-    showNavigationMapMessage('等待 Nav2 地图');
-    return;
-  }
-  context.imageSmoothingEnabled = false;
-  context.drawImage(
-    navigationMapImage,
-    0,
-    0,
-    navMapCanvas.width,
-    navMapCanvas.height
-  );
-
-  const plan = navigationStatus && Array.isArray(navigationStatus.plan)
-    ? navigationStatus.plan : [];
-  if (plan.length > 1) {
-    context.strokeStyle = '#d29922';
-    context.lineWidth = 4;
-    context.beginPath();
-    plan.forEach((pose, index) => {
-      const point = worldToMapCanvas(pose.x, pose.y);
-      if (!point) return;
-      if (index === 0) context.moveTo(point.x, point.y);
-      else context.lineTo(point.x, point.y);
-    });
-    context.stroke();
-  }
-
-  if (navigationStatus && navigationStatus.current_pose) {
-    drawPoseMarker(context, navigationStatus.current_pose, '#39d2c0', 12);
-  }
-  if (selectedNavigationGoal) {
-    drawPoseMarker(context, selectedNavigationGoal, '#bc8cff', 13);
-  } else if (navigationStatus && navigationStatus.goal) {
-    drawPoseMarker(context, navigationStatus.goal, '#bc8cff', 13);
-  }
-}
-
-function showNavigationMapMessage(message) {
-  const context = navMapCanvas.getContext('2d');
-  context.fillStyle = '#080c11';
-  context.fillRect(0, 0, navMapCanvas.width, navMapCanvas.height);
-  context.fillStyle = '#8b949e';
-  context.font = '18px sans-serif';
-  context.textAlign = 'center';
-  context.fillText(
-    message,
-    navMapCanvas.width / 2,
-    navMapCanvas.height / 2
-  );
-}
-
-navMapCanvas.addEventListener('click', event => {
-  if (isCabinetOperationActive()) {
-    toast('控制柜操作进行中，暂不能修改导航目标', 'err');
-    return;
-  }
-  if (!navigationMap) {
-    toast('Nav2 地图尚未加载', 'err');
-    return;
-  }
-  const bounds = navMapCanvas.getBoundingClientRect();
-  const canvasX = (event.clientX - bounds.left) / bounds.width *
-    navMapCanvas.width;
-  const canvasY = (event.clientY - bounds.top) / bounds.height *
-    navMapCanvas.height;
-  const goal = mapCanvasToWorld(canvasX, canvasY);
-  if (!goal) return;
-
-  const column = Math.max(
-    0,
-    Math.min(
-      navigationMap.width - 1,
-      Math.floor(canvasX / navMapCanvas.width * navigationMap.width)
-    )
-  );
-  const row = Math.max(
-    0,
-    Math.min(
-      navigationMap.height - 1,
-      Math.floor(
-        (navMapCanvas.height - canvasY) / navMapCanvas.height *
-        navigationMap.height
-      )
-    )
-  );
-  const occupancy = navigationMap.data[
-    row * navigationMap.width + column
-  ];
-  if (occupancy === undefined || occupancy < 0 || occupancy >= 65) {
-    toast('请选择地图中的自由区域', 'err');
-    return;
-  }
-  const yawDegrees = Number($('navGoalYaw').value) || 0;
-  selectedNavigationGoal = {
-    x: goal.x,
-    y: goal.y,
-    yaw: yawDegrees * Math.PI / 180
-  };
-  $('navGoalX').value = goal.x.toFixed(2);
-  $('navGoalY').value = goal.y.toFixed(2);
-  drawNavigationMap();
-});
-
 function renderNavigationStatus() {
   if (!navigationStatus) return;
   const available = Boolean(navigationStatus.available);
@@ -2871,7 +2609,6 @@ function renderNavigationStatus() {
   navDetail.style.whiteSpace = 'pre-line';
   renderBaseControlStatus();
   updateControlInterlocks();
-  drawNavigationMap();
 }
 
 function renderBaseControlStatus() {
@@ -3240,13 +2977,6 @@ function updateControlInterlocks() {
     navigationRetiring ||
     cabinetActive ||
     takingOver;
-  $('btnNavDebug').disabled =
-    !ctrlConnected ||
-    !navigationAvailable ||
-    navigationActive ||
-    navigationRetiring ||
-    cabinetActive ||
-    takingOver;
   $('btnNavCancel').disabled =
     !ctrlConnected ||
     cabinetActive ||
@@ -3265,10 +2995,6 @@ function updateControlInterlocks() {
       !navigationActive &&
       !navigationRetiring
     );
-  ['navGoalX', 'navGoalY', 'navGoalYaw'].forEach(id => {
-    $(id).disabled = cabinetActive || takingOver;
-  });
-
   const manualBlocked =
     !ctrlConnected ||
     cabinetActive;
@@ -3482,27 +3208,6 @@ async function sendNavigationGoal() {
   }
 }
 
-async function sendNavigationDebugGoal() {
-  if (isCabinetOperationActive() || isNavigationActive()) return;
-  const x = Number($('navGoalX').value);
-  const y = Number($('navGoalY').value);
-  const yawDegrees = Number($('navGoalYaw').value);
-  if (![x, y, yawDegrees].every(Number.isFinite)) {
-    toast('导航目标必须是有效数字', 'err');
-    return;
-  }
-  navigationTaskStatus = null;
-  selectedNavigationGoal = {x, y, yaw: yawDegrees * Math.PI / 180};
-  await clearDirectionInputs();
-  try {
-    await controlRequest('/navigation/goal', 'POST', selectedNavigationGoal);
-    toast('调试坐标目标已提交；该入口不绑定柜体任务', 'ok');
-    refreshAutonomyStatus();
-  } catch (error) {
-    toast(`调试导航失败: ${error.message}`, 'err');
-  }
-}
-
 async function cancelNavigation() {
   if (activeTaskId && activeTaskType === 'navigate') {
     try {
@@ -3670,7 +3375,6 @@ async function resetCabinetControls() {
   toast('控制目录已刷新', 'ok');
 }
 
-showNavigationMapMessage('等待控制服务器');
 
 // ─── Chassis Control ────────────────────────────────────────
 function getLinSpeed() { return parseFloat($('spdLinear').value) || 0.25; }
@@ -4070,7 +3774,6 @@ $('btnGripperOpen').addEventListener('click', openGripper);
 $('btnGripperClose').addEventListener('click', closeGripper);
 $('btnManualMode').addEventListener('click', switchToManualMode);
 $('btnNavSend').addEventListener('click', sendNavigationGoal);
-$('btnNavDebug').addEventListener('click', sendNavigationDebugGoal);
 $('btnNavCancel').addEventListener('click', cancelNavigation);
 $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
@@ -4091,7 +3794,6 @@ async function selectCabinetInstance(name) {
   cabinetResetAvailable = false;
   cabinetStatus = cabinetStatusByName.get(name) || null;
   cabinetStatusCurrent = Boolean(cabinetStatus);
-  updateCabinetStationFields();
   await loadSelectedCabinetControls();
   renderCabinetStatus();
 }

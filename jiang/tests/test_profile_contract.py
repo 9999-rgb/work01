@@ -32,7 +32,6 @@ def _robot_parameters() -> dict[str, object]:
         "navigation_mode_topic": "/robot/navigation_mode",
         "map_topic": "/map",
         "localization_pose_topic": "/localization_pose",
-        "plan_topic": "/plan",
         "manual_cmd_vel_topic": "/robot/manual_cmd_vel",
         "navigation_cmd_vel_topic": "/cmd_vel",
         "base_output_topic": "/robot/cmd_vel",

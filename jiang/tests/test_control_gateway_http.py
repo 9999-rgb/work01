@@ -594,6 +594,21 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.assertEqual("canceling", task["status"])
         self.assertEqual(task_id, self.control_server.canceled_task_id)
 
+    def test_arbitrary_coordinate_navigation_routes_are_not_exposed(
+        self,
+    ) -> None:
+        status, response, _ = self.request("/navigation/map")
+        self.assertEqual(404, status)
+        self.assertEqual("not found", response["error"])
+
+        status, response, _ = self.request(
+            "/navigation/goal",
+            "POST",
+            {"x": 1.0, "y": 2.0, "yaw": 0.0},
+        )
+        self.assertEqual(404, status)
+        self.assertEqual("not found", response["error"])
+
     def test_new_operation_route_defaults_and_forwards_force(self) -> None:
         status, accepted, _ = self.request(
             "/task/operate",

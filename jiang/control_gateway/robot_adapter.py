@@ -24,7 +24,6 @@ _LEGACY_DEFAULTS = {
     "navigation_mode_topic": "/xczs/navigation_mode",
     "map_topic": "/map",
     "localization_pose_topic": "/amcl_pose",
-    "plan_topic": "/plan",
     "manual_cmd_vel_topic": "/xczs/manual_cmd_vel",
     "navigation_cmd_vel_topic": "/cmd_vel",
     "base_output_topic": "/xczs/cmd_vel",
@@ -95,7 +94,6 @@ class RobotAdapterConfig:
     navigation_mode_topic: str
     map_topic: str
     localization_pose_topic: str
-    plan_topic: str
     manual_cmd_vel_topic: str
     navigation_cmd_vel_topic: str
     base_output_topic: str
@@ -450,10 +448,6 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         localization_pose_topic=_absolute_ros_name(
             _required(parameters, "localization_pose_topic", legacy=legacy),
             "localization_pose_topic",
-        ),
-        plan_topic=_absolute_ros_name(
-            _required(parameters, "plan_topic", legacy=legacy),
-            "plan_topic",
         ),
         manual_cmd_vel_topic=_absolute_ros_name(
             _required(parameters, "manual_cmd_vel_topic", legacy=legacy),

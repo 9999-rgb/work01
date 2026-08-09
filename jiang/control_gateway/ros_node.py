@@ -14,7 +14,6 @@ from geometry_msgs.msg import PoseWithCovarianceStamped
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import NavigateToPose
 from nav_msgs.msg import OccupancyGrid
-from nav_msgs.msg import Path
 from rclpy.action import ActionClient
 from rclpy.context import Context
 from rclpy.node import Node
@@ -121,7 +120,6 @@ class RosControlNode(Node):
         navigation_mode_topic: str = "/xczs/navigation_mode",
         map_topic: str = "/map",
         localization_pose_topic: str = "/amcl_pose",
-        plan_topic: str = "/plan",
         manual_linear_axis: str = "y",
         manual_joints: Sequence[ManualJointConfig] = (),
     ) -> None:
@@ -230,12 +228,6 @@ class RosControlNode(Node):
             10,
         )
         self.create_subscription(
-            Path,
-            plan_topic,
-            self._plan_callback,
-            10,
-        )
-        self.create_subscription(
             CabinetControlCatalog,
             "/xczs/cabinet/control_catalog",
             self._cabinet_control_catalog_callback,
@@ -269,7 +261,6 @@ class RosControlNode(Node):
         self._map_state: Optional[Dict[str, Any]] = None
         self._robot_pose: Optional[Dict[str, Any]] = None
         self._robot_pose_sequence = 0
-        self._global_plan: List[Dict[str, float]] = []
 
         self._cabinet_goal_handle: Any = None
         self._cabinet_cancel_requested = False
@@ -462,7 +453,6 @@ class RosControlNode(Node):
                         if self._robot_pose is not None
                         else None
                     ),
-                    "plan": [dict(point) for point in self._global_plan],
                 }
             )
         return snapshot
@@ -2854,19 +2844,6 @@ class RosControlNode(Node):
                 "sequence": self._robot_pose_sequence,
                 "source": "amcl",
             }
-
-    def _plan_callback(self, message: Path) -> None:
-        poses = message.poses
-        step = max(1, math.ceil(len(poses) / 500))
-        points = [
-            {
-                "x": float(pose.pose.position.x),
-                "y": float(pose.pose.position.y),
-            }
-            for pose in poses[::step]
-        ]
-        with self._lock:
-            self._global_plan = points
 
     def _validate_navigation_goal(self, x: float, y: float) -> None:
         with self._lock:

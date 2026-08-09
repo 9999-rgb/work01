@@ -13,7 +13,7 @@
 `cabinet_robot_adapter.yaml` 的 `/**.ros__parameters` 是跨节点接口合同，Web 网关、底盘路由、手动轨迹路由和柜体 operator 必须读取同一份文件。当前合同包括：
 
 - MoveIt 规划坐标系、规划组、末端执行器、命名安全位姿和规划约束；
-- Nav2 Action、模式 Service/Topic、地图、定位、路径 Topic 和底盘 TF；
+- Nav2 Action、模式 Service/Topic、地图、定位和底盘 TF；
 - 手动底盘输入、Nav2 速度输入、实际底盘输出及两坐标系的平面旋转；
 - 机械臂与夹爪关节分组、逐关节安全范围、默认位置、夹爪打开位置和 controller Topic。
 
@@ -83,6 +83,8 @@ Nav2 只负责把机器人送到由柜体完整 RPY 和 `cabinet_scene.yaml/navi
 
 `/task/operate` **绝不隐式导航**。需要完整流程时，Web 先提交 `/task/navigate`，等待成功后再提交 `/task/operate`。导航失败或取消时不会继续操作。手动方向输入仍可触发现有 Nav2 接管流程；对应导航任务会在 Nav2 确认取消后才释放全局任务锁。
 
+Web 不展示占用地图或全局路径，也不提供任意坐标导航入口。用户只能从 inventory 选择柜体，任务层使用已校验的 `navigation_station` 发送 Nav2 目标。底层仍订阅地图，仅用于工位边界和占用安全检查。
+
 同一原则也下沉到默认 operator 配置：`allow_embedded_navigation=false`。绕过 Web 直接向底层 Action 发送 `navigate_to_staging_pose=true` 时，会在任何 MoveIt、Nav2 或租约动作前返回明确的导航失败原因。旧客户端确实需要兼容算法时可以在专用适配包中显式开启，但该旧路径按控件位置计算工位，不属于通用任务合同。
 
 标准 Nav2 `NavigateToPose` 的 ABORTED 结果无法可靠区分“碰撞”与“目标不可达”。没有独立碰撞监视器证据时，系统诚实返回 `target_unreachable`，不会伪造碰撞原因。
@@ -146,7 +148,7 @@ SSE 业务事件为 `task_accepted`、`task_progress` 和 `task_completed`，支
 统一入口：
 
 ```bash
-./run_all.sh --web
+./run_all.sh
 ```
 
 统一入口可以用环境变量替换全部三层适配参数包：
@@ -171,12 +173,12 @@ MOVEIT_LAUNCH_PATH=/path/to/move_group.launch.py \
 NAV2_LAUNCH_PATH=/path/to/navigation.launch.py \
 NAV2_MAP_PATH=/path/to/map.yaml \
 NAV2_PARAMS_FILE=/path/to/nav2_params.yaml \
-./run_all.sh --web
+./run_all.sh
 ```
 
 当前 XCZS 仿真 bringup 只是默认 profile，不是通用任务层的硬依赖。还可用 `USE_SIM_TIME`、`MOVEIT_ENABLED`、`CABINET_BRINGUP`、`SPAWN_CABINET`、`SPAWN_Z` 和 `CABINET_POSE_SOURCE` 控制启动边界。`XCZS_PREFLIGHT_ONLY=true` 只检查最终组合需要的文件、依赖和参数，不启动任何进程；被关闭的子系统不会再强制要求其模型文件存在。
 
-如果新机器人已有自己的 Gazebo、controller、MoveIt 和 Nav2 bringup，先启动它，再以 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false` 运行本入口。此时本项目仍可加载设备实例、位姿权威、碰撞场景、操作节点和 Web 任务层；新机器人必须提供适配文件中声明的 ROS 2 接口。内置 Qt/键盘控制在该模式下会明确拒绝启动，不会静默失效；请使用动态 Web 控制或外部机器人自己的手动界面。
+如果新机器人已有自己的 Gazebo、controller、MoveIt 和 Nav2 bringup，先启动它，再以 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false` 运行本入口。此时本项目仍可加载设备实例、位姿权威、碰撞场景、操作节点和 Web 任务层；新机器人必须提供适配文件中声明的 ROS 2 接口。内置键盘控制在该模式下会明确拒绝启动，不会静默失效；请使用动态 Web 控制或外部机器人自己的手动界面。
 
 若外部 world 已经包含满足物理接口合同的设备实体，使用 `CABINET_BRINGUP=true SPAWN_CABINET=false`：本项目保留目录、位姿、碰撞场景和 operator，但不会重复生成 Gazebo entity。若连设备节点也由外部系统提供，则同时设置 `CABINET_BRINGUP=false SPAWN_CABINET=false`，Web 会按 inventory 中的 namespace 连接外部 Action/Topic/Service。
 
