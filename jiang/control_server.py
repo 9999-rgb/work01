@@ -42,6 +42,26 @@ def main() -> None:
         default=str(control_config / "cabinet_robot_adapter.yaml"),
         help="包含 navigation_base_frame 的机器人适配参数包。",
     )
+    parser.add_argument(
+        "--cabinet-controls",
+        default=str(control_config / "cabinet_controls.yaml"),
+        help="控制柜目录参数包；用于记录清单哈希。",
+    )
+    parser.add_argument(
+        "--cabinet-pose",
+        default=str(control_config / "cabinet_pose.yaml"),
+        help="控制柜位姿参数包；用于记录清单哈希。",
+    )
+    parser.add_argument(
+        "--robot-control",
+        default=str(control_config / "robot_control.yaml"),
+        help="机器人路由参数包；用于记录清单哈希。",
+    )
+    parser.add_argument(
+        "--recordings-root",
+        default=str(workspace / "recordings"),
+        help="rosbag2、清单、时间线和任务场景的本地数据目录。",
+    )
     args = parser.parse_args()
 
     shutdown_event = threading.Event()
@@ -62,8 +82,12 @@ def main() -> None:
         max_angular_speed=args.max_angular_speed,
         command_timeout=args.command_timeout,
         cabinet_instances_path=args.cabinet_instances,
+        cabinet_controls_path=args.cabinet_controls,
         cabinet_scene_path=args.cabinet_scene,
+        cabinet_pose_path=args.cabinet_pose,
         cabinet_robot_adapter_path=args.cabinet_robot_adapter,
+        robot_control_path=args.robot_control,
+        recordings_root=args.recordings_root,
         allowed_origins=args.allowed_origins,
     )
     try:

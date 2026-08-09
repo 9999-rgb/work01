@@ -8,6 +8,7 @@ import unittest
 from math import pi
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
@@ -269,6 +270,33 @@ class CabinetStateCallbackTest(unittest.TestCase):
             node.set_joint_target([0.0] * 7)
         with self.assertRaisesRegex(ControlRequestError, "manual joint order"):
             node.set_joint_target([0.0] * 9)
+
+    def test_replay_quiescence_clears_pending_manual_outputs(self) -> None:
+        resets = []
+        published = []
+        node = object.__new__(RosControlNode)
+        node._lock = threading.RLock()
+        node._target_linear_y = 0.2
+        node._target_angular_z = -0.3
+        node._linear_profile = SimpleNamespace(reset=lambda: resets.append("linear"))
+        node._angular_profile = SimpleNamespace(
+            reset=lambda: resets.append("angular")
+        )
+        node._pending_trajectory = object()
+        node._pending_trajectory_repeats = 4
+        node._manual_trajectory_active_until = 10.4
+        node._cmd_vel_publisher = SimpleNamespace(publish=published.append)
+
+        with patch("control_gateway.ros_node.time.monotonic", return_value=10.0):
+            settle = node.quiesce_manual_outputs()
+
+        self.assertAlmostEqual(0.4, settle)
+        self.assertEqual(0.0, node._target_linear_y)
+        self.assertEqual(0.0, node._target_angular_z)
+        self.assertIsNone(node._pending_trajectory)
+        self.assertEqual(0, node._pending_trajectory_repeats)
+        self.assertEqual(["linear", "angular"], resets)
+        self.assertEqual(1, len(published))
 
     def test_changed_catalog_topics_replace_dynamic_subscriptions(
         self,

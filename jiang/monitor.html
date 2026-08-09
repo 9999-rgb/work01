@@ -546,6 +546,67 @@
 }
 .cabinet-metric strong.ok { color: var(--green); }
 .cabinet-metric strong.busy { color: var(--yellow); }
+
+/* ── Recording and replay ─────────────────────────── */
+.replay-card { grid-column: 1 / -1; }
+.replay-grid {
+  display: grid; grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.2fr);
+  gap: 18px; align-items: start;
+}
+@media (max-width: 900px) {
+  .replay-grid { grid-template-columns: 1fr; }
+}
+.replay-form-grid {
+  display: grid; grid-template-columns: minmax(180px, 1fr) minmax(90px, 0.35fr);
+  gap: 8px; margin-top: 10px;
+}
+.replay-option {
+  display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  color: var(--text-dim); font-size: 12px;
+}
+.replay-option input { accent-color: var(--accent); }
+.replay-list {
+  width: 100%; min-height: 148px; margin-top: 10px;
+  background: #0d1117; border: 1px solid var(--border);
+  border-radius: 6px; padding: 6px; color: var(--text); font-size: 12px;
+}
+.replay-list:focus { outline: none; border-color: var(--accent); }
+.replay-progress-track {
+  height: 10px; overflow: hidden; border-radius: 5px;
+  background: rgba(255,255,255,0.06); margin-top: 8px;
+}
+.replay-progress-fill {
+  width: 0; height: 100%; border-radius: 5px;
+  background: linear-gradient(90deg, var(--purple), var(--accent));
+  transition: width 0.25s ease;
+}
+.replay-summary {
+  display: grid; grid-template-columns: repeat(3, minmax(100px, 1fr));
+  gap: 8px; margin-top: 10px;
+}
+@media (max-width: 620px) {
+  .replay-summary { grid-template-columns: 1fr; }
+}
+.replay-timeline {
+  max-height: 260px; overflow-y: auto; margin-top: 10px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: rgba(255,255,255,0.02);
+}
+.replay-timeline-entry {
+  display: grid; grid-template-columns: 76px minmax(100px, 0.4fr) minmax(180px, 1fr);
+  gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--border);
+  font-size: 10.5px; line-height: 1.45;
+}
+.replay-timeline-entry:last-child { border-bottom: none; }
+.replay-timeline-entry time {
+  color: var(--cyan); font-family: 'SF Mono', 'Fira Code', monospace;
+}
+.replay-timeline-entry strong { color: var(--text); font-weight: 500; }
+.replay-timeline-entry span { color: var(--text-dim); overflow-wrap: anywhere; }
+.replay-read-only {
+  margin-top: 10px; padding: 8px 10px; border: 1px solid var(--yellow);
+  border-radius: 6px; color: var(--yellow); font-size: 11px; line-height: 1.5;
+}
 .dpad-btn:disabled, .joint-slider-row input:disabled {
   opacity: 0.35; cursor: not-allowed;
 }
@@ -791,6 +852,96 @@
       </div>
     </div>
   </section>
+
+  <section class="autonomy-card replay-card" id="replayCard">
+    <div class="autonomy-header">
+      <h3>🎬 记录与回放</h3>
+      <span class="autonomy-state" id="replayState">等待服务</span>
+    </div>
+    <div class="autonomy-body">
+      <div class="replay-grid">
+        <div>
+          <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
+            rosbag2 数据记录
+          </div>
+          <div class="replay-form-grid">
+            <div class="form-field">
+              <label for="recordingName">记录 ID（可选）</label>
+              <input id="recordingName" type="text" maxlength="64"
+                     pattern="[a-z0-9][a-z0-9_-]{0,63}"
+                     placeholder="例如：press_5n_regression">
+            </div>
+            <div class="form-field">
+              <label for="replayRate">回放倍速</label>
+              <input id="replayRate" type="number" min="0.1" max="10"
+                     step="0.1" value="1.0">
+            </div>
+          </div>
+          <label class="replay-option" for="recordingIncludeSensors">
+            <input id="recordingIncludeSensors" type="checkbox">
+            包含相机与激光雷达大数据话题（会显著增大文件）
+          </label>
+          <div class="command-row">
+            <button class="btn btn-primary" id="btnRecordingStart">开始记录</button>
+            <button class="btn btn-danger" id="btnRecordingStop" disabled>停止记录</button>
+            <button class="btn btn-outline" id="btnRecordingsRefresh">刷新列表</button>
+          </div>
+          <label class="section-label" for="recordingList">本地记录</label>
+          <select class="replay-list" id="recordingList" size="6" disabled>
+            <option value="">等待记录列表</option>
+          </select>
+          <div class="status-detail" id="recordingDetail">
+            记录目录不纳入 Git；默认记录任务、TF、定位、关节和控制柜物理状态。
+          </div>
+        </div>
+        <div>
+          <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
+            只读数据回放与安全任务重演
+          </div>
+          <div class="command-row">
+            <button class="btn btn-primary" id="btnReplayData" disabled>播放数据</button>
+            <button class="btn btn-outline" id="btnReplayPause" disabled>暂停</button>
+            <button class="btn btn-outline" id="btnReplayRate" disabled>应用倍速</button>
+            <button class="btn btn-primary" id="btnReplayTask" disabled>任务重演</button>
+            <button class="btn btn-danger" id="btnReplayCancel" disabled>取消回放/重演</button>
+          </div>
+          <div class="replay-progress-track" aria-label="回放进度">
+            <div class="replay-progress-fill" id="replayProgressFill"></div>
+          </div>
+          <div class="cabinet-progress-header" style="margin-top:5px">
+            <span id="replayProgressLabel">尚未开始</span>
+            <span id="replayProgressText">0%</span>
+          </div>
+          <div class="replay-summary">
+            <div class="cabinet-metric">
+              <span>当前模式</span>
+              <strong id="replayMode">空闲</strong>
+            </div>
+            <div class="cabinet-metric">
+              <span>位置 / 总时长</span>
+              <strong id="replayPosition">0.0 / 0.0 s</strong>
+            </div>
+            <div class="cabinet-metric">
+              <span>任务步骤 / 倍速</span>
+              <strong id="replayStep">- / 1.0×</strong>
+            </div>
+          </div>
+          <div class="replay-read-only" id="replayReadOnly" hidden>
+            回放模式为只读：导航、底盘、机械臂和控制柜命令已锁定。
+          </div>
+          <div class="status-detail" id="replayDetail">
+            数据回放不会回灌底盘速度、轨迹命令或 Action goal；任务重演会重新调用现有安全任务链。
+          </div>
+          <div class="section-label">当前任务 / 控制柜状态时间线</div>
+          <div class="replay-timeline" id="replayTimeline">
+            <div class="replay-timeline-entry">
+              <time>--:--</time><strong>暂无事件</strong><span>选择记录后加载时间线。</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <!-- ─── Dashboard ─── -->
@@ -905,6 +1056,20 @@ let cabinetCatalogRequestGeneration = 0;
 const cabinetStatusByName = new Map();
 const taskSnapshotVersions = new Map();
 let cabinetOperationWorkflow = null;
+let replayStatusSnapshot = null;
+let replayControlReadOnly = false;
+let replayStatusTimer = null;
+let replayStatusPollGeneration = 0;
+let replayStatusPollInFlight = false;
+let replayActionInFlight = null;
+let replayActionError = '';
+let replayRecordings = [];
+let replayRecordingsRequestGeneration = 0;
+let replayRecordingDetailRequestGeneration = 0;
+let replayTimelineRequestGeneration = 0;
+let replayTimelineRecordingId = null;
+let replayTimelineLastRefreshAt = 0;
+let replayTimelineRequestInFlightId = null;
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -931,6 +1096,10 @@ const cabinetDetail = $('cabinetDetail');
 const cabinetTarget = $('cabinetTarget');
 const cabinetInstance = $('cabinetInstance');
 const navCabinetInstance = $('navCabinetInstance');
+const replayState = $('replayState');
+const recordingList = $('recordingList');
+const replayDetail = $('replayDetail');
+const replayTimeline = $('replayTimeline');
 
 function defaultServiceUrl(port) {
   const host = window.location.hostname || 'localhost';
@@ -1718,6 +1887,10 @@ async function testControlConnection() {
     if (r.ok) {
       const health = await r.json();
       ctrlConnected = true;
+      // Fail closed until the replay service explicitly confirms an idle
+      // state. This avoids a writable window when the page reconnects while
+      // playback is already active in another client.
+      replayControlReadOnly = true;
       applyCabinetHealth(health);
       if (health.active_task_id) {
         activeTaskId = health.active_task_id;
@@ -1735,6 +1908,14 @@ async function testControlConnection() {
         '/robot/capabilities'
       );
       applyRobotCapabilities(capabilities);
+      try {
+        applyReplayStatus(await controlRequestWithTimeout('/replay/status'));
+      } catch (replayError) {
+        setAutonomyState(replayState, '回放状态异常', 'err');
+        replayDetail.textContent =
+          `回放状态初始化失败：${replayError.message}\n` +
+          '为保证安全，实时写控制保持锁定并自动重试。';
+      }
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
@@ -1765,6 +1946,8 @@ async function testControlConnection() {
       connectTaskEvents();
       renderCabinetStatus();
       startAutonomyPolling();
+      startReplayPolling();
+      void refreshRecordings();
       if (!health.navigation_available) {
         log('info', 'Nav2 未就绪；请确认统一入口或外部机器人栈已提供导航');
       } else {
@@ -1789,6 +1972,8 @@ async function testControlConnection() {
     st.className = 'ctrl-status err';
     log('err', '控制服务器连接失败: ' + e.message);
     stopAutonomyPolling();
+    stopReplayPolling();
+    markReplayDisconnected(`回放服务连接失败：${e.message}`);
     if (taskEventSource) taskEventSource.close();
     taskEventSource = null;
     renderCabinetStatus();
@@ -1815,6 +2000,8 @@ setInterval(async () => {
     $('ctrlStatus').className = 'ctrl-status err';
     stopBase();
     stopAutonomyPolling();
+    stopReplayPolling();
+    markReplayDisconnected('控制服务连接已断开，回放状态不可用。');
     if (taskEventSource) taskEventSource.close();
     taskEventSource = null;
     renderCabinetStatus();
@@ -1824,6 +2011,7 @@ setInterval(async () => {
 // ─── HTTP POST helpers ──────────────────────────────────────
 async function postCmdVel(ly, az) {
   if (!ctrlConnected) return false;
+  if (replayControlReadOnly) return false;
   try {
     const r = await fetch(ctrlBaseUrl + '/cmd_vel', {
       method: 'POST',
@@ -1839,6 +2027,10 @@ async function postCmdVel(ly, az) {
 
 async function postJointTrajectory(positions) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return false; }
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，机械臂命令已禁止', 'err');
+    return false;
+  }
   if (isCabinetOperationActive()) {
     toast('控制柜操作进行中，手动关节控制已锁定', 'err');
     return false;
@@ -1861,6 +2053,20 @@ async function controlRequest(
   signal = null
 ) {
   if (!ctrlConnected) throw new Error('控制服务器未连接');
+  const replayManagementPaths = new Set([
+    '/replay/data/start',
+    '/replay/data/pause',
+    '/replay/data/resume',
+    '/replay/data/rate',
+    '/replay/task/start',
+    '/replay/cancel'
+  ]);
+  if (
+    method !== 'GET' && replayControlReadOnly &&
+    !replayManagementPaths.has(path)
+  ) {
+    throw new Error('回放只读模式中，实时写控制已禁止');
+  }
   const options = {method, cache: 'no-store'};
   if (signal) options.signal = signal;
   if (payload !== null) {
@@ -1890,6 +2096,689 @@ async function controlRequestWithTimeout(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// ─── Recording and replay ──────────────────────────────────────
+const replayPollIntervalMs = 750;
+const replayActivePlaybackStates = new Set([
+  'starting', 'playing', 'paused', 'canceling'
+]);
+const replayActiveTaskStates = new Set([
+  'starting', 'running', 'canceling'
+]);
+
+function recordingIdOf(recording) {
+  if (!recording || typeof recording !== 'object') return '';
+  return String(recording.recording_id || recording.id || '').trim();
+}
+
+function selectedRecordingId() {
+  return String(recordingList.value || '').trim();
+}
+
+function replayPartState(part) {
+  return String(part && (part.status || part.state) || 'idle');
+}
+
+function recordingIsActive(status = replayStatusSnapshot) {
+  const state = replayPartState(status && status.recording);
+  return state === 'recording' || state === 'stopping';
+}
+
+function playbackIsActive(status = replayStatusSnapshot) {
+  const state = replayPartState(status && status.playback);
+  return replayActivePlaybackStates.has(state);
+}
+
+function taskReplayIsActive(status = replayStatusSnapshot) {
+  const state = replayPartState(status && status.task_replay);
+  return replayActiveTaskStates.has(state);
+}
+
+function replayStatusReadOnly(status) {
+  if (!status || typeof status !== 'object') return false;
+  return status.read_only === true ||
+    playbackIsActive(status) || taskReplayIsActive(status);
+}
+
+function formatReplaySeconds(value) {
+  const seconds = Number(value);
+  return Number.isFinite(seconds) && seconds >= 0
+    ? seconds.toFixed(1)
+    : '0.0';
+}
+
+function formatReplayTimestamp(value) {
+  if (value === null || value === undefined || value === '') return '-';
+  const numeric = Number(value);
+  const date = Number.isFinite(numeric)
+    ? new Date(numeric > 1e12 ? numeric : numeric * 1000)
+    : new Date(value);
+  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+}
+
+function clampReplayProgress(value) {
+  let progress = Number(value);
+  if (!Number.isFinite(progress)) return 0;
+  if (progress > 1) progress /= 100;
+  return Math.max(0, Math.min(1, progress));
+}
+
+function freezeManualOutputsForReplay() {
+  manualIntentGeneration += 1;
+  pendingManualMotion = null;
+  manualIntentSource = null;
+  baseActive = false;
+  activeMotion = null;
+  if (controlInterval) {
+    clearInterval(controlInterval);
+    controlInterval = null;
+  }
+  if (typeof keysPressed !== 'undefined') keysPressed.clear();
+  if (typeof keyboardKeyOrder !== 'undefined') keyboardKeyOrder.length = 0;
+  document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
+    delete button.dataset.activePointer;
+    delete button.dataset.intentSource;
+    button.classList.remove('pressed');
+  });
+}
+
+function replayFailureMessage(part) {
+  if (!part || typeof part !== 'object') return '';
+  const error = part.error;
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error && typeof error === 'object') {
+    const nested = error.message || error.reason || error.code;
+    if (nested) return String(nested);
+  }
+  return String(part.message || '').trim();
+}
+
+function replayModeLabel(mode) {
+  return ({
+    idle: '空闲',
+    data_playback: '只读数据回放',
+    task_replay: '安全任务重演'
+  })[mode] || mode || '未知';
+}
+
+function replayStateLabel(state) {
+  return ({
+    idle: '空闲', recording: '记录中', stopping: '正在停止记录',
+    starting: '正在启动', playing: '播放中', paused: '已暂停',
+    completed: '已完成', running: '重演中', canceling: '正在取消',
+    success: '重演成功', failed: '失败', canceled: '已取消'
+  })[state] || state || '空闲';
+}
+
+function activeReplayPart(status = replayStatusSnapshot) {
+  if (!status || typeof status !== 'object') return {kind: 'idle', value: {}};
+  if (status.mode === 'task_replay' || taskReplayIsActive(status)) {
+    return {kind: 'task', value: status.task_replay || {}};
+  }
+  if (status.mode === 'data_playback' || playbackIsActive(status)) {
+    return {kind: 'playback', value: status.playback || {}};
+  }
+  if (recordingIsActive(status)) {
+    return {kind: 'recording', value: status.recording || {}};
+  }
+  const taskState = replayPartState(status.task_replay);
+  if (taskState && taskState !== 'idle') {
+    return {kind: 'task', value: status.task_replay};
+  }
+  const playbackState = replayPartState(status.playback);
+  if (playbackState && playbackState !== 'idle') {
+    return {kind: 'playback', value: status.playback};
+  }
+  return {kind: 'idle', value: {}};
+}
+
+function updateReplayControls() {
+  const status = replayStatusSnapshot;
+  const recordingActive = recordingIsActive(status);
+  const recordingState = replayPartState(status && status.recording);
+  const playback = status && status.playback || {};
+  const playbackState = replayPartState(playback);
+  const playbackActive = playbackIsActive(status);
+  const taskActive = taskReplayIsActive(status);
+  const selected = Boolean(selectedRecordingId());
+  const busy = Boolean(replayActionInFlight);
+  const liveTaskActive = isNavigationActive() || isCabinetOperationActive();
+
+  $('recordingName').disabled = !ctrlConnected || recordingActive || replayControlReadOnly || busy;
+  $('recordingIncludeSensors').disabled = !ctrlConnected || recordingActive || replayControlReadOnly || busy;
+  $('btnRecordingStart').disabled = !ctrlConnected || recordingActive || replayControlReadOnly || busy;
+  $('btnRecordingStop').disabled =
+    !ctrlConnected || recordingState !== 'recording' || replayControlReadOnly || busy;
+  $('btnRecordingsRefresh').disabled = !ctrlConnected || busy;
+  recordingList.disabled = !ctrlConnected || replayRecordings.length === 0;
+  $('btnReplayData').disabled =
+    !ctrlConnected || !selected || recordingActive || replayControlReadOnly || busy || liveTaskActive;
+  $('btnReplayTask').disabled =
+    !ctrlConnected || !selected || recordingActive || replayControlReadOnly || busy || liveTaskActive;
+  $('btnReplayPause').disabled =
+    !ctrlConnected || busy || !playbackActive || !['playing', 'paused'].includes(playbackState);
+  $('btnReplayPause').textContent = playbackState === 'paused' ? '继续' : '暂停';
+  $('btnReplayRate').disabled =
+    !ctrlConnected || busy || !playbackActive || !['playing', 'paused'].includes(playbackState);
+  $('btnReplayCancel').disabled =
+    !ctrlConnected || busy || !(playbackActive || taskActive || replayControlReadOnly);
+  $('replayRate').disabled = !ctrlConnected || busy || recordingActive || taskActive;
+}
+
+function renderReplayStatus() {
+  const status = replayStatusSnapshot;
+  const part = activeReplayPart(status);
+  const value = part.value || {};
+  const state = replayPartState(value);
+  const failure = replayFailureMessage(value);
+  const failed = state === 'failed' || Boolean(value.error);
+  const active = replayControlReadOnly || recordingIsActive(status);
+  setAutonomyState(
+    replayState,
+    !ctrlConnected
+      ? '回放服务未连接'
+      : part.kind === 'recording'
+        ? replayStateLabel(state)
+        : `${replayModeLabel(status && status.mode)} · ${replayStateLabel(state)}`,
+    !ctrlConnected || failed
+      ? 'err'
+      : active
+        ? 'busy'
+        : state === 'completed' || state === 'success' ? 'ok' : ''
+  );
+
+  const playback = status && status.playback || {};
+  const task = status && status.task_replay || {};
+  const progressSource = part.kind === 'task' ? task : playback;
+  const progress = clampReplayProgress(progressSource.progress);
+  const percent = Math.round(progress * 100);
+  $('replayProgressFill').style.width = `${percent}%`;
+  $('replayProgressText').textContent = `${percent}%`;
+  $('replayProgressLabel').textContent = part.kind === 'recording'
+    ? '正在采集数据'
+    : value.message || replayStateLabel(state);
+  $('replayMode').textContent = replayModeLabel(status && status.mode);
+  $('replayPosition').textContent =
+    `${formatReplaySeconds(playback.position_seconds)} / ` +
+    `${formatReplaySeconds(playback.duration_seconds)} s`;
+  const rate = Number(playback.rate);
+  const rateText = Number.isFinite(rate) && rate > 0 ? rate.toFixed(1) : '1.0';
+  const stepIndex = Number(task.step_index);
+  const stepCount = Number(task.step_count);
+  const stepText = Number.isFinite(stepIndex) && Number.isFinite(stepCount) && stepCount > 0
+    ? `${Math.min(stepCount, Math.max(0, stepIndex) + 1)} / ${stepCount}`
+    : '-';
+  $('replayStep').textContent = `${stepText} / ${rateText}×`;
+  $('replayReadOnly').hidden = !replayControlReadOnly;
+
+  const activeRecording = status && status.recording || {};
+  const currentStep = task.current_step;
+  const details = [
+    replayControlReadOnly
+      ? '安全互锁：实时写控制已禁止，仅允许管理当前回放。'
+      : '实时控制可用；记录过程不会锁定机器人。',
+    recordingIsActive(status)
+      ? `正在记录: ${recordingIdOf(activeRecording) || activeRecording.name || '等待 ID'}`
+      : '',
+    value.recording_id ? `记录 ID: ${value.recording_id}` : '',
+    currentStep
+      ? `当前任务: ${typeof currentStep === 'string' ? currentStep : JSON.stringify(currentStep)}`
+      : '',
+    value.message || '',
+    failure ? `原因: ${failure}` : '',
+    replayActionError
+  ];
+  replayDetail.textContent = details.filter(Boolean).join('\n');
+  replayDetail.style.whiteSpace = 'pre-line';
+  updateReplayControls();
+  updateControlInterlocks();
+}
+
+function markReplayDisconnected(message) {
+  replayStatusSnapshot = null;
+  replayControlReadOnly = false;
+  replayActionInFlight = null;
+  replayActionError = '';
+  setAutonomyState(replayState, '回放服务未连接', 'err');
+  replayDetail.textContent = message || '回放服务不可用。';
+  $('replayReadOnly').hidden = true;
+  updateReplayControls();
+  updateControlInterlocks();
+}
+
+function applyReplayStatus(status) {
+  if (!status || typeof status !== 'object' || Array.isArray(status)) {
+    throw new Error('回放状态响应格式无效');
+  }
+  const wasReadOnly = replayControlReadOnly;
+  const wasRecording = recordingIsActive(replayStatusSnapshot);
+  replayStatusSnapshot = status;
+  replayActionError = '';
+  replayControlReadOnly = replayStatusReadOnly(status);
+  if (replayControlReadOnly && !wasReadOnly) freezeManualOutputsForReplay();
+  renderReplayStatus();
+  const value = activeReplayPart(status).value || {};
+  const activeId = String(value.recording_id || '').trim();
+  if (
+    activeId && selectedRecordingId() === activeId &&
+    Date.now() - replayTimelineLastRefreshAt > 1500
+  ) {
+    void refreshReplayTimeline(activeId, true);
+  }
+  if (wasRecording && !recordingIsActive(status)) {
+    void refreshRecordings();
+  }
+}
+
+async function refreshReplayStatus(generation = replayStatusPollGeneration) {
+  if (
+    !ctrlConnected || generation !== replayStatusPollGeneration ||
+    replayStatusPollInFlight
+  ) return;
+  replayStatusPollInFlight = true;
+  try {
+    const status = await controlRequestWithTimeout('/replay/status');
+    if (ctrlConnected && generation === replayStatusPollGeneration) {
+      applyReplayStatus(status);
+    }
+  } catch (error) {
+    if (ctrlConnected && generation === replayStatusPollGeneration) {
+      if (!replayControlReadOnly) freezeManualOutputsForReplay();
+      replayControlReadOnly = true;
+      setAutonomyState(replayState, '回放状态异常', 'err');
+      replayDetail.textContent =
+        `无法获取回放状态：${error.message}\n` +
+        '为保证安全，保持只读锁定，直到服务明确返回空闲状态。';
+      updateReplayControls();
+      updateControlInterlocks();
+    }
+  } finally {
+    if (generation === replayStatusPollGeneration) {
+      replayStatusPollInFlight = false;
+    }
+  }
+}
+
+function startReplayPolling() {
+  stopReplayPolling();
+  const generation = replayStatusPollGeneration;
+  void refreshReplayStatus(generation);
+  replayStatusTimer = setInterval(
+    () => void refreshReplayStatus(generation),
+    replayPollIntervalMs
+  );
+}
+
+function stopReplayPolling() {
+  if (replayStatusTimer) clearInterval(replayStatusTimer);
+  replayStatusTimer = null;
+  replayStatusPollGeneration += 1;
+  replayStatusPollInFlight = false;
+}
+
+function normalizeRecordings(payload) {
+  const recordings = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload && payload.recordings)
+      ? payload.recordings
+      : [];
+  const seen = new Set();
+  return recordings.filter(recording => {
+    const recordingId = recordingIdOf(recording);
+    if (!recordingId || seen.has(recordingId)) return false;
+    seen.add(recordingId);
+    return true;
+  });
+}
+
+function renderRecordingList(preferredId = '') {
+  const previous = preferredId || selectedRecordingId();
+  if (!replayRecordings.length) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = '暂无可用记录';
+    recordingList.replaceChildren(option);
+    recordingList.disabled = true;
+    $('recordingDetail').textContent = '尚无记录，可先开始一次 rosbag2 数据采集。';
+    updateReplayControls();
+    return;
+  }
+  const options = replayRecordings.map(recording => {
+    const option = document.createElement('option');
+    const recordingId = recordingIdOf(recording);
+    const duration = Number(recording.duration_seconds);
+    const durationText = Number.isFinite(duration) ? `${duration.toFixed(1)}s` : '-';
+    option.value = recordingId;
+    option.textContent = [
+      recording.name || recordingId,
+      recording.status || '未知',
+      durationText
+    ].join(' · ');
+    option.title = recordingId;
+    return option;
+  });
+  recordingList.replaceChildren(...options);
+  recordingList.value = replayRecordings.some(item => recordingIdOf(item) === previous)
+    ? previous
+    : recordingIdOf(replayRecordings[0]);
+  recordingList.disabled = false;
+  renderSelectedRecording();
+  updateReplayControls();
+}
+
+function renderSelectedRecording() {
+  const selectedId = selectedRecordingId();
+  const recording = replayRecordings.find(item => recordingIdOf(item) === selectedId);
+  if (!recording) {
+    $('recordingDetail').textContent = '请选择一条记录。';
+    return;
+  }
+  const configHashes = recording.config_sha256;
+  const hashCount = configHashes && typeof configHashes === 'object'
+    ? Object.keys(configHashes).length
+    : 0;
+  $('recordingDetail').textContent = [
+    `ID: ${selectedId}`,
+    recording.created_at ? `创建: ${formatReplayTimestamp(recording.created_at)}` : '',
+    `状态: ${recording.status || '未知'}  时长: ${formatReplaySeconds(recording.duration_seconds)} s`,
+    recording.git_commit ? `Git: ${recording.git_commit}` : '',
+    `传感器大数据: ${recording.sensors_included ? '包含' : '未包含'}`,
+    hashCount ? `配置哈希: ${hashCount} 个文件` : '',
+    recording.result && recording.result.reason
+      ? `结果: ${recording.result.reason}`
+      : ''
+  ].filter(Boolean).join('\n');
+  $('recordingDetail').style.whiteSpace = 'pre-line';
+}
+
+async function refreshRecordingDetail(recordingId = selectedRecordingId()) {
+  const normalizedId = String(recordingId || '').trim();
+  if (!ctrlConnected || !normalizedId) return;
+  const generation = ++replayRecordingDetailRequestGeneration;
+  try {
+    const detail = await controlRequestWithTimeout(
+      `/recordings/${encodeURIComponent(normalizedId)}`,
+      4000
+    );
+    if (
+      generation !== replayRecordingDetailRequestGeneration ||
+      selectedRecordingId() !== normalizedId
+    ) return;
+    const index = replayRecordings.findIndex(
+      item => recordingIdOf(item) === normalizedId
+    );
+    if (index >= 0 && detail && typeof detail === 'object') {
+      replayRecordings[index] = {...replayRecordings[index], ...detail};
+      renderSelectedRecording();
+    }
+  } catch (error) {
+    if (
+      generation === replayRecordingDetailRequestGeneration &&
+      selectedRecordingId() === normalizedId
+    ) {
+      $('recordingDetail').textContent =
+        `记录详情加载失败：${error.message}`;
+    }
+  }
+}
+
+async function refreshRecordings() {
+  if (!ctrlConnected) {
+    toast('控制服务未连接，无法获取记录列表', 'err');
+    return;
+  }
+  const generation = ++replayRecordingsRequestGeneration;
+  const previous = selectedRecordingId();
+  try {
+    const payload = await controlRequestWithTimeout('/recordings', 4000);
+    if (generation !== replayRecordingsRequestGeneration) return;
+    replayRecordings = normalizeRecordings(payload);
+    renderRecordingList(previous);
+    const selected = selectedRecordingId();
+    if (selected) {
+      void refreshRecordingDetail(selected);
+      void refreshReplayTimeline(selected);
+    }
+  } catch (error) {
+    if (generation !== replayRecordingsRequestGeneration) return;
+    $('recordingDetail').textContent = `记录列表加载失败：${error.message}`;
+    toast(`记录列表加载失败: ${error.message}`, 'err');
+  }
+}
+
+function timelineEventSummary(event) {
+  const data = event && event.data;
+  if (typeof data === 'string') return data;
+  if (!data || typeof data !== 'object') {
+    return data === undefined ? '' : String(data);
+  }
+  const task = data.task && typeof data.task === 'object' ? data.task : data;
+  const request = task.request && typeof task.request === 'object' ? task.request : {};
+  const result = task.result && typeof task.result === 'object' ? task.result : {};
+  const parts = [
+    task.task_id ? `task=${task.task_id}` : '',
+    task.status ? `status=${task.status}` : '',
+    task.phase ? `phase=${task.phase}` : '',
+    request.cabinet || task.cabinet ? `cabinet=${request.cabinet || task.cabinet}` : '',
+    request.control_id || task.control_id
+      ? `control=${request.control_id || task.control_id}`
+      : '',
+    Number.isFinite(Number(result.requested_force ?? request.force))
+      ? `force=${Number(result.requested_force ?? request.force).toFixed(2)}N`
+      : '',
+    Number.isFinite(Number(result.estimated_force))
+      ? `estimated=${Number(result.estimated_force).toFixed(2)}N`
+      : '',
+    task.failure_reason || task.message || data.message || ''
+  ].filter(Boolean);
+  if (parts.length) return parts.join(' · ');
+  try {
+    return JSON.stringify(data).slice(0, 360);
+  } catch (_) {
+    return '无法解析事件数据';
+  }
+}
+
+function renderReplayTimeline(events, recordingId) {
+  if (!Array.isArray(events) || !events.length) {
+    const row = document.createElement('div');
+    row.className = 'replay-timeline-entry';
+    const time = document.createElement('time');
+    time.textContent = '--:--';
+    const title = document.createElement('strong');
+    title.textContent = '暂无事件';
+    const detail = document.createElement('span');
+    detail.textContent = `${recordingId} 尚未产生任务或控制柜状态时间线。`;
+    row.append(time, title, detail);
+    replayTimeline.replaceChildren(row);
+    return;
+  }
+  const rows = events.map(event => {
+    const row = document.createElement('div');
+    row.className = 'replay-timeline-entry';
+    const time = document.createElement('time');
+    const elapsed = Number(event.elapsed_seconds);
+    time.textContent = Number.isFinite(elapsed)
+      ? `+${elapsed.toFixed(2)}s`
+      : formatReplayTimestamp(event.timestamp);
+    const title = document.createElement('strong');
+    title.textContent = String(event.event || event.type || '状态事件');
+    const detail = document.createElement('span');
+    detail.textContent = timelineEventSummary(event);
+    row.append(time, title, detail);
+    return row;
+  });
+  replayTimeline.replaceChildren(...rows);
+  replayTimeline.scrollTop = replayTimeline.scrollHeight;
+}
+
+async function refreshReplayTimeline(
+  recordingId = selectedRecordingId(),
+  quiet = false
+) {
+  const normalizedId = String(recordingId || '').trim();
+  if (!ctrlConnected || !normalizedId) return;
+  if (quiet && replayTimelineRequestInFlightId === normalizedId) return;
+  const generation = ++replayTimelineRequestGeneration;
+  replayTimelineRecordingId = normalizedId;
+  replayTimelineRequestInFlightId = normalizedId;
+  if (!quiet) replayTimeline.textContent = '正在加载时间线…';
+  try {
+    const payload = await controlRequestWithTimeout(
+      `/recordings/${encodeURIComponent(normalizedId)}/timeline`,
+      4000
+    );
+    if (
+      generation !== replayTimelineRequestGeneration ||
+      replayTimelineRecordingId !== normalizedId ||
+      selectedRecordingId() !== normalizedId
+    ) return;
+    const events = Array.isArray(payload)
+      ? payload
+      : Array.isArray(payload && payload.events) ? payload.events : [];
+    replayTimelineLastRefreshAt = Date.now();
+    renderReplayTimeline(events, normalizedId);
+  } catch (error) {
+    if (generation !== replayTimelineRequestGeneration) return;
+    replayTimeline.textContent = `时间线加载失败：${error.message}`;
+    if (!quiet) toast(`时间线加载失败: ${error.message}`, 'err');
+  } finally {
+    if (generation === replayTimelineRequestGeneration) {
+      replayTimelineRequestInFlightId = null;
+    }
+  }
+}
+
+function validReplayRate() {
+  const rate = Number($('replayRate').value);
+  if (!Number.isFinite(rate) || rate < 0.1 || rate > 10) {
+    toast('回放倍速必须在 0.1～10.0 之间', 'err');
+    return null;
+  }
+  return rate;
+}
+
+async function runReplayAction(action, path, payload, options = {}) {
+  if (replayActionInFlight) return null;
+  replayActionInFlight = action;
+  replayActionError = '';
+  if (options.optimisticReadOnly) {
+    freezeManualOutputsForReplay();
+    replayControlReadOnly = true;
+  }
+  renderReplayStatus();
+  try {
+    const response = await controlRequest(path, 'POST', payload);
+    const candidate = response && (
+      response.replay_status || response.status || response
+    );
+    if (
+      candidate && typeof candidate === 'object' &&
+      (candidate.mode || candidate.recording || candidate.playback || candidate.task_replay)
+    ) {
+      applyReplayStatus(candidate);
+    }
+    toast(options.successMessage || '请求已提交', 'ok');
+    return response;
+  } catch (error) {
+    if (options.optimisticReadOnly) replayControlReadOnly = true;
+    replayActionError =
+      `${options.failureLabel || '回放请求'}失败：${error.message}` +
+      (options.optimisticReadOnly
+        ? '\n请求是否已被服务接收尚不确定，保持只读锁定直到状态确认。'
+        : '');
+    toast(`${options.failureLabel || '回放请求'}失败: ${error.message}`, 'err');
+    return null;
+  } finally {
+    replayActionInFlight = null;
+    renderReplayStatus();
+    await refreshReplayStatus(replayStatusPollGeneration);
+    if (options.refreshRecordings) void refreshRecordings();
+  }
+}
+
+async function startRecording() {
+  const name = $('recordingName').value.trim();
+  if (name && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name)) {
+    toast('记录 ID 只能包含小写字母、数字、下划线或连字符，最长 64 字符', 'err');
+    return;
+  }
+  const payload = {include_sensors: $('recordingIncludeSensors').checked};
+  if (name) payload.name = name;
+  await runReplayAction('recording_start', '/recording/start', payload, {
+    successMessage: '已开始 rosbag2 数据记录',
+    failureLabel: '开始记录'
+  });
+}
+
+async function stopRecording() {
+  await runReplayAction('recording_stop', '/recording/stop', {}, {
+    successMessage: '正在停止并完成记录清单',
+    failureLabel: '停止记录',
+    refreshRecordings: true
+  });
+}
+
+async function startDataReplay() {
+  const recordingId = selectedRecordingId();
+  const rate = validReplayRate();
+  if (!recordingId || rate === null) return;
+  await clearDirectionInputs();
+  await runReplayAction(
+    'data_start', '/replay/data/start', {recording_id: recordingId, rate},
+    {
+      optimisticReadOnly: true,
+      successMessage: `已启动只读数据回放：${recordingId}`,
+      failureLabel: '启动数据回放'
+    }
+  );
+}
+
+async function toggleDataReplayPause() {
+  const paused = Boolean(
+    replayStatusSnapshot && replayStatusSnapshot.playback &&
+    replayPartState(replayStatusSnapshot.playback) === 'paused'
+  );
+  await runReplayAction(
+    paused ? 'data_resume' : 'data_pause',
+    paused ? '/replay/data/resume' : '/replay/data/pause',
+    {},
+    {
+      successMessage: paused ? '数据回放已继续' : '数据回放已暂停',
+      failureLabel: paused ? '继续回放' : '暂停回放'
+    }
+  );
+}
+
+async function applyReplayRate() {
+  const rate = validReplayRate();
+  if (rate === null) return;
+  await runReplayAction('data_rate', '/replay/data/rate', {rate}, {
+    successMessage: `回放倍速已设为 ${rate}×`,
+    failureLabel: '设置回放倍速'
+  });
+}
+
+async function startTaskReplay() {
+  const recordingId = selectedRecordingId();
+  if (!recordingId) return;
+  await clearDirectionInputs();
+  await runReplayAction(
+    'task_start', '/replay/task/start', {recording_id: recordingId},
+    {
+      optimisticReadOnly: true,
+      successMessage: `已启动安全任务重演：${recordingId}`,
+      failureLabel: '启动任务重演'
+    }
+  );
+}
+
+async function cancelReplay() {
+  await runReplayAction('replay_cancel', '/replay/cancel', {}, {
+    successMessage: '正在取消回放/重演',
+    failureLabel: '取消回放/重演'
+  });
 }
 
 // ─── Autonomous task control ────────────────────────────────
@@ -2640,6 +3529,9 @@ function renderBaseControlStatus() {
   if (!ctrlConnected) {
     modeText = '控制服务未连接';
     hintText = '等待 Web 控制服务';
+  } else if (replayControlReadOnly) {
+    modeText = '回放只读锁定';
+    hintText = '导航、底盘、机械臂与控制柜实时命令已禁止';
   } else if (cabinetActive) {
     modeText = '控制柜操作锁定';
     hintText = '自动操作完成前不可手动接管';
@@ -2967,6 +3859,8 @@ function updateControlInterlocks() {
   const navigationRetiring = hasRetiringNavigationGoals();
   const cabinetActive = isCabinetOperationActive();
   const takingOver = manualTakeoverState === 'taking_over';
+  const replayLocked =
+    typeof replayControlReadOnly !== 'undefined' && replayControlReadOnly;
   const navigationAvailable = Boolean(
     navigationStatus && navigationStatus.available
   );
@@ -2987,11 +3881,13 @@ function updateControlInterlocks() {
     navigationActive ||
     navigationRetiring ||
     cabinetActive ||
-    takingOver;
+    takingOver ||
+    replayLocked;
   $('btnNavCancel').disabled =
     !ctrlConnected ||
     cabinetActive ||
     takingOver ||
+    replayLocked ||
     !(
       navigationActive ||
       navigationRetiring ||
@@ -3001,6 +3897,7 @@ function updateControlInterlocks() {
     !ctrlConnected ||
     cabinetActive ||
     takingOver ||
+    replayLocked ||
     Boolean(
       isManualControlReady() &&
       !navigationActive &&
@@ -3008,7 +3905,8 @@ function updateControlInterlocks() {
     );
   const manualBlocked =
     !ctrlConnected ||
-    cabinetActive;
+    cabinetActive ||
+    replayLocked;
   document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
     button.disabled = manualBlocked;
   });
@@ -3016,17 +3914,18 @@ function updateControlInterlocks() {
   $('spdAngular').disabled = manualBlocked;
 
   document.querySelectorAll('#jointSliders input').forEach(input => {
-    input.disabled = !ctrlConnected || cabinetActive;
+    input.disabled = !ctrlConnected || cabinetActive || replayLocked;
   });
   $('btnArmZero').disabled =
-    !ctrlConnected || cabinetActive || armJointSpecs.length === 0;
+    !ctrlConnected || cabinetActive || replayLocked || armJointSpecs.length === 0;
   $('btnGripperOpen').disabled =
     !ctrlConnected ||
     cabinetActive ||
+    replayLocked ||
     gripperJointSpecs.length === 0 ||
     gripperJointSpecs.every(spec => spec.open_position === null);
   $('btnGripperClose').disabled =
-    !ctrlConnected || cabinetActive || gripperJointSpecs.length === 0;
+    !ctrlConnected || cabinetActive || replayLocked || gripperJointSpecs.length === 0;
 
   $('btnCabinetPress').disabled =
     !ctrlConnected ||
@@ -3041,9 +3940,11 @@ function updateControlInterlocks() {
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
-    takingOver;
+    takingOver ||
+    replayLocked;
   $('btnCabinetCancel').disabled =
     !ctrlConnected ||
+    replayLocked ||
     !cabinetActive ||
     Boolean(cabinetStatus && cabinetStatus.state === 'resetting');
   $('btnCabinetReset').disabled =
@@ -3052,14 +3953,16 @@ function updateControlInterlocks() {
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
-    takingOver;
-  cabinetTarget.disabled = cabinetActive || !cabinetCatalogReceived;
-  cabinetInstance.disabled = cabinetActive || !cabinetInstances.length;
-  navCabinetInstance.disabled = cabinetActive || !cabinetInstances.length;
-  $('cabinetTargetState').disabled = cabinetActive || !cabinetCatalogReceived;
-  $('cabinetTargetPosition').disabled = cabinetActive || !cabinetCatalogReceived;
-  $('cabinetForce').disabled = cabinetActive || !cabinetCatalogReceived;
+    takingOver ||
+    replayLocked;
+  cabinetTarget.disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
+  cabinetInstance.disabled = replayLocked || cabinetActive || !cabinetInstances.length;
+  navCabinetInstance.disabled = replayLocked || cabinetActive || !cabinetInstances.length;
+  $('cabinetTargetState').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
+  $('cabinetTargetPosition').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
+  $('cabinetForce').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
   renderBaseControlStatus();
+  if (typeof updateReplayControls === 'function') updateReplayControls();
 }
 
 const manualTakeoverRequestTimeoutMs = 2500;
@@ -3271,6 +4174,10 @@ async function waitForManualMode() {
 }
 
 async function ensureManualControl(forceTakeover = false) {
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，不能手动接管底盘', 'err');
+    return false;
+  }
   if (!ctrlConnected) {
     toast('控制服务器未连接', 'err');
     return false;
@@ -3327,6 +4234,10 @@ async function switchToManualMode() {
 }
 
 async function sendNavigationGoal() {
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，不能发送导航目标', 'err');
+    return;
+  }
   if (isCabinetOperationActive()) {
     toast('控制柜操作进行中，不能发送 Nav2 目标', 'err');
     return;
@@ -3355,6 +4266,10 @@ async function sendNavigationGoal() {
 }
 
 async function cancelNavigation() {
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，请使用“取消回放/重演”', 'err');
+    return;
+  }
   if (activeTaskId && activeTaskType === 'navigate') {
     try {
       const task = await controlRequest(
@@ -3372,6 +4287,12 @@ async function cancelNavigation() {
 }
 
 async function sendCabinetOperation() {
+  if (
+    typeof replayControlReadOnly !== 'undefined' && replayControlReadOnly
+  ) {
+    toast('回放只读模式中，不能提交控制柜操作', 'err');
+    return;
+  }
   if (isCabinetOperationActive() || cabinetOperationWorkflow) return;
   if (!cabinetCatalogReceived) {
     toast('控制柜目录尚未到达，请稍后重试', 'err');
@@ -3634,6 +4555,12 @@ async function sendCabinetOperation() {
 }
 
 async function cancelCabinetOperation() {
+  if (
+    typeof replayControlReadOnly !== 'undefined' && replayControlReadOnly
+  ) {
+    toast('回放只读模式中，请使用“取消回放/重演”', 'err');
+    return;
+  }
   const workflow = cabinetOperationWorkflow;
   if (!workflow && !isCabinetOperationActive()) return;
   if (workflow) {
@@ -3694,6 +4621,10 @@ async function cancelCabinetOperation() {
 }
 
 async function resetCabinetControls() {
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，不能刷新写控制目录', 'err');
+    return;
+  }
   if (isCabinetOperationActive()) return;
   await loadSelectedCabinetControls();
   toast('控制目录已刷新', 'ok');
@@ -3749,6 +4680,10 @@ function beginBaseMotion(motion) {
 
 async function startBaseMotion(motion, source) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，底盘命令已禁止', 'err');
+    return;
+  }
   if (isCabinetOperationActive()) {
     toast('控制柜操作进行中，手动底盘已锁定', 'err');
     return;
@@ -3792,6 +4727,7 @@ function sendBaseCommand() {
   if (!baseActive || !activeMotion) return;
   if (
     !ctrlConnected ||
+    replayControlReadOnly ||
     isCabinetOperationActive() ||
     !isManualControlReady()
   ) {
@@ -3804,6 +4740,10 @@ function sendBaseCommand() {
 
 async function requestStopAndManualTakeover(showStoppedToast = false) {
   clearDirectionInputs();
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，不能手动接管底盘', 'err');
+    return false;
+  }
   if (!ctrlConnected) {
     toast('控制服务器未连接', 'err');
     return false;
@@ -4007,7 +4947,7 @@ function buildJointSliders() {
 }
 
 function onArmSlider(idx, val) {
-  if (isCabinetOperationActive()) return;
+  if (replayControlReadOnly || isCabinetOperationActive()) return;
   const spec = armJointSpecs[idx];
   if (!spec) return;
   const manualIndex = manualJointSpecs.findIndex(
@@ -4022,6 +4962,10 @@ function onArmSlider(idx, val) {
 }
 
 function resetArmToDefaults() {
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，机械臂命令已禁止', 'err');
+    return;
+  }
   if (isCabinetOperationActive()) {
     toast('控制柜操作进行中，手动关节控制已锁定', 'err');
     return;
@@ -4067,7 +5011,7 @@ function buildGripperControls() {
 }
 
 function openGripper() {
-  if (isCabinetOperationActive()) return;
+  if (replayControlReadOnly || isCabinetOperationActive()) return;
   gripperJointSpecs.forEach(spec => {
     const manualIndex = manualJointSpecs.findIndex(
       joint => joint.name === spec.name
@@ -4079,7 +5023,7 @@ function openGripper() {
   postJointTrajectory([...manualPositions]);
 }
 function closeGripper() {
-  if (isCabinetOperationActive()) return;
+  if (replayControlReadOnly || isCabinetOperationActive()) return;
   gripperJointSpecs.forEach(spec => {
     const manualIndex = manualJointSpecs.findIndex(
       joint => joint.name === spec.name
@@ -4102,6 +5046,25 @@ $('btnNavCancel').addEventListener('click', cancelNavigation);
 $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
 $('btnCabinetReset').addEventListener('click', resetCabinetControls);
+$('btnRecordingStart').addEventListener('click', startRecording);
+$('btnRecordingStop').addEventListener('click', stopRecording);
+$('btnRecordingsRefresh').addEventListener('click', refreshRecordings);
+$('btnReplayData').addEventListener('click', startDataReplay);
+$('btnReplayPause').addEventListener('click', toggleDataReplayPause);
+$('btnReplayRate').addEventListener('click', applyReplayRate);
+$('btnReplayTask').addEventListener('click', startTaskReplay);
+$('btnReplayCancel').addEventListener('click', cancelReplay);
+recordingList.addEventListener('change', () => {
+  renderSelectedRecording();
+  updateReplayControls();
+  void refreshRecordingDetail(selectedRecordingId());
+  void refreshReplayTimeline(selectedRecordingId());
+});
+$('replayRate').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !$('btnReplayRate').disabled) {
+    void applyReplayRate();
+  }
+});
 cabinetTarget.addEventListener('change', () => {
   delete $('cabinetTargetPosition').dataset.edited;
   delete $('cabinetTargetPosition').dataset.controlId;
@@ -4148,6 +5111,7 @@ buildJointSliders();
 buildGripperControls();
 renderCabinetTarget();
 renderCabinetStatus();
+renderReplayStatus();
 
 // Auto-connect monitoring, sensors and control on page load.
 doConnect();

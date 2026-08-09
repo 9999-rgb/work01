@@ -48,6 +48,7 @@ CABINET_SCENE_PATH="${CABINET_SCENE_PATH:-$WORK_DIR/xczs_inspection_robot_contro
 CABINET_POSE_PATH="${CABINET_POSE_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_pose.yaml}"
 CABINET_ROBOT_ADAPTER_PATH="${CABINET_ROBOT_ADAPTER_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_robot_adapter.yaml}"
 ROBOT_CONTROL_PATH="${ROBOT_CONTROL_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/robot_control.yaml}"
+RECORDINGS_ROOT="${RECORDINGS_ROOT:-$WORK_DIR/recordings}"
 SIMULATION_WORLD_PATH="${SIMULATION_WORLD_PATH:-$WORK_DIR/xczs_inspection_robot_description/worlds/inspection_robot.world}"
 CABINET_XACRO_PATH="${CABINET_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/control_cabinet.urdf.xacro}"
 ROBOT_NAME="${ROBOT_NAME:-xczs_inspection_robot}"
@@ -411,8 +412,12 @@ if [ "$CONTROL_MODE" = "web" ]; then
         --host "$CONTROL_HOST" \
         --port "$CONTROL_PORT" \
         --cabinet-instances "$CABINET_INSTANCES_PATH" \
+        --cabinet-controls "$CABINET_CONTROLS_PATH" \
         --cabinet-scene "$CABINET_SCENE_PATH" \
+        --cabinet-pose "$CABINET_POSE_PATH" \
         --cabinet-robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
+        --robot-control "$ROBOT_CONTROL_PATH" \
+        --recordings-root "$RECORDINGS_ROOT" \
         "${CONTROL_ORIGIN_ARGS[@]}" &
     CONTROL_PID=$!
     sleep 1

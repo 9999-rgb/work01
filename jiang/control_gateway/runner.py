@@ -25,6 +25,8 @@ from .inventory import CabinetNotFoundError
 from .inventory import InventoryError
 from .inventory import NavigationStationOutOfBoundsError
 from .inventory import OccupancyGridBoundary
+from .recording_manager import RecordingError
+from .recording_manager import RecordingManager
 from .ros_node import ControlRequestError
 from .ros_node import RosControlNode
 from .robot_adapter import RobotAdapterError
@@ -37,12 +39,17 @@ from .task_manager import TaskManager
 from .task_manager import TaskManagerClosedError
 from .task_manager import TaskManagerError
 from .task_manager import TaskNotFoundError
+from .task_replay import TaskReplayConflictError
+from .task_replay import TaskReplayError
+from .task_replay import TaskReplayOrchestrator
+from .task_replay import TaskReplayValidationError
 from .web_server import ControlHandler
 
 
 CABINET_SHUTDOWN_TIMEOUT_SEC = 15.0
 NAVIGATION_SHUTDOWN_TIMEOUT_SEC = 15.0
 TASK_MANAGER_SHUTDOWN_TIMEOUT_SEC = 8.0
+SHUTDOWN_RECHECK_TIMEOUT_SEC = 1.0
 BACKEND_SHUTDOWN_GRACE_SEC = 3.0
 REQUEST_DRAIN_TIMEOUT_SEC = 8.0
 NAVIGATION_TIMEOUT_SEC = 180.0
@@ -77,6 +84,10 @@ class ControlServer:
         cabinet_scene_path: Optional[str] = None,
         cabinet_robot_adapter_path: Optional[str] = None,
         allowed_origins: Optional[Iterable[str]] = None,
+        cabinet_controls_path: Optional[str] = None,
+        cabinet_pose_path: Optional[str] = None,
+        robot_control_path: Optional[str] = None,
+        recordings_root: Optional[str] = None,
     ) -> None:
         if not self._is_loopback_host(host):
             raise ValueError(
@@ -113,12 +124,22 @@ class ControlServer:
         instances_path = cabinet_instances_path or str(
             control_config / "cabinet_instances.yaml"
         )
+        controls_path = cabinet_controls_path or str(
+            control_config / "cabinet_controls.yaml"
+        )
         scene_path = cabinet_scene_path or str(
             control_config / "cabinet_scene.yaml"
+        )
+        pose_path = cabinet_pose_path or str(
+            control_config / "cabinet_pose.yaml"
         )
         robot_adapter_path = cabinet_robot_adapter_path or str(
             control_config / "cabinet_robot_adapter.yaml"
         )
+        control_path = robot_control_path or str(
+            control_config / "robot_control.yaml"
+        )
+        recordings_path = recordings_root or str(workspace / "recordings")
         try:
             self._inventory = CabinetInventory.load(instances_path, scene_path)
         except InventoryError as error:
@@ -197,6 +218,34 @@ class ControlServer:
             self._executor.add_node(client)
 
         self._task_manager = TaskManager()
+        self._replay_internal = threading.local()
+        self._recording_manager = RecordingManager(
+            recordings_path,
+            workspace_root=workspace,
+            config_paths=(
+                instances_path,
+                controls_path,
+                scene_path,
+                pose_path,
+                robot_adapter_path,
+                control_path,
+            ),
+            inventory_snapshot=self._inventory.list_cabinets(
+                include_station=True
+            ),
+            record_topics=(
+                self._robot_adapter.map_topic,
+                self._robot_adapter.localization_pose_topic,
+                self._robot_adapter.joint_state_topic,
+            ),
+        )
+        self._task_replay = TaskReplayOrchestrator(
+            load_scenario=self._recording_manager.load_scenario,
+            submit_navigation=self._replay_submit_navigation,
+            submit_operation=self._replay_submit_operation,
+            task_status=self._replay_task_status,
+            cancel_task=self._replay_cancel_task,
+        )
         self._event_bridge_subscription = self._task_manager.events.subscribe(
             last_event_id=0
         )
@@ -282,6 +331,34 @@ class ControlServer:
                 self._stopping = True
                 self._request_condition.notify_all()
 
+            task_replay = getattr(self, "_task_replay", None)
+            task_replay_stopped = True
+            if task_replay is not None:
+                try:
+                    task_replay_stopped = task_replay.shutdown(timeout=5.0)
+                except Exception as error:  # noqa: BLE001
+                    task_replay_stopped = False
+                    self._log_shutdown_warning(
+                        f"Failed to stop task replay cleanly: {error}"
+                    )
+                if not task_replay_stopped:
+                    self._log_shutdown_warning(
+                        "The task replay worker did not stop before teardown."
+                    )
+
+            recording_manager = getattr(self, "_recording_manager", None)
+            if recording_manager is not None:
+                try:
+                    if recording_manager.playback_status().get("state") in {
+                        "playing",
+                        "paused",
+                    }:
+                        recording_manager.cancel_playback()
+                except Exception as error:  # noqa: BLE001
+                    self._log_shutdown_warning(
+                        f"Failed to stop isolated data playback: {error}"
+                    )
+
             task_manager = getattr(self, "_task_manager", None)
             task_shutdown: Dict[str, Any] = {
                 "pending_worker_task_ids": [],
@@ -322,6 +399,19 @@ class ControlServer:
                     "The task event bridge did not stop before teardown."
                 )
 
+            recording_manager_stopped = True
+            if recording_manager is not None:
+                try:
+                    recording_manager.shutdown()
+                    recording_manager_stopped = (
+                        recording_manager.active_mode == "idle"
+                    )
+                except Exception as error:  # noqa: BLE001
+                    recording_manager_stopped = False
+                    self._log_shutdown_warning(
+                        f"Failed to finalize recording/replay data: {error}"
+                    )
+
             if self._http_server is not None:
                 self._http_server.shutdown()
                 self._http_server.server_close()
@@ -352,6 +442,36 @@ class ControlServer:
                     f"{pending_requests} Web request(s) did not drain before "
                     "the bounded shutdown deadline."
                 )
+            else:
+                # A request that entered before ``_stopping`` was set may
+                # finish starting a replay after the first shutdown pass.
+                # Once all admitted handlers have drained, no new request can
+                # cross the gate, so repeat shutdown for any newly acquired
+                # owner before ROS resources are destroyed.
+                if task_replay is not None and task_replay.is_active:
+                    try:
+                        task_replay_stopped = task_replay.shutdown(timeout=5.0)
+                    except Exception as error:  # noqa: BLE001
+                        task_replay_stopped = False
+                        self._log_shutdown_warning(
+                            "Failed to stop a task replay admitted during "
+                            f"gateway shutdown: {error}"
+                        )
+                if (
+                    recording_manager is not None
+                    and recording_manager.active_mode != "idle"
+                ):
+                    try:
+                        recording_manager.shutdown()
+                        recording_manager_stopped = (
+                            recording_manager.active_mode == "idle"
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        recording_manager_stopped = False
+                        self._log_shutdown_warning(
+                            "Failed to stop recording/replay work admitted "
+                            f"during gateway shutdown: {error}"
+                        )
 
             cabinet_clients = getattr(self, "_cabinet_clients", None)
             pending = set()
@@ -436,6 +556,40 @@ class ControlServer:
                     time.sleep(0.05)
             self._node.emergency_stop()
 
+            # Earlier bounded waits may have timed out even though their
+            # workers reached terminal state while HTTP, cabinets, or Nav2
+            # were being drained.  Recompute every owner immediately before
+            # the teardown decision so a stale timeout snapshot cannot keep
+            # an otherwise clean gateway half-shut down.
+            if task_replay is not None:
+                try:
+                    task_replay_stopped = task_replay.shutdown(
+                        timeout=SHUTDOWN_RECHECK_TIMEOUT_SEC
+                    )
+                except Exception as error:  # noqa: BLE001
+                    task_replay_stopped = False
+                    self._log_shutdown_warning(
+                        f"Failed to recheck task replay shutdown: {error}"
+                    )
+            if task_manager is not None:
+                task_shutdown = task_manager.shutdown(
+                    timeout=SHUTDOWN_RECHECK_TIMEOUT_SEC,
+                    cancel_active=True,
+                )
+            if recording_manager is not None:
+                try:
+                    if recording_manager.active_mode != "idle":
+                        recording_manager.shutdown()
+                    recording_manager_stopped = (
+                        recording_manager.active_mode == "idle"
+                    )
+                except Exception as error:  # noqa: BLE001
+                    recording_manager_stopped = False
+                    self._log_shutdown_warning(
+                        "Failed to recheck recording/replay shutdown: "
+                        f"{error}"
+                    )
+
             safe_to_destroy_ros = (
                 task_shutdown["workers_stopped"]
                 and task_shutdown.get("active_task_id") is None
@@ -445,6 +599,8 @@ class ControlServer:
                 and not navigation_pending
                 and event_bridge_stopped
                 and http_thread_stopped
+                and task_replay_stopped
+                and recording_manager_stopped
             )
             self._shutdown_report = {
                 "task_manager": task_shutdown,
@@ -454,6 +610,8 @@ class ControlServer:
                 "navigation_pending": navigation_pending,
                 "event_bridge_stopped": event_bridge_stopped,
                 "http_thread_stopped": http_thread_stopped,
+                "task_replay_stopped": task_replay_stopped,
+                "recording_manager_stopped": recording_manager_stopped,
                 "executor_stopped": False,
                 "ros_teardown_completed": False,
             }
@@ -553,6 +711,14 @@ class ControlServer:
                 cabinet_available = bool(cabinet["available"])
                 cabinet_active = bool(cabinet["active"])
             task_manager = getattr(self, "_task_manager", None)
+            replay = (
+                self._replay_status_snapshot()
+                if getattr(self, "_recording_manager", None) is not None
+                else {
+                    "mode": "idle",
+                    "read_only": False,
+                }
+            )
             return {
                 "status": "ok",
                 "navigation_available": navigation["available"],
@@ -565,6 +731,8 @@ class ControlServer:
                     else None
                 ),
                 "cabinets": cabinet_states,
+                "replay_mode": replay["mode"],
+                "replay_read_only": replay["read_only"],
             }
 
     def cabinets(self) -> Dict[str, Any]:
@@ -606,6 +774,150 @@ class ControlServer:
                 "gripper_joint_count": len(adapter.gripper_joint_names),
                 "manual_joints": joints,
             }
+
+    def recordings(self) -> Dict[str, Any]:
+        """List retained recording manifests without exposing data paths."""
+        with self._request_scope():
+            values = self._call_recording_manager(
+                self._recording_manager.list_recordings
+            )
+            return {"count": len(values), "recordings": values}
+
+    def recording_detail(self, recording_id: str) -> Dict[str, Any]:
+        """Return one validated recording manifest."""
+        with self._request_scope():
+            return self._call_recording_manager(
+                self._recording_manager.get_recording,
+                recording_id,
+            )
+
+    def recording_timeline(self, recording_id: str) -> Dict[str, Any]:
+        """Return the bounded task-event timeline for one recording."""
+        with self._request_scope():
+            return self._call_recording_manager(
+                self._recording_manager.timeline,
+                recording_id,
+            )
+
+    def start_recording(
+        self,
+        name: Optional[str],
+        include_sensors: bool,
+    ) -> Dict[str, Any]:
+        """Start passive rosbag2 capture; live controls remain available."""
+        with self._request_scope():
+            recording = self._call_recording_manager(
+                self._recording_manager.start_recording,
+                name,
+                include_sensors=include_sensors,
+            )
+            snapshot = self._replay_status_snapshot()
+            snapshot["recording"] = self._status_field(recording)
+            return snapshot
+
+    def stop_recording(self) -> Dict[str, Any]:
+        """Stop rosbag2 capture and atomically finalize retained artifacts."""
+        with self._request_scope():
+            recording = self._call_recording_manager(
+                self._recording_manager.stop_recording
+            )
+            # ``recording_status()`` intentionally reports the currently
+            # active recorder.  Once finalization has released that owner it
+            # returns idle, so preserve this request's terminal result (and
+            # any finalization error) in the HTTP response.
+            snapshot = self._replay_status_snapshot()
+            snapshot["recording"] = self._status_field(recording)
+            return snapshot
+
+    def replay_status(self) -> Dict[str, Any]:
+        """Return recording, isolated playback, and task-replay state."""
+        with self._request_scope():
+            return self._replay_status_snapshot()
+
+    def start_data_playback(
+        self,
+        recording_id: str,
+        rate: float,
+    ) -> Dict[str, Any]:
+        """Start namespace-isolated rosbag2 playback in read-only mode."""
+        with self._request_scope():
+            with self._task_interlock_scope():
+                self._ensure_replay_can_start("Data playback")
+                if self._task_replay.is_active:
+                    raise ControlRequestError(
+                        "A task replay is already active.",
+                        409,
+                    )
+                self._quiesce_manual_outputs_for_replay()
+                self._call_recording_manager(
+                    self._recording_manager.start_playback,
+                    recording_id,
+                    rate=rate,
+                )
+            return self._replay_status_snapshot()
+
+    def pause_data_playback(self) -> Dict[str, Any]:
+        """Pause the isolated rosbag2 player."""
+        with self._request_scope():
+            self._call_recording_manager(
+                self._recording_manager.pause_playback
+            )
+            return self._replay_status_snapshot()
+
+    def resume_data_playback(self) -> Dict[str, Any]:
+        """Resume the isolated rosbag2 player."""
+        with self._request_scope():
+            self._call_recording_manager(
+                self._recording_manager.resume_playback
+            )
+            return self._replay_status_snapshot()
+
+    def set_data_playback_rate(self, rate: float) -> Dict[str, Any]:
+        """Restart isolated playback at the current position and new rate."""
+        with self._request_scope():
+            self._call_recording_manager(
+                self._recording_manager.set_playback_rate,
+                rate,
+            )
+            return self._replay_status_snapshot()
+
+    def start_task_replay(self, recording_id: str) -> Dict[str, Any]:
+        """Re-enact safe semantic tasks through the current control stack."""
+        with self._request_scope():
+            with self._task_interlock_scope():
+                self._ensure_replay_can_start("Task replay")
+                playback = self._call_recording_manager(
+                    self._recording_manager.playback_status
+                )
+                if playback.get("state") in {"playing", "paused"}:
+                    raise ControlRequestError(
+                        "Isolated data playback is already active.",
+                        409,
+                    )
+                self._quiesce_manual_outputs_for_replay()
+                try:
+                    self._task_replay.start(recording_id)
+                except RecordingError as error:
+                    raise self._recording_control_error(error) from error
+                except TaskReplayConflictError as error:
+                    raise ControlRequestError(str(error), 409) from error
+                except TaskReplayValidationError as error:
+                    raise ControlRequestError(str(error), 400) from error
+                except TaskReplayError as error:
+                    raise ControlRequestError(str(error), 400) from error
+            return self._replay_status_snapshot()
+
+    def cancel_replay(self) -> Dict[str, Any]:
+        """Cancel whichever read-only playback or task replay owns control."""
+        with self._request_scope():
+            with self._task_interlock_lock:
+                if self._task_replay.is_active:
+                    self._task_replay.cancel()
+                else:
+                    self._call_recording_manager(
+                        self._recording_manager.cancel_playback
+                    )
+            return self._replay_status_snapshot()
 
     def cabinet_controls(self, name: Optional[str] = None) -> Dict[str, Any]:
         """Return one instance's catalog and live physical state."""
@@ -680,13 +992,15 @@ class ControlServer:
             if control_id is not None:
                 request["control_id"] = control_id
             with self._task_interlock_scope():
+                replay_owned = self._replay_internal_authorized()
                 try:
                     return self._task_manager.submit(
                         "navigate",
                         request,
-                        lambda context: self._execute_navigation_task(
+                        lambda context: self._execute_navigation_task_owned(
                             context,
                             station.to_dict(),
+                            replay_owned,
                         ),
                         cancel_callback=lambda _task_id: (
                             self._node.cancel_navigation()
@@ -735,11 +1049,12 @@ class ControlServer:
                 "force": force_value,
             }
             with self._task_interlock_scope():
+                replay_owned = self._replay_internal_authorized()
                 try:
                     return self._task_manager.submit(
                         "operate",
                         request,
-                        lambda context: self._execute_operation_task(
+                        lambda context: self._execute_operation_task_owned(
                             context,
                             cabinet,
                             client,
@@ -748,6 +1063,7 @@ class ControlServer:
                             target_state,
                             target_position,
                             force_value,
+                            replay_owned,
                         ),
                         cancel_callback=lambda _task_id: client.cancel(),
                         thread_name=f"xczs-operate-{cabinet}",
@@ -1117,6 +1433,17 @@ class ControlServer:
             )
         except (KeyError, TypeError, ValueError, InventoryError):
             return None
+
+    def _execute_navigation_task_owned(
+        self,
+        context: Any,
+        station: Mapping[str, Any],
+        replay_owned: bool,
+    ) -> Mapping[str, Any]:
+        if not replay_owned:
+            return self._execute_navigation_task(context, station)
+        with self._replay_internal_scope():
+            return self._execute_navigation_task(context, station)
 
     def _execute_navigation_task(
         self,
@@ -1591,6 +1918,41 @@ class ControlServer:
             "duration_seconds": elapsed,
         }
 
+    def _execute_operation_task_owned(
+        self,
+        context: Any,
+        cabinet: str,
+        client: CabinetClient,
+        control_id: str,
+        command: Any,
+        target_state: Optional[str],
+        target_position: Optional[float],
+        force: Optional[float],
+        replay_owned: bool,
+    ) -> Mapping[str, Any]:
+        if not replay_owned:
+            return self._execute_operation_task(
+                context,
+                cabinet,
+                client,
+                control_id,
+                command,
+                target_state,
+                target_position,
+                force,
+            )
+        with self._replay_internal_scope():
+            return self._execute_operation_task(
+                context,
+                cabinet,
+                client,
+                control_id,
+                command,
+                target_state,
+                target_position,
+                force,
+            )
+
     def _execute_operation_task(
         self,
         context: Any,
@@ -1856,6 +2218,161 @@ class ControlServer:
         if event_queue is not None:
             event_queue.put(dict(event))
 
+    @staticmethod
+    def _recording_control_error(error: RecordingError) -> ControlRequestError:
+        return ControlRequestError(
+            str(error),
+            error.status,
+            details={"code": error.code},
+        )
+
+    def _call_recording_manager(
+        self,
+        callback: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        try:
+            return callback(*args, **kwargs)
+        except RecordingError as error:
+            raise self._recording_control_error(error) from error
+
+    @staticmethod
+    def _status_field(snapshot: Mapping[str, Any]) -> Dict[str, Any]:
+        value = dict(snapshot)
+        state = value.pop("state", value.get("status", "idle"))
+        value["status"] = state
+        return value
+
+    def _replay_status_snapshot(self) -> Dict[str, Any]:
+        try:
+            recording = self._status_field(
+                self._recording_manager.recording_status()
+            )
+            playback = self._status_field(
+                self._recording_manager.playback_status()
+            )
+        except RecordingError as error:
+            raise self._recording_control_error(error) from error
+        task_replay = self._task_replay.status()
+        playback_active = playback["status"] in {"playing", "paused"}
+        task_active = task_replay.get("status") in {"running", "canceling"}
+        return {
+            "mode": (
+                "task_replay"
+                if task_active
+                else "data_playback" if playback_active else "idle"
+            ),
+            "read_only": playback_active or task_active,
+            "recording": recording,
+            "playback": playback,
+            "task_replay": task_replay,
+        }
+
+    def _ensure_replay_can_start(self, operation: str) -> None:
+        active_task = self._active_task_snapshot()
+        if active_task is not None:
+            task_id = str(active_task.get("task_id", "unknown"))
+            raise ControlRequestError(
+                f"{operation} cannot start while task {task_id} is active.",
+                409,
+                details={"active_task_id": task_id},
+            )
+        navigation = self._node.navigation_snapshot()
+        if (
+            str(navigation.get("state", ""))
+            in RosControlNode.ACTIVE_NAVIGATION_STATES
+            or int(navigation.get("retiring_goals", 0) or 0) > 0
+        ):
+            raise ControlRequestError(
+                f"{operation} cannot start while Nav2 is active.",
+                409,
+            )
+        active_cabinets = sorted(
+            name
+            for name, client in self._cabinet_clients.items()
+            if bool(client.snapshot_status().get("active"))
+        )
+        if active_cabinets:
+            raise ControlRequestError(
+                f"{operation} cannot start while a cabinet action is active.",
+                409,
+                details={"active_cabinets": active_cabinets},
+            )
+
+    def _quiesce_manual_outputs_for_replay(self) -> None:
+        """Stop legacy writes and wait out an accepted manual trajectory."""
+        quiesce = getattr(self._node, "quiesce_manual_outputs", None)
+        if not callable(quiesce):
+            # Compatibility for lifecycle fakes and older injected nodes.
+            self._node.emergency_stop()
+            return
+        settle_seconds = quiesce()
+        if (
+            isinstance(settle_seconds, bool)
+            or not isinstance(settle_seconds, (int, float))
+            or not math.isfinite(float(settle_seconds))
+            or float(settle_seconds) < 0.0
+        ):
+            raise ControlRequestError(
+                "Manual output quiescence returned an invalid settle time.",
+                503,
+            )
+        if settle_seconds > 0.0:
+            time.sleep(float(settle_seconds))
+
+    def _replay_internal_authorized(self) -> bool:
+        local = getattr(self, "_replay_internal", None)
+        return bool(local is not None and getattr(local, "depth", 0) > 0)
+
+    @contextmanager
+    def _replay_internal_scope(self) -> Iterator[None]:
+        local = getattr(self, "_replay_internal", None)
+        if local is None:
+            local = threading.local()
+            self._replay_internal = local
+        previous = int(getattr(local, "depth", 0))
+        local.depth = previous + 1
+        try:
+            yield
+        finally:
+            local.depth = previous
+
+    def _replay_submit_navigation(
+        self,
+        cabinet: str,
+        control_id: Optional[str],
+    ) -> Mapping[str, Any]:
+        with self._replay_internal_scope():
+            return self.submit_navigation_task(cabinet, control_id)
+
+    def _replay_submit_operation(
+        self,
+        cabinet: str,
+        control_id: str,
+        command: Any,
+        target_state: Optional[str],
+        target_position: Optional[float],
+        force: Optional[float],
+    ) -> Mapping[str, Any]:
+        with self._replay_internal_scope():
+            return self.submit_operation_task(
+                cabinet,
+                control_id,
+                command,
+                target_state,
+                target_position,
+                force,
+            )
+
+    def _replay_task_status(self, task_id: str) -> Mapping[str, Any]:
+        return self._task_manager.get_task(task_id)
+
+    def _replay_cancel_task(self, task_id: str) -> Mapping[str, Any]:
+        with self._replay_internal_scope():
+            with self._task_interlock_scope():
+                return self._cancel_managed_task(task_id)
+
     def _bridge_task_events(self) -> None:
         while True:
             try:
@@ -1864,6 +2381,18 @@ class ControlServer:
                 continue
             except EventHubClosed:
                 return
+            recording_manager = getattr(self, "_recording_manager", None)
+            if recording_manager is not None:
+                try:
+                    recording_manager.record_task_event(event)
+                except Exception as error:  # noqa: BLE001
+                    try:
+                        self._node.get_logger().warning(
+                            "Failed to append the recording task timeline: "
+                            f"{error}"
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
             try:
                 self._node.publish_task_event(event)
             except Exception as error:  # noqa: BLE001
@@ -1889,7 +2418,38 @@ class ControlServer:
             lock = threading.RLock()
             self._task_interlock_lock = lock
         with lock:
+            if (
+                self._replay_read_only()
+                and not self._replay_internal_authorized()
+            ):
+                status = self._replay_status_snapshot()
+                raise ControlRequestError(
+                    "Live control is disabled while replay is active.",
+                    409,
+                    details={
+                        "replay_mode": status["mode"],
+                        "read_only": True,
+                    },
+                )
             yield
+
+    def _replay_read_only(self) -> bool:
+        recording_manager = getattr(self, "_recording_manager", None)
+        task_replay = getattr(self, "_task_replay", None)
+        playback_active = False
+        if recording_manager is not None:
+            try:
+                playback_active = recording_manager.playback_status().get(
+                    "state"
+                ) in {"playing", "paused"}
+            except RecordingError:
+                # A write interlock must fail closed when player state cannot
+                # be established; status/management routes remain available
+                # so the operator can diagnose or cancel the session.
+                playback_active = True
+        return playback_active or bool(
+            task_replay is not None and task_replay.is_active
+        )
 
     @contextmanager
     def _request_scope(self) -> Iterator[None]:

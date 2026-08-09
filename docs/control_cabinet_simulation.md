@@ -158,6 +158,123 @@ SSE 业务事件为 `task_accepted`、`task_progress` 和 `task_completed`，支
 - `/xczs/task/<id>/progress`
 - `/xczs/task/<id>/result`（可靠、transient-local）
 
+## 录制、数据回放与任务重演
+
+录制和回放不是控制柜操作的硬依赖，而是用于复现失败、回归验收、演示和迁移新机器人。实现分为两个边界明确的层次：
+
+- **数据记录/回放**使用 ROS 2 官方 `rosbag2` 命令行，不自行实现 bag 格式。回放只用于观察历史状态，不会重新驱动机器人。
+- **任务重演**读取记录中提取的语义步骤，再调用现有 `/task/navigate` 和 `/task/operate`。它重新经过当前 Nav2、MoveIt、力度判定、任务互斥和安全检查，不回灌历史速度或轨迹。
+
+### 记录内容和文件
+
+运行数据默认写入项目根目录的 `recordings/`，可在统一启动前用 `RECORDINGS_ROOT=/data/xczs-recordings` 指向独立数据盘。默认目录已从 Git 中忽略；bag、运行日志和导出数据不得提交。每次记录使用独立且经过校验的 `recording_id` 目录：
+
+```text
+recordings/<recording_id>/
+├── bag/                  # rosbag2 数据与 metadata.yaml
+├── manifest.json         # 可复现性清单和执行结果
+├── timeline.jsonl        # Web 任务事件时间线
+├── scenario.yaml         # 可重演的 navigate/operate 语义步骤
+├── rosbag-record.log
+└── rosbag-play.log
+```
+
+`manifest.json` 包含记录时的 Git 提交、关键配置文件 SHA-256、柜体 inventory 快照、请求记录的 Topic、实际写入的 Topic、是否包含传感器、持续时间和停止结果。`timeline.jsonl` 按顺序保存 `task_accepted`、`task_progress`、`task_completed` 和资源释放等事件；`scenario.yaml` 是 schema version 1 的 JSON 兼容文档，从任务接受与终态事件生成，而不是从 `/cmd_vel` 反推任务。
+
+默认记录以下状态类 Topic；图中不存在的候选 Topic 不会产生数据：
+
+- `/tf`、`/tf_static`、`/clock`；
+- `/odom`、`/xczs/odom`、`/amcl_pose`、`/xczs/localization_pose`；
+- `/joint_states`、`/xczs/joint_states`；
+- 各柜体实例的 control catalog、物理 state、按钮位移/触发状态；
+- `/xczs/task/<task_id>/progress` 和 `/xczs/task/<task_id>/result`。
+
+Web 中勾选“包含传感器”后，还会加入相机图像、相机标定、深度图和激光雷达候选 Topic。高频传感器数据可能显著增加文件体积，日常任务回归默认不记录。
+
+录制是被动观察，可以与正常导航或柜体操作并存，不会使 Web 进入只读状态。数据回放和任务重演则彼此互斥，并且只能在没有活动任务或运动资源时启动。启动回放前，网关还会立即停止手动底盘输出、清除尚未发布的手动关节轨迹，并等待已经被控制器接受的 0.5 秒轨迹窗口连同 0.1 秒安全余量结束，随后才取得回放只读所有权。
+
+### 隔离数据回放
+
+数据回放启动前会读取 bag 的 `metadata.yaml`，校验每个 Topic，并显式将**所有**记录 Topic 重映射到：
+
+```text
+/xczs/replay/<recording_id>/<原 Topic 去掉开头斜杠>
+```
+
+例如历史 `/tf` 只发布为 `/xczs/replay/<recording_id>/tf`，历史 `/clock` 只发布为 `/xczs/replay/<recording_id>/clock`，不会覆盖实时仿真的时间和 TF。回放进程不在原 Topic 名称下发布任何数据，也不需要改动当前 ROS Domain。包含 `cmd_vel`、关节轨迹、Action goal、controller command 等危险 Topic 的外部 bag 会在启动进程前被拒绝。暂停、恢复、倍率切换和取消均只管理这个隔离的 `ros2 bag play` 进程。
+
+数据回放和任务重演活动期间，Web 显示明确的只读状态，并同时在前端和后端拒绝导航、底盘、机械臂、柜体任务、复位和旧接口命令。不能只依赖按钮置灰：即使客户端绕过页面直接发送 HTTP 请求，后端仍返回 HTTP 409。回放取消、状态查询和只读记录查询保持可用。
+
+该只读互锁覆盖统一 Web 网关及由它发起的 ROS 任务；直接绕过网关向 ROS 2 Topic、Service 或 Action 写入的外部客户端不受 HTTP 互锁管理，属于受信任的低层运维接口。运行数据回放时不得同时启动这类写入客户端；需要让不受信任的 ROS 参与者接入时，应另外使用独立 `ROS_DOMAIN_ID` 或 DDS 网络访问策略。即使出现误接入，rosbag2 数据自身仍只会发布到上述隔离 namespace，不会回灌原始控制 Topic。
+
+每个 rosbag2 子进程运行在独立进程组中。正常停止、取消、倍率切换以及网关收到 `SIGINT`/`SIGTERM` 时，管理器会逐级发送信号，并在确认整个进程组清空后才释放回放所有权。操作系统直接 `SIGKILL` 网关、断电或宿主机崩溃时，用户态程序无法执行任何清理；生产部署应由 systemd、容器或同类进程监管器以 cgroup 为单位终止整组进程。孤立的数据播放器仍只能发布到隔离 namespace，但被动 recorder 可能继续占用磁盘，恢复服务前应先由监管器确认旧进程组已清除。
+
+### 任务重演
+
+一个任务场景只允许下面两类步骤：
+
+```yaml
+schema_version: 1
+recording_id: recording_...
+steps:
+  - type: navigate
+    request:
+      cabinet: cabinet_a
+      control_id: box_10_button_1
+  - type: operate
+    request:
+      cabinet: cabinet_a
+      control_id: box_10_button_1
+      command: press
+      force: 5.0
+```
+
+导航步骤中即使历史记录带有绝对 `station`，重演时也会丢弃它，并根据**当前**柜体位姿与机器人 adapter 重新计算安全工位。操作步骤保留柜体、控件、命令、目标状态/位置和请求力。未知步骤、额外字段、非法标识、非有限数值、零力/负力或空场景会在运动前拒绝。
+
+重演按顺序提交语义任务，并等待每一步进入终态且释放资源后才执行下一步。任一步导航失败、MoveIt 不可达、力度不足、物理反馈不符或被取消，整个重演立即停止并保留原始失败码和原因；记录中的历史“成功”不会绕过当前环境的安全检查。取消重演会同时取消当前活动任务。任务重演具有真实运动副作用，不能把它当作只读数据播放。
+
+### Web API
+
+| 方法 | 路径 | 请求/说明 |
+|---|---|---|
+| GET | `/recordings` | 记录列表与数量 |
+| GET | `/recordings/<recording_id>` | 清单详情和产物可用性 |
+| GET | `/recordings/<recording_id>/timeline` | 有界任务事件时间线 |
+| GET | `/replay/status` | 录制、数据回放、任务重演及 `read_only` 状态 |
+| POST | `/recording/start` | `{"name":"可选安全ID","include_sensors":false}`；ID 仅含小写字母、数字、`_`、`-`，最长 64 字符 |
+| POST | `/recording/stop` | `{}` |
+| POST | `/replay/data/start` | `{"recording_id":"...","rate":1.0}`，倍率范围 0.1～10.0 |
+| POST | `/replay/data/pause` | `{}` |
+| POST | `/replay/data/resume` | `{}` |
+| POST | `/replay/data/rate` | `{"rate":2.0}` |
+| POST | `/replay/task/start` | `{"recording_id":"..."}`，会真实执行任务 |
+| POST | `/replay/cancel` | `{}`，取消当前数据回放或任务重演 |
+
+所有变更接口只接受 `Content-Type: application/json` 和表中声明的字段，接受异步请求时返回 HTTP 202。未知记录返回 404，状态冲突返回 409，清单、时间线、场景或 bag 元数据损坏返回 400，`rosbag2` 后端无法启动返回 503；响应正文包含明确错误原因。
+
+### 安全验收脚本
+
+统一入口运行后，先执行不会改变系统状态的合同检查：
+
+```bash
+scripts/validate_recording_replay
+```
+
+默认模式只读取列表、详情、时间线和状态，并用必然无效的 JSON 验证 POST 路由，不开始录制或回放。显式加入 `--runtime` 后，脚本会创建短时被动记录，检查 Git/配置哈希/inventory/时间线/scenario，暂停隔离数据回放，确认所有回放 Topic 均位于 `/xczs/replay/<recording_id>/`，并用一次零速度请求验证后端只读互锁；它仍不会导航或操作机械臂：
+
+```bash
+scripts/validate_recording_replay --runtime
+```
+
+只有同时提供 `--allow-motion` 和一个经过人工确认的已有场景，脚本才允许任务重演：
+
+```bash
+scripts/validate_recording_replay --runtime --allow-motion \
+  --task-recording recording_1234567890_abcdef
+```
+
+要验收“4 N 力度不足后立即停止”的失败场景，再加 `--expect-task-failure`；脚本会要求重演终态为 `failed` 且带明确原因。中断运行时，脚本只停止自己创建的 recorder/player 或任务重演，不会接管启动前已有的会话。
+
 ## 启动与参数包接口
 
 统一入口：

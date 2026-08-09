@@ -67,6 +67,111 @@ class _FakeControlServer:
         self.tasks: Dict[str, Dict[str, Any]] = {}
         self._task_sequence = 0
         self.expected_joint_count = 3
+        self.recording_start_request: Optional[Tuple[Optional[str], bool]] = None
+        self.recording_stop_count = 0
+        self.data_playback_start_request: Optional[Tuple[str, float]] = None
+        self.data_playback_pause_count = 0
+        self.data_playback_resume_count = 0
+        self.data_playback_rate: Optional[float] = None
+        self.task_replay_start_request: Optional[str] = None
+        self.replay_cancel_count = 0
+        self.recording_items = {
+            "recording_20260809_120000": {
+                "recording_id": "recording_20260809_120000",
+                "name": "five-newton-press",
+                "status": "complete",
+                "result": "succeeded",
+            }
+        }
+
+    def recordings(self) -> Dict[str, Any]:
+        return {"recordings": list(self.recording_items.values())}
+
+    def recording_detail(self, recording_id: str) -> Dict[str, Any]:
+        try:
+            return self.recording_items[recording_id]
+        except KeyError as error:
+            raise ControlRequestError("Unknown recording.", 404) from error
+
+    def recording_timeline(self, recording_id: str) -> Dict[str, Any]:
+        self.recording_detail(recording_id)
+        return {
+            "recording_id": recording_id,
+            "events": [
+                {
+                    "offset": 0.5,
+                    "event": "task_result",
+                    "data": {"status": "succeeded"},
+                }
+            ],
+        }
+
+    def start_recording(
+        self,
+        name: Optional[str],
+        include_sensors: bool,
+    ) -> Dict[str, Any]:
+        if name == "../escape":
+            raise ControlRequestError("Invalid recording name.")
+        self.recording_start_request = (name, include_sensors)
+        return {
+            "status": "starting",
+            "recording_id": "recording_20260809_130000",
+            "name": name,
+            "include_sensors": include_sensors,
+        }
+
+    def stop_recording(self) -> Dict[str, Any]:
+        self.recording_stop_count += 1
+        return {"status": "stopping"}
+
+    def replay_status(self) -> Dict[str, Any]:
+        return {
+            "mode": "idle",
+            "read_only": False,
+            "recording": None,
+            "playback": None,
+            "task_replay": None,
+        }
+
+    def start_data_playback(
+        self,
+        recording_id: str,
+        rate: float,
+    ) -> Dict[str, Any]:
+        self.recording_detail(recording_id)
+        self.data_playback_start_request = (recording_id, rate)
+        return {
+            "status": "starting",
+            "mode": "data_playback",
+            "recording_id": recording_id,
+            "rate": rate,
+        }
+
+    def pause_data_playback(self) -> Dict[str, Any]:
+        self.data_playback_pause_count += 1
+        return {"status": "paused"}
+
+    def resume_data_playback(self) -> Dict[str, Any]:
+        self.data_playback_resume_count += 1
+        return {"status": "playing"}
+
+    def set_data_playback_rate(self, rate: float) -> Dict[str, Any]:
+        self.data_playback_rate = rate
+        return {"status": "playing", "rate": rate}
+
+    def start_task_replay(self, recording_id: str) -> Dict[str, Any]:
+        self.recording_detail(recording_id)
+        self.task_replay_start_request = recording_id
+        return {
+            "status": "starting",
+            "mode": "task_replay",
+            "recording_id": recording_id,
+        }
+
+    def cancel_replay(self) -> Dict[str, Any]:
+        self.replay_cancel_count += 1
+        return {"status": "canceling"}
 
     def cabinets(self) -> Dict[str, Any]:
         return {
@@ -475,6 +580,14 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.control_server.tasks = {}
         self.control_server._task_sequence = 0
         self.control_server.expected_joint_count = 3
+        self.control_server.recording_start_request = None
+        self.control_server.recording_stop_count = 0
+        self.control_server.data_playback_start_request = None
+        self.control_server.data_playback_pause_count = 0
+        self.control_server.data_playback_resume_count = 0
+        self.control_server.data_playback_rate = None
+        self.control_server.task_replay_start_request = None
+        self.control_server.replay_cancel_count = 0
 
     def request(
         self,
@@ -575,6 +688,326 @@ class ControlGatewayHttpTest(unittest.TestCase):
         )
         self.assertEqual(404, status)
         self.assertEqual("Unknown cabinet.", response["error"])
+
+    def test_recording_read_routes_and_replay_status(self) -> None:
+        recording_id = "recording_20260809_120000"
+
+        status, catalog, _ = self.request("/recordings")
+        self.assertEqual(200, status)
+        self.assertEqual(
+            [recording_id],
+            [item["recording_id"] for item in catalog["recordings"]],
+        )
+
+        status, detail, _ = self.request(f"/recordings/{recording_id}")
+        self.assertEqual(200, status)
+        self.assertEqual("five-newton-press", detail["name"])
+
+        status, timeline, _ = self.request(
+            f"/recordings/{recording_id}/timeline"
+        )
+        self.assertEqual(200, status)
+        self.assertEqual(recording_id, timeline["recording_id"])
+        self.assertEqual("task_result", timeline["events"][0]["event"])
+
+        status, replay, _ = self.request("/replay/status")
+        self.assertEqual(200, status)
+        self.assertEqual("idle", replay["mode"])
+        self.assertFalse(replay["read_only"])
+        self.assertEqual(
+            {"recording", "playback", "task_replay"},
+            {key for key, value in replay.items() if value is None},
+        )
+
+        for path in (
+            "/recordings/unknown",
+            "/recordings/unknown/timeline",
+        ):
+            with self.subTest(path=path):
+                status, response, _ = self.request(path)
+                self.assertEqual(404, status)
+                self.assertEqual("Unknown recording.", response["error"])
+
+    def test_recording_start_and_stop_routes(self) -> None:
+        status, response, _ = self.request(
+            "/recording/start",
+            "POST",
+            {},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("starting", response["status"])
+        self.assertEqual(
+            (None, False),
+            self.control_server.recording_start_request,
+        )
+
+        status, response, _ = self.request(
+            "/recording/start",
+            "POST",
+            {
+                "name": "  navigation-and-five-newton  ",
+                "include_sensors": True,
+            },
+        )
+        self.assertEqual(202, status)
+        self.assertEqual(
+            ("navigation-and-five-newton", True),
+            self.control_server.recording_start_request,
+        )
+        self.assertTrue(response["include_sensors"])
+
+        status, response, _ = self.request(
+            "/recording/stop",
+            "POST",
+            {},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("stopping", response["status"])
+        self.assertEqual(1, self.control_server.recording_stop_count)
+
+    def test_data_playback_and_task_replay_routes(self) -> None:
+        recording_id = "recording_20260809_120000"
+
+        status, response, _ = self.request(
+            "/replay/data/start",
+            "POST",
+            {"recording_id": f" {recording_id} "},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("data_playback", response["mode"])
+        self.assertEqual(
+            (recording_id, 1.0),
+            self.control_server.data_playback_start_request,
+        )
+
+        status, response, _ = self.request(
+            "/replay/data/start",
+            "POST",
+            {"recording_id": recording_id, "rate": 2.5},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual(2.5, response["rate"])
+        self.assertEqual(
+            (recording_id, 2.5),
+            self.control_server.data_playback_start_request,
+        )
+
+        status, response, _ = self.request(
+            "/replay/data/pause",
+            "POST",
+            {},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("paused", response["status"])
+        self.assertEqual(1, self.control_server.data_playback_pause_count)
+
+        status, response, _ = self.request(
+            "/replay/data/resume",
+            "POST",
+            {},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("playing", response["status"])
+        self.assertEqual(1, self.control_server.data_playback_resume_count)
+
+        status, response, _ = self.request(
+            "/replay/data/rate",
+            "POST",
+            {"rate": 0.25},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual(0.25, response["rate"])
+        self.assertEqual(0.25, self.control_server.data_playback_rate)
+
+        status, response, _ = self.request(
+            "/replay/task/start",
+            "POST",
+            {"recording_id": recording_id},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("task_replay", response["mode"])
+        self.assertEqual(
+            recording_id,
+            self.control_server.task_replay_start_request,
+        )
+
+        status, response, _ = self.request(
+            "/replay/cancel",
+            "POST",
+            {},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("canceling", response["status"])
+        self.assertEqual(1, self.control_server.replay_cancel_count)
+
+    def test_recording_and_replay_routes_reject_invalid_payloads(self) -> None:
+        recording_id = "recording_20260809_120000"
+        invalid_requests = [
+            ("/recording/start", {"name": " "}, "name"),
+            (
+                "/recording/start",
+                {"include_sensors": 1},
+                "boolean",
+            ),
+            (
+                "/recording/start",
+                {"name": "test", "extra": True},
+                "Unexpected request field",
+            ),
+            ("/recording/stop", {"force": True}, "does not accept"),
+            ("/replay/data/start", {}, "recording_id"),
+            (
+                "/replay/data/start",
+                {"recording_id": " "},
+                "recording_id",
+            ),
+            (
+                "/replay/data/start",
+                {"recording_id": recording_id, "rate": True},
+                "must be a number",
+            ),
+            (
+                "/replay/data/start",
+                {"recording_id": recording_id, "rate": "2"},
+                "must be a number",
+            ),
+            (
+                "/replay/data/start",
+                {"recording_id": recording_id, "rate": float("nan")},
+                "finite",
+            ),
+            (
+                "/replay/data/start",
+                {"recording_id": recording_id, "rate": 0},
+                "greater than zero",
+            ),
+            (
+                "/replay/data/start",
+                {"recording_id": recording_id, "extra": 1},
+                "Unexpected request field",
+            ),
+            ("/replay/data/pause", {"rate": 1}, "does not accept"),
+            ("/replay/data/resume", {"rate": 1}, "does not accept"),
+            ("/replay/data/rate", {}, "rate is required"),
+            ("/replay/data/rate", {"rate": -1}, "greater than zero"),
+            (
+                "/replay/data/rate",
+                {"rate": 1, "extra": 1},
+                "Unexpected request field",
+            ),
+            ("/replay/task/start", {}, "recording_id"),
+            (
+                "/replay/task/start",
+                {"recording_id": "", "rate": 1},
+                "Unexpected request field",
+            ),
+            ("/replay/cancel", {"recording_id": recording_id}, "does not accept"),
+        ]
+        for path, body, error_fragment in invalid_requests:
+            with self.subTest(path=path, body=body):
+                status, response, _ = self.request(path, "POST", body)
+                self.assertEqual(400, status)
+                self.assertIn(error_fragment, response["error"])
+
+        required_body_paths = (
+            "/recording/start",
+            "/recording/stop",
+            "/replay/data/start",
+            "/replay/data/pause",
+            "/replay/data/resume",
+            "/replay/data/rate",
+            "/replay/task/start",
+            "/replay/cancel",
+        )
+        for path in required_body_paths:
+            with self.subTest(path=path, body="missing"):
+                status, response, _ = self.request(path, "POST")
+                self.assertEqual(400, status)
+                self.assertIn("Content-Length", response["error"])
+
+        status, response, _ = self.request(
+            "/recording/start",
+            "POST",
+            {"name": "../escape"},
+        )
+        self.assertEqual(400, status)
+        self.assertEqual("Invalid recording name.", response["error"])
+
+        for path in ("/replay/data/start", "/replay/task/start"):
+            with self.subTest(path=path, recording_id="unknown"):
+                status, response, _ = self.request(
+                    path,
+                    "POST",
+                    {"recording_id": "unknown"},
+                )
+                self.assertEqual(404, status)
+                self.assertEqual("Unknown recording.", response["error"])
+
+    def test_recording_and_replay_unknown_routes_are_not_dispatched(self) -> None:
+        for path in (
+            "/recordings/recording_20260809_120000/unknown",
+            "/recordings/%20",
+            "/recording/status",
+        ):
+            with self.subTest(method="GET", path=path):
+                status, response, _ = self.request(path)
+                self.assertEqual(404, status)
+                self.assertEqual("not found", response["error"])
+
+        for path in (
+            "/recording/cancel",
+            "/replay/start",
+            "/replay/data/stop",
+            "/replay/task/pause",
+        ):
+            with self.subTest(method="POST", path=path):
+                status, response, _ = self.request(path, "POST", {})
+                self.assertEqual(404, status)
+                self.assertEqual("not found", response["error"])
+
+    def test_replay_route_cors_preflight(self) -> None:
+        request = Request(
+            self.base_url + "/replay/data/start",
+            headers={
+                "Origin": "http://localhost:8080",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type",
+            },
+            method="OPTIONS",
+        )
+        with urlopen(request, timeout=2.0) as response:
+            self.assertEqual(204, response.status)
+            self.assertEqual(b"", response.read())
+            self.assertEqual(
+                "http://localhost:8080",
+                response.headers["Access-Control-Allow-Origin"],
+            )
+            self.assertIn(
+                "POST",
+                response.headers["Access-Control-Allow-Methods"],
+            )
+            self.assertIn(
+                "Content-Type",
+                response.headers["Access-Control-Allow-Headers"],
+            )
+
+    def test_json_post_rejects_non_json_content_type(self) -> None:
+        for content_type in ("text/plain", "application/x-www-form-urlencoded"):
+            with self.subTest(content_type=content_type):
+                request = Request(
+                    self.base_url + "/recording/start",
+                    data=b'{"include_sensors":false}',
+                    headers={"Content-Type": content_type},
+                    method="POST",
+                )
+                try:
+                    response = urlopen(request, timeout=2.0)
+                except HTTPError as error:
+                    response = error
+                with response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                    self.assertEqual(415, response.status)
+                    self.assertIn("application/json", payload["error"])
 
     def test_task_navigation_status_and_cancel_routes(self) -> None:
         status, accepted, _ = self.request(

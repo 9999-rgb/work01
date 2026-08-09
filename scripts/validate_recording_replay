@@ -1,0 +1,496 @@
+#!/usr/bin/env bash
+# Validate the recording/replay HTTP contract without moving the robot by default.
+
+set -euo pipefail
+
+API_URL="${XCZS_CONTROL_API_URL:-http://127.0.0.1:8090}"
+RUN_RUNTIME="false"
+ALLOW_MOTION="false"
+INCLUDE_SENSORS="false"
+EXPECT_TASK_FAILURE="false"
+TASK_RECORDING=""
+RECORD_SECONDS=8
+TIMEOUT_SECONDS=120
+RESPONSE_BODY=""
+RESPONSE_CODE=""
+OWN_RECORDING="false"
+OWN_REPLAY="false"
+TEMP_DIR=""
+
+usage() {
+  cat <<'EOF'
+用法: scripts/validate_recording_replay [选项]
+
+默认只读取录制目录和回放状态，并用无效载荷检查所有 HTTP 路由；
+不会开始录制、回放或发送机器人运动命令。
+
+选项:
+  --api URL                 控制服务地址（默认 http://127.0.0.1:8090）
+  --runtime                 创建一段被动记录并验证隔离数据回放和只读互锁
+  --include-sensors         与 --runtime 一起记录相机和激光雷达 Topic
+  --record-seconds N        被动记录秒数，范围 5..30（默认 8）
+  --timeout N               运行时等待秒数，范围 10..1800（默认 120）
+  --allow-motion            额外允许任务重演；必须同时给出 --runtime
+  --task-recording ID       任务重演使用的已有记录；必须与 --allow-motion 同时使用
+  --expect-task-failure     要求任务重演以 failed 结束，用于验收失败即停止
+  -h, --help                显示帮助
+
+安全边界:
+  --runtime 本身不会调用导航、机械臂或非零速度命令。它只发送一次零速度
+  请求来确认数据回放期间后端返回 HTTP 409。只有显式加入 --allow-motion
+  和 --task-recording 后，脚本才会调用 /replay/task/start。
+EOF
+}
+
+fail() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || fail "缺少命令: $1"
+}
+
+is_integer_in_range() {
+  local value="$1"
+  local minimum="$2"
+  local maximum="$3"
+  [[ "$value" =~ ^[0-9]+$ ]] &&
+    (( value >= minimum && value <= maximum ))
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --api)
+      [[ $# -ge 2 ]] || fail "--api 缺少 URL"
+      API_URL="${2%/}"
+      shift 2
+      ;;
+    --runtime)
+      RUN_RUNTIME="true"
+      shift
+      ;;
+    --include-sensors)
+      INCLUDE_SENSORS="true"
+      shift
+      ;;
+    --record-seconds)
+      [[ $# -ge 2 ]] || fail "--record-seconds 缺少秒数"
+      RECORD_SECONDS="$2"
+      shift 2
+      ;;
+    --timeout)
+      [[ $# -ge 2 ]] || fail "--timeout 缺少秒数"
+      TIMEOUT_SECONDS="$2"
+      shift 2
+      ;;
+    --allow-motion)
+      ALLOW_MOTION="true"
+      shift
+      ;;
+    --task-recording)
+      [[ $# -ge 2 ]] || fail "--task-recording 缺少 recording_id"
+      TASK_RECORDING="$2"
+      shift 2
+      ;;
+    --expect-task-failure)
+      EXPECT_TASK_FAILURE="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      fail "未知选项: $1"
+      ;;
+  esac
+done
+
+[[ -n "$API_URL" ]] || fail "--api 不能为空"
+is_integer_in_range "$RECORD_SECONDS" 5 30 ||
+  fail "--record-seconds 必须是 5..30 的整数"
+is_integer_in_range "$TIMEOUT_SECONDS" 10 1800 ||
+  fail "--timeout 必须是 10..1800 的整数"
+
+if [[ "$RUN_RUNTIME" != "true" ]]; then
+  [[ "$INCLUDE_SENSORS" == "false" ]] ||
+    fail "--include-sensors 必须与 --runtime 一起使用"
+  [[ "$ALLOW_MOTION" == "false" ]] ||
+    fail "--allow-motion 必须与 --runtime 一起使用"
+fi
+if [[ "$ALLOW_MOTION" == "true" ]]; then
+  [[ -n "$TASK_RECORDING" ]] ||
+    fail "--allow-motion 还必须显式提供 --task-recording ID"
+else
+  [[ -z "$TASK_RECORDING" ]] ||
+    fail "--task-recording 必须与 --allow-motion 一起使用"
+  [[ "$EXPECT_TASK_FAILURE" == "false" ]] ||
+    fail "--expect-task-failure 必须与 --allow-motion 一起使用"
+fi
+if [[ -n "$TASK_RECORDING" ]]; then
+  [[ "$TASK_RECORDING" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] ||
+    fail "--task-recording 不符合安全 recording_id 格式"
+fi
+
+require_command curl
+require_command jq
+require_command mktemp
+
+TEMP_DIR="$(mktemp -d /tmp/xczs-recording-replay.XXXXXX)"
+
+cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM
+  if [[ "$OWN_REPLAY" == "true" ]]; then
+    curl -sS --connect-timeout 2 --max-time 10 \
+      -H 'Content-Type: application/json' -X POST --data '{}' \
+      "$API_URL/replay/cancel" >/dev/null 2>&1 || true
+  fi
+  if [[ "$OWN_RECORDING" == "true" ]]; then
+    curl -sS --connect-timeout 2 --max-time 15 \
+      -H 'Content-Type: application/json' -X POST --data '{}' \
+      "$API_URL/recording/stop" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$TEMP_DIR" && "$TEMP_DIR" == /tmp/xczs-recording-replay.* ]]; then
+    rm -f -- "$TEMP_DIR/response.json"
+    rmdir -- "$TEMP_DIR" 2>/dev/null || true
+  fi
+  exit "$exit_code"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+request_json() {
+  local method="$1"
+  local path="$2"
+  local body="${3-}"
+  local output_file="$TEMP_DIR/response.json"
+  local code=""
+  : >"$output_file"
+  if [[ -n "$body" ]]; then
+    code="$(
+      curl -sS --connect-timeout 5 --max-time 30 \
+        -H 'Content-Type: application/json' -X "$method" --data "$body" \
+        -o "$output_file" -w '%{http_code}' "$API_URL$path"
+    )" || fail "$method $path 请求失败"
+  else
+    code="$(
+      curl -sS --connect-timeout 5 --max-time 30 \
+        -X "$method" -o "$output_file" -w '%{http_code}' \
+        "$API_URL$path"
+    )" || fail "$method $path 请求失败"
+  fi
+  RESPONSE_BODY="$(<"$output_file")"
+  RESPONSE_CODE="$code"
+  jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "$method $path 返回的不是有效 JSON"
+}
+
+expect_code() {
+  local expected="$1"
+  local operation="$2"
+  if [[ "$RESPONSE_CODE" != "$expected" ]]; then
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "$operation 期望 HTTP $expected，实际 $RESPONSE_CODE"
+  fi
+}
+
+get_json() {
+  request_json GET "$1"
+  expect_code 200 "GET $1"
+}
+
+post_json() {
+  local path="$1"
+  local body="$2"
+  local expected="$3"
+  request_json POST "$path" "$body"
+  expect_code "$expected" "POST $path"
+}
+
+wait_for_status() {
+  local filter="$1"
+  local description="$2"
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    get_json /replay/status
+    if jq -e "$filter" <<<"$RESPONSE_BODY" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.25
+  done
+  jq . <<<"$RESPONSE_BODY" >&2
+  fail "等待超时: $description"
+}
+
+check_read_only_contract() {
+  printf '检查只读 HTTP 路由...\n'
+  get_json /recordings
+  jq -e '
+    (.recordings | type == "array") and
+    ((has("count") | not) or (.count == (.recordings | length)))
+  ' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "GET /recordings 响应结构无效"
+  local recording_id
+  recording_id="$(jq -r '.recordings[0].recording_id // ""' <<<"$RESPONSE_BODY")"
+
+  get_json /replay/status
+  jq -e '
+    (.mode | type == "string") and
+    (.read_only | type == "boolean") and
+    has("recording") and has("playback") and has("task_replay")
+  ' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "GET /replay/status 响应结构无效"
+
+  if [[ -n "$recording_id" ]]; then
+    [[ "$recording_id" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] ||
+      fail "服务返回了不安全的 recording_id: $recording_id"
+    get_json "/recordings/$recording_id"
+    jq -e --arg id "$recording_id" '.recording_id == $id' \
+      <<<"$RESPONSE_BODY" >/dev/null ||
+      fail "记录详情 identity 不匹配"
+    get_json "/recordings/$recording_id/timeline"
+    jq -e --arg id "$recording_id" '
+      .recording_id == $id and (.events | type == "array")
+    ' <<<"$RESPONSE_BODY" >/dev/null ||
+      fail "记录时间线响应结构无效"
+  else
+    printf '录制目录为空，跳过详情和时间线的只读检查。\n'
+  fi
+
+  printf '用不会改变状态的无效载荷检查 POST 路由...\n'
+  post_json /recording/start '{"include_sensors":"false"}' 400
+  post_json /recording/stop '{"unexpected":true}' 400
+  post_json /replay/data/start '{}' 400
+  post_json /replay/data/pause '{"unexpected":true}' 400
+  post_json /replay/data/resume '{"unexpected":true}' 400
+  post_json /replay/data/rate '{"rate":0}' 400
+  post_json /replay/task/start '{}' 400
+  post_json /replay/cancel '{"unexpected":true}' 400
+}
+
+verify_manifest() {
+  local recording_id="$1"
+  get_json "/recordings/$recording_id"
+  jq -e --arg id "$recording_id" '
+    .recording_id == $id and
+    (.git_commit | type == "string" and length > 0) and
+    (.config_sha256 | type == "object" and length > 0) and
+    (.inventory | type == "object" or type == "array") and
+    (.recorded_topics | type == "array" and length > 0) and
+    .artifacts.bag == true and
+    .artifacts.timeline == true and
+    .artifacts.scenario == true
+  ' <<<"$RESPONSE_BODY" >/dev/null || {
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "录制清单缺少 Git、配置哈希、实例快照、Topic 或产物"
+  }
+}
+
+verify_replay_topics() {
+  local recording_id="$1"
+  local detail_json="$2"
+  local prefix="/xczs/replay/$recording_id"
+  local topic_output=""
+  local deadline=$((SECONDS + 20))
+  local all_found="false"
+  local topic=""
+  local expected=""
+  local -a recorded_topics=()
+  local -A discovered=()
+
+  mapfile -t recorded_topics < <(
+    jq -r '.recorded_topics[]' <<<"$detail_json"
+  )
+  (( ${#recorded_topics[@]} > 0 )) || fail "清单没有 recorded_topics"
+
+  while (( SECONDS < deadline )); do
+    topic_output="$(timeout 10 ros2 topic list 2>/dev/null || true)"
+    discovered=()
+    while IFS= read -r topic; do
+      [[ -z "$topic" ]] || discovered["$topic"]=1
+    done <<<"$topic_output"
+    all_found="true"
+    for topic in "${recorded_topics[@]}"; do
+      expected="$prefix$topic"
+      if [[ -z "${discovered[$expected]+present}" ]]; then
+        all_found="false"
+        break
+      fi
+    done
+    [[ "$all_found" == "true" ]] && break
+    sleep 0.5
+  done
+  [[ "$all_found" == "true" ]] || {
+    printf '%s\n' "$topic_output" >&2
+    fail "未发现清单中每个 Topic 的隔离回放副本"
+  }
+
+  while IFS= read -r topic; do
+    [[ "$topic" == "$prefix/"* ]] || continue
+    case "${topic,,}" in
+      *cmd_vel*|*joint_trajectory*|*/_action/goal|*/goal|*follow_joint_trajectory*|*/commands)
+        fail "隔离 namespace 中出现危险控制 Topic: $topic"
+        ;;
+    esac
+  done <<<"$topic_output"
+}
+
+run_data_runtime() {
+  printf '检查运行时前置状态...\n'
+  get_json /replay/status
+  jq -e '
+    .mode == "idle" and .read_only == false and
+    ((.recording == null) or
+      ((.recording.status // .recording.state // "idle") == "idle"))
+  ' <<<"$RESPONSE_BODY" >/dev/null || {
+    jq . <<<"$RESPONSE_BODY" >&2
+    fail "已有录制、数据回放或任务重演活动；脚本不会接管它"
+  }
+
+  local recording_name="acceptance_$(date -u +%Y%m%d_%H%M%S)_$$"
+  local start_body
+  start_body="$(
+    jq -nc --arg name "$recording_name" \
+      --argjson sensors "$INCLUDE_SENSORS" \
+      '{name:$name,include_sensors:$sensors}'
+  )"
+  printf '开始 %s 秒被动记录（不会发送运动命令）...\n' "$RECORD_SECONDS"
+  post_json /recording/start "$start_body" 202
+  OWN_RECORDING="true"
+  local recording_id
+  recording_id="$(jq -r '.recording_id // ""' <<<"$RESPONSE_BODY")"
+  if [[ -z "$recording_id" ]]; then
+    wait_for_status \
+      '(.recording.status // .recording.state // "") == "recording"' \
+      '录制进入 recording 状态'
+    recording_id="$(jq -r '.recording.recording_id // ""' <<<"$RESPONSE_BODY")"
+  fi
+  [[ "$recording_id" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] ||
+    fail "录制服务未返回安全 recording_id"
+  wait_for_status \
+    '(.recording.status // .recording.state // "") == "recording" and .read_only == false' \
+    '录制活动且 Web 仍可控制'
+  sleep "$RECORD_SECONDS"
+
+  post_json /recording/stop '{}' 202
+  OWN_RECORDING="false"
+  verify_manifest "$recording_id"
+  local detail_json="$RESPONSE_BODY"
+  get_json "/recordings/$recording_id/timeline"
+  jq -e --arg id "$recording_id" '
+    .recording_id == $id and (.events | type == "array")
+  ' <<<"$RESPONSE_BODY" >/dev/null || fail "运行时记录时间线无效"
+
+  printf '开始 0.5 倍速隔离数据回放...\n'
+  post_json /replay/data/start \
+    "$(jq -nc --arg id "$recording_id" '{recording_id:$id,rate:0.5}')" \
+    202
+  OWN_REPLAY="true"
+  wait_for_status '
+    .mode == "data_playback" and .read_only == true and
+    ((.playback.status // .playback.state // "") == "playing")
+  ' '数据回放进入只读 playing 状态'
+  # 先让 rosbag2 完成 publisher 初始化；过早 SIGSTOP 会冻结初始化线程。
+  verify_replay_topics "$recording_id" "$detail_json"
+
+  post_json /replay/data/pause '{}' 202
+  wait_for_status '
+    .mode == "data_playback" and .read_only == true and
+    ((.playback.status // .playback.state // "") == "paused")
+  ' '数据回放暂停'
+
+  # 如果互锁错误地未生效，下面也只会发布一次零速度，不会驱动机器人。
+  post_json /cmd_vel '{"linear_y":0.0,"angular_z":0.0}' 409
+  post_json /replay/data/rate '{"rate":1.0}' 202
+  wait_for_status '
+    .mode == "data_playback" and .read_only == true and
+    ((.playback.status // .playback.state // "") == "paused") and
+    (.playback.rate == 1.0)
+  ' '暂停状态下切换回放倍率'
+  post_json /replay/data/resume '{}' 202
+  wait_for_status '
+    .mode == "data_playback" and .read_only == true and
+    ((.playback.status // .playback.state // "") == "playing")
+  ' '数据回放恢复'
+  post_json /replay/cancel '{}' 202
+  OWN_REPLAY="false"
+  wait_for_status '.mode == "idle" and .read_only == false' '数据回放取消并解除只读'
+  printf '数据运行时验收通过，recording_id=%s\n' "$recording_id"
+}
+
+run_task_runtime() {
+  local recording_id="$TASK_RECORDING"
+  printf '即将执行允许真实运动的任务重演: %s\n' "$recording_id"
+  get_json "/recordings/$recording_id"
+  jq -e '.artifacts.scenario == true' <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "所选记录没有 scenario 产物"
+  get_json /replay/status
+  jq -e '.mode == "idle" and .read_only == false' \
+    <<<"$RESPONSE_BODY" >/dev/null ||
+    fail "任务重演前系统不是 idle"
+
+  post_json /replay/task/start \
+    "$(jq -nc --arg id "$recording_id" '{recording_id:$id}')" 202
+  OWN_REPLAY="true"
+  wait_for_status '
+    .mode == "task_replay" and .read_only == true and
+    ((.task_replay.status // "") == "running" or
+     (.task_replay.status // "") == "canceling")
+  ' '任务重演进入只读运行状态'
+  post_json /cmd_vel '{"linear_y":0.0,"angular_z":0.0}' 409
+
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local task_status=""
+  while (( SECONDS < deadline )); do
+    get_json /replay/status
+    task_status="$(jq -r '.task_replay.status // ""' <<<"$RESPONSE_BODY")"
+    case "$task_status" in
+      success|failed|canceled) break ;;
+    esac
+    sleep 0.5
+  done
+  case "$task_status" in
+    success)
+      OWN_REPLAY="false"
+      [[ "$EXPECT_TASK_FAILURE" == "false" ]] ||
+        fail "任务重演成功，但 --expect-task-failure 要求失败"
+      ;;
+    failed)
+      OWN_REPLAY="false"
+      if [[ "$EXPECT_TASK_FAILURE" != "true" ]]; then
+        jq . <<<"$RESPONSE_BODY" >&2
+        fail "任务重演失败"
+      fi
+      jq -e '
+        ((.task_replay.error // .task_replay.message // "") | length > 0)
+      ' <<<"$RESPONSE_BODY" >/dev/null ||
+        fail "失败的任务重演没有返回明确原因"
+      ;;
+    canceled)
+      OWN_REPLAY="false"
+      fail "任务重演被意外取消"
+      ;;
+    *)
+      jq . <<<"$RESPONSE_BODY" >&2
+      fail "任务重演未在超时前结束"
+      ;;
+  esac
+  wait_for_status '.mode == "idle" and .read_only == false' '任务重演解除只读'
+  printf '任务重演验收通过，终态=%s\n' "$task_status"
+}
+
+check_read_only_contract
+if [[ "$RUN_RUNTIME" == "true" ]]; then
+  require_command date
+  require_command ros2
+  require_command timeout
+  run_data_runtime
+fi
+if [[ "$ALLOW_MOTION" == "true" ]]; then
+  run_task_runtime
+fi
+
+printf '录制/回放验收通过。\n'

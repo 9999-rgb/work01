@@ -92,6 +92,7 @@ class RosControlNode(Node):
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     TASK_PUBLISHER_HISTORY_LIMIT = 256
+    MANUAL_TRAJECTORY_SETTLE_SECONDS = 0.60
     ACTIVE_NAVIGATION_STATES = {
         "enabling",
         "sending",
@@ -173,6 +174,7 @@ class RosControlNode(Node):
         self._last_update_time = time.monotonic()
         self._pending_trajectory: Optional[JointTrajectory] = None
         self._pending_trajectory_repeats = 0
+        self._manual_trajectory_active_until = 0.0
         self._cabinet_catalog_received = False
         self._cabinet_controls: Dict[str, Dict[str, Any]] = {}
         self._cabinet_control_states: Dict[str, Dict[str, Any]] = {}
@@ -420,6 +422,30 @@ class RosControlNode(Node):
             self._linear_profile.reset()
             self._angular_profile.reset()
         self._cmd_vel_publisher.publish(Twist())
+
+    def quiesce_manual_outputs(self) -> float:
+        """Stop queued manual writes and return remaining settle time.
+
+        A trajectory already accepted through the legacy topic cannot be
+        recalled. Its interpolation window is 0.5 s, so replay admission keeps
+        the gateway write lock until that window plus a small margin expires.
+        Pending repeats are discarded immediately.
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._target_linear_y = 0.0
+            self._target_angular_z = 0.0
+            self._linear_profile.reset()
+            self._angular_profile.reset()
+            self._pending_trajectory = None
+            self._pending_trajectory_repeats = 0
+            settle_seconds = max(
+                0.0,
+                float(getattr(self, "_manual_trajectory_active_until", 0.0))
+                - now,
+            )
+        self._cmd_vel_publisher.publish(Twist())
+        return settle_seconds
 
     def navigation_snapshot(self) -> Dict[str, Any]:
         """Return current Nav2 availability, feedback and display overlays."""
@@ -1333,6 +1359,16 @@ class RosControlNode(Node):
                 self._cmd_vel_publisher.publish(command)
                 if trajectory is not None:
                     self._trajectory_publisher.publish(trajectory)
+                    self._manual_trajectory_active_until = max(
+                        float(
+                            getattr(
+                                self,
+                                "_manual_trajectory_active_until",
+                                0.0,
+                            )
+                        ),
+                        now + self.MANUAL_TRAJECTORY_SETTLE_SECONDS,
+                    )
 
     def _request_navigation_mode_locked(
         self,

@@ -75,6 +75,24 @@ class ControlHandler(BaseHTTPRequestHandler):
                     200,
                     self.control_server.cabinet_controls(),
                 )
+            elif path == "/recordings":
+                self._send_json(200, self.control_server.recordings())
+            elif (
+                recording_id := self._recording_timeline_path(path)
+            ) is not None:
+                self._send_json(
+                    200,
+                    self.control_server.recording_timeline(recording_id),
+                )
+            elif (
+                recording_id := self._recording_detail_path(path)
+            ) is not None:
+                self._send_json(
+                    200,
+                    self.control_server.recording_detail(recording_id),
+                )
+            elif path == "/replay/status":
+                self._send_json(200, self.control_server.replay_status())
             else:
                 self._send_json(404, {"error": "not found"})
         except Exception as error:  # noqa: BLE001
@@ -98,6 +116,14 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/cabinet/press": self._handle_cabinet_press,
                 "/cabinet/cancel": self._handle_cabinet_cancel,
                 "/cabinet/reset": self._handle_cabinet_reset,
+                "/recording/start": self._handle_recording_start,
+                "/recording/stop": self._handle_recording_stop,
+                "/replay/data/start": self._handle_data_playback_start,
+                "/replay/data/pause": self._handle_data_playback_pause,
+                "/replay/data/resume": self._handle_data_playback_resume,
+                "/replay/data/rate": self._handle_data_playback_rate,
+                "/replay/task/start": self._handle_task_replay_start,
+                "/replay/cancel": self._handle_replay_cancel,
             }
             handler = routes.get(path)
             if handler is None:
@@ -396,6 +422,62 @@ class ControlHandler(BaseHTTPRequestHandler):
             self.control_server.reset_cabinet_controls(),
         )
 
+    def _handle_recording_start(self) -> None:
+        body = self._required_body()
+        self._reject_unknown_fields(body, {"name", "include_sensors"})
+        name = self._nonempty_string(body, "name") if "name" in body else None
+        include_sensors = body.get("include_sensors", False)
+        if not isinstance(include_sensors, bool):
+            raise ControlRequestError("include_sensors must be a boolean.")
+        self._send_json(
+            202,
+            self.control_server.start_recording(name, include_sensors),
+        )
+
+    def _handle_recording_stop(self) -> None:
+        self._require_empty_body("recording stop")
+        self._send_json(202, self.control_server.stop_recording())
+
+    def _handle_data_playback_start(self) -> None:
+        body = self._required_body()
+        self._reject_unknown_fields(body, {"recording_id", "rate"})
+        recording_id = self._nonempty_string(body, "recording_id")
+        rate = self._positive_json_number(body, "rate", 1.0)
+        self._send_json(
+            202,
+            self.control_server.start_data_playback(recording_id, rate),
+        )
+
+    def _handle_data_playback_pause(self) -> None:
+        self._require_empty_body("data playback pause")
+        self._send_json(202, self.control_server.pause_data_playback())
+
+    def _handle_data_playback_resume(self) -> None:
+        self._require_empty_body("data playback resume")
+        self._send_json(202, self.control_server.resume_data_playback())
+
+    def _handle_data_playback_rate(self) -> None:
+        body = self._required_body()
+        self._reject_unknown_fields(body, {"rate"})
+        rate = self._positive_json_number(body, "rate")
+        self._send_json(
+            202,
+            self.control_server.set_data_playback_rate(rate),
+        )
+
+    def _handle_task_replay_start(self) -> None:
+        body = self._required_body()
+        self._reject_unknown_fields(body, {"recording_id"})
+        recording_id = self._nonempty_string(body, "recording_id")
+        self._send_json(
+            202,
+            self.control_server.start_task_replay(recording_id),
+        )
+
+    def _handle_replay_cancel(self) -> None:
+        self._require_empty_body("replay cancel")
+        self._send_json(202, self.control_server.cancel_replay())
+
     @staticmethod
     def _path_parameter(path: str, prefix: str, suffix: str) -> Optional[str]:
         if not path.startswith(prefix) or not path.endswith(suffix):
@@ -420,6 +502,20 @@ class ControlHandler(BaseHTTPRequestHandler):
     @classmethod
     def _task_cancel_path(cls, path: str) -> Optional[str]:
         return cls._path_parameter(path, "/task/", "/cancel")
+
+    @classmethod
+    def _recording_detail_path(cls, path: str) -> Optional[str]:
+        value = cls._path_parameter(path, "/recordings/", "")
+        if value is None or value != value.strip():
+            return None
+        return value
+
+    @classmethod
+    def _recording_timeline_path(cls, path: str) -> Optional[str]:
+        value = cls._path_parameter(path, "/recordings/", "/timeline")
+        if value is None or value != value.strip():
+            return None
+        return value
 
     @staticmethod
     def _nonempty_string(body: Dict[str, Any], name: str) -> str:
@@ -455,6 +551,23 @@ class ControlHandler(BaseHTTPRequestHandler):
             raise ControlRequestError(f"{name} must be finite.")
         return value
 
+    @classmethod
+    def _positive_json_number(
+        cls,
+        body: Dict[str, Any],
+        name: str,
+        default: Optional[float] = None,
+    ) -> float:
+        value = cls._json_number(body, name, default)
+        if value <= 0.0:
+            raise ControlRequestError(f"{name} must be greater than zero.")
+        return value
+
+    def _require_empty_body(self, operation: str) -> None:
+        body = self._required_body()
+        if body:
+            raise ControlRequestError(f"{operation} does not accept options.")
+
     def _required_body(self) -> Dict[str, Any]:
         body = self._read_body(required=True)
         if body is None:
@@ -476,6 +589,21 @@ class ControlHandler(BaseHTTPRequestHandler):
             return None
         if length <= 0 or length > 65536:
             raise ControlRequestError("Invalid Content-Length.")
+        content_type = self.headers.get("Content-Type")
+        media_type = (
+            content_type.split(";", 1)[0].strip().lower()
+            if isinstance(content_type, str)
+            else ""
+        )
+        if media_type != "application/json":
+            # The request body has not been consumed, so close this HTTP/1.1
+            # connection after the error response instead of interpreting its
+            # bytes as the next pipelined request.
+            self.close_connection = True
+            raise ControlRequestError(
+                "Content-Type must be application/json.",
+                415,
+            )
         try:
             body = json.loads(self.rfile.read(length))
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
