@@ -51,7 +51,6 @@ add_executable(
   src/cabinet_planning_scene.cpp
 )
 add_executable(cabinet_pose_authority src/cabinet_pose_authority.cpp)
-add_executable(moveit_planner src/moveit_planner.cpp)
 add_executable(cabinet_button_operator src/cabinet_button_operator.cpp)
 add_executable(
   operation_lease_coordinator
@@ -133,14 +132,6 @@ ament_target_dependencies(
   tf2
   tf2_geometry_msgs
   tf2_ros
-)
-
-target_compile_features(moveit_planner PUBLIC cxx_std_17)
-ament_target_dependencies(
-  moveit_planner
-  geometry_msgs
-  moveit_ros_planning_interface
-  rclcpp
 )
 
 target_compile_features(cabinet_button_operator PUBLIC cxx_std_17)
@@ -251,7 +242,6 @@ install(
     cabinet_pose_authority
     cabinet_button_operator
     operation_lease_coordinator
-    moveit_planner
     base_command_router
     cabinet_grasp_aggregator
   DESTINATION lib/${PROJECT_NAME}
