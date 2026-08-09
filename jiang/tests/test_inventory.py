@@ -14,6 +14,7 @@ import yaml
 
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
+WORKSPACE = JIANG_DIR.parent
 sys.path.insert(0, str(JIANG_DIR))
 # ``control_gateway.__init__`` intentionally exposes the ROS-backed server.
 # Load this pure module without requiring a sourced ROS workspace.
@@ -109,6 +110,71 @@ class CabinetInventoryTest(unittest.TestCase):
         listed = inventory.list_cabinets()
         self.assertEqual("cabinet_a", listed[0]["name"])
         self.assertEqual("map", listed[0]["navigation_station"]["frame_id"])
+
+    def test_project_layout_reserves_front_rear_and_side_workspace(self) -> None:
+        config = WORKSPACE / "xczs_inspection_robot_control" / "config"
+        inventory = CabinetInventory.load(
+            config / "cabinet_instances.yaml",
+            config / "cabinet_scene.yaml",
+        )
+        instances = {instance.name: instance for instance in inventory}
+
+        expected_y = {
+            "cabinet_a": 0.33,
+            "cabinet_b": 2.83,
+            "cabinet_c": -2.17,
+        }
+        self.assertEqual(set(expected_y), set(instances))
+        for name, y in expected_y.items():
+            self.assertAlmostEqual(2.0, instances[name].x)
+            self.assertAlmostEqual(y, instances[name].y)
+
+        # With the configured RPY, the 0.662 m cabinet width lies on world Y.
+        cabinet_width = 0.662
+        ordered = sorted(instances.values(), key=lambda instance: instance.y)
+        clearances = [
+            upper.y - cabinet_width - lower.y
+            for lower, upper in zip(ordered, ordered[1:])
+        ]
+        self.assertAlmostEqual(1.838, min(clearances), places=6)
+
+        # The static map has a two-cell occupied border, leaving [-4.9, 4.9].
+        # Nav2's padded footprint spans x=[-0.58, 0.45], y=[-0.45, 0.45]
+        # while facing the cabinet from the front.
+        map_min = -4.9
+        map_max = 4.9
+        for name in expected_y:
+            front = inventory.station_for(name)
+            self.assertAlmostEqual(1.07, front.x, places=6)
+            self.assertAlmostEqual(instances[name].y - 0.331, front.y, places=6)
+            self.assertGreaterEqual(front.x - 0.58, map_min)
+            self.assertLessEqual(front.x + 0.45, map_max)
+            self.assertGreaterEqual(front.y - 0.45, map_min)
+            self.assertLessEqual(front.y + 0.45, map_max)
+
+            # Reserve a rear station 1.20 m behind the 0.60 m cabinet body.
+            # At yaw=pi its padded footprint occupies x=[3.35, 4.38].
+            rear_x = instances[name].x + 1.80
+            rear_y = instances[name].y - cabinet_width / 2.0
+            self.assertGreaterEqual(rear_x - 0.45, map_min)
+            self.assertLessEqual(rear_x + 0.58, map_max)
+            self.assertGreaterEqual(rear_y - 0.45, map_min)
+            self.assertLessEqual(rear_y + 0.45, map_max)
+
+            # A conservative 0.65 m rear-door sweep ends at x=3.25.
+            door_sweep_max_x = instances[name].x + 0.60 + 0.65
+            self.assertGreaterEqual(rear_x - 0.45 - door_sweep_max_x, 0.09)
+
+        # A 0.93 m side standoff plus the footprint's 0.58 m rear extent
+        # still leaves more than 0.30 m before the adjacent cabinet.
+        self.assertGreaterEqual(min(clearances) - 0.93 - 0.58, 0.30)
+
+        upper_side_max_y = instances["cabinet_b"].y + 0.93 + 0.58
+        lower_side_min_y = (
+            instances["cabinet_c"].y - cabinet_width - 0.93 - 0.58
+        )
+        self.assertLessEqual(upper_side_max_y, map_max)
+        self.assertGreaterEqual(lower_side_min_y, map_min)
 
     def test_uses_full_rpy_rotation_and_instance_override(self) -> None:
         inventory = self._load(

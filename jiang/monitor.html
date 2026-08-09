@@ -724,7 +724,7 @@
             <select id="cabinetInstance" disabled>
               <option value="">等待柜体 inventory</option>
             </select>
-            <small id="cabinetInstanceHint">每个实例具有独立 TF、控制目录和操作 Action。</small>
+            <small id="cabinetInstanceHint">执行时会先导航到所选柜体工位，到达后再操作控件。</small>
           </div>
           <div class="cabinet-target">
             <label for="cabinetTarget">操作目标</label>
@@ -752,10 +752,10 @@
           <div class="cabinet-unavailable" id="cabinetUnavailable" hidden></div>
           <div class="command-row">
             <button class="btn btn-primary" id="btnCabinetPress" disabled>
-              按下所选按钮
+              导航到工位并执行操作
             </button>
             <button class="btn btn-danger" id="btnCabinetCancel" disabled>
-              取消操作
+              取消自动操作
             </button>
             <button class="btn btn-outline" id="btnCabinetReset" disabled>
               刷新控制目录
@@ -904,6 +904,8 @@ let navigationTaskStatus = null;
 let cabinetCatalogRequestGeneration = 0;
 const cabinetStatusByName = new Map();
 const taskSnapshotVersions = new Map();
+let cabinetOperationWorkflow = null;
+let cabinetOperationWorkflowSequence = 0;
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -2325,7 +2327,7 @@ function renderCabinetTarget() {
     delete stateSelect.dataset.controlId;
     delete positionInput.dataset.controlId;
     delete positionInput.dataset.edited;
-    $('btnCabinetPress').textContent = '执行控制柜操作';
+    $('btnCabinetPress').textContent = '导航到工位并执行操作';
     return;
   }
 
@@ -2414,7 +2416,8 @@ function renderCabinetTarget() {
     2: '切换',
     3: '开合'
   };
-  $('btnCabinetPress').textContent = `${verbs[type] || '操作'}：${control.display_name}`;
+  $('btnCabinetPress').textContent =
+    `导航并${verbs[type] || '操作'}：${control.display_name}`;
 }
 
 function startAutonomyPolling() {
@@ -3058,6 +3061,141 @@ function waitForControlDelay(delayMs) {
   return new Promise(resolve => setTimeout(resolve, delayMs));
 }
 
+const cabinetWorkflowTerminalStates = new Set([
+  'success',
+  'failed',
+  'canceled'
+]);
+const cabinetWorkflowTaskWaitTimeoutMs = 240000;
+const cabinetWorkflowTaskPollIntervalMs = 250;
+
+function cabinetWorkflowIsCurrent(workflow) {
+  return Boolean(workflow && cabinetOperationWorkflow === workflow);
+}
+
+function setCabinetWorkflowTask(workflow, stage, task) {
+  if (!cabinetWorkflowIsCurrent(workflow)) return false;
+  if (!task || typeof task.task_id !== 'string' || !task.task_id) {
+    throw new Error('任务服务没有返回有效的 task_id');
+  }
+  workflow.stage = stage;
+  workflow.taskId = task.task_id;
+  workflow.cancelAcknowledgedTaskId = null;
+  workflow.cancelPromise = null;
+  workflow.cancelPromiseTaskId = null;
+  return true;
+}
+
+function updateCabinetWorkflowStatus(
+  workflow,
+  {
+    state,
+    message,
+    phase,
+    progress,
+    active = true,
+    success = null,
+    errorCode = null
+  }
+) {
+  if (!cabinetWorkflowIsCurrent(workflow)) return;
+  cabinetStatus = {
+    ...(cabinetStatus || {}),
+    cabinet: workflow.cabinet,
+    active,
+    reservation_active: false,
+    state,
+    message,
+    control_id: workflow.controlId,
+    button_id: workflow.controlId,
+    control_type: workflow.controlType,
+    command: workflow.command,
+    target_state: workflow.targetState,
+    target_position: workflow.targetPosition,
+    requested_force: workflow.controlType === 0 ? workflow.force : null,
+    // Navigation is orchestrated by this Web workflow.  The low-level
+    // /task/operate request remains a pure operation with embedded navigation
+    // disabled.
+    navigate_to_staging_pose: false,
+    workflow_stage: workflow.stage,
+    phase,
+    progress,
+    success,
+    error_code: errorCode
+  };
+  cabinetStatusByName.set(workflow.cabinet, cabinetStatus);
+  cabinetStatusCurrent = true;
+  renderCabinetStatus();
+}
+
+async function waitForCabinetWorkflowTaskRelease(workflow, taskId) {
+  const deadline = Date.now() + cabinetWorkflowTaskWaitTimeoutMs;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    if (!cabinetWorkflowIsCurrent(workflow)) {
+      throw new Error('自动操作流程已被替换');
+    }
+    if (!ctrlConnected) throw new Error('控制服务器已断开');
+    try {
+      const task = await controlRequestWithTimeout(
+        `/task/${encodeURIComponent(taskId)}/status`,
+        autonomyRequestTimeoutMs
+      );
+      if (task.task_id !== taskId) {
+        throw new Error('任务状态返回了不匹配的 task_id');
+      }
+      applyTaskSnapshot(task);
+      lastError = null;
+      if (
+        cabinetWorkflowTerminalStates.has(task.status) &&
+        task.reservation_active !== true
+      ) {
+        return task;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+    await waitForControlDelay(cabinetWorkflowTaskPollIntervalMs);
+  }
+  const detail = lastError && lastError.name !== 'AbortError'
+    ? `：${lastError.message}`
+    : '';
+  throw new Error(`等待任务结束并释放资源超时${detail}`);
+}
+
+async function requestCabinetWorkflowCancellation(workflow) {
+  if (!cabinetWorkflowIsCurrent(workflow) || !workflow.taskId) return null;
+  const taskId = workflow.taskId;
+  if (workflow.cancelAcknowledgedTaskId === taskId) return null;
+  if (
+    workflow.cancelPromise &&
+    workflow.cancelPromiseTaskId === taskId
+  ) {
+    return workflow.cancelPromise;
+  }
+  workflow.cancelPromiseTaskId = taskId;
+  const cancelPromise = (async () => {
+    const response = await controlRequest(
+      `/task/${encodeURIComponent(taskId)}/cancel`,
+      'POST',
+      {}
+    );
+    const task = response.task || response;
+    applyTaskSnapshot(task);
+    workflow.cancelAcknowledgedTaskId = taskId;
+    return task;
+  })();
+  workflow.cancelPromise = cancelPromise;
+  try {
+    return await cancelPromise;
+  } finally {
+    if (workflow.cancelPromise === cancelPromise) {
+      workflow.cancelPromise = null;
+      workflow.cancelPromiseTaskId = null;
+    }
+  }
+}
+
 function isManualControlReady(status = navigationStatus) {
   if (!status || status.mode !== false) return false;
   if (
@@ -3226,7 +3364,7 @@ async function cancelNavigation() {
 }
 
 async function sendCabinetOperation() {
-  if (isCabinetOperationActive()) return;
+  if (isCabinetOperationActive() || cabinetOperationWorkflow) return;
   if (!cabinetCatalogReceived) {
     toast('控制柜目录尚未到达，请稍后重试', 'err');
     return;
@@ -3286,31 +3424,141 @@ async function sendCabinetOperation() {
     toast('所选控制件没有可用命令', 'err');
     return;
   }
-  const previousStatus = cabinetStatus;
-  const previousStatusCurrent = cabinetStatusCurrent;
-  cabinetStatus = {
-    ...(cabinetStatus || {}),
+  const workflow = {
+    sequence: ++cabinetOperationWorkflowSequence,
     cabinet,
-    active: true,
-    state: 'sending',
-    message: '正在提交控制柜操作。',
-    control_id: controlId,
-    control_type: Number(target.control_type),
+    controlId,
+    controlType: Number(target.control_type),
+    displayName: target.display_name,
     command,
-    target_state: targetState,
-    target_position: targetPosition,
-    button_id: controlId,
-    requested_force: Number(target.control_type) === 0 ? force : null,
-    navigate_to_staging_pose: false,
-    progress: 0,
-    success: null,
-    error_code: null
+    targetState,
+    targetPosition,
+    force,
+    stage: 'navigation_starting',
+    taskId: null,
+    cancelRequested: false,
+    cancelAcknowledgedTaskId: null,
+    cancelPromise: null,
+    cancelPromiseTaskId: null
   };
-  cabinetStatusByName.set(cabinet, cabinetStatus);
-  cabinetStatusCurrent = true;
-  renderCabinetStatus();
+  cabinetOperationWorkflow = workflow;
+  updateCabinetWorkflowStatus(workflow, {
+    state: 'navigating',
+    phase: 'navigating',
+    progress: 0.01,
+    message: `正在准备导航到 ${cabinet} 的操作工位。`
+  });
+
   try {
-    const task = await controlRequest(
+    await clearDirectionInputs();
+    manualTakeoverState = 'idle';
+    renderBaseControlStatus();
+    updateControlInterlocks();
+    if (workflow.cancelRequested) {
+      workflow.stage = 'canceled';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'canceled',
+        phase: 'navigating',
+        progress: 0,
+        active: false,
+        success: false,
+        errorCode: 'canceled',
+        message: '自动操作已取消，未发送导航或机械臂任务。'
+      });
+      toast('自动操作已取消，未执行控件操作', 'ok');
+      return;
+    }
+
+    const navigationResponse = await controlRequest(
+      '/task/navigate',
+      'POST',
+      {cabinet}
+    );
+    const navigationTask = navigationResponse.task || navigationResponse;
+    setCabinetWorkflowTask(workflow, 'navigating', navigationTask);
+    applyTaskSnapshot(navigationTask);
+    updateCabinetWorkflowStatus(workflow, {
+      state: workflow.cancelRequested ? 'canceling' : 'navigating',
+      phase: 'navigating',
+      progress: 0.05,
+      message: workflow.cancelRequested
+        ? '正在取消导航；不会执行后续控件操作。'
+        : `正在导航到 ${cabinet}，到达后将自动操作 ${target.display_name}。`
+    });
+    toast(`正在导航到 ${cabinet}，到达后自动执行操作`, 'ok');
+    refreshAutonomyStatus();
+
+    if (workflow.cancelRequested) {
+      await requestCabinetWorkflowCancellation(workflow);
+    }
+    const navigationResult = await waitForCabinetWorkflowTaskRelease(
+      workflow,
+      navigationTask.task_id
+    );
+    if (
+      workflow.cancelRequested ||
+      navigationResult.status === 'canceled'
+    ) {
+      workflow.stage = 'canceled';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'canceled',
+        phase: 'navigating',
+        progress: Number(navigationResult.progress) || 0,
+        active: false,
+        success: false,
+        errorCode: 'canceled',
+        message: '导航已取消，未发送控件操作任务。'
+      });
+      toast('导航已取消，未执行控件操作', 'ok');
+      return;
+    }
+    if (navigationResult.status !== 'success') {
+      const reason = navigationResult.failure_reason ||
+        navigationResult.message || '导航任务失败';
+      workflow.stage = 'navigation_failed';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'failed',
+        phase: 'navigating',
+        progress: Number(navigationResult.progress) || 0,
+        active: false,
+        success: false,
+        errorCode: navigationResult.failure_code || 'navigation_failed',
+        message: `${reason}；未发送控件操作任务。`
+      });
+      toast(`导航失败，未执行控件操作: ${reason}`, 'err');
+      return;
+    }
+
+    // waitForCabinetWorkflowTaskRelease only returns after the navigation
+    // terminal snapshot reports reservation_active=false.  Keep a separate
+    // transition with no task id so cancellation can prevent the operation
+    // POST even in the small gap between the two backend tasks.
+    workflow.stage = 'operation_starting';
+    workflow.taskId = null;
+    workflow.cancelAcknowledgedTaskId = null;
+    updateCabinetWorkflowStatus(workflow, {
+      state: 'sending',
+      phase: 'waiting_for_system',
+      progress: 0.10,
+      message: `已到达 ${cabinet}，正在提交 ${target.display_name} 操作。`
+    });
+    await waitForControlDelay(0);
+    if (workflow.cancelRequested) {
+      workflow.stage = 'canceled';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'canceled',
+        phase: 'waiting_for_system',
+        progress: 0.10,
+        active: false,
+        success: false,
+        errorCode: 'canceled',
+        message: '到达工位后取消，未发送控件操作任务。'
+      });
+      toast('自动操作已取消，机械臂未开始执行', 'ok');
+      return;
+    }
+
+    const operationResponse = await controlRequest(
       '/task/operate',
       'POST',
       {
@@ -3322,16 +3570,48 @@ async function sendCabinetOperation() {
         ...(targetPosition !== null ? {target_position: targetPosition} : {})
       }
     );
-    applyTaskSnapshot(task.task || task);
-    toast(`已提交：${target.display_name}`, 'ok');
+    const operationTask = operationResponse.task || operationResponse;
+    setCabinetWorkflowTask(workflow, 'operating', operationTask);
+    applyTaskSnapshot(operationTask);
+    if (workflow.cancelRequested) {
+      try {
+        await requestCabinetWorkflowCancellation(workflow);
+        toast('正在取消已提交的控件操作', 'ok');
+      } catch (cancelError) {
+        toast(`控件操作取消请求失败: ${cancelError.message}`, 'err');
+      }
+    } else {
+      toast(`已到达工位，开始执行：${target.display_name}`, 'ok');
+    }
     refreshAutonomyStatus();
   } catch (error) {
-    cabinetStatus = previousStatus;
-    cabinetStatusCurrent = previousStatusCurrent;
-    if (previousStatus) cabinetStatusByName.set(cabinet, previousStatus);
-    else cabinetStatusByName.delete(cabinet);
+    const canceled = workflow.cancelRequested;
+    workflow.stage = canceled ? 'canceled' : 'failed';
+    updateCabinetWorkflowStatus(workflow, {
+      state: canceled ? 'canceled' : 'failed',
+      phase: workflow.stage === 'navigation_starting'
+        ? 'navigating'
+        : 'waiting_for_system',
+      progress: 0,
+      active: false,
+      success: false,
+      errorCode: canceled ? 'canceled' : 'workflow_failed',
+      message: canceled
+        ? `自动操作已取消，未继续执行：${error.message}`
+        : `自动操作流程失败，未继续执行：${error.message}`
+    });
+    toast(
+      canceled
+        ? '自动操作已取消，未执行后续操作'
+        : `自动操作流程失败: ${error.message}`,
+      canceled ? 'ok' : 'err'
+    );
+  } finally {
+    if (cabinetWorkflowIsCurrent(workflow)) {
+      cabinetOperationWorkflow = null;
+    }
     renderCabinetStatus();
-    toast(`控制柜操作提交失败: ${error.message}`, 'err');
+    updateControlInterlocks();
   }
 }
 
