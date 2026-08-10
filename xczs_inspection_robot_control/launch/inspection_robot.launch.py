@@ -352,6 +352,9 @@ def _cabinet_nodes(context, *, cabinet_xacro):
         moveit_kinematics = LaunchConfiguration(
             "moveit_kinematics"
         ).perform(context)
+        moveit_joint_limits = LaunchConfiguration(
+            "moveit_joint_limits"
+        ).perform(context)
         moveit_client_config = (
             MoveItConfigsBuilder(
                 robot_name,
@@ -360,6 +363,7 @@ def _cabinet_nodes(context, *, cabinet_xacro):
             .robot_description(file_path=robot_xacro)
             .robot_description_semantic(file_path=moveit_srdf)
             .robot_description_kinematics(file_path=moveit_kinematics)
+            .joint_limits(file_path=moveit_joint_limits)
             .planning_pipelines(
                 default_planning_pipeline="ompl",
                 pipelines=["ompl"],
@@ -518,6 +522,7 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                         moveit_client_config.robot_description,
                         moveit_client_config.robot_description_semantic,
                         moveit_client_config.robot_description_kinematics,
+                        moveit_client_config.joint_limits,
                         {
                             "use_sim_time": ParameterValue(
                                 LaunchConfiguration("use_sim_time"),

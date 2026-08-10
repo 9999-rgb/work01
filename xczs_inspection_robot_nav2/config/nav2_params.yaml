@@ -60,6 +60,10 @@ bt_navigator:
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /xczs/odom
+    # Keep a stable path until the goal changes or the costmap invalidates it.
+    # Recomputing the same straight axis leg every second causes needless DWB
+    # plan resets and visible micro-corrections on the omnidirectional base.
+    default_nav_to_pose_bt_xml: "$(find-pkg-share xczs_inspection_robot_nav2)/config/behavior_trees/stable_axis_navigation.xml"
     bt_loop_duration: 10
     default_server_timeout: 20
     plugin_lib_names:
@@ -190,15 +194,14 @@ controller_server:
         - RotateToGoal
         - Oscillation
         - BaseObstacle
-        - GoalAlign
-        - PathAlign
+        - Twirling
         - PathDist
         - GoalDist
       BaseObstacle.scale: 0.02
-      PathAlign.scale: 32.0
-      PathAlign.forward_point_distance: 0.1
-      GoalAlign.scale: 24.0
-      GoalAlign.forward_point_distance: 0.1
+      # The chassis is omnidirectional: track the path without repeatedly
+      # aligning its body heading while translating.  A modest twirling cost
+      # suppresses incidental rotation; RotateToGoal still owns final yaw.
+      Twirling.scale: 5.0
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0

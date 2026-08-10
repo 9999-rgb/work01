@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import yaml
@@ -15,6 +16,13 @@ NAV2_PARAMS = (
     / "xczs_inspection_robot_nav2"
     / "config"
     / "nav2_params.yaml"
+)
+NAV2_BT = (
+    WORKSPACE
+    / "xczs_inspection_robot_nav2"
+    / "config"
+    / "behavior_trees"
+    / "stable_axis_navigation.xml"
 )
 ROBOT_ADAPTER = (
     WORKSPACE
@@ -42,6 +50,74 @@ def _numeric_constant(path: Path, name: str) -> float:
 
 
 class Nav2ConfigContractTest(unittest.TestCase):
+    def test_navigation_replans_only_for_new_or_invalid_path(self) -> None:
+        document = yaml.safe_load(NAV2_PARAMS.read_text(encoding="utf-8"))
+        navigator = document["bt_navigator"]["ros__parameters"]
+        self.assertEqual(
+            "$(find-pkg-share xczs_inspection_robot_nav2)"
+            "/config/behavior_trees/stable_axis_navigation.xml",
+            navigator["default_nav_to_pose_bt_xml"],
+        )
+
+        tree = ET.parse(NAV2_BT)
+        root = tree.getroot()
+        rate_controller = root.find(".//RateController")
+        self.assertIsNotNone(rate_controller)
+        self.assertEqual("1.0", rate_controller.attrib["hz"])
+
+        planning_fallback = root.find(
+            ".//Fallback[@name='FallbackComputePathToPose']"
+        )
+        self.assertIsNotNone(planning_fallback)
+        self.assertEqual(
+            ["ReactiveSequence", "ComputePathToPose"],
+            [child.tag for child in planning_fallback],
+        )
+        path_check = planning_fallback[0]
+        self.assertEqual(
+            ["Inverter", "IsPathValid"],
+            [child.tag for child in path_check],
+        )
+        self.assertEqual("GlobalUpdatedGoal", path_check[0][0].tag)
+
+        self.assertEqual(1, len(root.findall(".//ComputePathToPose")))
+        self.assertEqual(1, len(root.findall(".//IsPathValid")))
+        self.assertIsNotNone(root.find(".//FollowPath"))
+        self.assertIsNotNone(root.find(".//ClearEntireCostmap"))
+        self.assertIsNotNone(root.find(".//Spin"))
+        self.assertIsNotNone(root.find(".//Wait"))
+        self.assertIsNotNone(root.find(".//BackUp"))
+
+    def test_omnidirectional_controller_tracks_path_without_heading_alignment(
+        self,
+    ) -> None:
+        document = yaml.safe_load(NAV2_PARAMS.read_text(encoding="utf-8"))
+        controller = document["controller_server"]["ros__parameters"]
+        follow_path = controller["FollowPath"]
+        critics = follow_path["critics"]
+
+        self.assertNotIn("PathAlign", critics)
+        self.assertNotIn("GoalAlign", critics)
+        for critic in (
+            "BaseObstacle",
+            "Oscillation",
+            "Twirling",
+            "PathDist",
+            "GoalDist",
+            "RotateToGoal",
+        ):
+            self.assertIn(critic, critics)
+
+        self.assertGreater(follow_path["Twirling.scale"], 0.0)
+        self.assertLess(
+            follow_path["Twirling.scale"],
+            follow_path["RotateToGoal.scale"],
+        )
+        self.assertLess(follow_path["min_vel_x"], 0.0)
+        self.assertGreater(follow_path["max_vel_x"], 0.0)
+        self.assertLess(follow_path["min_vel_y"], 0.0)
+        self.assertGreater(follow_path["max_vel_y"], 0.0)
+
     def test_in_place_rotation_counts_as_navigation_progress(self) -> None:
         document = yaml.safe_load(NAV2_PARAMS.read_text(encoding="utf-8"))
         controller = document["controller_server"]["ros__parameters"]

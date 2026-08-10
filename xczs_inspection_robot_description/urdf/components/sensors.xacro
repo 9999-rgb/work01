@@ -1,16 +1,16 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <!-- Arm-mounted RGB camera parameters. -->
-  <xacro:property name="arm_camera_update_rate" value="30.0" />
+  <xacro:property name="arm_camera_update_rate" value="15.0" />
   <xacro:property name="arm_camera_horizontal_fov" value="1.3962634" />
-  <xacro:property name="arm_camera_image_width" value="800" />
-  <xacro:property name="arm_camera_image_height" value="800" />
+  <xacro:property name="arm_camera_image_width" value="640" />
+  <xacro:property name="arm_camera_image_height" value="640" />
   <xacro:property name="arm_camera_near_clip" value="0.02" />
   <xacro:property name="arm_camera_far_clip" value="300.0" />
 
   <!-- Body-mounted planar lidar parameters. -->
-  <xacro:property name="body_lidar_update_rate" value="40.0" />
-  <xacro:property name="body_lidar_samples" value="720" />
+  <xacro:property name="body_lidar_update_rate" value="20.0" />
+  <xacro:property name="body_lidar_samples" value="360" />
   <xacro:property name="body_lidar_min_angle" value="-1.57079632679" />
   <xacro:property name="body_lidar_max_angle" value="1.57079632679" />
   <xacro:property name="body_lidar_min_range" value="0.10" />

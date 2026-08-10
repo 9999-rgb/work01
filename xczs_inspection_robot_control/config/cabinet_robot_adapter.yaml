@@ -85,8 +85,10 @@
     transport_named_target: home
     planning_time: 10.0
     planning_attempts: 10
-    planning_velocity_scale: 0.20
-    planning_acceleration_scale: 0.20
+    # 自由空间的预按位与 home 轨迹使用碰撞感知规划，可在完整关节限速下
+    # 保守提至 30%；近柜直线接近、按压与力补偿仍使用节点的低速默认值。
+    planning_velocity_scale: 0.30
+    planning_acceleration_scale: 0.30
     goal_position_tolerance: 0.005
     goal_orientation_tolerance: 0.01
     goal_joint_tolerance: 0.001

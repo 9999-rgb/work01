@@ -79,6 +79,12 @@ JOINT_LIMITS = MOVEIT_CONFIG / "joint_limits.yaml"
 OMPL_PLANNING = MOVEIT_CONFIG / "ompl_planning.yaml"
 SRDF = MOVEIT_CONFIG / "xczs_inspection_robot.srdf"
 NAV2_CONFIG = ROOT / "xczs_inspection_robot_nav2" / "config" / "nav2_params.yaml"
+SIMULATION_WORLD = (
+    ROOT
+    / "xczs_inspection_robot_description"
+    / "worlds"
+    / "inspection_robot.world"
+)
 WEB_ROS_NODE = ROOT / "jiang" / "control_gateway" / "ros_node.py"
 WEB_MONITOR = ROOT / "jiang" / "monitor.html"
 CONTROL_LAUNCH = (
@@ -1024,8 +1030,60 @@ def main() -> int:
             "planning_acceleration_scale",
         ):
             value = float(robot_parameters.get(field, 0.0))
-            if not math.isfinite(value) or not 0.0 < value <= 1.0:
-                fail(f"Robot adapter {field} must be in (0, 1].")
+            if not math.isfinite(value) or not math.isclose(
+                value, 0.30, rel_tol=0.0, abs_tol=1.0e-9
+            ):
+                fail(
+                    f"Robot adapter {field} must explicitly be 0.30 for "
+                    "free-space arm motion."
+                )
+        for field, member_name in (
+            ("cartesian_velocity_scale", "cartesian_velocity_scale_"),
+            ("cartesian_acceleration_scale", "cartesian_acceleration_scale_"),
+        ):
+            value = float(robot_parameters.get(field, 0.08))
+            if not math.isfinite(value) or not math.isclose(
+                value, 0.08, rel_tol=0.0, abs_tol=1.0e-9
+            ):
+                fail(
+                    f"Robot adapter {field} must remain 0.08 for "
+                    "contact-adjacent Cartesian motion."
+                )
+            if not re.search(
+                re.escape(member_name)
+                + r'\s*=\s*unit_interval_parameter\(\s*"'
+                + re.escape(field)
+                + r'"\s*,\s*0\.08\s*\);',
+                operator_source,
+            ):
+                fail(
+                    f"Cabinet operator {field} default must remain 0.08."
+                )
+        if operate_execute_match is None or not re.search(
+            r"\{button_poses\.pressed_pose\}\s*,\s*"
+            r"cartesian_velocity_scale_\s*\*\s*0\.5\s*,\s*"
+            r"cartesian_acceleration_scale_\s*\*\s*0\.5",
+            operate_execute_match.group(0),
+        ):
+            fail(
+                "Generic button pressing must retain the half-speed Cartesian "
+                "contact profile."
+            )
+        force_tracking_source = re.search(
+            r"void track_button_force\(.*?\n  OperationPoses "
+            r"calculate_operation_poses\(",
+            operator_source,
+            re.DOTALL,
+        )
+        if force_tracking_source is None or not re.search(
+            r"cartesian_velocity_scale_\s*\*\s*0\.35\s*,\s*"
+            r"cartesian_acceleration_scale_\s*\*\s*0\.35",
+            force_tracking_source.group(0),
+        ):
+            fail(
+                "Button force correction must retain the 0.35 Cartesian "
+                "contact scale multiplier."
+            )
         planning_attempts = robot_parameters.get("planning_attempts")
         if (
             isinstance(planning_attempts, bool)
@@ -1136,6 +1194,13 @@ def main() -> int:
         )
         if plugin is None:
             fail("libxczs_cabinet_state.so is absent from expanded URDF.")
+        if not math.isclose(
+            float(text(plugin, "state_publish_rate")),
+            20.0,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            fail("Cabinet physical state publication must remain at 20 Hz.")
         grasp_active_topic = text(plugin, "grasp_active_topic")
         if grasp_active_topic != f"{CABINET_NAMESPACE}/grasp_active":
             fail("Cabinet grasp-active topic must use its canonical name.")
@@ -1518,6 +1583,87 @@ def main() -> int:
         robot_description = render_xacro(ROBOT_XACRO)
         validate_rcl_parameter_value(robot_description)
         robot_root = ElementTree.fromstring(robot_description)
+        robot_sensors = {
+            sensor.attrib.get("name", ""): sensor
+            for sensor in robot_root.findall(".//sensor")
+        }
+        arm_camera = robot_sensors.get("arm_camera")
+        if arm_camera is None or arm_camera.attrib.get("type") != "camera":
+            fail("Expanded robot must contain the arm RGB camera sensor.")
+        camera_update_rate = float(text(arm_camera, "update_rate"))
+        camera_width = int(text(arm_camera, "camera/image/width"))
+        camera_height = int(text(arm_camera, "camera/image/height"))
+        if (
+            not math.isclose(
+                camera_update_rate, 15.0, rel_tol=0.0, abs_tol=1.0e-9
+            )
+            or camera_width != 640
+            or camera_height != 640
+        ):
+            fail("Arm camera performance contract must be 640x640 at 15 Hz.")
+
+        body_lidar = robot_sensors.get("body_lidar")
+        if body_lidar is None or body_lidar.attrib.get("type") != "ray":
+            fail("Expanded robot must contain the body planar lidar sensor.")
+        lidar_update_rate = float(text(body_lidar, "update_rate"))
+        lidar_samples = int(text(body_lidar, "ray/scan/horizontal/samples"))
+        if not math.isclose(
+            lidar_update_rate, 20.0, rel_tol=0.0, abs_tol=1.0e-9
+        ) or lidar_samples != 360:
+            fail("Body lidar performance contract must be 360 samples at 20 Hz.")
+
+        planar_move = next(
+            (
+                candidate
+                for candidate in robot_root.findall(".//plugin")
+                if candidate.attrib.get("filename")
+                == "libgazebo_ros_planar_move.so"
+            ),
+            None,
+        )
+        if planar_move is None:
+            fail("Gazebo planar-move plugin is absent from the robot URDF.")
+        planar_update_rate = float(text(planar_move, "update_rate"))
+        planar_publish_rate = float(text(planar_move, "publish_rate"))
+        if not math.isclose(
+            planar_update_rate, 500.0, rel_tol=0.0, abs_tol=1.0e-9
+        ) or not math.isclose(
+            planar_publish_rate, 20.0, rel_tol=0.0, abs_tol=1.0e-9
+        ):
+            fail(
+                "Planar mover must update at 500 Hz and publish odometry at "
+                "20 Hz."
+            )
+        updates_per_publish = planar_update_rate / planar_publish_rate
+        if not math.isclose(
+            updates_per_publish,
+            round(updates_per_publish),
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            fail(
+                "Planar update rate must be an integer multiple of its odometry "
+                "publish rate."
+            )
+
+        world_root = ElementTree.parse(SIMULATION_WORLD).getroot()
+        physics = world_root.find("./world/physics")
+        if physics is None:
+            fail("Simulation world is missing its physics profile.")
+        if (
+            not math.isclose(
+                float(text(physics, "max_step_size")),
+                0.002,
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            )
+            or int(text(physics, "real_time_update_rate")) != 500
+            or int(text(physics, "ode/solver/iters")) != 80
+        ):
+            fail(
+                "Simulation performance profile must remain at 2 ms, 500 Hz "
+                "and 80 ODE solver iterations."
+            )
         forbidden_lift_links = {"arm_lift", "arm_lift_mast"}
         robot_links = {
             link.attrib.get("name", "") for link in robot_root.findall("./link")
@@ -1677,18 +1823,42 @@ def main() -> int:
             re.DOTALL,
         ):
             fail("Unified launch must restrict its MoveIt client to OMPL.")
+        moveit_client_builder = re.search(
+            r"moveit_client_config\s*=\s*\((.*?)"
+            r"\.to_moveit_configs\(\)\s*\)",
+            launch_source,
+            re.DOTALL,
+        )
+        if moveit_client_builder is None or not re.search(
+            r"\.joint_limits\(\s*file_path\s*=\s*"
+            r"moveit_joint_limits\s*\)",
+            moveit_client_builder.group(1),
+        ):
+            fail(
+                "Cabinet operator MoveIt client must load the configured "
+                "joint_limits file."
+            )
+        operator_launch = re.search(
+            r'executable=["\']cabinet_button_operator["\'].*?'
+            r"parameters=\[(.*?)\]\s*,",
+            launch_source,
+            re.DOTALL,
+        )
+        if operator_launch is None:
+            fail("Unified launch must configure the cabinet operator node.")
         required_client_parameters = (
             "moveit_client_config.robot_description",
             "moveit_client_config.robot_description_semantic",
             "moveit_client_config.robot_description_kinematics",
+            "moveit_client_config.joint_limits",
         )
         if not all(
-            parameter in launch_source
+            parameter in operator_launch.group(1)
             for parameter in required_client_parameters
         ):
             fail(
-                "Cabinet operator must receive explicit URDF, SRDF and "
-                "kinematics parameters."
+                "Cabinet operator must receive explicit URDF, SRDF, "
+                "kinematics and joint-limit parameters."
             )
 
         with ROS2_CONTROLLERS.open("r", encoding="utf-8") as stream:
@@ -1786,6 +1956,32 @@ def main() -> int:
 
         with NAV2_CONFIG.open("r", encoding="utf-8") as stream:
             nav2_config = yaml.safe_load(stream)
+        controller_parameters = nav2_config["controller_server"][
+            "ros__parameters"
+        ]
+        controller_frequency = float(
+            controller_parameters["controller_frequency"]
+        )
+        local_costmap_frequency = float(
+            nav2_config["local_costmap"]["local_costmap"]["ros__parameters"][
+                "update_frequency"
+            ]
+        )
+        smoother_frequency = float(
+            nav2_config["velocity_smoother"]["ros__parameters"][
+                "smoothing_frequency"
+            ]
+        )
+        if lidar_update_rate < max(
+            controller_frequency, local_costmap_frequency
+        ):
+            fail("Lidar rate must cover every Nav2 control and costmap cycle.")
+        if planar_publish_rate < controller_frequency:
+            fail("Odometry rate must cover every Nav2 controller cycle.")
+        if planar_update_rate < smoother_frequency:
+            fail("Planar update rate must cover every smoothed velocity command.")
+        if camera_update_rate < 10.0:
+            fail("Camera rate must preserve the 10 Hz Web sensor stream.")
         amcl = nav2_config["amcl"]["ros__parameters"]
         if amcl.get("robot_model_type") != "nav2_amcl::OmniMotionModel":
             fail("AMCL must use its omni motion model for the holonomic base.")
@@ -1847,7 +2043,9 @@ def main() -> int:
         print(
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
-            "topics, and a six-axis MoveIt arm without a lift."
+            "topics, a six-axis MoveIt arm without a lift, and the "
+            "500/20 Hz planar, 640x640@15 Hz camera, 360@20 Hz lidar "
+            "simulation performance contract."
         )
         return 0
     except Exception as error:  # noqa: BLE001

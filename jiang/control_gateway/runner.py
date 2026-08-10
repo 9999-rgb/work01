@@ -2279,6 +2279,7 @@ class ControlServer:
         try:
             start_x = float(initial_pose["x"])
             start_y = float(initial_pose["y"])
+            start_yaw = float(initial_pose["yaw"])
             target_x = float(station["x"])
             target_y = float(station["y"])
         except (KeyError, TypeError, ValueError) as error:
@@ -2288,7 +2289,7 @@ class ControlServer:
             ) from error
         if not all(
             math.isfinite(value)
-            for value in (start_x, start_y, target_x, target_y)
+            for value in (start_x, start_y, start_yaw, target_x, target_y)
         ):
             raise TaskExecutionError(
                 "The localized start pose or navigation station is invalid.",
@@ -2318,9 +2319,12 @@ class ControlServer:
                 {
                     "x": target_x,
                     "y": start_y,
-                    # Finish the corner facing along the next Y-axis leg.  The
-                    # stateful Nav2 goal checker settles XY before this turn.
-                    "yaw": math.copysign(math.pi / 2.0, delta_y),
+                    # This robot is holonomic: preserve its current heading
+                    # while completing the X leg instead of adding a turn at
+                    # the corner.  The final Y leg remains responsible for
+                    # the station heading, so the route is X translation,
+                    # then Y translation, then at most one required turn.
+                    "yaw": start_yaw,
                 }
             )
             legs.append(

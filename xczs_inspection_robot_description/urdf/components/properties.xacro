@@ -30,6 +30,10 @@
   <xacro:property name="contact_kd" value="100" />
   <xacro:property name="contact_max_velocity" value="0.2" />
   <xacro:property name="contact_min_depth" value="0.001" />
-  <!-- Zero means that planar constraints are applied every physics update. -->
-  <xacro:property name="planar_move_update_rate" value="0" />
+  <!--
+    Keep the kinematic planar mover aligned with every 500 Hz physics step.
+    A slower mover update lets wheel contacts introduce lateral drift during
+    an in-place turn; the separate publish_rate still limits odometry to 20 Hz.
+  -->
+  <xacro:property name="planar_move_update_rate" value="500" />
 </robot>

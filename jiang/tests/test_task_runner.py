@@ -719,6 +719,12 @@ class TaskRunnerTest(unittest.TestCase):
 
     def test_navigation_uses_map_x_then_positive_y_legs(self) -> None:
         server, node = _server()
+        node.state["current_pose"] = {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
         station = NavigationStationSpec(
             local_anchor=(0.0, 2.0, 0.0),
             outward_axis=(1.0, 0.0, 0.0),
@@ -765,8 +771,14 @@ class TaskRunnerTest(unittest.TestCase):
             [leg["target"] for leg in task["result"]["route"]["legs"]],
         )
 
-    def test_navigation_uses_negative_y_corner_heading(self) -> None:
+    def test_navigation_preserves_heading_at_negative_y_corner(self) -> None:
         server, node = _server()
+        node.state["current_pose"] = {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
         station = NavigationStationSpec(
             local_anchor=(0.0, -2.0, 0.0),
             outward_axis=(1.0, 0.0, 0.0),
@@ -784,10 +796,10 @@ class TaskRunnerTest(unittest.TestCase):
         assert first_goal is not None
         self.assertAlmostEqual(0.5, first_goal["x"])
         self.assertAlmostEqual(0.0, first_goal["y"])
-        self.assertAlmostEqual(-math.pi / 2.0, first_goal["yaw"])
+        self.assertAlmostEqual(math.pi / 2.0, first_goal["yaw"])
         node.finish_navigation(
             "succeeded",
-            pose={"x": 0.5, "y": 0.0, "yaw": -math.pi / 2.0},
+            pose={"x": 0.5, "y": 0.0, "yaw": math.pi / 2.0},
         )
 
         second_goal = node.wait_for_navigation_goal(2)
@@ -1208,7 +1220,7 @@ class TaskRunnerTest(unittest.TestCase):
                 pose={
                     "x": 0.5,
                     "y": 0.0,
-                    "yaw": math.pi / 2.0,
+                    "yaw": 0.0,
                 },
             )
             self.assertIsNotNone(node.wait_for_navigation_goal(2))
@@ -1280,7 +1292,7 @@ class TaskRunnerTest(unittest.TestCase):
         with server._task_interlock_lock:
             node.finish_navigation(
                 "succeeded",
-                pose={"x": 0.5, "y": 0.0, "yaw": math.pi / 2.0},
+                pose={"x": 0.5, "y": 0.0, "yaw": 0.0},
             )
             deadline = time.monotonic() + 1.0
             phase = ""
