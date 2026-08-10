@@ -32,6 +32,15 @@ _LEGACY_DEFAULTS = {
     "base_output_topic": "/xczs/cmd_vel",
     "joint_trajectory_topic": "/xczs/joint_trajectory",
     "joint_state_topic": "/xczs/joint_states",
+    "reset_base_pose": {
+        "frame_id": "map",
+        "x": 0.0,
+        "y": 0.0,
+        "yaw": math.pi / 2.0,
+    },
+    "reset_joint_tolerance": 0.02,
+    "reset_joint_timeout_sec": 15.0,
+    "reset_joint_duration_sec": 5.0,
     "arm_controller_topic": "/xczs/arm_controller/joint_trajectory",
     "arm_controller_status_topic": (
         "/xczs/arm_controller/follow_joint_trajectory/_action/status"
@@ -84,6 +93,16 @@ class ManualJointConfig:
 
 
 @dataclass(frozen=True)
+class ResetBasePoseConfig:
+    """Validated navigation-frame pose used for a robot reset."""
+
+    frame_id: str
+    x: float
+    y: float
+    yaw: float
+
+
+@dataclass(frozen=True)
 class RobotAdapterConfig:
     """Immutable ROS/TF interface contract for one robot adapter."""
 
@@ -102,6 +121,10 @@ class RobotAdapterConfig:
     base_output_topic: str
     joint_trajectory_topic: str
     joint_state_topic: str
+    reset_base_pose: ResetBasePoseConfig
+    reset_joint_tolerance: float
+    reset_joint_timeout_sec: float
+    reset_joint_duration_sec: float
     arm_controller_topic: str
     arm_controller_status_topic: str
     gripper_controller_topic: Union[str, None]
@@ -200,6 +223,48 @@ def _finite_number(value: Any, field: str) -> float:
     if not math.isfinite(number):
         raise RobotAdapterError(f"{field} must be a finite number.")
     return number
+
+
+def _positive_number(value: Any, field: str) -> float:
+    number = _finite_number(value, field)
+    if number <= 0.0:
+        raise RobotAdapterError(f"{field} must be positive.")
+    return number
+
+
+def _reset_base_pose(
+    value: Any,
+    navigation_frame: str,
+) -> ResetBasePoseConfig:
+    field = "reset_base_pose"
+    if not isinstance(value, Mapping):
+        raise RobotAdapterError(f"{field} must be a mapping.")
+    if any(not isinstance(name, str) for name in value):
+        raise RobotAdapterError(f"{field} keys must be strings.")
+    required = {"frame_id", "x", "y", "yaw"}
+    configured = set(value)
+    missing = sorted(required - configured)
+    unknown = sorted(configured - required)
+    if missing:
+        raise RobotAdapterError(
+            f"{field} is missing required fields: {', '.join(missing)}."
+        )
+    if unknown:
+        raise RobotAdapterError(
+            f"{field} contains unknown fields: {', '.join(unknown)}."
+        )
+    frame_id = _relative_name(value["frame_id"], f"{field}.frame_id")
+    if frame_id != navigation_frame:
+        raise RobotAdapterError(
+            f"{field}.frame_id must match navigation_frame "
+            f"'{navigation_frame}'."
+        )
+    return ResetBasePoseConfig(
+        frame_id=frame_id,
+        x=_finite_number(value["x"], f"{field}.x"),
+        y=_finite_number(value["y"], f"{field}.y"),
+        yaw=_finite_number(value["yaw"], f"{field}.yaw"),
+    )
 
 
 def _manual_joints(
@@ -476,6 +541,27 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         _required(parameters, "gripper_joint_names", legacy=legacy),
         _required(parameters, "manual_joint_limits", legacy=legacy),
     )
+    reset_base_pose = _reset_base_pose(
+        _required(parameters, "reset_base_pose", legacy=legacy),
+        navigation_frame,
+    )
+    reset_joint_tolerance = _positive_number(
+        _required(parameters, "reset_joint_tolerance", legacy=legacy),
+        "reset_joint_tolerance",
+    )
+    reset_joint_timeout_sec = _positive_number(
+        _required(parameters, "reset_joint_timeout_sec", legacy=legacy),
+        "reset_joint_timeout_sec",
+    )
+    reset_joint_duration_sec = _positive_number(
+        _required(parameters, "reset_joint_duration_sec", legacy=legacy),
+        "reset_joint_duration_sec",
+    )
+    if reset_joint_duration_sec > reset_joint_timeout_sec:
+        raise RobotAdapterError(
+            "reset_joint_duration_sec must not exceed "
+            "reset_joint_timeout_sec."
+        )
     has_gripper = any(joint.group == "gripper" for joint in manual_joints)
     gripper_topic = parameters.get("gripper_controller_topic")
     gripper_status_topic = parameters.get("gripper_controller_status_topic")
@@ -560,6 +646,10 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
             _required(parameters, "joint_state_topic", legacy=legacy),
             "joint_state_topic",
         ),
+        reset_base_pose=reset_base_pose,
+        reset_joint_tolerance=reset_joint_tolerance,
+        reset_joint_timeout_sec=reset_joint_timeout_sec,
+        reset_joint_duration_sec=reset_joint_duration_sec,
         arm_controller_topic=_absolute_ros_name(
             _required(parameters, "arm_controller_topic", legacy=legacy),
             "arm_controller_topic",

@@ -31,13 +31,21 @@ from control_gateway.task_manager import TaskExecutionError  # noqa: E402
 class _NavigationNode:
     def __init__(self) -> None:
         self._lock = threading.Lock()
+        self._goal_condition = threading.Condition(self._lock)
         self.goal_event = threading.Event()
         self.goal: Optional[Dict[str, float]] = None
+        self.navigation_goals: list[Dict[str, float]] = []
         self.navigation_goal_count = 0
         self.cancel_count = 0
         self.takeover_count = 0
+        self.quiesce_count = 0
         self.base_targets = []
         self.joint_targets = []
+        self.joint_target_durations = []
+        self.joint_target_event = threading.Event()
+        self.joint_state_available = True
+        self.joint_positions: Dict[str, float] = {}
+        self.joint_state_received_monotonic: Optional[float] = None
         self.navigation_mode_requests = []
         self.task_events = []
         self.ros_time_nanoseconds = 100_000_000_000
@@ -68,9 +76,10 @@ class _NavigationNode:
         y: float,
         yaw: float,
     ) -> Dict[str, Any]:
-        with self._lock:
+        with self._goal_condition:
             self.navigation_goal_count += 1
             self.goal = {"x": x, "y": y, "yaw": yaw}
+            self.navigation_goals.append(dict(self.goal))
             self.state.update(
                 {
                     "state": "navigating",
@@ -83,7 +92,22 @@ class _NavigationNode:
                 }
             )
             self.goal_event.set()
+            self._goal_condition.notify_all()
         return {"status": "accepted", "goal": dict(self.goal)}
+
+    def wait_for_navigation_goal(
+        self,
+        count: int,
+        timeout: float = 1.0,
+    ) -> Optional[Dict[str, float]]:
+        deadline = time.monotonic() + timeout
+        with self._goal_condition:
+            while len(self.navigation_goals) < count:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    return None
+                self._goal_condition.wait(remaining)
+            return dict(self.navigation_goals[count - 1])
 
     def navigation_snapshot(self) -> Dict[str, Any]:
         with self._lock:
@@ -149,9 +173,44 @@ class _NavigationNode:
         self.base_targets.append((linear_y, angular_z))
         return linear_y, angular_z
 
-    def set_joint_target(self, positions: list[float]) -> list[float]:
+    def quiesce_manual_outputs(self) -> float:
+        self.quiesce_count += 1
+        return 0.0
+
+    def set_joint_target(
+        self,
+        positions: list[float],
+        duration_sec: float = 0.5,
+    ) -> list[float]:
         self.joint_targets.append(list(positions))
+        self.joint_target_durations.append(duration_sec)
+        self.joint_positions = {
+            name: position
+            for name, position in zip(
+                (
+                    "body_arm1",
+                    "arm1_arm2",
+                    "arm2_arm3",
+                    "arm3_arm4",
+                    "arm4_arm5",
+                    "arm5_end",
+                    "end_worklink1",
+                    "end_worklink2",
+                ),
+                positions,
+            )
+        }
+        self.joint_state_received_monotonic = time.monotonic()
+        self.joint_target_event.set()
         return list(positions)
+
+    def robot_joint_state_snapshot(self) -> Dict[str, Any]:
+        return {
+            "available": self.joint_state_available,
+            "positions": dict(self.joint_positions),
+            "stamp_ros_nanoseconds": self.ros_time_nanoseconds,
+            "received_monotonic": self.joint_state_received_monotonic,
+        }
 
     def publish_task_event(self, event: Dict[str, Any]) -> None:
         self.task_events.append(event)
@@ -164,6 +223,10 @@ class _CabinetClient:
         self.submit_event = threading.Event()
         self.submissions = []
         self.cancel_count = 0
+        self.reset_count = 0
+        self.reset_event = threading.Event()
+        self.reset_gate: Optional[threading.Event] = None
+        self.reset_error: Optional[CabinetClientError] = None
         self.submit_error: Optional[Exception] = None
         self.submission_response: Optional[Dict[str, Any]] = None
         self.status = {
@@ -253,6 +316,12 @@ class _CabinetClient:
         return {"status": "canceling", "cabinet": self.name}
 
     def reset(self) -> Dict[str, Any]:
+        self.reset_count += 1
+        self.reset_event.set()
+        if self.reset_gate is not None:
+            self.reset_gate.wait(timeout=1.0)
+        if self.reset_error is not None:
+            raise self.reset_error
         return {"status": "reset", "cabinet": self.name}
 
 
@@ -282,9 +351,32 @@ def _inventory(count: int = 2) -> CabinetInventory:
 def _server(count: int = 2) -> tuple[ControlServer, _NavigationNode]:
     server = object.__new__(ControlServer)
     server._inventory = _inventory(count)
+    manual_joints = tuple(
+        SimpleNamespace(name=name, default_position=position)
+        for name, position in (
+            ("body_arm1", 0.0),
+            ("arm1_arm2", -math.pi / 2.0),
+            ("arm2_arm3", 0.0),
+            ("arm3_arm4", 0.0),
+            ("arm4_arm5", 0.0),
+            ("arm5_end", 0.0),
+            ("end_worklink1", 0.0),
+            ("end_worklink2", 0.0),
+        )
+    )
     server._robot_adapter = SimpleNamespace(
         navigation_frame="map",
         control_navigation_station=lambda _control_id: None,
+        manual_joints=manual_joints,
+        reset_base_pose=SimpleNamespace(
+            frame_id="map",
+            x=0.0,
+            y=0.0,
+            yaw=math.pi / 2.0,
+        ),
+        reset_joint_tolerance=0.02,
+        reset_joint_timeout_sec=0.5,
+        reset_joint_duration_sec=0.2,
     )
     server._node = _NavigationNode()
     server._task_manager = TaskManager()
@@ -345,6 +437,138 @@ class TaskRunnerTest(unittest.TestCase):
             server.cabinet_controls()
         self.assertEqual(410, legacy.exception.status)
 
+    def test_scene_reset_verifies_cabinet_joints_and_base(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+
+        accepted = server.submit_reset_task("cabinet_a")
+        self.assertRegex(accepted["task_id"], r"^reset_\d+_[a-z0-9]{6}$")
+        self.assertTrue(client.reset_event.wait(timeout=1.0))
+        self.assertTrue(node.joint_target_event.wait(timeout=1.0))
+        goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertEqual(1, client.reset_count)
+        self.assertEqual(1, node.quiesce_count)
+        self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
+        self.assertAlmostEqual(0.2, node.joint_target_durations[0])
+        self.assertAlmostEqual(0.0, goal["x"])
+        self.assertAlmostEqual(0.0, goal["y"])
+        self.assertAlmostEqual(math.pi / 2.0, goal["yaw"])
+
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.0, "y": 0.0, "yaw": math.pi / 2.0},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("success", task["status"])
+        self.assertEqual("verified", task["result"]["components"][
+            "robot_joints"
+        ]["status"])
+        self.assertEqual("map_x_then_y", task["result"]["components"][
+            "robot_base"
+        ]["route"]["policy"])
+
+    def test_scene_reset_rejects_unknown_cabinet_before_task_acceptance(
+        self,
+    ) -> None:
+        server, node = _server()
+
+        with self.assertRaises(ControlRequestError) as unknown:
+            server.submit_reset_task("missing")
+
+        self.assertEqual(404, unknown.exception.status)
+        self.assertEqual(0, node.navigation_goal_count)
+        self.assertIsNone(server._task_manager.active_task_id)
+
+    def test_scene_reset_requires_idle_navigation_before_acceptance(
+        self,
+    ) -> None:
+        server, node = _server()
+        node.state["state"] = "navigating"
+
+        with self.assertRaises(ControlRequestError) as busy:
+            server.submit_reset_task("cabinet_a")
+
+        self.assertEqual(409, busy.exception.status)
+        self.assertEqual(
+            0,
+            server._cabinet_clients["cabinet_a"].reset_count,
+        )
+        self.assertIsNone(server._task_manager.active_task_id)
+
+    def test_scene_reset_cabinet_failure_is_a_terminal_task_failure(
+        self,
+    ) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        client.reset_error = CabinetClientError(
+            "physics reset unavailable",
+            code="not_ready",
+            status=503,
+        )
+
+        accepted = server.submit_reset_task("cabinet_a")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("not_ready", task["failure_code"])
+        self.assertEqual([], node.joint_targets)
+        self.assertEqual(0, node.navigation_goal_count)
+
+    def test_scene_reset_requires_fresh_joint_state_verification(self) -> None:
+        server, node = _server()
+        server._robot_adapter.reset_joint_timeout_sec = 0.05
+        server._robot_adapter.reset_joint_duration_sec = 0.02
+        node.joint_state_available = False
+
+        accepted = server.submit_reset_task("cabinet_a")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("robot_joint_reset_timeout", task["failure_code"])
+        self.assertEqual(0, node.navigation_goal_count)
+
+    def test_scene_reset_rejects_cancel_during_noncancelable_phase(
+        self,
+    ) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        client.reset_gate = threading.Event()
+
+        accepted = server.submit_reset_task("cabinet_a")
+        self.assertTrue(client.reset_event.wait(timeout=1.0))
+        with self.assertRaises(ControlRequestError) as rejected:
+            server.cancel_task(accepted["task_id"])
+        self.assertEqual(409, rejected.exception.status)
+        self.assertEqual(
+            accepted["task_id"],
+            server._task_manager.active_task_id,
+        )
+
+        client.reset_gate.set()
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.0, "y": 0.0, "yaw": math.pi / 2.0},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_scene_reset_base_homing_can_be_canceled(self) -> None:
+        server, node = _server()
+        accepted = server.submit_reset_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+
+        canceling = server.cancel_task(accepted["task_id"])
+        self.assertEqual("canceling", canceling["status"])
+        self.assertEqual(1, node.cancel_count)
+        node.finish_navigation("canceled")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("canceled", task["status"])
+
     def test_navigation_success_reports_final_pose_and_error(self) -> None:
         server, node = _server()
         accepted = server.submit_navigation_task("cabinet_a")
@@ -363,8 +587,14 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertAlmostEqual(0.05, task["result"]["error"]["position_m"])
         self.assertAlmostEqual(0.03, task["result"]["error"]["yaw_rad"])
         self.assertEqual("cabinet_a", task["result"]["cabinet"])
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertEqual("map_x_then_y", task["result"]["route"]["policy"])
+        self.assertEqual(
+            ["x"],
+            [leg["axis"] for leg in task["result"]["route"]["legs"]],
+        )
 
-    def test_navigation_uses_control_specific_robot_station(self) -> None:
+    def test_navigation_uses_map_x_then_positive_y_legs(self) -> None:
         server, node = _server()
         station = NavigationStationSpec(
             local_anchor=(0.0, 2.0, 0.0),
@@ -378,17 +608,140 @@ class TaskRunnerTest(unittest.TestCase):
         )
 
         accepted = server.submit_navigation_task("cabinet_a", "button_1")
-        self.assertTrue(node.goal_event.wait(timeout=1.0))
-        assert node.goal is not None
-        self.assertAlmostEqual(0.5, node.goal["x"])
-        self.assertAlmostEqual(2.0, node.goal["y"])
+        first_goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(first_goal)
+        assert first_goal is not None
+        self.assertAlmostEqual(0.5, first_goal["x"])
+        self.assertAlmostEqual(0.0, first_goal["y"])
+        self.assertAlmostEqual(math.pi / 2.0, first_goal["yaw"])
+        self.assertEqual(1, node.navigation_goal_count)
         self.assertEqual("button_1", accepted["request"]["control_id"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": 0.0, "yaw": math.pi / 2.0},
+        )
+
+        second_goal = node.wait_for_navigation_goal(2)
+        self.assertIsNotNone(second_goal)
+        assert second_goal is not None
+        self.assertAlmostEqual(0.5, second_goal["x"])
+        self.assertAlmostEqual(2.0, second_goal["y"])
+        self.assertAlmostEqual(math.pi, abs(second_goal["yaw"]))
         node.finish_navigation(
             "succeeded",
             pose={"x": 0.5, "y": 2.0, "yaw": math.pi},
         )
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
         self.assertEqual("success", task["status"])
+        self.assertEqual(
+            ["x", "y"],
+            [leg["axis"] for leg in task["result"]["route"]["legs"]],
+        )
+        self.assertEqual(
+            [first_goal, second_goal],
+            [leg["target"] for leg in task["result"]["route"]["legs"]],
+        )
+
+    def test_navigation_uses_negative_y_corner_heading(self) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, -2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        first_goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(first_goal)
+        assert first_goal is not None
+        self.assertAlmostEqual(0.5, first_goal["x"])
+        self.assertAlmostEqual(0.0, first_goal["y"])
+        self.assertAlmostEqual(-math.pi / 2.0, first_goal["yaw"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": 0.0, "yaw": -math.pi / 2.0},
+        )
+
+        second_goal = node.wait_for_navigation_goal(2)
+        self.assertIsNotNone(second_goal)
+        assert second_goal is not None
+        self.assertAlmostEqual(0.5, second_goal["x"])
+        self.assertAlmostEqual(-2.0, second_goal["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": -2.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(2, node.navigation_goal_count)
+        self.assertEqual(
+            ["x", "y"],
+            [leg["axis"] for leg in task["result"]["route"]["legs"]],
+        )
+
+    def test_navigation_skips_x_leg_when_already_on_target_x(self) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+        node.state["current_pose"] = {
+            "x": 0.5,
+            "y": 0.0,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        only_goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(only_goal)
+        assert only_goal is not None
+        self.assertAlmostEqual(0.5, only_goal["x"])
+        self.assertAlmostEqual(2.0, only_goal["y"])
+        self.assertAlmostEqual(math.pi, abs(only_goal["yaw"]))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": 2.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertEqual("y", task["result"]["route"]["legs"][0]["axis"])
+
+    def test_navigation_first_leg_failure_never_submits_second_leg(self) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation("failed", message="X-axis route blocked")
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("target_unreachable", task["failure_code"])
+        self.assertEqual(1, node.navigation_goal_count)
 
     def test_control_navigation_rejects_unknown_catalog_id(self) -> None:
         server, _node = _server()
@@ -609,6 +962,83 @@ class TaskRunnerTest(unittest.TestCase):
             self.assertFalse(released["reservation_active"])
             self.assertTrue(released["backend_termination_confirmed"])
 
+    def test_axis_navigation_timeout_budget_is_shared_by_both_legs(
+        self,
+    ) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+        clock_offset = [0.0]
+
+        def navigation_monotonic() -> float:
+            return time.monotonic() + clock_offset[0]
+
+        navigation_time = SimpleNamespace(
+            monotonic=navigation_monotonic,
+            sleep=time.sleep,
+        )
+        with patch.object(
+            runner_module,
+            "time",
+            navigation_time,
+        ), patch.object(
+            runner_module,
+            "NAVIGATION_TIMEOUT_SEC",
+            10.0,
+        ), patch.object(
+            runner_module,
+            "NAVIGATION_CANCEL_GRACE_SEC",
+            0.0,
+        ):
+            accepted = server.submit_navigation_task(
+                "cabinet_a",
+                "button_1",
+            )
+            self.assertIsNotNone(node.wait_for_navigation_goal(1))
+
+            # Spend nine seconds of the one task-level budget on the X leg.
+            clock_offset[0] = 9.0
+            node.finish_navigation(
+                "succeeded",
+                pose={
+                    "x": 0.5,
+                    "y": 0.0,
+                    "yaw": math.pi / 2.0,
+                    "received_monotonic": navigation_monotonic(),
+                },
+            )
+            self.assertIsNotNone(node.wait_for_navigation_goal(2))
+
+            # Crossing ten seconds on Y must time out immediately; a per-leg
+            # timeout would incorrectly grant this goal another ten seconds.
+            clock_offset[0] = 11.0
+            failed = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=1.0,
+            )
+            self.assertEqual("failed", failed["status"])
+            self.assertEqual("navigation_timeout", failed["failure_code"])
+            self.assertTrue(failed["reservation_active"])
+            self.assertEqual(2, node.navigation_goal_count)
+            self.assertGreaterEqual(node.cancel_count, 1)
+
+            node.finish_navigation("canceled")
+            deadline = time.monotonic() + 1.0
+            while (
+                server._task_manager.active_task_id is not None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.005)
+            self.assertIsNone(server._task_manager.active_task_id)
+
     def test_cancel_holds_global_lock_until_nav2_terminal(self) -> None:
         server, node = _server()
         first = server.submit_navigation_task("cabinet_a")
@@ -628,6 +1058,50 @@ class TaskRunnerTest(unittest.TestCase):
         terminal = server._task_manager.wait(first["task_id"], timeout=2.0)
         self.assertEqual("canceled", terminal["status"])
         self.assertIsNone(server._task_manager.active_task_id)
+
+    def test_cancel_between_axis_legs_never_submits_second_goal(self) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+
+        # Hold the same admission lock used for each goal submission.  This
+        # creates the exact boundary after X succeeds but before Y can start.
+        with server._task_interlock_lock:
+            node.finish_navigation(
+                "succeeded",
+                pose={"x": 0.5, "y": 0.0, "yaw": math.pi / 2.0},
+            )
+            deadline = time.monotonic() + 1.0
+            phase = ""
+            while time.monotonic() < deadline:
+                phase = str(
+                    server._task_manager.get_task(accepted["task_id"])[
+                        "phase"
+                    ]
+                )
+                if phase == "navigation_x_complete":
+                    break
+                time.sleep(0.005)
+            self.assertEqual("navigation_x_complete", phase)
+            canceling = server.cancel_task(accepted["task_id"])
+            self.assertEqual("canceling", canceling["status"])
+
+        terminal = server._task_manager.wait(
+            accepted["task_id"],
+            timeout=2.0,
+        )
+        self.assertEqual("canceled", terminal["status"])
+        self.assertEqual(1, node.navigation_goal_count)
 
     def test_operation_forces_no_navigation_and_maps_result(self) -> None:
         server, _node = _server()

@@ -819,7 +819,7 @@
               取消自动操作
             </button>
             <button class="btn btn-outline" id="btnCabinetReset" disabled>
-              刷新控制目录
+              场景归零（机器人 + 所选柜体）
             </button>
           </div>
         </div>
@@ -891,7 +891,7 @@
             <option value="">等待记录列表</option>
           </select>
           <div class="status-detail" id="recordingDetail">
-            记录目录不纳入 Git；默认记录任务、TF、定位、关节和控制柜物理状态。
+            记录目录不纳入 Git；为保证任务可复现，开始记录后请先执行“场景归零”，再导航和操作。
           </div>
         </div>
         <div>
@@ -1839,6 +1839,35 @@ function applyTaskSnapshot(task) {
       ...business,
       ...result,
       success: task.status === 'success',
+      error_code: task.failure_code
+    };
+    if (taskCabinet) cabinetStatusByName.set(taskCabinet, nextStatus);
+    if (!taskCabinet || taskCabinet === selectedCabinetName()) {
+      cabinetStatus = nextStatus;
+      cabinetStatusCurrent = true;
+      renderCabinetStatus();
+    }
+  } else if (task.type === 'reset') {
+    const request = task.request || {};
+    const result = task.result || {};
+    const business = task.business_data || {};
+    const taskCabinet = request.cabinet || result.cabinet || '';
+    const nextStatus = {
+      ...business,
+      ...result,
+      cabinet: taskCabinet,
+      task_type: 'reset',
+      scene_reset: true,
+      active: !terminal || reservationActive,
+      reservation_active: reservationActive,
+      state: terminal
+        ? (task.status === 'success' ? 'succeeded' : task.status)
+        : 'resetting',
+      phase: business.phase || task.phase || 'resetting',
+      progress: task.progress,
+      command: 'scene_reset',
+      message: task.failure_reason || task.message || result.message,
+      success: terminal ? task.status === 'success' : null,
       error_code: task.failure_code
     };
     if (taskCabinet) cabinetStatusByName.set(taskCabinet, nextStatus);
@@ -2834,7 +2863,12 @@ const cabinetGenericPhaseLabels = {
   manipulating: '执行操作',
   verifying: '验证物理状态',
   releasing: '释放控制件',
-  retreating: '安全撤回'
+  retreating: '安全撤回',
+  resetting: '场景归零',
+  resetting_robot_quiescence: '停止手动指令',
+  resetting_cabinet: '复位所选柜体',
+  resetting_robot_joints: '机械臂与夹爪归零',
+  resetting_robot_base: '底盘返回初始位姿'
 };
 const cabinetLegacyPhaseLabels = {
   0: '等待系统',
@@ -2897,7 +2931,9 @@ const stateLabels = {
 
 function isCabinetOperationActive(status = cabinetStatus) {
   const workflowActive = Boolean(cabinetOperationWorkflow);
-  const taskActive = Boolean(activeTaskId && activeTaskType === 'operate');
+  const taskActive = Boolean(
+    activeTaskId && ['operate', 'reset'].includes(activeTaskType)
+  );
   const visibleStatusActive = Boolean(
     cabinetStatusCurrent && status && (
       status.active === true ||
@@ -3637,7 +3673,10 @@ function cabinetPhysicalValue(name) {
 }
 
 function renderCabinetStatus() {
-  const available = isCabinetAvailable();
+  const sceneReset = Boolean(
+    cabinetStatus && cabinetStatus.task_type === 'reset'
+  );
+  const available = sceneReset ? cabinetResetAvailable : isCabinetAvailable();
   const statusCurrent = Boolean(cabinetStatusCurrent && cabinetStatus);
   const lastState = cabinetStatus ? cabinetStatus.state || 'idle' : 'idle';
   const reservationActive = Boolean(
@@ -3694,12 +3733,17 @@ function renderCabinetStatus() {
     : cabinetGenericPhaseLabels;
   let lastPhaseText = phaseLabel || phaseLabels[phase];
   if (!lastPhaseText) {
-    if (lastState === 'succeeded') lastPhaseText = '操作已完成';
-    else if (lastState === 'canceled') lastPhaseText = '操作已取消';
+    if (lastState === 'succeeded') {
+      lastPhaseText = sceneReset ? '场景已归零' : '操作已完成';
+    } else if (lastState === 'canceled') {
+      lastPhaseText = sceneReset ? '场景归零已取消' : '操作已取消';
+    }
     else if (['failed', 'rejected'].includes(lastState)) {
-      lastPhaseText = '操作失败';
+      lastPhaseText = sceneReset ? '场景归零失败' : '操作失败';
     } else {
-      lastPhaseText = active ? '执行中' : '尚未开始';
+      lastPhaseText = sceneReset && active
+        ? '正在归零机器人与所选柜体'
+        : active ? '执行中' : '尚未开始';
     }
   }
   const phaseText = statusCurrent
@@ -3775,12 +3819,21 @@ function renderCabinetStatus() {
   ) {
     targetMetric += ` · 峰值 ${formatCabinetTravel(maxTravel)}`;
   }
-  $('cabinetTargetMetric').textContent = targetMetric;
-  $('cabinetStateMetricLabel').textContent = '当前状态';
-  $('cabinetPositionMetricLabel').textContent = Number(metricControl && metricControl.control_type) === 0
-    ? '当前行程'
-    : '当前位置';
-  $('cabinetTargetMetricLabel').textContent = '操作目标';
+  if (sceneReset) {
+    $('cabinetControlState').textContent = stateLabels[lastState] || lastState;
+    $('cabinetPosition').textContent = '-';
+    $('cabinetTargetMetric').textContent = `机器人 + ${cabinetStatus.cabinet || '所选柜体'}`;
+    $('cabinetStateMetricLabel').textContent = '归零状态';
+    $('cabinetPositionMetricLabel').textContent = '物理验证';
+    $('cabinetTargetMetricLabel').textContent = '归零范围';
+  } else {
+    $('cabinetTargetMetric').textContent = targetMetric;
+    $('cabinetStateMetricLabel').textContent = '当前状态';
+    $('cabinetPositionMetricLabel').textContent = Number(metricControl && metricControl.control_type) === 0
+      ? '当前行程'
+      : '当前位置';
+    $('cabinetTargetMetricLabel').textContent = '操作目标';
+  }
 
   if (!ctrlConnected) {
     cabinetDetail.textContent = '连接控制服务器后可执行控制柜操作。';
@@ -3796,6 +3849,19 @@ function renderCabinetStatus() {
     cabinetDetail.textContent = ctrlConnected
       ? '等待控制柜动作状态。'
       : '连接控制服务器后可执行控制柜操作。';
+  } else if (sceneReset) {
+    const resultText = cabinetStatus.success === true
+      ? '成功'
+      : cabinetStatus.success === false ? '未成功' : '等待结果';
+    cabinetDetail.textContent = [
+      cabinetStatus.message || '',
+      `归零场景: ${cabinetStatus.cabinet || '-'}`,
+      '范围: 底盘初始位姿、机械臂/夹爪默认关节、所选柜体控件',
+      reservationActive
+        ? '任务资源占用: 等待归零后端确认停止'
+        : '',
+      `结果: ${resultText}  错误码: ${cabinetStatus.error_code || '-'}`
+    ].filter(Boolean).join('\n');
   } else {
     const success = cabinetStatus.success;
     const resultText = success === true
@@ -3950,6 +4016,7 @@ function updateControlInterlocks() {
   $('btnCabinetReset').disabled =
     !ctrlConnected ||
     !selectedCabinetName() ||
+    !cabinetResetAvailable ||
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
@@ -4561,6 +4628,10 @@ async function cancelCabinetOperation() {
     toast('回放只读模式中，请使用“取消回放/重演”', 'err');
     return;
   }
+  if (activeTaskId && activeTaskType === 'reset') {
+    toast('场景归零已开始，需等待后端确认结束', 'err');
+    return;
+  }
   const workflow = cabinetOperationWorkflow;
   if (!workflow && !isCabinetOperationActive()) return;
   if (workflow) {
@@ -4622,12 +4693,34 @@ async function cancelCabinetOperation() {
 
 async function resetCabinetControls() {
   if (replayControlReadOnly) {
-    toast('回放只读模式中，不能刷新写控制目录', 'err');
+    toast('回放只读模式中，不能执行场景归零', 'err');
     return;
   }
   if (isCabinetOperationActive()) return;
-  await loadSelectedCabinetControls();
-  toast('控制目录已刷新', 'ok');
+  if (isNavigationActive() || hasRetiringNavigationGoals()) {
+    toast('请先结束当前导航任务', 'err');
+    return;
+  }
+  const cabinet = selectedCabinetName();
+  if (!cabinet) {
+    toast('请选择要归零的柜体场景', 'err');
+    return;
+  }
+  if (!cabinetResetAvailable) {
+    toast('场景归零服务尚未就绪', 'err');
+    return;
+  }
+  try {
+    await clearDirectionInputs();
+    const response = await controlRequest(
+      '/task/reset', 'POST', {cabinet}
+    );
+    applyTaskSnapshot(response.task || response);
+    toast(`已提交场景归零任务：机器人 + ${cabinet}`, 'ok');
+    refreshAutonomyStatus();
+  } catch (error) {
+    toast(`场景归零提交失败: ${error.message}`, 'err');
+  }
 }
 
 

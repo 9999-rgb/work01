@@ -18,9 +18,12 @@ from control_gateway.task_replay import TaskReplayOrchestrator  # noqa: E402
 from control_gateway.task_replay import TaskReplayValidationError  # noqa: E402
 
 
-def _scenario(*steps: Mapping[str, Any]) -> Dict[str, Any]:
+def _scenario(
+    *steps: Mapping[str, Any],
+    schema_version: int = 1,
+) -> Dict[str, Any]:
     return {
-        "schema_version": 1,
+        "schema_version": schema_version,
         "recording_id": "sample",
         "steps": list(steps),
     }
@@ -68,6 +71,9 @@ class _Backend:
                 "force": force,
             }
         )
+
+    def reset(self, cabinet: str) -> Mapping[str, Any]:
+        return self._submit({"type": "reset", "cabinet": cabinet})
 
     def _submit(self, value: Dict[str, Any]) -> Mapping[str, Any]:
         task_id = f"task_{len(self.submissions)}"
@@ -140,6 +146,7 @@ def _orchestrator(backend: _Backend) -> TaskReplayOrchestrator:
         load_scenario=backend.load,
         submit_navigation=backend.navigate,
         submit_operation=backend.operate,
+        submit_reset=backend.reset,
         task_status=backend.status,
         cancel_task=backend.cancel,
         poll_period=0.005,
@@ -207,6 +214,40 @@ class TaskReplayTest(unittest.TestCase):
         )
         self.assertEqual("success", replay.status()["status"])
         self.assertEqual(1.0, replay.status()["progress"])
+
+    def test_schema_v2_replays_reset_before_following_task(self) -> None:
+        backend = _Backend(
+            _scenario(
+                {
+                    "type": "reset",
+                    "request": {"cabinet": "cabinet_a"},
+                },
+                {
+                    "type": "navigate",
+                    "request": {"cabinet": "cabinet_a"},
+                },
+                schema_version=2,
+            )
+        )
+        replay = _orchestrator(backend)
+
+        replay.start("sample")
+        self.assertTrue(backend.submitted.wait(timeout=1.0))
+        self.assertEqual(
+            [{"type": "reset", "cabinet": "cabinet_a"}],
+            backend.submissions,
+        )
+        backend.finish("task_0")
+        deadline = time.monotonic() + 1.0
+        while len(backend.submissions) < 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual("navigate", backend.submissions[1]["type"])
+        backend.finish("task_1")
+        deadline = time.monotonic() + 1.0
+        while replay.is_active and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertTrue(replay.shutdown(timeout=1.0))
+        self.assertEqual("success", replay.status()["status"])
 
     def test_failure_stops_following_steps_and_preserves_reason(self) -> None:
         backend = _Backend(
@@ -412,8 +453,27 @@ class TaskReplayTest(unittest.TestCase):
     def test_strictly_rejects_unsafe_or_malformed_scenarios(self) -> None:
         invalid = [
             {"schema_version": 2, "steps": []},
+            {
+                "schema_version": True,
+                "steps": [
+                    {
+                        "type": "navigate",
+                        "request": {"cabinet": "cabinet_a"},
+                    }
+                ],
+            },
             _scenario(),
             _scenario({"type": "cmd_vel", "request": {}}),
+            _scenario(
+                {"type": "reset", "request": {"cabinet": "cabinet_a"}}
+            ),
+            _scenario(
+                {
+                    "type": "reset",
+                    "request": {"cabinet": "cabinet_a", "all": True},
+                },
+                schema_version=2,
+            ),
             _scenario(
                 {
                     "type": "navigate",

@@ -59,6 +59,7 @@ class _FakeControlServer:
         self.navigation_task_request: Optional[str] = None
         self.navigation_task_control_id: Optional[str] = None
         self.operation_task_request: Optional[Dict[str, Any]] = None
+        self.reset_task_request: Optional[str] = None
         self.canceled_task_id: Optional[str] = None
         self.conflict_task_id: Optional[str] = None
         self.subscribed_last_event_id: Optional[str] = None
@@ -451,6 +452,10 @@ class _FakeControlServer:
         }
         return self._new_task("operate", self.operation_task_request)
 
+    def submit_reset_task(self, cabinet: str) -> Dict[str, Any]:
+        self.reset_task_request = cabinet
+        return self._new_task("reset", {"cabinet": cabinet})
+
     def task_status(self, task_id: str) -> Dict[str, Any]:
         try:
             return self.tasks[task_id]
@@ -572,6 +577,7 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.control_server.requested_cabinet = None
         self.control_server.navigation_task_request = None
         self.control_server.operation_task_request = None
+        self.control_server.reset_task_request = None
         self.control_server.canceled_task_id = None
         self.control_server.conflict_task_id = None
         self.control_server.subscribed_last_event_id = None
@@ -1061,6 +1067,35 @@ class ControlGatewayHttpTest(unittest.TestCase):
         )
         self.assertEqual(404, status)
         self.assertEqual("not found", response["error"])
+
+    def test_scoped_reset_task_route_is_strict_and_asynchronous(self) -> None:
+        status, accepted, _ = self.request(
+            "/task/reset",
+            "POST",
+            {"cabinet": " cabinet_b "},
+        )
+        self.assertEqual(202, status)
+        self.assertEqual("cabinet_b", self.control_server.reset_task_request)
+        self.assertEqual("reset", accepted["type"])
+        self.assertEqual({"cabinet": "cabinet_b"}, accepted["request"])
+        self.assertRegex(
+            accepted["task_id"],
+            r"^reset_[0-9]{13}_[a-z0-9]{6}$",
+        )
+
+        for payload in (
+            {},
+            {"cabinet": ""},
+            {"cabinet": "cabinet_a", "all": True},
+        ):
+            with self.subTest(payload=payload):
+                status, response, _ = self.request(
+                    "/task/reset",
+                    "POST",
+                    payload,
+                )
+                self.assertEqual(400, status)
+                self.assertIn("error", response)
 
     def test_new_operation_route_defaults_and_forwards_force(self) -> None:
         status, accepted, _ = self.request(

@@ -22,6 +22,16 @@
     base_output_topic: /xczs/cmd_vel
     joint_trajectory_topic: /xczs/joint_trajectory
     joint_state_topic: /xczs/joint_states
+    # 机器人复位的唯一目标定义。底盘目标使用 Nav2 的 map 坐标系，
+    # 关节目标直接复用下方每个 manual_joint_limits.default_position。
+    reset_base_pose:
+      frame_id: map
+      x: 0.0
+      y: 0.0
+      yaw: 1.5707963267948966
+    reset_joint_tolerance: 0.02
+    reset_joint_timeout_sec: 15.0
+    reset_joint_duration_sec: 5.0
     arm_controller_topic: /xczs/arm_controller/joint_trajectory
     arm_controller_status_topic: /xczs/arm_controller/follow_joint_trajectory/_action/status
     gripper_controller_topic: /xczs/gripper_controller/joint_trajectory
@@ -42,7 +52,9 @@
       body_arm1:
         {min_position: -2.8, max_position: 2.8, default_position: 0.0}
       arm1_arm2:
-        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+        min_position: -2.8
+        max_position: 2.8
+        default_position: -1.5707963267948966
       arm2_arm3:
         {min_position: -2.8, max_position: 2.8, default_position: 0.0}
       arm3_arm4:

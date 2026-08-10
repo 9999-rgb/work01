@@ -258,9 +258,16 @@ class CabinetStateCallbackTest(unittest.TestCase):
             [joint.name for joint in node._manual_joints],
             node._pending_trajectory.joint_names,
         )
+        default_point = node._pending_trajectory.points[0]
+        self.assertEqual(0, default_point.time_from_start.sec)
+        self.assertEqual(500_000_000, default_point.time_from_start.nanosec)
 
-        zero = node.set_joint_target([0.0] * 8)
+        zero = node.set_joint_target([0.0] * 8, duration_sec=4.25)
         self.assertEqual([0.0] * 8, zero)
+        reset_point = node._pending_trajectory.points[0]
+        self.assertEqual(4, reset_point.time_from_start.sec)
+        self.assertEqual(250_000_000, reset_point.time_from_start.nanosec)
+        self.assertEqual(4.25, node._pending_trajectory_duration_sec)
         self.assertNotIn(
             "body_arm_lift",
             node._pending_trajectory.joint_names,
@@ -270,6 +277,96 @@ class CabinetStateCallbackTest(unittest.TestCase):
             node.set_joint_target([0.0] * 7)
         with self.assertRaisesRegex(ControlRequestError, "manual joint order"):
             node.set_joint_target([0.0] * 9)
+        for invalid_duration in (
+            True,
+            "1.0",
+            0.0,
+            -1.0,
+            float("nan"),
+            float("inf"),
+        ):
+            with self.subTest(duration_sec=invalid_duration):
+                with self.assertRaisesRegex(
+                    ControlRequestError,
+                    "duration_sec",
+                ):
+                    node.set_joint_target(
+                        [0.0] * 8,
+                        duration_sec=invalid_duration,
+                    )
+        with self.assertRaisesRegex(ControlRequestError, "ROS duration range"):
+            node.set_joint_target(
+                [0.0] * 8,
+                duration_sec=2_147_483_648.0,
+            )
+
+    def test_robot_joint_state_snapshot_requires_all_finite_manual_joints(
+        self,
+    ) -> None:
+        node = object.__new__(RosControlNode)
+        node._lock = threading.RLock()
+        node._manual_joints = (
+            ManualJointConfig("joint_a", "arm", -2.0, 2.0, 0.0, None),
+            ManualJointConfig("joint_b", "arm", -2.0, 2.0, 0.0, None),
+        )
+        node._robot_joint_state = {
+            "available": False,
+            "positions": {},
+            "stamp_ros_nanoseconds": None,
+            "received_monotonic": None,
+        }
+
+        self.assertEqual(
+            {
+                "available": False,
+                "positions": {},
+                "stamp_ros_nanoseconds": None,
+                "received_monotonic": None,
+            },
+            node.robot_joint_state_snapshot(),
+        )
+
+        message = JointState()
+        message.header.stamp.sec = 12
+        message.header.stamp.nanosec = 345
+        message.name = ["unrelated", "joint_b", "joint_a"]
+        message.position = [99.0, -0.25, 0.75]
+        with patch("control_gateway.ros_node.time.monotonic", return_value=8.5):
+            node._robot_joint_state_callback(message)
+
+        snapshot = node.robot_joint_state_snapshot()
+        self.assertEqual(
+            {
+                "available": True,
+                "positions": {"joint_a": 0.75, "joint_b": -0.25},
+                "stamp_ros_nanoseconds": 12_000_000_345,
+                "received_monotonic": 8.5,
+            },
+            snapshot,
+        )
+        snapshot["positions"]["joint_a"] = 100.0
+        self.assertEqual(
+            0.75,
+            node.robot_joint_state_snapshot()["positions"]["joint_a"],
+        )
+
+        incomplete = JointState()
+        incomplete.header.stamp.sec = 13
+        incomplete.name = ["joint_a", "joint_b"]
+        incomplete.position = [0.1, float("nan")]
+        node._robot_joint_state_callback(incomplete)
+        snapshot = node.robot_joint_state_snapshot()
+        self.assertFalse(snapshot["available"])
+        self.assertEqual({"joint_a": 0.1}, snapshot["positions"])
+        self.assertEqual(13_000_000_000, snapshot["stamp_ros_nanoseconds"])
+
+        duplicated = JointState()
+        duplicated.name = ["joint_a", "joint_a", "joint_b"]
+        duplicated.position = [0.1, 0.2, 0.3]
+        node._robot_joint_state_callback(duplicated)
+        snapshot = node.robot_joint_state_snapshot()
+        self.assertFalse(snapshot["available"])
+        self.assertEqual({"joint_b": 0.3}, snapshot["positions"])
 
     def test_replay_quiescence_clears_pending_manual_outputs(self) -> None:
         resets = []

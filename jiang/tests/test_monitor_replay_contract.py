@@ -210,6 +210,7 @@ class MonitorReplayContractTest(unittest.TestCase):
             let ctrlConnected = true;
             let cabinetCatalogReceived = true;
             let cabinetOperationAvailable = true;
+            let cabinetResetAvailable = true;
             let cabinetInterlockWasActive = false;
             let manualTakeoverState = 'idle';
             const navigationStatus = {{available: true, mode: false}};
@@ -325,6 +326,10 @@ class MonitorReplayContractTest(unittest.TestCase):
             (async () => {{
               await assert.rejects(
                 controlRequest('/task/navigate', 'POST', {{cabinet: 'cabinet_a'}}),
+                /只读/
+              );
+              await assert.rejects(
+                controlRequest('/task/reset', 'POST', {{cabinet: 'cabinet_a'}}),
                 /只读/
               );
               await assert.rejects(

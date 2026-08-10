@@ -7,6 +7,7 @@ import tempfile
 import threading
 import unittest
 from dataclasses import FrozenInstanceError
+from math import pi
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -40,6 +41,15 @@ def _parameters() -> dict[str, object]:
         "base_output_topic": "/robot/base_output",
         "joint_trajectory_topic": "/robot/joint_trajectory",
         "joint_state_topic": "/robot/joint_states",
+        "reset_base_pose": {
+            "frame_id": "world_map",
+            "x": 1.25,
+            "y": -0.5,
+            "yaw": 0.75,
+        },
+        "reset_joint_tolerance": 0.03,
+        "reset_joint_timeout_sec": 12.0,
+        "reset_joint_duration_sec": 4.0,
         "arm_controller_topic": "/robot/arm/joint_trajectory",
         "arm_controller_status_topic": "/robot/arm/status",
         "gripper_controller_topic": "/robot/gripper/joint_trajectory",
@@ -104,6 +114,13 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("arm", adapter.manual_joints[0].group)
         self.assertEqual("gripper", adapter.manual_joints[1].group)
         self.assertEqual(0.5, adapter.manual_joints[1].open_position)
+        self.assertEqual("world_map", adapter.reset_base_pose.frame_id)
+        self.assertEqual(1.25, adapter.reset_base_pose.x)
+        self.assertEqual(-0.5, adapter.reset_base_pose.y)
+        self.assertEqual(0.75, adapter.reset_base_pose.yaw)
+        self.assertEqual(0.03, adapter.reset_joint_tolerance)
+        self.assertEqual(12.0, adapter.reset_joint_timeout_sec)
+        self.assertEqual(4.0, adapter.reset_joint_duration_sec)
         station = adapter.control_navigation_station("button_1")
         self.assertIsNotNone(station)
         assert station is not None
@@ -113,6 +130,60 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertIsNone(adapter.control_navigation_station("missing"))
         with self.assertRaisesRegex(FrozenInstanceError, "cannot assign"):
             adapter.navigation_frame = "changed"  # type: ignore[misc]
+        with self.assertRaisesRegex(FrozenInstanceError, "cannot assign"):
+            adapter.reset_base_pose.x = 2.0  # type: ignore[misc]
+
+    def test_rejects_invalid_reset_contract(self) -> None:
+        parameters = _parameters()
+        parameters["reset_base_pose"] = {
+            "frame_id": "world_map",
+            "x": 0.0,
+            "y": 0.0,
+        }
+        with self.assertRaisesRegex(RobotAdapterError, "missing.*yaw"):
+            self._load_document({"/**": {"ros__parameters": parameters}})
+
+        parameters = _parameters()
+        parameters["reset_base_pose"] = {
+            "frame_id": "world_map",
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": 0.0,
+            "z": 0.0,
+        }
+        with self.assertRaisesRegex(RobotAdapterError, "unknown fields: z"):
+            self._load_document({"/**": {"ros__parameters": parameters}})
+
+        parameters = _parameters()
+        parameters["reset_base_pose"]["frame_id"] = "other_map"
+        with self.assertRaisesRegex(RobotAdapterError, "match navigation_frame"):
+            self._load_document({"/**": {"ros__parameters": parameters}})
+
+        parameters = _parameters()
+        parameters["reset_base_pose"]["yaw"] = float("nan")
+        with self.assertRaisesRegex(RobotAdapterError, "reset_base_pose.yaw"):
+            self._load_document({"/**": {"ros__parameters": parameters}})
+
+        for field, value in (
+            ("reset_joint_tolerance", 0.0),
+            ("reset_joint_timeout_sec", -1.0),
+            ("reset_joint_duration_sec", float("inf")),
+        ):
+            with self.subTest(field=field):
+                parameters = _parameters()
+                parameters[field] = value
+                with self.assertRaisesRegex(RobotAdapterError, field):
+                    self._load_document(
+                        {"/**": {"ros__parameters": parameters}}
+                    )
+
+        parameters = _parameters()
+        parameters["reset_joint_duration_sec"] = 13.0
+        with self.assertRaisesRegex(
+            RobotAdapterError,
+            "must not exceed reset_joint_timeout_sec",
+        ):
+            self._load_document({"/**": {"ros__parameters": parameters}})
 
     def test_rejects_invalid_control_navigation_station(self) -> None:
         with self.assertRaisesRegex(
@@ -193,10 +264,22 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("y", adapter.manual_linear_axis)
         self.assertEqual(6, len(adapter.arm_joint_names))
         self.assertEqual(2, len(adapter.gripper_joint_names))
+        self.assertEqual("map", adapter.reset_base_pose.frame_id)
+        self.assertEqual(0.0, adapter.reset_base_pose.x)
+        self.assertEqual(0.0, adapter.reset_base_pose.y)
+        self.assertAlmostEqual(pi / 2.0, adapter.reset_base_pose.yaw)
+        self.assertEqual(0.02, adapter.reset_joint_tolerance)
+        self.assertEqual(15.0, adapter.reset_joint_timeout_sec)
+        self.assertEqual(5.0, adapter.reset_joint_duration_sec)
+        defaults = {
+            joint.name: joint.default_position for joint in adapter.manual_joints
+        }
+        self.assertAlmostEqual(-pi / 2.0, defaults["arm1_arm2"])
 
     def test_navigation_frame_defaults_to_map(self) -> None:
         parameters = _parameters()
         parameters.pop("navigation_frame")
+        parameters["reset_base_pose"]["frame_id"] = "map"
 
         adapter = self._load_document(
             {"/**": {"ros__parameters": parameters}}
@@ -317,6 +400,11 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(6, len(adapter.arm_joint_names))
         self.assertEqual(2, len(adapter.gripper_joint_names))
         self.assertEqual("y", adapter.manual_linear_axis)
+        self.assertEqual("map", adapter.reset_base_pose.frame_id)
+        self.assertAlmostEqual(pi / 2.0, adapter.reset_base_pose.yaw)
+        self.assertEqual(0.02, adapter.reset_joint_tolerance)
+        self.assertEqual(15.0, adapter.reset_joint_timeout_sec)
+        self.assertEqual(5.0, adapter.reset_joint_duration_sec)
 
     def test_runner_passes_adapter_interfaces_and_explicit_overrides(self) -> None:
         parameters = _parameters()
@@ -399,6 +487,10 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(
             "/robot/localization_pose",
             captured_keywords[0]["localization_pose_topic"],
+        )
+        self.assertEqual(
+            "/robot/joint_states",
+            captured_keywords[0]["joint_state_topic"],
         )
         self.assertEqual("x", captured_keywords[0]["manual_linear_axis"])
 

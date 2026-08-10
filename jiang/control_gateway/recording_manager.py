@@ -1161,7 +1161,7 @@ class RecordingManager:
                 request = task.get("request")
                 task_id = task.get("task_id") or data.get("task_id")
                 if (
-                    task_type not in {"navigate", "operate"}
+                    task_type not in {"navigate", "operate", "reset"}
                     or not isinstance(request, Mapping)
                     or not isinstance(task_id, str)
                     or not task_id
@@ -1188,7 +1188,9 @@ class RecordingManager:
                     step["recorded_failure_code"] = task.get("failure_code")
                     step["recorded_failure_reason"] = task.get("failure_reason")
         scenario = {
-            "schema_version": 1,
+            "schema_version": (
+                2 if any(step["type"] == "reset" for step in steps) else 1
+            ),
             "recording_id": recording_id,
             "steps": steps,
         }
@@ -1992,7 +1994,13 @@ def _validate_scenario(value: Any, recording_id: str) -> dict[str, Any]:
             "Scenario must be an object.",
             code="scenario_corrupted",
         )
-    if value.get("schema_version") != 1 or value.get("recording_id") != recording_id:
+    schema_version = value.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in {1, 2}
+        or value.get("recording_id") != recording_id
+    ):
         raise RecordingValidationError(
             "Scenario schema or recording identity is invalid.",
             code="scenario_corrupted",
@@ -2003,16 +2011,32 @@ def _validate_scenario(value: Any, recording_id: str) -> dict[str, Any]:
             "Scenario steps must be a list.",
             code="scenario_corrupted",
         )
+    allowed_types = (
+        {"navigate", "operate"}
+        if schema_version == 1
+        else {"navigate", "operate", "reset"}
+    )
     for index, step in enumerate(steps):
         if (
             not isinstance(step, dict)
-            or step.get("type") not in {"navigate", "operate"}
+            or step.get("type") not in allowed_types
             or not isinstance(step.get("request"), dict)
         ):
             raise RecordingValidationError(
                 f"Scenario step {index} is invalid.",
                 code="scenario_corrupted",
             )
+        if step.get("type") == "reset":
+            request = step["request"]
+            if (
+                set(request) != {"cabinet"}
+                or not isinstance(request.get("cabinet"), str)
+                or not request["cabinet"].strip()
+            ):
+                raise RecordingValidationError(
+                    f"Scenario reset step {index} is invalid.",
+                    code="scenario_corrupted",
+                )
     return _json_copy(value, "scenario")
 
 

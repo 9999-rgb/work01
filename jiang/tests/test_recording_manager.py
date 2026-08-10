@@ -237,6 +237,7 @@ class RecordingManagerTest(unittest.TestCase):
         self.assertTrue(self.factory.processes[-1].kwargs["start_new_session"])
 
         manifest = manager.get_recording("run_001")
+        self.assertEqual(1, manager.load_scenario("run_001")["schema_version"])
         expected_hash = hashlib.sha256(self.config.read_bytes()).hexdigest()
         self.assertEqual("0123456789abcdef", manifest["git_commit"])
         self.assertEqual(expected_hash, manifest["config_sha256"]["robot.yaml"])
@@ -264,6 +265,11 @@ class RecordingManagerTest(unittest.TestCase):
     def test_task_timeline_extracts_ordered_replay_scenario(self) -> None:
         manager = self._manager()
         manager.start_recording("scenario_1")
+        reset = {
+            "task_id": "reset_0",
+            "type": "reset",
+            "request": {"cabinet": "cabinet_a"},
+        }
         navigate = {
             "task_id": "navigate_1",
             "type": "navigate",
@@ -279,6 +285,26 @@ class RecordingManagerTest(unittest.TestCase):
                 "force": 5.0,
             },
         }
+        manager.record_task_event(
+            "task_accepted",
+            {"task_id": "reset_0", "task": reset},
+            timestamp=1_700_000_000.1,
+        )
+        manager.record_task_event(
+            "task_completed",
+            {
+                "task_id": "reset_0",
+                "outcome": "success",
+                "task": {
+                    **reset,
+                    "result": {
+                        "cabinet": "cabinet_a",
+                        "scene_reset": True,
+                    },
+                },
+            },
+            timestamp=1_700_000_000.2,
+        )
         manager.record_task_event(
             "task_accepted",
             {"task_id": "navigate_1", "task": navigate},
@@ -337,18 +363,28 @@ class RecordingManagerTest(unittest.TestCase):
         self.assertEqual(3, page["next_offset"])
         self.assertTrue(page["has_more"])
         scenario = manager.load_scenario("scenario_1")
+        self.assertEqual(2, scenario["schema_version"])
         self.assertEqual(
-            ["navigate", "operate"],
+            ["reset", "navigate", "operate"],
             [step["type"] for step in scenario["steps"]],
         )
-        self.assertEqual("navigate_1", scenario["steps"][0]["recorded_task_id"])
+        self.assertEqual("reset_0", scenario["steps"][0]["recorded_task_id"])
         self.assertEqual("success", scenario["steps"][0]["recorded_outcome"])
         self.assertEqual(
-            "insufficient_force",
-            scenario["steps"][1]["recorded_failure_code"],
+            {"cabinet": "cabinet_a"},
+            scenario["steps"][0]["request"],
         )
-        self.assertEqual("力度不足", scenario["steps"][1]["recorded_failure_reason"])
-        self.assertEqual(5.0, scenario["steps"][1]["request"]["force"])
+        self.assertEqual("navigate_1", scenario["steps"][1]["recorded_task_id"])
+        self.assertEqual("success", scenario["steps"][1]["recorded_outcome"])
+        self.assertEqual(
+            "insufficient_force",
+            scenario["steps"][2]["recorded_failure_code"],
+        )
+        self.assertEqual(
+            "力度不足",
+            scenario["steps"][2]["recorded_failure_reason"],
+        )
+        self.assertEqual(5.0, scenario["steps"][2]["request"]["force"])
 
         self._write_metadata("scenario_1")
         manager.stop_recording()

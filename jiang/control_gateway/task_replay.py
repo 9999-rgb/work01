@@ -34,6 +34,7 @@ SubmitOperation = Callable[
     [str, str, Any, Optional[str], Optional[float], Optional[float]],
     Mapping[str, Any],
 ]
+SubmitReset = Callable[[str], Mapping[str, Any]]
 TaskStatus = Callable[[str], Mapping[str, Any]]
 CancelTask = Callable[[str], Mapping[str, Any]]
 LoadScenario = Callable[[str], Mapping[str, Any]]
@@ -48,6 +49,7 @@ class TaskReplayOrchestrator:
         load_scenario: LoadScenario,
         submit_navigation: SubmitNavigation,
         submit_operation: SubmitOperation,
+        submit_reset: SubmitReset,
         task_status: TaskStatus,
         cancel_task: CancelTask,
         poll_period: float = 0.10,
@@ -60,6 +62,7 @@ class TaskReplayOrchestrator:
                 load_scenario,
                 submit_navigation,
                 submit_operation,
+                submit_reset,
                 task_status,
                 cancel_task,
                 wall_clock,
@@ -77,6 +80,7 @@ class TaskReplayOrchestrator:
         self._load_scenario = load_scenario
         self._submit_navigation = submit_navigation
         self._submit_operation = submit_operation
+        self._submit_reset = submit_reset
         self._task_status = task_status
         self._cancel_task = cancel_task
         self._poll_period = float(poll_period)
@@ -314,6 +318,8 @@ class TaskReplayOrchestrator:
                 request["cabinet"],
                 request.get("control_id"),
             )
+        if step["type"] == "reset":
+            return self._submit_reset(request["cabinet"])
         return self._submit_operation(
             request["cabinet"],
             request["control_id"],
@@ -534,9 +540,14 @@ def _validated_steps(scenario: Any) -> Tuple[Dict[str, Any], ...]:
             "Scenario has unknown fields: "
             + ", ".join(sorted(str(key) for key in unknown_document))
         )
-    if scenario.get("schema_version") != 1:
+    schema_version = scenario.get("schema_version")
+    if (
+        isinstance(schema_version, bool)
+        or not isinstance(schema_version, int)
+        or schema_version not in {1, 2}
+    ):
         raise TaskReplayValidationError(
-            "Scenario schema_version must be 1."
+            "Scenario schema_version must be 1 or 2."
         )
     raw_steps = scenario.get("steps")
     if (
@@ -552,12 +563,16 @@ def _validated_steps(scenario: Any) -> Tuple[Dict[str, Any], ...]:
             f"Scenario may contain at most {_MAX_SCENARIO_STEPS} steps."
         )
     return tuple(
-        _validated_step(index, step)
+        _validated_step(index, step, schema_version)
         for index, step in enumerate(raw_steps)
     )
 
 
-def _validated_step(index: int, raw_step: Any) -> Dict[str, Any]:
+def _validated_step(
+    index: int,
+    raw_step: Any,
+    schema_version: int,
+) -> Dict[str, Any]:
     context = f"steps[{index}]"
     if not isinstance(raw_step, Mapping):
         raise TaskReplayValidationError(f"{context} must be a mapping.")
@@ -577,9 +592,15 @@ def _validated_step(index: int, raw_step: Any) -> Dict[str, Any]:
             + ", ".join(sorted(str(key) for key in unknown_step))
         )
     step_type = raw_step.get("type")
-    if step_type not in {"navigate", "operate"}:
+    allowed_types = (
+        {"navigate", "operate"}
+        if schema_version == 1
+        else {"navigate", "operate", "reset"}
+    )
+    if step_type not in allowed_types:
         raise TaskReplayValidationError(
-            f"{context}.type must be navigate or operate."
+            f"{context}.type is not allowed by scenario schema version "
+            f"{schema_version}."
         )
     request = raw_step.get("request")
     if not isinstance(request, Mapping):
@@ -588,6 +609,8 @@ def _validated_step(index: int, raw_step: Any) -> Dict[str, Any]:
         )
     if step_type == "navigate":
         normalized_request = _navigation_request(context, request)
+    elif step_type == "reset":
+        normalized_request = _reset_request(context, request)
     else:
         normalized_request = _operation_request(context, request)
     return {"type": step_type, "request": normalized_request}
@@ -613,6 +636,22 @@ def _navigation_request(
     # A recorded absolute station is deliberately ignored.  Replaying through
     # the task API recomputes the current adapter's safe station.
     return normalized
+
+
+def _reset_request(
+    context: str,
+    request: Mapping[str, Any],
+) -> Dict[str, Any]:
+    allowed = {"cabinet"}
+    unknown = set(request) - allowed
+    if unknown:
+        raise TaskReplayValidationError(
+            f"{context}.request has unknown fields: "
+            + ", ".join(sorted(str(key) for key in unknown))
+        )
+    return {
+        "cabinet": _nonempty_string(request.get("cabinet"), "cabinet")
+    }
 
 
 def _operation_request(

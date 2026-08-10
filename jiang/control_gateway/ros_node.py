@@ -92,7 +92,8 @@ class RosControlNode(Node):
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
 
     TASK_PUBLISHER_HISTORY_LIMIT = 256
-    MANUAL_TRAJECTORY_SETTLE_SECONDS = 0.60
+    DEFAULT_MANUAL_TRAJECTORY_DURATION_SECONDS = 0.50
+    MANUAL_TRAJECTORY_SETTLE_MARGIN_SECONDS = 0.10
     ACTIVE_NAVIGATION_STATES = {
         "enabling",
         "sending",
@@ -123,6 +124,7 @@ class RosControlNode(Node):
         localization_pose_topic: str = "/amcl_pose",
         manual_linear_axis: str = "y",
         manual_joints: Sequence[ManualJointConfig] = (),
+        joint_state_topic: str = "/xczs/joint_states",
     ) -> None:
         super().__init__(
             "xczs_web_control_server",
@@ -157,9 +159,17 @@ class RosControlNode(Node):
         self._manual_joints = tuple(manual_joints)
         if not self._manual_joints:
             raise ValueError("manual_joints must not be empty.")
+        if not isinstance(joint_state_topic, str) or not joint_state_topic.strip():
+            raise ValueError("joint_state_topic must be a non-empty ROS name.")
         if manual_linear_axis not in {"x", "y"}:
             raise ValueError("manual_linear_axis must be either x or y.")
         self._manual_linear_axis = manual_linear_axis
+        self._robot_joint_state: Dict[str, Any] = {
+            "available": False,
+            "positions": {},
+            "stamp_ros_nanoseconds": None,
+            "received_monotonic": None,
+        }
         self._tf_buffer = Buffer(node=self)
         self._tf_listener = TransformListener(
             self._tf_buffer,
@@ -174,6 +184,7 @@ class RosControlNode(Node):
         self._last_update_time = time.monotonic()
         self._pending_trajectory: Optional[JointTrajectory] = None
         self._pending_trajectory_repeats = 0
+        self._pending_trajectory_duration_sec = 0.0
         self._manual_trajectory_active_until = 0.0
         self._cabinet_catalog_received = False
         self._cabinet_controls: Dict[str, Dict[str, Any]] = {}
@@ -228,6 +239,12 @@ class RosControlNode(Node):
             localization_pose_topic,
             self._pose_callback,
             10,
+        )
+        self._robot_joint_state_subscription = self.create_subscription(
+            JointState,
+            joint_state_topic.strip(),
+            self._robot_joint_state_callback,
+            qos_profile_sensor_data,
         )
         self.create_subscription(
             CabinetControlCatalog,
@@ -382,8 +399,31 @@ class RosControlNode(Node):
             self._last_command_time = time.monotonic()
         return linear_y, angular_z
 
-    def set_joint_target(self, positions: List[float]) -> List[float]:
+    def set_joint_target(
+        self,
+        positions: List[float],
+        duration_sec: float = DEFAULT_MANUAL_TRAJECTORY_DURATION_SECONDS,
+    ) -> List[float]:
         """Queue one legacy manual joint target."""
+        if (
+            isinstance(duration_sec, bool)
+            or not isinstance(duration_sec, (int, float))
+            or not math.isfinite(float(duration_sec))
+            or float(duration_sec) <= 0.0
+        ):
+            raise ControlRequestError(
+                "duration_sec must be a positive finite number."
+            )
+        duration_sec = float(duration_sec)
+        duration_nanoseconds = round(duration_sec * 1_000_000_000)
+        duration_seconds, duration_remainder = divmod(
+            duration_nanoseconds,
+            1_000_000_000,
+        )
+        if duration_nanoseconds <= 0 or duration_seconds > 2_147_483_647:
+            raise ControlRequestError(
+                "duration_sec is outside the ROS duration range."
+            )
         if len(positions) != len(self._manual_joints):
             raise ControlRequestError(
                 "positions must match the configured manual joint order "
@@ -400,18 +440,18 @@ class RosControlNode(Node):
         trajectory.joint_names = joint_names
         point = JointTrajectoryPoint()
         point.positions = safe_positions
-        # Give the controller a 0.5 s window to reach the target so it
-        # can interpolate a smooth trajectory.  Without this the
-        # ros2_control JointTrajectoryController has no timing
-        # reference and may reject the command outright.
-        point.time_from_start.sec = 0
-        point.time_from_start.nanosec = 500_000_000
+        # Give the controller an explicit interpolation window. Reset callers
+        # can select a slower, safer trajectory while legacy requests retain
+        # the historical 0.5 s default.
+        point.time_from_start.sec = duration_seconds
+        point.time_from_start.nanosec = duration_remainder
         trajectory.points.append(point)
 
         with self._lock:
             self._reject_if_cabinet_active_locked()
             self._pending_trajectory = trajectory
             self._pending_trajectory_repeats = 6
+            self._pending_trajectory_duration_sec = duration_sec
         return safe_positions
 
     def emergency_stop(self) -> None:
@@ -427,8 +467,8 @@ class RosControlNode(Node):
         """Stop queued manual writes and return remaining settle time.
 
         A trajectory already accepted through the legacy topic cannot be
-        recalled. Its interpolation window is 0.5 s, so replay admission keeps
-        the gateway write lock until that window plus a small margin expires.
+        recalled. Replay admission therefore keeps the gateway write lock until
+        its configured interpolation window plus a small margin expires.
         Pending repeats are discarded immediately.
         """
         now = time.monotonic()
@@ -439,6 +479,7 @@ class RosControlNode(Node):
             self._angular_profile.reset()
             self._pending_trajectory = None
             self._pending_trajectory_repeats = 0
+            self._pending_trajectory_duration_sec = 0.0
             settle_seconds = max(
                 0.0,
                 float(getattr(self, "_manual_trajectory_active_until", 0.0))
@@ -446,6 +487,17 @@ class RosControlNode(Node):
             )
         self._cmd_vel_publisher.publish(Twist())
         return settle_seconds
+
+    def robot_joint_state_snapshot(self) -> Dict[str, Any]:
+        """Return an isolated snapshot of the latest manual-joint positions."""
+        with self._lock:
+            state = self._robot_joint_state
+            return {
+                "available": bool(state["available"]),
+                "positions": dict(state["positions"]),
+                "stamp_ros_nanoseconds": state["stamp_ros_nanoseconds"],
+                "received_monotonic": state["received_monotonic"],
+            }
 
     def navigation_snapshot(self) -> Dict[str, Any]:
         """Return current Nav2 availability, feedback and display overlays."""
@@ -1342,11 +1394,19 @@ class RosControlNode(Node):
                     period,
                 )
                 trajectory = self._pending_trajectory
+                trajectory_duration_sec = float(
+                    getattr(
+                        self,
+                        "_pending_trajectory_duration_sec",
+                        self.DEFAULT_MANUAL_TRAJECTORY_DURATION_SECONDS,
+                    )
+                )
                 if self._pending_trajectory_repeats > 0:
                     self._pending_trajectory_repeats -= 1
                 else:
                     trajectory = None
                     self._pending_trajectory = None
+                    self._pending_trajectory_duration_sec = 0.0
 
                 # Publish while holding the state lock so a cabinet goal
                 # cannot become active between the active check and send.
@@ -1367,7 +1427,9 @@ class RosControlNode(Node):
                                 0.0,
                             )
                         ),
-                        now + self.MANUAL_TRAJECTORY_SETTLE_SECONDS,
+                        now
+                        + trajectory_duration_sec
+                        + self.MANUAL_TRAJECTORY_SETTLE_MARGIN_SECONDS,
                     )
 
     def _request_navigation_mode_locked(
@@ -2856,6 +2918,49 @@ class RosControlNode(Node):
                 "data": list(message.data),
             }
 
+    def _robot_joint_state_callback(self, message: JointState) -> None:
+        """Store only finite positions for the configured manual joints."""
+        required_names = tuple(joint.name for joint in self._manual_joints)
+        required_set = set(required_names)
+        positions: Dict[str, float] = {}
+        seen = set()
+        invalid = set()
+        for index, raw_name in enumerate(message.name):
+            name = str(raw_name)
+            if name not in required_set:
+                continue
+            if name in seen:
+                invalid.add(name)
+                positions.pop(name, None)
+                continue
+            seen.add(name)
+            if index >= len(message.position):
+                invalid.add(name)
+                continue
+            position = float(message.position[index])
+            if not math.isfinite(position):
+                invalid.add(name)
+                continue
+            positions[name] = position
+
+        ordered_positions = {
+            name: positions[name]
+            for name in required_names
+            if name in positions and name not in invalid
+        }
+        stamp_ros_nanoseconds = (
+            int(message.header.stamp.sec) * 1_000_000_000
+            + int(message.header.stamp.nanosec)
+        )
+        snapshot = {
+            "available": len(ordered_positions) == len(required_names),
+            "positions": ordered_positions,
+            "stamp_ros_nanoseconds": stamp_ros_nanoseconds,
+            "received_monotonic": time.monotonic(),
+        }
+        with self._lock:
+            self._robot_joint_state = snapshot
+
     def _pose_callback(
         self,
         message: PoseWithCovarianceStamped,
@@ -2959,6 +3064,7 @@ class RosControlNode(Node):
         self._angular_profile.reset()
         self._pending_trajectory = None
         self._pending_trajectory_repeats = 0
+        self._pending_trajectory_duration_sec = 0.0
         self._cmd_vel_publisher.publish(Twist())
 
     @classmethod

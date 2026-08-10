@@ -144,6 +144,7 @@ class MonitorWebContractTest(unittest.TestCase):
             let ctrlConnected = true;
             let cabinetCatalogReceived = true;
             let cabinetOperationAvailable = false;
+            let cabinetResetAvailable = true;
             let cabinetInterlockWasActive = false;
             let manualTakeoverState = 'idle';
             const navigationStatus = {{available: false}};
@@ -167,6 +168,11 @@ class MonitorWebContractTest(unittest.TestCase):
               $('btnCabinetPress').disabled,
               false,
               'operable=false must remain submit-capable for local failure'
+            );
+            assert.equal(
+              $('btnCabinetReset').disabled,
+              false,
+              'a ready scene reset must remain available'
             );
             selected = {{control_id: 'physical', control_type: 1, operable: true}};
             updateControlInterlocks();
@@ -355,6 +361,119 @@ class MonitorWebContractTest(unittest.TestCase):
                 ['/task/navigate']
               );
             }})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+        """))
+
+    def test_scene_reset_button_submits_scoped_task(self) -> None:
+        html = MONITOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("场景归零（机器人 + 所选柜体）", html)
+        reset = _source_block(
+            "async function resetCabinetControls()",
+            "\n\n// ─── Chassis Control",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            let replayControlReadOnly = false;
+            let cabinetResetAvailable = true;
+            let cleared = 0;
+            let refreshed = 0;
+            const requests = [];
+            const snapshots = [];
+            const messages = [];
+            function isCabinetOperationActive() {{ return false; }}
+            function isNavigationActive() {{ return false; }}
+            function hasRetiringNavigationGoals() {{ return false; }}
+            function selectedCabinetName() {{ return 'cabinet_b'; }}
+            async function clearDirectionInputs() {{ cleared += 1; }}
+            async function controlRequest(path, method, body) {{
+              requests.push({{path, method, body}});
+              return {{
+                task_id: 'reset_1',
+                type: 'reset',
+                status: 'accepted',
+                request: {{cabinet: 'cabinet_b'}}
+              }};
+            }}
+            function applyTaskSnapshot(task) {{ snapshots.push(task); }}
+            function toast(message, kind) {{ messages.push({{message, kind}}); }}
+            function refreshAutonomyStatus() {{ refreshed += 1; }}
+            {reset}
+
+            (async () => {{
+              await resetCabinetControls();
+              assert.equal(cleared, 1);
+              assert.deepEqual(requests, [{{
+                path: '/task/reset',
+                method: 'POST',
+                body: {{cabinet: 'cabinet_b'}}
+              }}]);
+              assert.equal(snapshots[0].type, 'reset');
+              assert.equal(refreshed, 1);
+              assert.match(messages[0].message, /机器人 \+ cabinet_b/);
+
+              cabinetResetAvailable = false;
+              await resetCabinetControls();
+              assert.equal(requests.length, 1);
+              assert.match(messages.at(-1).message, /尚未就绪/);
+            }})().catch(error => {{
+              console.error(error);
+              process.exitCode = 1;
+            }});
+        """))
+
+    def test_reset_task_snapshot_owns_interlock_and_renders_resetting(self) -> None:
+        apply_task = _source_block(
+            "function applyTaskSnapshot(task)",
+            "\nfunction connectTaskEvents()",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            const taskSnapshotVersions = new Map();
+            const cabinetStatusByName = new Map();
+            let activeTaskId = null;
+            let activeTaskType = null;
+            let navigationTaskStatus = null;
+            let cabinetStatus = null;
+            let cabinetStatusCurrent = false;
+            let rendered = 0;
+            let interlocks = 0;
+            function selectedCabinetName() {{ return 'cabinet_a'; }}
+            function renderNavigationStatus() {{}}
+            function renderCabinetStatus() {{ rendered += 1; }}
+            function updateControlInterlocks() {{ interlocks += 1; }}
+            {apply_task}
+
+            const accepted = {{
+              task_id: 'reset_1',
+              type: 'reset',
+              status: 'accepted',
+              request: {{cabinet: 'cabinet_a'}},
+              phase: 'accepted',
+              progress: 0,
+              reservation_active: true,
+              updated_at: 1
+            }};
+            applyTaskSnapshot(accepted);
+            assert.equal(activeTaskId, 'reset_1');
+            assert.equal(activeTaskType, 'reset');
+            assert.equal(cabinetStatus.state, 'resetting');
+            assert.equal(cabinetStatus.scene_reset, true);
+            assert.equal(cabinetStatusByName.get('cabinet_a').active, true);
+
+            applyTaskSnapshot({{
+              ...accepted,
+              status: 'success',
+              phase: 'completed',
+              progress: 1,
+              reservation_active: false,
+              updated_at: 2,
+              result: {{scene_reset: true}}
+            }});
+            assert.equal(activeTaskId, null);
+            assert.equal(activeTaskType, null);
+            assert.equal(cabinetStatus.state, 'succeeded');
+            assert.equal(cabinetStatus.success, true);
+            assert.equal(rendered, 2);
+            assert.equal(interlocks, 2);
         """))
 
 

@@ -84,6 +84,10 @@ MoveIt 到达名义按压位姿后，执行器会读取 Gazebo 的实际按钮�
 
 Nav2 只负责把机器人送到指定柜体的操作工位，MoveIt 2 负责机械臂碰撞检查、接近、操作和撤回。当 `/task/navigate` 携带 `control_id` 时，任务层优先使用机器人适配参数中该控件的 `controls.<control_id>.navigation_station`；该控件没有专用工位时，回退到 `cabinet_scene.yaml/navigation_station` 的公共工位。两种配置都会结合目标柜体的完整 RPY 换算到地图坐标系，不会在 Web 中硬编码绝对位姿。省略 `control_id` 时直接使用公共工位，保持旧客户端兼容。
 
+导航任务默认按地图坐标系分轴执行。任务层先以目标工位的 X 坐标和当前 Y 坐标构造中间点，完成 X 方向阶段后，再前往最终工位完成 Y 方向阶段；已在容差内的零长度阶段可直接跳过。只有前一阶段成功并释放相应导航目标后才会开始后一阶段；任一阶段失败或取消都不会继续。
+
+“分轴”是无障碍正常情况下的路径顺序，不是绕过 Nav2 的直线速度控制。两个阶段都作为 Nav2 目标执行，并继续服从当前代价地图、footprint、碰撞检查和局部规划器。如果轴向直线上出现障碍，Nav2 可以暂时偏离该轴安全绕行；安全可达性始终高于轨迹的几何纯度。
+
 `/task/operate` **绝不隐式导航**。需要完整流程时，Web 先提交 `/task/navigate`，等待成功后再提交 `/task/operate`。导航失败或取消时不会继续操作。手动方向输入仍可触发现有 Nav2 接管流程；对应导航任务会在 Nav2 确认取消后才释放全局任务锁。
 
 Web 不展示占用地图或全局路径，也不提供任意坐标导航入口。用户只能从 inventory 选择柜体，任务层使用已校验的 `navigation_station` 发送 Nav2 目标。底层仍订阅地图，仅用于工位边界和占用安全检查。
@@ -115,6 +119,7 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 | GET | `/cabinets/<name>/controls` | 该实例的目录与实时状态 |
 | POST | `/task/navigate` | 按柜体导航；可选 `control_id` 用于选择逐控件工位 |
 | POST | `/task/operate` | 操作指定实例的控件，不含导航 |
+| POST | `/task/reset` | 将 `cabinet` 指定的任务场景归零：底盘回初始位姿、机械臂/夹爪回默认关节，并复位该柜体控件 |
 | GET | `/task/<id>/status` | 状态轮询 fallback |
 | POST | `/task/<id>/cancel` | 请求取消 |
 | GET | `/task/events` | 可重连 SSE 事件流 |
@@ -147,7 +152,17 @@ curl -sS -X POST http://localhost:8090/task/operate \
   -d '{"cabinet":"cabinet_a","control_id":"box_10_button_1","command":"press","force":4.0}'
 ```
 
-有效请求立即返回 `{type}_{timestamp_ms}_{random6}` 格式的 `task_id`。Web `TaskManager` 是第一层全局互斥：所有柜体共用一个活动任务/保留资源槽，导航和操作都不能并发。并发 Web 请求返回 HTTP 409 和 `active_task_id`。后端 Action 暂不可用、规划失败或力度不足发生在任务接受之后，因此表现为该任务的 `failed` 终态，而不是丢失任务 ID。
+将指定柜体的任务场景归零：
+
+```bash
+curl -sS -X POST http://localhost:8090/task/reset \
+  -H 'Content-Type: application/json' \
+  -d '{"cabinet":"cabinet_a"}'
+```
+
+`/task/reset` 只接受非空 `cabinet` 字段，该字段选择要归零的柜体任务场景。一次成功归零必须同时确认：共享机器人底盘已回到配置的初始位姿，机械臂和夹爪已回到机器人 adapter 声明的默认关节位置，且所选柜体的全部控件已回到配置默认状态。其中任一部分未完成或未通过最终状态验证，整个 reset 任务都不得报告 `success`。该 scoped 请求不会改动其他柜体的控件状态。未知柜体在接纳前返回 404；任一归零后端不可用、超时或状态验证失败则作为已接纳任务的 `failed` 终态记录。无 scope 的 `/cabinet/reset` 仅保留为单柜旧客户端兼容接口；需要可录制的完整场景归零时必须使用 `/task/reset`。
+
+有效请求立即返回 `{type}_{timestamp_ms}_{random6}` 格式的 `task_id`。Web `TaskManager` 是第一层全局互斥：所有柜体共用一个活动任务/保留资源槽，导航、操作和场景归零都不能并发。并发 Web 请求返回 HTTP 409 和 `active_task_id`。后端 Action 或 Service 暂不可用、规划失败、力度不足或归零状态验证失败发生在任务接受之后，因此表现为该任务的 `failed` 终态，而不是丢失任务 ID。
 
 导航或操作超时后，Web 立即收到 `navigation_timeout` 或 `operation_timeout` 终态。如底层 Action 尚未确认退出，任务记录保持 `reservation_active=true`，新任务仍返回 409；只有收到底层终态后才释放全局资源，避免超时动作与新动作重叠。
 
@@ -163,7 +178,7 @@ SSE 业务事件为 `task_accepted`、`task_progress` 和 `task_completed`，支
 录制和回放不是控制柜操作的硬依赖，而是用于复现失败、回归验收、演示和迁移新机器人。实现分为两个边界明确的层次：
 
 - **数据记录/回放**使用 ROS 2 官方 `rosbag2` 命令行，不自行实现 bag 格式。回放只用于观察历史状态，不会重新驱动机器人。
-- **任务重演**读取记录中提取的语义步骤，再调用现有 `/task/navigate` 和 `/task/operate`。它重新经过当前 Nav2、MoveIt、力度判定、任务互斥和安全检查，不回灌历史速度或轨迹。
+- **任务重演**读取记录中提取的语义步骤，再调用现有 `/task/navigate`、`/task/operate` 和 `/task/reset`。它重新经过当前 Nav2、MoveIt、底盘与关节状态验证、Gazebo 柜体物理验证、任务互斥和安全检查，不回灌历史速度或轨迹。
 
 ### 记录内容和文件
 
@@ -174,12 +189,12 @@ recordings/<recording_id>/
 ├── bag/                  # rosbag2 数据与 metadata.yaml
 ├── manifest.json         # 可复现性清单和执行结果
 ├── timeline.jsonl        # Web 任务事件时间线
-├── scenario.yaml         # 可重演的 navigate/operate 语义步骤
+├── scenario.yaml         # 可重演的 navigate/operate/reset 语义步骤
 ├── rosbag-record.log
 └── rosbag-play.log
 ```
 
-`manifest.json` 包含记录时的 Git 提交、关键配置文件 SHA-256、柜体 inventory 快照、请求记录的 Topic、实际写入的 Topic、是否包含传感器、持续时间和停止结果。`timeline.jsonl` 按顺序保存 `task_accepted`、`task_progress`、`task_completed` 和资源释放等事件；`scenario.yaml` 是 schema version 1 的 JSON 兼容文档，从任务接受与终态事件生成，而不是从 `/cmd_vel` 反推任务。
+`manifest.json` 包含记录时的 Git 提交、关键配置文件 SHA-256、柜体 inventory 快照、请求记录的 Topic、实际写入的 Topic、是否包含传感器、持续时间和停止结果。`timeline.jsonl` 按顺序保存 `task_accepted`、`task_progress`、`task_completed` 和资源释放等事件；通过 `/task/reset` 提交的复位与导航、操作一样进入这条时间线。`scenario.yaml` 是从任务接受与终态事件生成的 JSON 兼容文档，而不是从 `/cmd_vel` 反推任务；不含复位步骤的旧格式使用 schema version 1，包含复位步骤时使用 schema version 2。
 
 默认记录以下状态类 Topic；图中不存在的候选 Topic 不会产生数据：
 
@@ -191,7 +206,9 @@ recordings/<recording_id>/
 
 Web 中勾选“包含传感器”后，还会加入相机图像、相机标定、深度图和激光雷达候选 Topic。高频传感器数据可能显著增加文件体积，日常任务回归默认不记录。
 
-录制是被动观察，可以与正常导航或柜体操作并存，不会使 Web 进入只读状态。数据回放和任务重演则彼此互斥，并且只能在没有活动任务或运动资源时启动。启动回放前，网关还会立即停止手动底盘输出、清除尚未发布的手动关节轨迹，并等待已经被控制器接受的 0.5 秒轨迹窗口连同 0.1 秒安全余量结束，随后才取得回放只读所有权。
+录制是被动观察，可以与正常导航、柜体操作或场景归零并存，不会使 Web 进入只读状态。如需可确定复现任务初始状态，应当先开始录制，再为目标柜体显式提交 `/task/reset`；只有底盘初始位姿、机械臂/夹爪默认关节和柜体默认控件状态全部确认后，再开始导航和操作。任务重演不会为旧记录或未记录的柜体隐式补做场景归零，以免篡改原场景意图。
+
+数据回放和任务重演彼此互斥，并且只能在没有活动任务或运动资源时启动。启动回放前，网关还会立即停止手动底盘输出、清除尚未发布的手动关节轨迹，并等待已经被控制器接受的 0.5 秒轨迹窗口连同 0.1 秒安全余量结束，随后才取得回放只读所有权。
 
 ### 隔离数据回放
 
@@ -211,12 +228,20 @@ Web 中勾选“包含传感器”后，还会加入相机图像、相机标定�
 
 ### 任务重演
 
-一个任务场景只允许下面两类步骤：
+场景读取器同时兼容 schema version 1 和 2：
+
+- version 1 是旧格式，只允许 `navigate` 和 `operate`；已有录制不需要迁移。
+- version 2 在保留 `navigate` 和 `operate` 的基础上新增 `reset`。只有录制时真实接纳过的复位任务才会生成该步骤。
+
+version 2 场景示例：
 
 ```yaml
-schema_version: 1
+schema_version: 2
 recording_id: recording_...
 steps:
+  - type: reset
+    request:
+      cabinet: cabinet_a
   - type: navigate
     request:
       cabinet: cabinet_a
@@ -229,9 +254,9 @@ steps:
       force: 5.0
 ```
 
-导航步骤中即使历史记录带有绝对 `station`，重演时也会丢弃它，并根据**当前**柜体位姿与机器人 adapter 重新计算安全工位。操作步骤保留柜体、控件、命令、目标状态/位置和请求力。未知步骤、额外字段、非法标识、非有限数值、零力/负力或空场景会在运动前拒绝。
+`reset` 步骤的 request 只允许 `cabinet`，并通过 scoped `/task/reset` 重新执行完整场景归零：共享机器人底盘回到配置初始位姿，机械臂和夹爪回到 adapter 默认关节，所选柜体控件回到配置默认状态；它不会被扩大成“复位所有柜体控件”。导航步骤中即使历史记录带有绝对 `station`，重演时也会丢弃它，并根据**当前**柜体位姿与机器人 adapter 重新计算安全工位，再按 X 后 Y 的分轴策略执行。操作步骤保留柜体、控件、命令、目标状态/位置和请求力。未知步骤、版本不允许的步骤、额外字段、非法标识、非有限数值、零力/负力或空场景会在产生任何物理副作用前拒绝。
 
-重演按顺序提交语义任务，并等待每一步进入终态且释放资源后才执行下一步。任一步导航失败、MoveIt 不可达、力度不足、物理反馈不符或被取消，整个重演立即停止并保留原始失败码和原因；记录中的历史“成功”不会绕过当前环境的安全检查。取消重演会同时取消当前活动任务。任务重演具有真实运动副作用，不能把它当作只读数据播放。
+重演按顺序提交语义任务，并等待每一步进入终态且释放资源后才执行下一步。任一步场景归零失败、导航失败、MoveIt 不可达、力度不足、物理反馈不符或被取消，整个重演立即停止并保留当前失败码和原因；记录中的历史“成功”不会绕过当前环境的安全检查。取消重演会同时请求取消当前活动任务；已被后端接纳且无法立即停止的归零子操作会继续保留全局任务资源，直到后端确认它已结束，且不会执行后续场景步骤。任务重演具有真实运动和物理状态副作用，不能把它当作只读数据播放。
 
 ### Web API
 

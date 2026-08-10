@@ -109,6 +109,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 "/joint_trajectory": self._handle_joint_trajectory,
                 "/task/navigate": self._handle_task_navigate,
                 "/task/operate": self._handle_task_operate,
+                "/task/reset": self._handle_task_reset,
                 "/navigation/mode": self._handle_navigation_mode,
                 "/navigation/cancel": self._handle_navigation_cancel,
                 "/navigation/takeover": self._handle_navigation_takeover,
@@ -209,6 +210,15 @@ class ControlHandler(BaseHTTPRequestHandler):
                 target_position,
                 force,
             ),
+        )
+
+    def _handle_task_reset(self) -> None:
+        body = self._required_body()
+        self._reject_unknown_fields(body, {"cabinet"})
+        cabinet = self._nonempty_string(body, "cabinet")
+        self._send_json(
+            202,
+            self.control_server.submit_reset_task(cabinet),
         )
 
     def _handle_task_cancel(self, task_id: str) -> None:

@@ -65,6 +65,8 @@ NAVIGATION_POSITION_TOLERANCE_M = 0.20
 # fraction of a degree while the base settles.  Keep a 5 mrad verification
 # margin without relaxing the controller's own stopping criterion.
 NAVIGATION_YAW_TOLERANCE_RAD = 0.205
+NAVIGATION_AXIS_EPSILON_M = 1.0e-3
+RESET_JOINT_STATE_POLL_SEC = 0.05
 MAP_STATION_MARGIN_M = 0.05
 
 
@@ -194,6 +196,7 @@ class ControlServer:
             ),
             manual_linear_axis=self._robot_adapter.manual_linear_axis,
             manual_joints=self._robot_adapter.manual_joints,
+            joint_state_topic=self._robot_adapter.joint_state_topic,
         )
         self._executor = SingleThreadedExecutor(context=self._context)
         self._executor.add_node(self._node)
@@ -243,6 +246,7 @@ class ControlServer:
             load_scenario=self._recording_manager.load_scenario,
             submit_navigation=self._replay_submit_navigation,
             submit_operation=self._replay_submit_operation,
+            submit_reset=self._replay_submit_reset,
             task_status=self._replay_task_status,
             cancel_task=self._replay_cancel_task,
         )
@@ -842,7 +846,7 @@ class ControlServer:
         """Start namespace-isolated rosbag2 playback in read-only mode."""
         with self._request_scope():
             with self._task_interlock_scope():
-                self._ensure_replay_can_start("Data playback")
+                self._ensure_backend_quiescent("Data playback")
                 if self._task_replay.is_active:
                     raise ControlRequestError(
                         "A task replay is already active.",
@@ -885,7 +889,7 @@ class ControlServer:
         """Re-enact safe semantic tasks through the current control stack."""
         with self._request_scope():
             with self._task_interlock_scope():
-                self._ensure_replay_can_start("Task replay")
+                self._ensure_backend_quiescent("Task replay")
                 playback = self._call_recording_manager(
                     self._recording_manager.playback_status
                 )
@@ -1077,6 +1081,39 @@ class ControlServer:
                 except TaskManagerClosedError as error:
                     raise ControlRequestError(str(error), 503) from error
 
+    def submit_reset_task(self, cabinet: str) -> Dict[str, Any]:
+        """Reset one cabinet through the globally serialized task API."""
+        with self._request_scope():
+            client = self._client_for(cabinet)
+            request = {"cabinet": cabinet}
+            with self._task_interlock_scope():
+                self._ensure_backend_quiescent("Scene reset")
+                replay_owned = self._replay_internal_authorized()
+                try:
+                    return self._task_manager.submit(
+                        "reset",
+                        request,
+                        lambda context: self._execute_reset_task_owned(
+                            context,
+                            cabinet,
+                            client,
+                            replay_owned,
+                        ),
+                        # Trigger services cannot be canceled after dispatch.
+                        # Reject cancellation so TaskManager retains the global
+                        # slot until the service call reaches a real terminal.
+                        cancel_callback=lambda _task_id: False,
+                        thread_name=f"xczs-reset-{cabinet}",
+                    )
+                except TaskConflictError as error:
+                    raise ControlRequestError(
+                        str(error),
+                        409,
+                        details=error.details,
+                    ) from error
+                except TaskManagerClosedError as error:
+                    raise ControlRequestError(str(error), 503) from error
+
     def task_status(self, task_id: str) -> Dict[str, Any]:
         """Return a retained task snapshot for polling clients."""
         with self._request_scope():
@@ -1119,7 +1156,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"navigate", "operate"},
+                    {"navigate", "operate", "reset"},
                     "Manual base control",
                     canceling_allowed_types={"navigate"},
                 )
@@ -1133,7 +1170,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"operate"},
+                    {"operate", "reset"},
                     "Manual joint control",
                 )
                 return self._node.set_joint_target(positions)
@@ -1148,7 +1185,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"navigate", "operate"},
+                    {"navigate", "operate", "reset"},
                     "The legacy navigation-mode route",
                 )
                 return self._node.set_navigation_mode(enabled)
@@ -1166,6 +1203,10 @@ class ControlServer:
                     return self._cancel_managed_task(
                         str(active_task["task_id"]),
                     )
+                self._reject_active_task_types(
+                    {"reset"},
+                    "The legacy navigation-cancel route",
+                )
                 return self._node.cancel_navigation()
 
     def takeover_navigation(self) -> Dict[str, Any]:
@@ -1173,7 +1214,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"operate"},
+                    {"operate", "reset"},
                     "Navigation takeover",
                 )
                 active_task = self._active_task_snapshot()
@@ -1206,7 +1247,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"navigate", "operate"},
+                    {"navigate", "operate", "reset"},
                     "The legacy cabinet-press route",
                 )
                 clients = getattr(self, "_cabinet_clients", None)
@@ -1237,7 +1278,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"navigate", "operate"},
+                    {"navigate", "operate", "reset"},
                     "The legacy cabinet-operation route",
                 )
                 clients = getattr(self, "_cabinet_clients", None)
@@ -1278,7 +1319,7 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"navigate", "operate"},
+                    {"navigate", "operate", "reset"},
                     "The legacy cabinet-reset route",
                 )
                 clients = getattr(self, "_cabinet_clients", None)
@@ -1298,6 +1339,10 @@ class ControlServer:
                     return self._cancel_managed_task(
                         str(active_task["task_id"]),
                     )
+                self._reject_active_task_types(
+                    {"reset"},
+                    "The legacy cabinet-cancel route",
+                )
                 clients = getattr(self, "_cabinet_clients", None)
                 if clients:
                     _name, client = self._legacy_cabinet_client()
@@ -1445,12 +1490,307 @@ class ControlServer:
         with self._replay_internal_scope():
             return self._execute_navigation_task(context, station)
 
+    def _execute_reset_task_owned(
+        self,
+        context: Any,
+        cabinet: str,
+        client: CabinetClient,
+        replay_owned: bool,
+    ) -> Mapping[str, Any]:
+        if not replay_owned:
+            return self._execute_reset_task(context, cabinet, client)
+        with self._replay_internal_scope():
+            return self._execute_reset_task(context, cabinet, client)
+
+    def _execute_reset_task(
+        self,
+        context: Any,
+        cabinet: str,
+        client: CabinetClient,
+    ) -> Mapping[str, Any]:
+        context.raise_if_canceled()
+        context.progress(
+            "resetting_robot_quiescence",
+            0.01,
+            message="Stopping pending manual robot commands before reset.",
+            data={"cabinet": cabinet, "component": "robot"},
+        )
+        try:
+            self._quiesce_manual_outputs()
+        except ControlRequestError as error:
+            raise TaskExecutionError(
+                str(error),
+                code="robot_quiescence_failed",
+                details=getattr(error, "details", {}),
+                result={"cabinet": cabinet},
+            ) from error
+        context.progress(
+            "resetting_cabinet",
+            0.05,
+            message=f"Resetting and verifying controls for {cabinet}.",
+            data={"cabinet": cabinet, "component": "cabinet"},
+        )
+        try:
+            cabinet_result = client.reset()
+        except CabinetClientError as error:
+            raise TaskExecutionError(
+                str(error),
+                code=error.code,
+                details=error.details,
+                result={"cabinet": cabinet},
+            ) from error
+
+        context.progress(
+            "resetting_robot_joints",
+            0.20,
+            message="Returning the arm and gripper to adapter defaults.",
+            data={"cabinet": cabinet, "component": "robot_joints"},
+        )
+        joint_result = self._reset_robot_joints(context, cabinet)
+        if context.shutdown_requested:
+            raise TaskExecutionError(
+                "Gateway shutdown interrupted the reset before base homing.",
+                code="shutdown_requested",
+                result={
+                    "cabinet": cabinet,
+                    "components": {
+                        "cabinet": dict(cabinet_result),
+                        "robot_joints": joint_result,
+                    },
+                },
+            )
+
+        context.progress(
+            "resetting_robot_base",
+            0.55,
+            message="Returning the robot base to its configured initial pose.",
+            data={"cabinet": cabinet, "component": "robot_base"},
+        )
+        # Cabinet reset and legacy joint trajectories cannot be recalled once
+        # dispatched, so cancellation is rejected during those phases.  Nav2
+        # does support cancellation; enable it immediately before base homing.
+        self._task_manager.set_cancel_callback(
+            context.task_id,
+            lambda _task_id: self._node.cancel_navigation(allow_idle=True),
+        )
+        reset_pose = self._robot_adapter.reset_base_pose
+        reset_station = {
+            "cabinet": cabinet,
+            "frame_id": reset_pose.frame_id,
+            "x": reset_pose.x,
+            "y": reset_pose.y,
+            "yaw": reset_pose.yaw,
+            "purpose": "robot_reset",
+        }
+        base_result = self._execute_navigation_task(
+            context,
+            reset_station,
+            progress_start=0.55,
+            progress_span=0.44,
+        )
+        return {
+            "cabinet": cabinet,
+            "status": "reset",
+            "message": "Robot and selected cabinet returned to defaults.",
+            "components": {
+                "cabinet": {
+                    "status": str(cabinet_result.get("status") or "reset"),
+                    "message": str(
+                        cabinet_result.get("message")
+                        or "Cabinet controls reset."
+                    ),
+                },
+                "robot_joints": joint_result,
+                "robot_base": base_result,
+            },
+        }
+
+    def _reset_robot_joints(
+        self,
+        context: Any,
+        cabinet: str,
+    ) -> Dict[str, Any]:
+        """Command adapter defaults and wait for fresh joint-state proof."""
+        adapter = self._robot_adapter
+        names = tuple(joint.name for joint in adapter.manual_joints)
+        targets = tuple(
+            float(joint.default_position) for joint in adapter.manual_joints
+        )
+        command_started = time.monotonic()
+        try:
+            commanded = self._node.set_joint_target(
+                list(targets),
+                duration_sec=float(adapter.reset_joint_duration_sec),
+            )
+        except ControlRequestError as error:
+            raise TaskExecutionError(
+                str(error),
+                code=(
+                    "backend_unavailable"
+                    if getattr(error, "status", 500) == 503
+                    else "robot_joint_reset_rejected"
+                ),
+                details=getattr(error, "details", {}),
+                result={"cabinet": cabinet},
+            ) from error
+
+        deadline = command_started + float(adapter.reset_joint_timeout_sec)
+        tolerance = float(adapter.reset_joint_tolerance)
+        last_snapshot: Mapping[str, Any] = {}
+        last_report_at = 0.0
+        while True:
+            snapshot = self._node.robot_joint_state_snapshot()
+            last_snapshot = snapshot
+            received_at = snapshot.get("received_monotonic")
+            positions = snapshot.get("positions")
+            if (
+                snapshot.get("available") is True
+                and isinstance(received_at, (int, float))
+                and float(received_at) >= command_started
+                and isinstance(positions, Mapping)
+            ):
+                try:
+                    errors = {
+                        name: abs(float(positions[name]) - target)
+                        for name, target in zip(names, commanded)
+                    }
+                except (KeyError, TypeError, ValueError):
+                    errors = {}
+                if errors and max(errors.values()) <= tolerance:
+                    return {
+                        "status": "verified",
+                        "joint_count": len(names),
+                        "max_error_rad": max(errors.values()),
+                        "tolerance_rad": tolerance,
+                    }
+
+            now = time.monotonic()
+            if now >= deadline:
+                details: Dict[str, Any] = {
+                    "joint_names": list(names),
+                    "target_positions": list(commanded),
+                    "tolerance_rad": tolerance,
+                    "timeout_seconds": float(adapter.reset_joint_timeout_sec),
+                    "joint_state_available": bool(
+                        last_snapshot.get("available")
+                    ),
+                }
+                if isinstance(last_snapshot.get("positions"), Mapping):
+                    details["observed_positions"] = {
+                        name: last_snapshot["positions"].get(name)
+                        for name in names
+                    }
+                raise TaskExecutionError(
+                    "Robot joints did not reach their configured defaults "
+                    "before the reset timeout.",
+                    code="robot_joint_reset_timeout",
+                    details=details,
+                    result={"cabinet": cabinet},
+                )
+            if now - last_report_at >= 1.0:
+                elapsed = max(0.0, now - command_started)
+                timeout = float(adapter.reset_joint_timeout_sec)
+                context.progress(
+                    "resetting_robot_joints",
+                    min(0.49, 0.20 + 0.29 * elapsed / timeout),
+                    message="Waiting for fresh robot joint-state confirmation.",
+                    data={
+                        "cabinet": cabinet,
+                        "component": "robot_joints",
+                    },
+                )
+                last_report_at = now
+            time.sleep(RESET_JOINT_STATE_POLL_SEC)
+
     def _execute_navigation_task(
         self,
         context: Any,
         station: Mapping[str, Any],
+        *,
+        progress_start: float = 0.0,
+        progress_span: float = 1.0,
     ) -> Mapping[str, Any]:
-        started = time.monotonic()
+        task_started = time.monotonic()
+        initial_pose = self._node.navigation_snapshot().get("current_pose")
+        legs = self._axis_navigation_legs(initial_pose, station)
+        total_distance = sum(float(leg["distance_m"]) for leg in legs)
+        if total_distance <= NAVIGATION_AXIS_EPSILON_M:
+            weights = [1.0 / len(legs)] * len(legs)
+        else:
+            weights = [
+                float(leg["distance_m"]) / total_distance for leg in legs
+            ]
+
+        route_progress = 0.0
+        final_result: Mapping[str, Any] = {}
+        for index, (leg, weight) in enumerate(zip(legs, weights)):
+            final_result = self._execute_navigation_leg(
+                context,
+                leg["target"],
+                task_started=task_started,
+                progress_start=(
+                    progress_start + progress_span * route_progress
+                ),
+                progress_span=progress_span * weight,
+                route_axis=str(leg["axis"]),
+                route_leg_index=index,
+                route_leg_count=len(legs),
+            )
+            # A retained timeout/shutdown terminal releases its reservation
+            # only after Nav2 later confirms termination and returns an empty
+            # sentinel.  Never submit another axis after that terminal path.
+            if not final_result:
+                return {}
+            route_progress += weight
+            if index + 1 < len(legs):
+                context.progress(
+                    f"navigation_{leg['axis']}_complete",
+                    min(
+                        0.99,
+                        progress_start + progress_span * route_progress,
+                    ),
+                    message=(
+                        f"Navigation {leg['axis'].upper()}-axis leg "
+                        "completed; preparing the next axis."
+                    ),
+                    data={
+                        "cabinet": station["cabinet"],
+                        "route_axis": leg["axis"],
+                        "route_leg_index": index + 1,
+                        "route_leg_count": len(legs),
+                    },
+                )
+
+        result = dict(final_result)
+        result["station"] = dict(station)
+        result["route"] = {
+            "policy": "map_x_then_y",
+            "legs": [
+                {
+                    "axis": leg["axis"],
+                    "target": {
+                        "x": leg["target"]["x"],
+                        "y": leg["target"]["y"],
+                        "yaw": leg["target"]["yaw"],
+                    },
+                }
+                for leg in legs
+            ],
+        }
+        return result
+
+    def _execute_navigation_leg(
+        self,
+        context: Any,
+        station: Mapping[str, Any],
+        *,
+        task_started: float,
+        progress_start: float,
+        progress_span: float,
+        route_axis: str,
+        route_leg_index: int,
+        route_leg_count: int,
+    ) -> Mapping[str, Any]:
         initial_distance: Optional[float] = None
         initial_pose = self._node.navigation_snapshot().get("current_pose")
         if isinstance(initial_pose, Mapping):
@@ -1466,6 +1806,17 @@ class ControlServer:
             # an immediately canceled task cannot submit a goal afterward.
             with self._task_interlock_scope():
                 context.raise_if_canceled()
+                elapsed_before_send = time.monotonic() - task_started
+                if elapsed_before_send >= NAVIGATION_TIMEOUT_SEC:
+                    raise TaskExecutionError(
+                        "Navigation timed out before the next axis could start.",
+                        code="navigation_timeout",
+                        result={
+                            "cabinet": station["cabinet"],
+                            "station": dict(station),
+                            "duration_seconds": elapsed_before_send,
+                        },
+                    )
                 self._node.send_navigation_goal(
                     float(station["x"]),
                     float(station["y"]),
@@ -1494,7 +1845,7 @@ class ControlServer:
             snapshot = self._node.navigation_snapshot()
             state = str(snapshot.get("state", "unknown"))
             now = time.monotonic()
-            elapsed = now - started
+            elapsed = now - task_started
             if timeout_started_at is None and elapsed >= NAVIGATION_TIMEOUT_SEC:
                 timeout_started_at = now
             timed_out = timeout_started_at is not None
@@ -1626,9 +1977,13 @@ class ControlServer:
             )
             if should_report:
                 last_progress = max(last_progress, progress)
+                task_progress = min(
+                    0.99,
+                    progress_start + progress_span * last_progress,
+                )
                 context.progress(
                     f"navigation_{state}",
-                    last_progress,
+                    task_progress,
                     message=str(
                         snapshot.get("message") or "Navigation running."
                     ),
@@ -1639,6 +1994,9 @@ class ControlServer:
                         ),
                         "eta_seconds": snapshot.get("eta_seconds"),
                         "recoveries": snapshot.get("recoveries", 0),
+                        "route_axis": route_axis,
+                        "route_leg_index": route_leg_index + 1,
+                        "route_leg_count": route_leg_count,
                     },
                 )
                 last_phase = state
@@ -1705,6 +2063,90 @@ class ControlServer:
             # Keep polling until Nav2 reports a real terminal state so a new
             # globally-exclusive task cannot overlap a retiring goal.
             time.sleep(TASK_MONITOR_PERIOD_SEC)
+
+    @staticmethod
+    def _axis_navigation_legs(
+        initial_pose: Any,
+        station: Mapping[str, Any],
+    ) -> Tuple[Dict[str, Any], ...]:
+        """Build stoppable map-axis legs, always preferring X before Y."""
+        if not isinstance(initial_pose, Mapping):
+            raise TaskExecutionError(
+                "A localized start pose is required for axis-by-axis navigation.",
+                code="initial_pose_unavailable",
+            )
+        try:
+            start_x = float(initial_pose["x"])
+            start_y = float(initial_pose["y"])
+            target_x = float(station["x"])
+            target_y = float(station["y"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise TaskExecutionError(
+                "The localized start pose or navigation station is invalid.",
+                code="initial_pose_unavailable",
+            ) from error
+        if not all(
+            math.isfinite(value)
+            for value in (start_x, start_y, target_x, target_y)
+        ):
+            raise TaskExecutionError(
+                "The localized start pose or navigation station is invalid.",
+                code="initial_pose_unavailable",
+            )
+        expected_frame = str(station.get("frame_id") or "map")
+        actual_frame = initial_pose.get("frame_id")
+        if actual_frame not in {None, "", expected_frame}:
+            raise TaskExecutionError(
+                "The localized start pose uses an unexpected coordinate frame.",
+                code="initial_pose_frame_mismatch",
+                details={
+                    "expected_frame": expected_frame,
+                    "actual_frame": actual_frame,
+                },
+            )
+
+        delta_x = target_x - start_x
+        delta_y = target_y - start_y
+        legs: List[Dict[str, Any]] = []
+        if (
+            abs(delta_x) > NAVIGATION_AXIS_EPSILON_M
+            and abs(delta_y) > NAVIGATION_AXIS_EPSILON_M
+        ):
+            corner = dict(station)
+            corner.update(
+                {
+                    "x": target_x,
+                    "y": start_y,
+                    # Finish the corner facing along the next Y-axis leg.  The
+                    # stateful Nav2 goal checker settles XY before this turn.
+                    "yaw": math.copysign(math.pi / 2.0, delta_y),
+                }
+            )
+            legs.append(
+                {
+                    "axis": "x",
+                    "distance_m": abs(delta_x),
+                    "target": corner,
+                }
+            )
+
+        if abs(delta_y) > NAVIGATION_AXIS_EPSILON_M:
+            final_axis = "y"
+            final_distance = abs(delta_y)
+        elif abs(delta_x) > NAVIGATION_AXIS_EPSILON_M:
+            final_axis = "x"
+            final_distance = abs(delta_x)
+        else:
+            final_axis = "alignment"
+            final_distance = 0.0
+        legs.append(
+            {
+                "axis": final_axis,
+                "distance_m": final_distance,
+                "target": dict(station),
+            }
+        )
+        return tuple(legs)
 
     @staticmethod
     def _navigation_progress(
@@ -2269,7 +2711,7 @@ class ControlServer:
             "task_replay": task_replay,
         }
 
-    def _ensure_replay_can_start(self, operation: str) -> None:
+    def _ensure_backend_quiescent(self, operation: str) -> None:
         active_task = self._active_task_snapshot()
         if active_task is not None:
             task_id = str(active_task.get("task_id", "unknown"))
@@ -2300,7 +2742,7 @@ class ControlServer:
                 details={"active_cabinets": active_cabinets},
             )
 
-    def _quiesce_manual_outputs_for_replay(self) -> None:
+    def _quiesce_manual_outputs(self) -> None:
         """Stop legacy writes and wait out an accepted manual trajectory."""
         quiesce = getattr(self._node, "quiesce_manual_outputs", None)
         if not callable(quiesce):
@@ -2320,6 +2762,10 @@ class ControlServer:
             )
         if settle_seconds > 0.0:
             time.sleep(float(settle_seconds))
+
+    def _quiesce_manual_outputs_for_replay(self) -> None:
+        """Compatibility wrapper for existing replay admission call sites."""
+        self._quiesce_manual_outputs()
 
     def _replay_internal_authorized(self) -> bool:
         local = getattr(self, "_replay_internal", None)
@@ -2364,6 +2810,10 @@ class ControlServer:
                 target_position,
                 force,
             )
+
+    def _replay_submit_reset(self, cabinet: str) -> Mapping[str, Any]:
+        with self._replay_internal_scope():
+            return self.submit_reset_task(cabinet)
 
     def _replay_task_status(self, task_id: str) -> Mapping[str, Any]:
         return self._task_manager.get_task(task_id)
