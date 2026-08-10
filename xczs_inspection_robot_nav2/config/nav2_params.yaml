@@ -122,7 +122,10 @@ bt_navigator_navigate_to_pose_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: true
-    controller_frequency: 20.0
+    # DWB evaluates a Cartesian product of vx/vy/vtheta samples.  Keep the
+    # control loop aligned with the 10 Hz local costmap so the full Gazebo
+    # stack can maintain simulation time without dropping control cycles.
+    controller_frequency: 10.0
     min_x_velocity_threshold: 0.001
     min_y_velocity_threshold: 0.001
     min_theta_velocity_threshold: 0.001
@@ -133,17 +136,25 @@ controller_server:
     controller_plugins:
       - FollowPath
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      # Axis-by-axis navigation ends each leg with an in-place turn.  Count
+      # angular motion as progress so a healthy turn is not aborted merely
+      # because its translation stays inside required_movement_radius.
+      plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.05
+      # The simulated planar mover settles its final few degrees slowly.
+      # Count about half a degree of real rotation as progress so a deliberate
+      # corner turn is not mistaken for a stalled translation.
+      required_movement_angle: 0.01
       movement_time_allowance: 20.0
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
       xy_goal_tolerance: 0.10
-      # Close-range cabinet docking can make in-place rotation collide with
-      # the local inflated footprint.  Accept the same 0.20 rad bound that
-      # the task layer verifies instead of retrying forever a few degrees out.
-      yaw_goal_tolerance: 0.20
+      # The simulated planar mover converges very slowly over its final few
+      # degrees.  Precise cabinet docking has its own 0.35 rad takeover gate
+      # and 0.07 rad closed-loop target, so stop coarse Nav2 rotation at this
+      # tighter bound instead of entering recovery spins near the station.
+      yaw_goal_tolerance: 0.25
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false
@@ -161,9 +172,12 @@ controller_server:
       decel_lim_x: -0.50
       decel_lim_y: -0.50
       decel_lim_theta: -1.20
-      vx_samples: 20
-      vy_samples: 20
-      vtheta_samples: 20
+      # Odd counts retain an exact zero sample and symmetric positive/negative
+      # velocities for the omnidirectional base while avoiding the previous
+      # 20^3 trajectory explosion on every controller cycle.
+      vx_samples: 11
+      vy_samples: 11
+      vtheta_samples: 15
       sim_time: 2.0
       linear_granularity: 0.025
       angular_granularity: 0.025

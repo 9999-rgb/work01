@@ -54,6 +54,7 @@ BACKEND_SHUTDOWN_GRACE_SEC = 3.0
 REQUEST_DRAIN_TIMEOUT_SEC = 8.0
 NAVIGATION_TIMEOUT_SEC = 180.0
 NAVIGATION_CANCEL_GRACE_SEC = 5.0
+NAVIGATION_CLOCK_STALL_TIMEOUT_SEC = 30.0
 NAVIGATION_FINAL_POSE_WAIT_SEC = 2.0
 NAVIGATION_FINAL_POSE_MAX_AGE_SEC = 1.0
 OPERATION_TIMEOUT_SEC = 180.0
@@ -61,11 +62,15 @@ OPERATION_CANCEL_GRACE_SEC = 5.0
 TASK_MONITOR_PERIOD_SEC = 0.10
 EXECUTOR_SPIN_PERIOD_SEC = 0.10
 NAVIGATION_POSITION_TOLERANCE_M = 0.20
-# Nav2's 0.20 rad goal checker and the following TF sample can differ by a
+# Nav2's 0.25 rad goal checker and the following TF sample can differ by a
 # fraction of a degree while the base settles.  Keep a 5 mrad verification
 # margin without relaxing the controller's own stopping criterion.
-NAVIGATION_YAW_TOLERANCE_RAD = 0.205
-NAVIGATION_AXIS_EPSILON_M = 1.0e-3
+NAVIGATION_YAW_TOLERANCE_RAD = 0.255
+# One map cell and the Nav2 progress checker's required movement are both
+# 0.05 m.  Treat smaller cross-axis differences as localization/grid noise;
+# asking Nav2 to settle them as a separate leg forces a pointless 90-degree
+# corner rotation while the final goal already verifies the exact station.
+NAVIGATION_AXIS_EPSILON_M = 0.05
 RESET_JOINT_STATE_POLL_SEC = 0.05
 MAP_STATION_MARGIN_M = 0.05
 
@@ -1711,8 +1716,13 @@ class ControlServer:
         progress_span: float = 1.0,
     ) -> Mapping[str, Any]:
         task_started = time.monotonic()
-        initial_pose = self._node.navigation_snapshot().get("current_pose")
+        initial_snapshot = self._node.navigation_snapshot()
+        initial_pose = initial_snapshot.get("current_pose")
         legs = self._axis_navigation_legs(initial_pose, station)
+        navigation_clock = self._navigation_clock_state(
+            initial_snapshot,
+            task_started,
+        )
         total_distance = sum(float(leg["distance_m"]) for leg in legs)
         if total_distance <= NAVIGATION_AXIS_EPSILON_M:
             weights = [1.0 / len(legs)] * len(legs)
@@ -1735,6 +1745,7 @@ class ControlServer:
                 route_axis=str(leg["axis"]),
                 route_leg_index=index,
                 route_leg_count=len(legs),
+                navigation_clock=navigation_clock,
             )
             # A retained timeout/shutdown terminal releases its reservation
             # only after Nav2 later confirms termination and returns an empty
@@ -1790,6 +1801,7 @@ class ControlServer:
         route_axis: str,
         route_leg_index: int,
         route_leg_count: int,
+        navigation_clock: Dict[str, Any],
     ) -> Mapping[str, Any]:
         initial_distance: Optional[float] = None
         initial_pose = self._node.navigation_snapshot().get("current_pose")
@@ -1806,11 +1818,31 @@ class ControlServer:
             # an immediately canceled task cannot submit a goal afterward.
             with self._task_interlock_scope():
                 context.raise_if_canceled()
-                elapsed_before_send = time.monotonic() - task_started
-                if elapsed_before_send >= NAVIGATION_TIMEOUT_SEC:
+                now_before_send = time.monotonic()
+                elapsed_before_send = now_before_send - task_started
+                active_elapsed, clock_issue = self._navigation_elapsed(
+                    self._node.navigation_snapshot(),
+                    navigation_clock,
+                    now_before_send,
+                )
+                if (
+                    active_elapsed >= NAVIGATION_TIMEOUT_SEC
+                    or clock_issue is not None
+                ):
                     raise TaskExecutionError(
-                        "Navigation timed out before the next axis could start.",
+                        (
+                            "The active ROS clock stopped before the next "
+                            "axis could start."
+                            if clock_issue is not None
+                            else "Navigation timed out before the next axis "
+                            "could start."
+                        ),
                         code="navigation_timeout",
+                        details={
+                            "timeout_clock": navigation_clock["source"],
+                            "active_duration_seconds": active_elapsed,
+                            "clock_issue": clock_issue,
+                        },
                         result={
                             "cabinet": station["cabinet"],
                             "station": dict(station),
@@ -1838,21 +1870,62 @@ class ControlServer:
         last_progress = 0.0
         last_report_at = 0.0
         timeout_started_at: Optional[float] = None
+        timeout_cause: Optional[str] = None
         timeout_reported = False
         last_timeout_cancel_at = 0.0
-        final_pose_deadline: Optional[float] = None
+        final_pose_started_active: Optional[float] = None
+        last_settling_report_at = 0.0
         while True:
             snapshot = self._node.navigation_snapshot()
             state = str(snapshot.get("state", "unknown"))
             now = time.monotonic()
             elapsed = now - task_started
-            if timeout_started_at is None and elapsed >= NAVIGATION_TIMEOUT_SEC:
-                timeout_started_at = now
+            active_elapsed, clock_issue = self._navigation_elapsed(
+                snapshot,
+                navigation_clock,
+                now,
+            )
+            if timeout_started_at is None:
+                if active_elapsed >= NAVIGATION_TIMEOUT_SEC:
+                    timeout_started_at = now
+                    timeout_cause = "active_time_limit"
+                elif clock_issue is not None:
+                    timeout_started_at = now
+                    timeout_cause = clock_issue
             timed_out = timeout_started_at is not None
 
             if state == "succeeded":
-                if final_pose_deadline is None:
-                    final_pose_deadline = now + NAVIGATION_FINAL_POSE_WAIT_SEC
+                if final_pose_started_active is None:
+                    final_pose_started_active = active_elapsed
+                settling_elapsed = max(
+                    0.0,
+                    active_elapsed - final_pose_started_active,
+                )
+                settling_expired = (
+                    settling_elapsed >= NAVIGATION_FINAL_POSE_WAIT_SEC
+                )
+                if timed_out:
+                    if timeout_reported:
+                        context.release_reservation(
+                            backend_termination_confirmed=True,
+                            details={"backend_terminal_state": state},
+                        )
+                        return {}
+                    raise TaskExecutionError(
+                        "Navigation exceeded its timeout before termination.",
+                        code="navigation_timeout",
+                        details={
+                            "timeout_clock": navigation_clock["source"],
+                            "timeout_cause": timeout_cause,
+                            "active_duration_seconds": active_elapsed,
+                            "wall_duration_seconds": elapsed,
+                        },
+                        result={
+                            "cabinet": station["cabinet"],
+                            "station": dict(station),
+                            "duration_seconds": elapsed,
+                        },
+                    )
                 try:
                     result = self._navigation_result(
                         station,
@@ -1869,28 +1942,67 @@ class ControlServer:
                     if (
                         error.code
                         in {"final_pose_stale", "final_pose_frame_mismatch"}
-                        and now < final_pose_deadline
+                        and not timed_out
+                        and not settling_expired
                     ):
+                        if now - last_settling_report_at >= 1.0:
+                            context.progress(
+                                "navigation_settling",
+                                min(
+                                    0.99,
+                                    progress_start + progress_span * 0.99,
+                                ),
+                                message=(
+                                    "Nav2 reached the goal; waiting for a "
+                                    "fresh localized pose."
+                                ),
+                                data={
+                                    "cabinet": station["cabinet"],
+                                    "route_axis": route_axis,
+                                    "route_leg_index": route_leg_index + 1,
+                                    "route_leg_count": route_leg_count,
+                                    "verification_error": error.code,
+                                    "settling_elapsed_seconds": (
+                                        settling_elapsed
+                                    ),
+                                },
+                            )
+                            last_settling_report_at = now
                         time.sleep(TASK_MONITOR_PERIOD_SEC)
                         continue
                     raise
-                if timed_out:
-                    if timeout_reported:
-                        context.release_reservation(
-                            backend_termination_confirmed=True,
-                            details={"backend_terminal_state": state},
-                        )
-                        return {}
-                    raise TaskExecutionError(
-                        "Navigation exceeded its timeout before termination.",
-                        code="navigation_timeout",
-                        result=result,
-                    )
                 errors = result["error"]
                 if (
                     errors["position_m"] > NAVIGATION_POSITION_TOLERANCE_M
                     or errors["yaw_rad"] > NAVIGATION_YAW_TOLERANCE_RAD
                 ):
+                    if not settling_expired:
+                        if now - last_settling_report_at >= 1.0:
+                            context.progress(
+                                "navigation_settling",
+                                min(
+                                    0.99,
+                                    progress_start + progress_span * 0.99,
+                                ),
+                                message=(
+                                    "Nav2 reached the goal; waiting for the "
+                                    "localized pose to settle."
+                                ),
+                                data={
+                                    "cabinet": station["cabinet"],
+                                    "route_axis": route_axis,
+                                    "route_leg_index": route_leg_index + 1,
+                                    "route_leg_count": route_leg_count,
+                                    "position_error_m": errors["position_m"],
+                                    "yaw_error_rad": errors["yaw_rad"],
+                                    "settling_elapsed_seconds": (
+                                        settling_elapsed
+                                    ),
+                                },
+                            )
+                            last_settling_report_at = now
+                        time.sleep(TASK_MONITOR_PERIOD_SEC)
+                        continue
                     raise TaskExecutionError(
                         "Navigation ended outside the operation-station "
                         "position/yaw tolerance.",
@@ -1900,6 +2012,10 @@ class ControlServer:
                                 NAVIGATION_POSITION_TOLERANCE_M
                             ),
                             "yaw_tolerance_rad": NAVIGATION_YAW_TOLERANCE_RAD,
+                            "settling_window_seconds": (
+                                NAVIGATION_FINAL_POSE_WAIT_SEC
+                            ),
+                            "settling_elapsed_seconds": settling_elapsed,
                         },
                         result=result,
                     )
@@ -1937,6 +2053,15 @@ class ControlServer:
                         "unreachable target."
                     ),
                 }
+                if timed_out:
+                    failure_details.update(
+                        {
+                            "timeout_clock": navigation_clock["source"],
+                            "timeout_cause": timeout_cause,
+                            "active_duration_seconds": active_elapsed,
+                            "wall_duration_seconds": elapsed,
+                        }
+                    )
                 failure_result = {
                     "cabinet": station["cabinet"],
                     "station": dict(station),
@@ -2027,6 +2152,10 @@ class ControlServer:
                     details={
                         "backend_terminal_state": state,
                         "cancel_grace_seconds": NAVIGATION_CANCEL_GRACE_SEC,
+                        "timeout_clock": navigation_clock["source"],
+                        "timeout_cause": timeout_cause,
+                        "active_duration_seconds": active_elapsed,
+                        "wall_duration_seconds": elapsed,
                     },
                     result={
                         "cabinet": station["cabinet"],
@@ -2063,6 +2192,78 @@ class ControlServer:
             # Keep polling until Nav2 reports a real terminal state so a new
             # globally-exclusive task cannot overlap a retiring goal.
             time.sleep(TASK_MONITOR_PERIOD_SEC)
+
+    @staticmethod
+    def _navigation_ros_time_seconds(
+        snapshot: Mapping[str, Any],
+    ) -> Optional[float]:
+        """Return the active ROS clock sampled with the localized pose."""
+        pose = snapshot.get("current_pose")
+        if not isinstance(pose, Mapping):
+            return None
+        value = pose.get("observed_ros_nanoseconds")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        nanoseconds = float(value)
+        if not math.isfinite(nanoseconds) or nanoseconds <= 0.0:
+            return None
+        return nanoseconds / 1_000_000_000.0
+
+    @classmethod
+    def _navigation_clock_state(
+        cls,
+        snapshot: Mapping[str, Any],
+        wall_now: float,
+    ) -> Dict[str, Any]:
+        """Create one task-level timeout clock shared by every axis leg.
+
+        Nav2 durations and TF stamps use the node's ROS clock.  In simulation
+        that clock advances more slowly than wall time when Gazebo's real-time
+        factor is below one, so a wall deadline would cancel healthy motion.
+        Adapters without timestamped localization retain the legacy wall-clock
+        behavior instead of silently losing timeout protection.
+        """
+        ros_now = cls._navigation_ros_time_seconds(snapshot)
+        if ros_now is None:
+            return {
+                "source": "wall",
+                "started": wall_now,
+                "last": wall_now,
+                "last_advanced_wall": wall_now,
+            }
+        return {
+            "source": "ros",
+            "started": ros_now,
+            "last": ros_now,
+            "last_advanced_wall": wall_now,
+        }
+
+    @classmethod
+    def _navigation_elapsed(
+        cls,
+        snapshot: Mapping[str, Any],
+        clock_state: Dict[str, Any],
+        wall_now: float,
+    ) -> Tuple[float, Optional[str]]:
+        """Return active elapsed time and any ROS-clock watchdog failure."""
+        if clock_state["source"] == "wall":
+            return max(0.0, wall_now - float(clock_state["started"])), None
+
+        started = float(clock_state["started"])
+        previous = float(clock_state["last"])
+        ros_now = cls._navigation_ros_time_seconds(snapshot)
+        if ros_now is not None:
+            if ros_now < previous - 1.0e-6:
+                return max(0.0, previous - started), "ros_clock_regressed"
+            if ros_now > previous + 1.0e-6:
+                clock_state["last"] = ros_now
+                clock_state["last_advanced_wall"] = wall_now
+                previous = ros_now
+
+        stalled_for = wall_now - float(clock_state["last_advanced_wall"])
+        if stalled_for >= NAVIGATION_CLOCK_STALL_TIMEOUT_SEC:
+            return max(0.0, previous - started), "ros_clock_stalled"
+        return max(0.0, previous - started), None
 
     @staticmethod
     def _axis_navigation_legs(

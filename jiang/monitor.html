@@ -447,6 +447,16 @@
   display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px;
 }
 .command-row .btn { flex: 1; min-width: 100px; }
+.scene-reset-row { margin-top: 8px; }
+.scene-reset-row .scene-reset-button {
+  flex-basis: 100%;
+  color: var(--cyan);
+  border-color: rgba(57, 210, 192, 0.65);
+  background: rgba(57, 210, 192, 0.08);
+}
+.scene-reset-row .scene-reset-button:disabled {
+  opacity: 0.72;
+}
 .status-detail {
   margin-top: 10px; padding: 9px 10px; border-radius: 6px;
   background: rgba(255,255,255,0.035);
@@ -818,8 +828,11 @@
             <button class="btn btn-danger" id="btnCabinetCancel" disabled>
               取消自动操作
             </button>
-            <button class="btn btn-outline" id="btnCabinetReset" disabled>
-              场景归零（机器人 + 所选柜体）
+          </div>
+          <div class="command-row scene-reset-row">
+            <button class="btn btn-outline scene-reset-button"
+                    id="btnCabinetReset" disabled>
+              重置场景（机器人 + 所选柜体归零）
             </button>
           </div>
         </div>

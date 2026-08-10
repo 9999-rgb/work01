@@ -113,6 +113,13 @@ class _NavigationNode:
         with self._lock:
             return dict(self.state)
 
+    def set_navigation_ros_time(self, nanoseconds: int) -> None:
+        with self._lock:
+            self.ros_time_nanoseconds = nanoseconds
+            current_pose = dict(self.state["current_pose"])
+            current_pose["observed_ros_nanoseconds"] = nanoseconds
+            self.state["current_pose"] = current_pose
+
     def finish_navigation(
         self,
         state: str,
@@ -594,6 +601,122 @@ class TaskRunnerTest(unittest.TestCase):
             [leg["axis"] for leg in task["result"]["route"]["legs"]],
         )
 
+    def test_navigation_ignores_sub_cell_cross_axis_localization_noise(
+        self,
+    ) -> None:
+        server, node = _server()
+        node.state["current_pose"] = {
+            "x": 0.0,
+            "y": -0.0044,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
+
+        accepted = server.submit_navigation_task("cabinet_a")
+        goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        # The exact final station remains authoritative; only the pointless
+        # corner goal and its 90-degree turn are omitted.
+        self.assertAlmostEqual(1.0, goal["x"])
+        self.assertAlmostEqual(0.0, goal["y"])
+        self.assertAlmostEqual(math.pi, abs(goal["yaw"]))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertEqual("x", task["result"]["route"]["legs"][0]["axis"])
+
+    def test_navigation_accepts_goal_checker_yaw_settle_margin(self) -> None:
+        server, node = _server()
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi - 0.253},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertAlmostEqual(0.253, task["result"]["error"]["yaw_rad"])
+
+    def test_navigation_waits_for_fresh_pose_to_settle_after_nav2_success(
+        self,
+    ) -> None:
+        server, node = _server()
+        node.set_navigation_ros_time(100_000_000_000)
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi - 0.266},
+        )
+
+        deadline = time.monotonic() + 1.0
+        phase = ""
+        while time.monotonic() < deadline:
+            phase = str(
+                server._task_manager.get_task(accepted["task_id"])["phase"]
+            )
+            if phase == "navigation_settling":
+                break
+            time.sleep(0.005)
+        self.assertEqual("navigation_settling", phase)
+
+        # A newer TF sample inside the active-ROS-time settling window is the
+        # authoritative terminal pose, not the first sample after the action.
+        node.ros_time_nanoseconds = 101_000_000_000
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi - 0.24},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("success", task["status"])
+        self.assertAlmostEqual(0.24, task["result"]["error"]["yaw_rad"])
+        self.assertEqual(1, node.navigation_goal_count)
+
+    def test_navigation_fails_if_pose_remains_outside_settling_tolerance(
+        self,
+    ) -> None:
+        server, node = _server()
+        node.set_navigation_ros_time(100_000_000_000)
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi - 0.266},
+        )
+
+        deadline = time.monotonic() + 1.0
+        phase = ""
+        while time.monotonic() < deadline:
+            phase = str(
+                server._task_manager.get_task(accepted["task_id"])["phase"]
+            )
+            if phase == "navigation_settling":
+                break
+            time.sleep(0.005)
+        self.assertEqual("navigation_settling", phase)
+
+        # Advance beyond the two-second active ROS window while supplying a
+        # fresh transform that remains outside the verified yaw tolerance.
+        node.ros_time_nanoseconds = 102_200_000_000
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi - 0.266},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("pose_deviation_exceeded", task["failure_code"])
+        self.assertAlmostEqual(0.266, task["result"]["error"]["yaw_rad"])
+        self.assertEqual(1, node.navigation_goal_count)
+
     def test_navigation_uses_map_x_then_positive_y_legs(self) -> None:
         server, node = _server()
         station = NavigationStationSpec(
@@ -962,6 +1085,92 @@ class TaskRunnerTest(unittest.TestCase):
             self.assertFalse(released["reservation_active"])
             self.assertTrue(released["backend_termination_confirmed"])
 
+    def test_navigation_timeout_uses_active_ros_time_not_slow_sim_wall(
+        self,
+    ) -> None:
+        server, node = _server()
+        node.set_navigation_ros_time(100_000_000_000)
+        wall_offset = [0.0]
+
+        def navigation_monotonic() -> float:
+            return time.monotonic() + wall_offset[0]
+
+        navigation_time = SimpleNamespace(
+            monotonic=navigation_monotonic,
+            sleep=time.sleep,
+        )
+        with patch.object(
+            runner_module,
+            "time",
+            navigation_time,
+        ), patch.object(
+            runner_module,
+            "NAVIGATION_TIMEOUT_SEC",
+            10.0,
+        ):
+            accepted = server.submit_navigation_task("cabinet_a")
+            self.assertIsNotNone(node.wait_for_navigation_goal(1))
+
+            # Simulate a low real-time factor: twenty wall seconds pass while
+            # the active ROS clock advances only five seconds.
+            wall_offset[0] = 20.0
+            node.ros_time_nanoseconds = 104_900_000_000
+            node.finish_navigation(
+                "succeeded",
+                pose={
+                    "x": 1.0,
+                    "y": 0.0,
+                    "yaw": math.pi,
+                    "received_monotonic": navigation_monotonic(),
+                },
+            )
+
+            task = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=1.0,
+            )
+            self.assertEqual("success", task["status"])
+            self.assertGreater(task["result"]["duration_seconds"], 10.0)
+
+    def test_navigation_ros_clock_stall_uses_wall_watchdog(self) -> None:
+        server, node = _server()
+        node.set_navigation_ros_time(100_000_000_000)
+        with patch.object(
+            runner_module,
+            "NAVIGATION_TIMEOUT_SEC",
+            10.0,
+        ), patch.object(
+            runner_module,
+            "NAVIGATION_CLOCK_STALL_TIMEOUT_SEC",
+            0.02,
+        ), patch.object(
+            runner_module,
+            "NAVIGATION_CANCEL_GRACE_SEC",
+            0.02,
+        ):
+            accepted = server.submit_navigation_task("cabinet_a")
+            failed = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=1.0,
+            )
+            self.assertEqual("failed", failed["status"])
+            self.assertEqual("navigation_timeout", failed["failure_code"])
+            self.assertEqual("ros", failed["failure_details"]["timeout_clock"])
+            self.assertEqual(
+                "ros_clock_stalled",
+                failed["failure_details"]["timeout_cause"],
+            )
+            self.assertTrue(failed["reservation_active"])
+
+            node.finish_navigation("canceled")
+            deadline = time.monotonic() + 1.0
+            while (
+                server._task_manager.active_task_id is not None
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.005)
+            self.assertIsNone(server._task_manager.active_task_id)
+
     def test_axis_navigation_timeout_budget_is_shared_by_both_legs(
         self,
     ) -> None:
@@ -976,20 +1185,8 @@ class TaskRunnerTest(unittest.TestCase):
         server._robot_adapter.control_navigation_station = (
             lambda control_id: station if control_id == "button_1" else None
         )
-        clock_offset = [0.0]
-
-        def navigation_monotonic() -> float:
-            return time.monotonic() + clock_offset[0]
-
-        navigation_time = SimpleNamespace(
-            monotonic=navigation_monotonic,
-            sleep=time.sleep,
-        )
+        node.set_navigation_ros_time(100_000_000_000)
         with patch.object(
-            runner_module,
-            "time",
-            navigation_time,
-        ), patch.object(
             runner_module,
             "NAVIGATION_TIMEOUT_SEC",
             10.0,
@@ -1004,22 +1201,21 @@ class TaskRunnerTest(unittest.TestCase):
             )
             self.assertIsNotNone(node.wait_for_navigation_goal(1))
 
-            # Spend nine seconds of the one task-level budget on the X leg.
-            clock_offset[0] = 9.0
+            # Spend nine active ROS seconds of the one task-level budget on X.
+            node.ros_time_nanoseconds = 109_000_000_000
             node.finish_navigation(
                 "succeeded",
                 pose={
                     "x": 0.5,
                     "y": 0.0,
                     "yaw": math.pi / 2.0,
-                    "received_monotonic": navigation_monotonic(),
                 },
             )
             self.assertIsNotNone(node.wait_for_navigation_goal(2))
 
-            # Crossing ten seconds on Y must time out immediately; a per-leg
-            # timeout would incorrectly grant this goal another ten seconds.
-            clock_offset[0] = 11.0
+            # Crossing ten active seconds on Y must time out immediately; a
+            # per-leg timeout would incorrectly grant another ten seconds.
+            node.set_navigation_ros_time(111_000_000_000)
             failed = server._task_manager.wait(
                 accepted["task_id"],
                 timeout=1.0,
@@ -1027,6 +1223,11 @@ class TaskRunnerTest(unittest.TestCase):
             self.assertEqual("failed", failed["status"])
             self.assertEqual("navigation_timeout", failed["failure_code"])
             self.assertTrue(failed["reservation_active"])
+            self.assertEqual("ros", failed["failure_details"]["timeout_clock"])
+            self.assertEqual(
+                "active_time_limit",
+                failed["failure_details"]["timeout_cause"],
+            )
             self.assertEqual(2, node.navigation_goal_count)
             self.assertGreaterEqual(node.cancel_count, 1)
 

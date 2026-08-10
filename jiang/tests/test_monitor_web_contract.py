@@ -365,7 +365,18 @@ class MonitorWebContractTest(unittest.TestCase):
 
     def test_scene_reset_button_submits_scoped_task(self) -> None:
         html = MONITOR_PATH.read_text(encoding="utf-8")
-        self.assertIn("场景归零（机器人 + 所选柜体）", html)
+        self.assertIn("重置场景（机器人 + 所选柜体归零）", html)
+        self.assertRegex(
+            html,
+            r'class="command-row scene-reset-row">\s*'
+            r'<button class="btn btn-outline scene-reset-button"\s*'
+            r'id="btnCabinetReset" disabled>',
+        )
+        self.assertRegex(
+            html,
+            r"\.scene-reset-row \.scene-reset-button:disabled\s*\{\s*"
+            r"opacity:\s*0\.72;",
+        )
         reset = _source_block(
             "async function resetCabinetControls()",
             "\n\n// ─── Chassis Control",
