@@ -214,6 +214,13 @@
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
+      box_10_button_1:
+        navigation_station:
+          local_anchor: [0.331, 1.115, 0.0]
+          outward_axis: [0.0, 0.0, 1.0]
+          standoff: 0.930
+          base_yaw_offset: 0.0
+          frame_id: map
       box_10_button_2:
         navigation_station:
           local_anchor: [0.366, 1.115, 0.0]

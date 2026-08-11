@@ -42,6 +42,13 @@ string final_state
 float64 requested_force
 float64 estimated_force
 bool button_triggered
+bool validation_performed
+bool operation_executed
+string diagnostic_stage
+float64 path_fraction
+float64 required_fraction
+int32 moveit_error_code
+string policy_reason
 ---
 # Feedback
 uint8 WAITING_FOR_SYSTEM=0

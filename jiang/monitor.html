@@ -806,7 +806,7 @@
             <select id="cabinetInstance" disabled>
               <option value="">等待柜体 inventory</option>
             </select>
-            <small id="cabinetInstanceHint">具备执行能力的控件会先导航到对应工位；当前机器人能力不足时会直接返回失败原因。</small>
+            <small id="cabinetInstanceHint">所有目录内控件都会先导航到对应工位；受安全策略限制的控件会执行实时规划验证，再返回实测失败阶段和原因。</small>
           </div>
           <div class="cabinet-target">
             <label for="cabinetTarget">操作目标</label>
@@ -3324,7 +3324,7 @@ function applyCabinetControls(payload) {
         option.value = control.control_id;
         option.textContent = control.operable
           ? control.display_name
-          : `${control.display_name}（当前机器人预计失败）`;
+          : `${control.display_name}（需实时规划验证）`;
         group.appendChild(option);
       });
       return group;
@@ -3356,13 +3356,13 @@ function renderCabinetTarget() {
   const control = selectedCabinetControl();
   $('cabinetTargetId').textContent = control ? control.control_id : '-';
   $('cabinetCatalogHint').textContent = cabinetCatalogReceived
-    ? `已载入 ${cabinetControls.length} 个控制件，全部可提交；标注“当前机器人预计失败”的任务会直接返回原因。`
+    ? `已载入 ${cabinetControls.length} 个控制件；每个合法任务都会先导航，并由仿真后端给出实际执行或规划验证结果。`
     : '控制柜目录尚未到达，操作功能已禁用。';
   const unavailable = $('cabinetUnavailable');
   unavailable.hidden = !control || control.operable !== false;
   unavailable.textContent = control && control.operable === false
-    ? `当前机器人预计无法完成，但仍可提交任务。系统将返回失败结果和原因：${
-        control.unavailable_reason || '当前机器人能力不足。'
+    ? `该控件带有安全策略限制。提交后仍会导航并执行实时规划验证；配置依据：${
+        control.unavailable_reason || '当前机器人尚未完成该控件的安全验证。'
       }`
     : '';
 
@@ -3472,7 +3472,7 @@ function renderCabinetTarget() {
     3: '开合'
   };
   $('btnCabinetPress').textContent = control.operable === false
-    ? `提交并返回失败原因：${control.display_name}`
+    ? `导航并实时验证：${control.display_name}`
     : `导航并${verbs[type] || '操作'}：${control.display_name}`;
 }
 
@@ -3780,6 +3780,44 @@ function formatCabinetPosition(value, control) {
   return `${position.toFixed(3)}${unit}`;
 }
 
+function cabinetValidationDetailLines(status) {
+  if (!status || typeof status !== 'object') return [];
+  const diagnosticStage = String(status.diagnostic_stage || '').trim();
+  const policyReason = String(status.policy_reason || '').trim();
+  const validationPerformed = status.validation_performed === true;
+  const showValidationDiagnostics = Boolean(
+    validationPerformed || diagnosticStage || policyReason
+  );
+  const lines = [];
+  if (showValidationDiagnostics) {
+    lines.push(
+      `实时规划验证: ${validationPerformed ? '已执行' : '未完成'}${
+        diagnosticStage ? ` · 阶段: ${diagnosticStage}` : ''
+      }`
+    );
+    const pathFraction = Number(status.path_fraction);
+    const requiredFraction = Number(status.required_fraction);
+    if (Number.isFinite(pathFraction) && Number.isFinite(requiredFraction)) {
+      lines.push(
+        `路径完成度: ${(pathFraction * 100).toFixed(1)}% / 要求 ${
+          (requiredFraction * 100).toFixed(1)
+        }%`
+      );
+    }
+  }
+  if (typeof status.operation_executed === 'boolean') {
+    lines.push(
+      `机械臂/柜体物理操作: ${status.operation_executed ? '已执行' : '未执行'}`
+    );
+  }
+  if (policyReason) lines.push(`验证原因: ${policyReason}`);
+  const moveitErrorCode = Number(status.moveit_error_code);
+  if (showValidationDiagnostics && Number.isFinite(moveitErrorCode)) {
+    lines.push(`MoveIt 错误码: ${moveitErrorCode}`);
+  }
+  return lines;
+}
+
 function cabinetStateLabel(control, stateId) {
   if (!control || !stateId) return stateId || '未知';
   const states = Array.isArray(control.state_ids) ? control.state_ids : [];
@@ -4032,6 +4070,7 @@ function renderCabinetStatus() {
       selectionText,
       forceText,
       triggeredText,
+      ...cabinetValidationDetailLines(cabinetStatus),
       reservationActive
         ? '任务资源占用: 等待控制柜后端确认停止（全局互锁保持）'
         : '',
@@ -4058,9 +4097,6 @@ function updateControlInterlocks() {
     navigationStatus && navigationStatus.available
   );
   const selectedControl = selectedCabinetControl();
-  const expectsLocalCapabilityFailure = Boolean(
-    selectedControl && selectedControl.operable === false
-  );
 
   if (cabinetActive && !cabinetInterlockWasActive) {
     clearDirectionInputs();
@@ -4124,12 +4160,9 @@ function updateControlInterlocks() {
     !ctrlConnected ||
     !cabinetCatalogReceived ||
     !selectedControl ||
-    (!expectsLocalCapabilityFailure && !isCabinetAvailable()) ||
-    (
-      !expectsLocalCapabilityFailure &&
-      Number(selectedControl.control_type) !== 0 &&
-      !cabinetOperationAvailable
-    ) ||
+    !navigationAvailable ||
+    !isCabinetAvailable() ||
+    !cabinetOperationAvailable ||
     cabinetActive ||
     navigationActive ||
     navigationRetiring ||
@@ -4552,11 +4585,7 @@ async function sendCabinetOperation() {
     targetState,
     targetPosition,
     force,
-    requiresNavigation: target.operable !== false,
-    capabilityWarning: target.unavailable_reason || null,
-    stage: target.operable === false
-      ? 'operation_starting'
-      : 'navigation_starting',
+    stage: 'navigation_starting',
     taskId: null,
     cancelRequested: false,
     cancelAcknowledgedTaskId: null,
@@ -4565,12 +4594,12 @@ async function sendCabinetOperation() {
   };
   cabinetOperationWorkflow = workflow;
   updateCabinetWorkflowStatus(workflow, {
-    state: workflow.requiresNavigation ? 'navigating' : 'sending',
-    phase: workflow.requiresNavigation ? 'navigating' : 'waiting_for_system',
+    state: 'navigating',
+    phase: 'navigating',
     progress: 0.01,
-    message: workflow.requiresNavigation
-      ? `正在准备导航到 ${cabinet} 的操作工位。`
-      : `正在提交能力验证任务：${workflow.capabilityWarning || '当前机器人预计无法完成该操作。'}`
+    message: target.operable === false
+      ? `正在准备导航到 ${cabinet}；到达后将对 ${target.display_name} 执行实时规划验证。`
+      : `正在准备导航到 ${cabinet} 的操作工位。`
   });
 
   try {
@@ -4593,66 +4622,66 @@ async function sendCabinetOperation() {
       return;
     }
 
-    if (workflow.requiresNavigation) {
-      const navigationResponse = await controlRequest(
-        '/task/navigate',
-        'POST',
-        {cabinet, control_id: controlId}
-      );
-      const navigationTask = navigationResponse.task || navigationResponse;
-      setCabinetWorkflowTask(workflow, 'navigating', navigationTask);
-      applyTaskSnapshot(navigationTask);
-      updateCabinetWorkflowStatus(workflow, {
-        state: workflow.cancelRequested ? 'canceling' : 'navigating',
-        phase: 'navigating',
-        progress: 0.05,
-        message: workflow.cancelRequested
-          ? '正在取消导航；不会执行后续控件操作。'
-          : `正在导航到 ${cabinet}，到达后将自动操作 ${target.display_name}。`
-      });
-      toast(`正在导航到 ${cabinet}，到达后自动执行操作`, 'ok');
-      refreshAutonomyStatus();
+    const navigationResponse = await controlRequest(
+      '/task/navigate',
+      'POST',
+      {cabinet, control_id: controlId}
+    );
+    const navigationTask = navigationResponse.task || navigationResponse;
+    setCabinetWorkflowTask(workflow, 'navigating', navigationTask);
+    applyTaskSnapshot(navigationTask);
+    updateCabinetWorkflowStatus(workflow, {
+      state: workflow.cancelRequested ? 'canceling' : 'navigating',
+      phase: 'navigating',
+      progress: 0.05,
+      message: workflow.cancelRequested
+        ? '正在取消导航；不会执行后续控件操作。'
+        : `正在导航到 ${cabinet}，到达后将${
+            target.operable === false ? '实时验证' : '自动操作'
+          } ${target.display_name}。`
+    });
+    toast(`正在导航到 ${cabinet}，到达后继续控件任务`, 'ok');
+    refreshAutonomyStatus();
 
-      if (workflow.cancelRequested) {
-        await requestCabinetWorkflowCancellation(workflow);
-      }
-      const navigationResult = await waitForCabinetWorkflowTaskRelease(
-        workflow,
-        navigationTask.task_id
-      );
-      if (
-        workflow.cancelRequested ||
-        navigationResult.status === 'canceled'
-      ) {
-        workflow.stage = 'canceled';
-        updateCabinetWorkflowStatus(workflow, {
-          state: 'canceled',
-          phase: 'navigating',
-          progress: Number(navigationResult.progress) || 0,
-          active: false,
-          success: false,
-          errorCode: 'canceled',
-          message: '导航已取消，未发送控件操作任务。'
-        });
-        toast('导航已取消，未执行控件操作', 'ok');
-        return;
-      }
-      if (navigationResult.status !== 'success') {
-        const reason = navigationResult.failure_reason ||
-          navigationResult.message || '导航任务失败';
-        workflow.stage = 'navigation_failed';
-        updateCabinetWorkflowStatus(workflow, {
-          state: 'failed',
-          phase: 'navigating',
-          progress: Number(navigationResult.progress) || 0,
-          active: false,
-          success: false,
-          errorCode: navigationResult.failure_code || 'navigation_failed',
-          message: `${reason}；未发送控件操作任务。`
-        });
-        toast(`导航失败，未执行控件操作: ${reason}`, 'err');
-        return;
-      }
+    if (workflow.cancelRequested) {
+      await requestCabinetWorkflowCancellation(workflow);
+    }
+    const navigationResult = await waitForCabinetWorkflowTaskRelease(
+      workflow,
+      navigationTask.task_id
+    );
+    if (
+      workflow.cancelRequested ||
+      navigationResult.status === 'canceled'
+    ) {
+      workflow.stage = 'canceled';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'canceled',
+        phase: 'navigating',
+        progress: Number(navigationResult.progress) || 0,
+        active: false,
+        success: false,
+        errorCode: 'canceled',
+        message: '导航已取消，未发送控件操作任务。'
+      });
+      toast('导航已取消，未执行控件操作', 'ok');
+      return;
+    }
+    if (navigationResult.status !== 'success') {
+      const reason = navigationResult.failure_reason ||
+        navigationResult.message || '导航任务失败';
+      workflow.stage = 'navigation_failed';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'failed',
+        phase: 'navigating',
+        progress: Number(navigationResult.progress) || 0,
+        active: false,
+        success: false,
+        errorCode: navigationResult.failure_code || 'navigation_failed',
+        message: `${reason}；未发送控件操作任务。`
+      });
+      toast(`导航失败，未执行控件操作: ${reason}`, 'err');
+      return;
     }
 
     // waitForCabinetWorkflowTaskRelease only returns after the navigation
@@ -4666,9 +4695,9 @@ async function sendCabinetOperation() {
       state: 'sending',
       phase: 'waiting_for_system',
       progress: 0.10,
-      message: workflow.requiresNavigation
-        ? `已到达 ${cabinet}，正在提交 ${target.display_name} 操作。`
-        : `正在验证 ${target.display_name}；预计失败原因：${workflow.capabilityWarning || '当前机器人能力不足。'}`
+      message: target.operable === false
+        ? `已到达 ${cabinet}，正在提交 ${target.display_name} 实时规划验证。`
+        : `已到达 ${cabinet}，正在提交 ${target.display_name} 操作。`
     });
     await waitForControlDelay(0);
     if (workflow.cancelRequested) {
@@ -4710,9 +4739,9 @@ async function sendCabinetOperation() {
       }
     } else {
       toast(
-        workflow.requiresNavigation
-          ? `已到达工位，开始执行：${target.display_name}`
-          : `能力受限任务已提交，等待失败结果和具体原因：${target.display_name}`,
+        target.operable === false
+          ? `已到达工位，开始实时规划验证：${target.display_name}`
+          : `已到达工位，开始执行：${target.display_name}`,
         'ok'
       );
     }

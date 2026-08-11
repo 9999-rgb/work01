@@ -198,11 +198,11 @@ class CabinetClient(Node):
         force: Optional[float] = None,
         navigate: bool = False,
     ) -> Dict[str, Any]:
-        """Submit one operation, or emit a structured local failure.
+        """Submit one catalog-valid operation to the cabinet action server.
 
-        Catalog-declared unavailable controls intentionally do not raise.  A
-        terminal ``unreachable`` event containing ``unavailable_reason`` is
-        emitted so an already accepted Web task can finish normally.
+        ``operable=false`` is a safety-policy hint, not a cached execution
+        result.  The action server owns the real-time planning validation and
+        returns its measured stage, path fraction and failure reason.
         """
         control_id, command_code, command_name = self._validate_request_shape(
             control_id,
@@ -685,15 +685,7 @@ class CabinetClient(Node):
             if generation != self._operation_generation:
                 return
             canceled = self._cancel_requested
-            if not bool(goal_handle.accepted):
-                control = self._controls.get(str(self._status["control_id"]))
-                unavailable_reason = (
-                    str(control.get("unavailable_reason", "")).strip()
-                    if control is not None and not control.get("operable", True)
-                    else ""
-                )
-            else:
-                unavailable_reason = ""
+            if bool(goal_handle.accepted):
                 self._goal_handle = goal_handle
                 self._status.update(
                     {
@@ -710,8 +702,7 @@ class CabinetClient(Node):
             self._finish_terminal(
                 generation,
                 "canceled" if canceled else "failed",
-                unavailable_reason
-                or (
+                (
                     "Cabinet operation was canceled before goal acceptance."
                     if canceled
                     else "Cabinet operation action server rejected the goal."
@@ -720,7 +711,7 @@ class CabinetClient(Node):
                 failure_code=(
                     "canceled"
                     if canceled
-                    else ("unreachable" if unavailable_reason else "rejected")
+                    else "rejected"
                 ),
             )
             return
@@ -810,6 +801,27 @@ class CabinetClient(Node):
                 "requested_force": float(result_message.requested_force),
                 "estimated_force": float(result_message.estimated_force),
                 "button_triggered": bool(result_message.button_triggered),
+                "validation_performed": bool(
+                    getattr(result_message, "validation_performed", False)
+                ),
+                "operation_executed": bool(
+                    getattr(result_message, "operation_executed", False)
+                ),
+                "diagnostic_stage": str(
+                    getattr(result_message, "diagnostic_stage", "")
+                ),
+                "path_fraction": float(
+                    getattr(result_message, "path_fraction", 0.0)
+                ),
+                "required_fraction": float(
+                    getattr(result_message, "required_fraction", 0.0)
+                ),
+                "moveit_error_code": int(
+                    getattr(result_message, "moveit_error_code", 0)
+                ),
+                "policy_reason": str(
+                    getattr(result_message, "policy_reason", "")
+                ),
             }
             if (
                 action_status == GoalStatus.STATUS_CANCELED
@@ -1087,13 +1099,6 @@ class CabinetClient(Node):
                 "invalid_control",
                 f"Unsupported cabinet control: {control_id}.",
                 {"control_id": control_id},
-            )
-        if not bool(control.get("operable", True)):
-            reason = str(control.get("unavailable_reason", "")).strip()
-            return (
-                "unreachable",
-                reason or f"Cabinet control {control_id} is unreachable.",
-                {"control_id": control_id, "unavailable_reason": reason},
             )
         required_support = self.COMMAND_SUPPORT[command_code]
         if int(control.get("supported_commands", 0)) & required_support == 0:

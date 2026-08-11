@@ -58,7 +58,12 @@
   </xacro:macro>
 
   <xacro:macro name="control_cabinet_state_plugin" params="">
-    <plugin name="xczs_cabinet_state" filename="libxczs_cabinet_state.so">
+    <!--
+      Gazebo hosts every cabinet plugin in one process.  Keep the plugin/node
+      name unique even when process-wide ROS arguments override the namespace;
+      otherwise rosout treats all cabinet instances as the same node.
+    -->
+    <plugin name="xczs_$(arg cabinet_name)_state" filename="libxczs_cabinet_state.so">
       <ros>
         <namespace>${cabinet_namespace}</namespace>
       </ros>

@@ -114,11 +114,11 @@ class MonitorWebContractTest(unittest.TestCase):
             const limited = options.find(option => option.value === 'limited_control');
             assert.ok(limited);
             assert.equal(limited.disabled, false);
-            assert.match(limited.textContent, /当前机器人预计失败/);
+            assert.match(limited.textContent, /需实时规划验证/);
             assert.doesNotMatch(limited.textContent, /不可操作/);
         """))
 
-    def test_robot_limited_control_can_submit_without_action_server(self) -> None:
+    def test_every_control_requires_navigation_and_action_backends(self) -> None:
         update_interlocks = _source_block(
             "function updateControlInterlocks()",
             "\nconst manualTakeoverRequestTimeoutMs",
@@ -143,8 +143,9 @@ class MonitorWebContractTest(unittest.TestCase):
             let selected = {{control_id: 'limited', control_type: 1, operable: false}};
             let ctrlConnected = true;
             let cabinetCatalogReceived = true;
-            let cabinetOperationAvailable = false;
+            let cabinetOperationAvailable = true;
             let cabinetResetAvailable = true;
+            let cabinetAvailable = true;
             let cabinetInterlockWasActive = false;
             let manualTakeoverState = 'idle';
             const navigationStatus = {{available: false}};
@@ -154,7 +155,7 @@ class MonitorWebContractTest(unittest.TestCase):
             const gripperJointSpecs = [];
             function selectedCabinetControl() {{ return selected; }}
             function selectedCabinetName() {{ return 'cabinet_a'; }}
-            function isCabinetAvailable() {{ return false; }}
+            function isCabinetAvailable() {{ return cabinetAvailable; }}
             function isCabinetOperationActive() {{ return false; }}
             function isNavigationActive() {{ return false; }}
             function hasRetiringNavigationGoals() {{ return false; }}
@@ -166,14 +167,23 @@ class MonitorWebContractTest(unittest.TestCase):
             updateControlInterlocks();
             assert.equal(
               $('btnCabinetPress').disabled,
-              false,
-              'operable=false must remain submit-capable for local failure'
+              true,
+              'policy-limited controls still require the navigation backend'
             );
             assert.equal(
               $('btnCabinetReset').disabled,
               false,
               'a ready scene reset must remain available'
             );
+            navigationStatus.available = true;
+            updateControlInterlocks();
+            assert.equal(
+              $('btnCabinetPress').disabled,
+              false,
+              'a limited control is submit-capable when both backends are ready'
+            );
+            cabinetOperationAvailable = false;
+            cabinetAvailable = false;
             selected = {{control_id: 'physical', control_type: 1, operable: true}};
             updateControlInterlocks();
             assert.equal(
@@ -183,7 +193,7 @@ class MonitorWebContractTest(unittest.TestCase):
             );
         """))
 
-    def test_limited_control_skips_navigation_and_submits_operation(self) -> None:
+    def test_limited_control_navigates_then_submits_live_validation(self) -> None:
         send_operation = _source_block(
             "async function sendCabinetOperation()",
             "\nasync function cancelCabinetOperation()",
@@ -241,17 +251,63 @@ class MonitorWebContractTest(unittest.TestCase):
             function renderCabinetStatus() {{}}
             async function controlRequest(path, method, body) {{
               requests.push({{path, method, body}});
+              if (path === '/task/navigate') {{
+                return {{task: {{task_id: 'navigation_1', type: 'navigate', status: 'accepted'}}}};
+              }}
               return {{task: {{task_id: 'operation_1', type: 'operate', status: 'accepted'}}}};
             }}
             {send_operation}
 
             (async () => {{
               await sendCabinetOperation();
-              assert.deepEqual(requests.map(request => request.path), ['/task/operate']);
+              assert.deepEqual(
+                requests.map(request => request.path),
+                ['/task/navigate', '/task/operate']
+              );
+              assert.equal(requests[0].body.cabinet, 'cabinet_a');
               assert.equal(requests[0].body.control_id, 'limited_button');
-              assert.equal(requests[0].body.force, 5);
+              assert.equal(requests[1].body.control_id, 'limited_button');
+              assert.equal(requests[1].body.force, 5);
               assert.equal(cabinetOperationWorkflow, null);
             }})().catch(error => {{ console.error(error); process.exitCode = 1; }});
+        """))
+
+    def test_validation_diagnostics_are_rendered(self) -> None:
+        diagnostics = _source_block(
+            "function cabinetValidationDetailLines(status)",
+            "\nfunction cabinetStateLabel",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            {diagnostics}
+
+            const normal = cabinetValidationDetailLines({{
+              validation_performed: false,
+              operation_executed: true,
+              diagnostic_stage: '',
+              path_fraction: 0,
+              required_fraction: 0,
+              moveit_error_code: 0,
+              policy_reason: ''
+            }});
+            assert.deepEqual(normal, ['机械臂/柜体物理操作: 已执行']);
+
+            const failed = cabinetValidationDetailLines({{
+              validation_performed: true,
+              operation_executed: false,
+              diagnostic_stage: 'approach',
+              path_fraction: 0,
+              required_fraction: 0.98,
+              moveit_error_code: -1,
+              policy_reason: '工作空间不可达'
+            }});
+            assert.deepEqual(failed, [
+              '实时规划验证: 已执行 · 阶段: approach',
+              '路径完成度: 0.0% / 要求 98.0%',
+              '机械臂/柜体物理操作: 未执行',
+              '验证原因: 工作空间不可达',
+              'MoveIt 错误码: -1'
+            ]);
         """))
 
     def test_cancel_prevents_posts_in_both_workflow_gaps(self) -> None:

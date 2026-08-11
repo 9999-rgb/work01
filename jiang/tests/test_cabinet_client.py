@@ -505,7 +505,7 @@ class CabinetClientTest(unittest.TestCase):
             CabinetClient._error_code_name(_Result.LEASE_LOST),
         )
 
-    def test_unavailable_control_emits_reason_without_action_goal(self) -> None:
+    def test_policy_limited_control_is_sent_for_live_validation(self) -> None:
         events: List[Dict[str, Any]] = []
         client, action = self._client("cabinet_a", events)
         reason = "当前机器人工作空间无法到达该按钮"
@@ -515,15 +515,47 @@ class CabinetClientTest(unittest.TestCase):
 
         result = client.submit_operation("button_1", "press", force=5.0)
 
-        self.assertEqual("failed", result["status"])
-        self.assertEqual("unreachable", result["failure_code"])
-        self.assertEqual(reason, result["message"])
-        self.assertEqual([], action.sent)
-        self.assertEqual(reason, events[-1]["message"])
-        self.assertEqual(
-            reason,
-            events[-1]["result"]["unavailable_reason"],
+        self.assertEqual("accepted", result["status"])
+        self.assertEqual(1, len(action.sent))
+        self.assertEqual("button_1", action.sent[0].control_id)
+        handle = _GoalHandle()
+        action.goal_futures[0].complete(handle)
+        handle.result_future.complete(
+            SimpleNamespace(
+                status=4,
+                result=SimpleNamespace(
+                    success=False,
+                    error_code=_Result.UNREACHABLE,
+                    message="实时规划验证通过，但安全策略禁止物理执行",
+                    initial_position=0.0,
+                    final_position=0.0,
+                    peak_position=0.0,
+                    final_state="released",
+                    requested_force=5.0,
+                    estimated_force=0.0,
+                    button_triggered=False,
+                    validation_performed=True,
+                    operation_executed=False,
+                    diagnostic_stage="retreat",
+                    path_fraction=1.0,
+                    required_fraction=0.98,
+                    moveit_error_code=1,
+                    policy_reason=reason,
+                ),
+            )
         )
+
+        terminal = events[-1]
+        self.assertEqual("terminal", terminal["event"])
+        self.assertEqual("failed", terminal["outcome"])
+        self.assertEqual("unreachable", terminal["failure_code"])
+        self.assertTrue(terminal["result"]["validation_performed"])
+        self.assertFalse(terminal["result"]["operation_executed"])
+        self.assertEqual("retreat", terminal["result"]["diagnostic_stage"])
+        self.assertEqual(1.0, terminal["result"]["path_fraction"])
+        self.assertEqual(0.98, terminal["result"]["required_fraction"])
+        self.assertEqual(1, terminal["result"]["moveit_error_code"])
+        self.assertEqual(reason, terminal["result"]["policy_reason"])
 
     def test_non_button_ignores_web_force_and_reports_zero_force(self) -> None:
         events: List[Dict[str, Any]] = []

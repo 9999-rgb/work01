@@ -300,6 +300,17 @@ if(BUILD_TESTING)
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
       "$<INSTALL_INTERFACE:include>"
   )
+  ament_add_gtest(
+    operation_validation_policy_test
+    test/operation_validation_policy_test.cpp
+  )
+  target_compile_features(operation_validation_policy_test PUBLIC cxx_std_17)
+  target_include_directories(
+    operation_validation_policy_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
 endif()
 
 ament_package()

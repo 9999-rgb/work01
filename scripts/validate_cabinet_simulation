@@ -14,7 +14,7 @@ import re
 import sys
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
 
 import rclpy
 from rclpy.action import ActionClient
@@ -699,6 +699,16 @@ class CabinetValidator(Node):
             raise RuntimeError(
                 f"error={int(result.error_code)}: {result.message}"
             )
+        if not bool(getattr(result, "operation_executed", False)):
+            raise RuntimeError(
+                "Successful cabinet operation did not report physical "
+                "execution."
+            )
+        if bool(getattr(result, "validation_performed", False)):
+            raise RuntimeError(
+                "Successful physical operation was mislabeled as "
+                "planning-only validation."
+            )
         if result.final_state != expected_state:
             raise RuntimeError(
                 f"Action result final_state={result.final_state!r}, "
@@ -775,6 +785,8 @@ class CabinetValidator(Node):
         *,
         expected_reason: str = "",
         maximum_duration: Optional[float] = None,
+        allowed_error_codes: Optional[Sequence[int]] = None,
+        require_planning_validation: bool = False,
     ) -> str:
         """Require an accepted action to return one structured failure."""
         if self.current_goal_handle is not None:
@@ -788,6 +800,18 @@ class CabinetValidator(Node):
             entry.control_id: entry for entry in self.catalog.controls
         }
         control = controls[operation.control_id]
+        target_before = self.states.get(operation.control_id)
+        if target_before is None or not self._fresh_valid_state(
+            operation.control_id
+        ):
+            raise RuntimeError(
+                "No fresh valid target state before failure validation."
+            )
+        target_snapshot = (
+            str(target_before.state_id),
+            float(target_before.position),
+            int(target_before.transition_sequence),
+        )
         non_target_snapshot = self.snapshot_non_target_controls(
             operation.control_id
         )
@@ -829,11 +853,16 @@ class CabinetValidator(Node):
         result = wrapped.result
         if result is None:
             raise RuntimeError("Structured failure returned no result.")
-        if result.success or int(result.error_code) != expected_error_code:
+        accepted_error_codes = (
+            {int(value) for value in allowed_error_codes}
+            if allowed_error_codes is not None
+            else {int(expected_error_code)}
+        )
+        if result.success or int(result.error_code) not in accepted_error_codes:
             raise RuntimeError(
                 "Structured failure mismatch: "
                 f"success={result.success}, error={int(result.error_code)}, "
-                f"expected={expected_error_code}."
+                f"expected one of={sorted(accepted_error_codes)}."
             )
         message = str(result.message).strip()
         if not message:
@@ -848,6 +877,50 @@ class CabinetValidator(Node):
                 f"Failure took {elapsed:.2f}s; expected at most "
                 f"{maximum_duration:.2f}s."
             )
+
+        if require_planning_validation:
+            diagnostic_stage = str(
+                getattr(result, "diagnostic_stage", "")
+            ).strip()
+            policy_reason = str(getattr(result, "policy_reason", "")).strip()
+            path_fraction = float(getattr(result, "path_fraction", math.nan))
+            required_fraction = float(
+                getattr(result, "required_fraction", math.nan)
+            )
+            moveit_error_code = getattr(result, "moveit_error_code", None)
+            if not bool(getattr(result, "validation_performed", False)):
+                raise RuntimeError(
+                    "Capability failure did not run live MoveIt validation."
+                )
+            if bool(getattr(result, "operation_executed", True)):
+                raise RuntimeError(
+                    "Planning-only validation unexpectedly executed motion."
+                )
+            if not diagnostic_stage:
+                raise RuntimeError(
+                    "Planning-only result omitted its diagnostic stage."
+                )
+            if not all(
+                math.isfinite(value)
+                for value in (path_fraction, required_fraction)
+            ) or not (0.0 <= path_fraction <= 1.0) or not (
+                0.0 < required_fraction <= 1.0
+            ):
+                raise RuntimeError(
+                    "Planning-only result contains invalid path fractions: "
+                    f"actual={path_fraction}, required={required_fraction}."
+                )
+            if isinstance(moveit_error_code, bool) or not isinstance(
+                moveit_error_code, int
+            ):
+                raise RuntimeError(
+                    "Planning-only result omitted its MoveIt error code."
+                )
+            if expected_reason and expected_reason not in policy_reason:
+                raise RuntimeError(
+                    "Planning-only result did not preserve the configured "
+                    f"policy basis: {policy_reason!r}."
+                )
 
         if expected_error_code == OperateCabinetControl.Result.INSUFFICIENT_FORCE:
             requested_force = float(result.requested_force)
@@ -915,6 +988,32 @@ class CabinetValidator(Node):
             raise RuntimeError(
                 "Structured failure did not clear the active-control target."
             )
+        if require_planning_validation:
+            expected_state, expected_position, expected_sequence = (
+                target_snapshot
+            )
+
+            def target_unchanged() -> bool:
+                state = self.states.get(operation.control_id)
+                return bool(
+                    state is not None
+                    and self._fresh_valid_state(operation.control_id)
+                    and str(state.state_id) == expected_state
+                    and abs(float(state.position) - expected_position)
+                    <= 1.0e-4
+                    and int(state.transition_sequence) == expected_sequence
+                    and not bool(state.in_motion)
+                )
+
+            if not self._spin_until_stable(
+                target_unchanged,
+                0.20,
+                min(timeout, 5.0),
+            ):
+                raise RuntimeError(
+                    "Planning-only validation changed the target control's "
+                    "physical state."
+                )
         self.verify_planning_scene(None, min(timeout, 5.0))
         self.verify_non_target_controls_unchanged(
             non_target_snapshot,
@@ -1305,7 +1404,8 @@ def parse_arguments() -> argparse.Namespace:
         "--exhaustive",
         action="store_true",
         help=(
-            "Submit every unavailable control and require fast UNREACHABLE; "
+            "Submit every unavailable control and require live MoveIt "
+            "planning diagnostics; "
             "physical operations still require a pre-positioned robot. Use "
             "validate_cabinet_web --exhaustive for autonomous full coverage."
         ),
@@ -1450,7 +1550,7 @@ def main() -> int:
         validated_unavailable: set[str] = set()
         for unavailable in unavailable_to_validate:
             print(
-                f"[reachability] structured fast failure: "
+                f"[planning-validation] live structured failure: "
                 f"{unavailable.control_id}"
             )
             print(
@@ -1458,9 +1558,13 @@ def main() -> int:
                 + node.execute_expected_failure(
                     unavailable_operation_for(unavailable),
                     OperateCabinetControl.Result.UNREACHABLE,
-                    min(args.timeout, 15.0),
+                    args.timeout,
                     expected_reason=str(unavailable.unavailable_reason),
-                    maximum_duration=5.0,
+                    allowed_error_codes=(
+                        OperateCabinetControl.Result.PLANNING_FAILED,
+                        OperateCabinetControl.Result.UNREACHABLE,
+                    ),
+                    require_planning_validation=True,
                 )
             )
             validated_unavailable.add(str(unavailable.control_id))
@@ -1575,10 +1679,11 @@ def main() -> int:
                     if control.control_id not in validated_unavailable:
                         raise RuntimeError(
                             f"{control.control_id} was not submitted for its "
-                            "structured UNREACHABLE result."
+                            "structured live-planning result."
                         )
                     print(
-                        f"  PASS: {control.control_id} returned UNREACHABLE: "
+                        f"  PASS: {control.control_id} returned live planning "
+                        "diagnostics: "
                         f"{control.unavailable_reason}"
                     )
                     continue

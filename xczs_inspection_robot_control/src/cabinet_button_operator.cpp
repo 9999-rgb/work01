@@ -12,6 +12,8 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -27,6 +29,7 @@
 #include "moveit/move_group_interface/move_group_interface.h"
 #include "moveit/robot_trajectory/robot_trajectory.h"
 #include "moveit/trajectory_processing/time_optimal_trajectory_generation.h"
+#include "moveit/utils/moveit_error_code.h"
 #include "moveit_msgs/msg/robot_trajectory.hpp"
 #include "nav2_msgs/action/navigate_to_pose.hpp"
 #include "rclcpp/expand_topic_or_service_name.hpp"
@@ -50,6 +53,7 @@
 #include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_catalog.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
+#include "xczs_inspection_robot_control/operation_validation_policy.hpp"
 #include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/srv/manage_operation_lease.hpp"
 #include "xczs_inspection_robot_control/srv/set_cabinet_grasp.hpp"
@@ -108,8 +112,6 @@ public:
 
 struct OperationPoses
 {
-  geometry_msgs::msg::PoseStamped staging_pose;
-  geometry_msgs::msg::PoseStamped staging_pose_in_planning_frame;
   geometry_msgs::msg::Pose prepress_pose;
   geometry_msgs::msg::Pose contact_pose;
   geometry_msgs::msg::Pose pressed_pose;
@@ -117,8 +119,6 @@ struct OperationPoses
 
 struct RotaryOperationPoses
 {
-  geometry_msgs::msg::PoseStamped staging_pose;
-  geometry_msgs::msg::PoseStamped staging_pose_in_planning_frame;
   geometry_msgs::msg::Pose ready_pose;
   geometry_msgs::msg::Pose door_pregrasp_pose;
   geometry_msgs::msg::Pose grasp_pose;
@@ -130,6 +130,21 @@ struct DoorArcProgress
   double initial_position{0.0};
   std::size_t completed_waypoints{0U};
   std::size_t total_waypoints{0U};
+};
+
+struct ControlNavigationStation
+{
+  tf2::Vector3 local_anchor{0.0, 0.0, 0.0};
+  tf2::Vector3 outward_axis{0.0, 0.0, 1.0};
+  double standoff{0.0};
+  double base_yaw_offset{0.0};
+  std::string frame_id;
+};
+
+struct ControlStagingPoses
+{
+  geometry_msgs::msg::PoseStamped navigation_pose;
+  geometry_msgs::msg::PoseStamped planning_pose;
 };
 
 struct ButtonSnapshot
@@ -172,6 +187,7 @@ struct ButtonSpec
   double grasp_outward_offset{0.0};
   bool operable{true};
   std::string unavailable_reason;
+  std::optional<ControlNavigationStation> navigation_station;
   std::string parent_control_id;
   double local_x{0.0};
   double local_y{0.0};
@@ -822,6 +838,8 @@ private:
       button_default_approach, "button_defaults.approach_normal");
     checked_vector3(knob_default_axis, "knob_defaults.axis");
     checked_vector3(knob_default_approach, "knob_defaults.approach_normal");
+    const auto & parameter_overrides =
+      get_node_parameters_interface()->get_parameter_overrides();
 
     std::unordered_set<std::string> seen_button_ids;
     for (const auto & control_id : control_ids) {
@@ -915,6 +933,72 @@ private:
       if (unreachable_controls.count(control_id) != 0U) {
         button->operable = false;
         button->unavailable_reason = unreachable_control_reason;
+      }
+      const std::string station_prefix = prefix + "navigation_station.";
+      const std::string station_anchor_parameter =
+        station_prefix + "local_anchor";
+      const std::string station_axis_parameter =
+        station_prefix + "outward_axis";
+      const std::string station_standoff_parameter =
+        station_prefix + "standoff";
+      const bool station_configured =
+        parameter_overrides.count(station_anchor_parameter) != 0U ||
+        parameter_overrides.count(station_axis_parameter) != 0U ||
+        parameter_overrides.count(station_standoff_parameter) != 0U ||
+        parameter_overrides.count(station_prefix + "base_yaw_offset") != 0U ||
+        parameter_overrides.count(station_prefix + "frame_id") != 0U;
+      if (station_configured) {
+        if (parameter_overrides.count(station_anchor_parameter) == 0U ||
+          parameter_overrides.count(station_axis_parameter) == 0U ||
+          parameter_overrides.count(station_standoff_parameter) == 0U)
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id + "' navigation_station must "
+                  "define local_anchor, outward_axis and standoff.");
+        }
+        ControlNavigationStation station;
+        station.local_anchor = checked_vector3(
+          declare_parameter<std::vector<double>>(
+            station_anchor_parameter, std::vector<double>{}),
+          station_anchor_parameter);
+        station.outward_axis = checked_vector3(
+          declare_parameter<std::vector<double>>(
+            station_axis_parameter, std::vector<double>{}),
+          station_axis_parameter);
+        if (station.outward_axis.length2() <= 1.0e-12) {
+          throw std::invalid_argument(
+                  "Parameter '" + station_axis_parameter +
+                  "' must not be zero.");
+        }
+        station.outward_axis.normalize();
+        station.standoff = declare_parameter<double>(
+          station_standoff_parameter, 0.0);
+        if (!std::isfinite(station.standoff) || station.standoff <= 0.0) {
+          throw std::invalid_argument(
+                  "Parameter '" + station_standoff_parameter +
+                  "' must be positive and finite.");
+        }
+        station.base_yaw_offset = declare_parameter<double>(
+          station_prefix + "base_yaw_offset", 0.0);
+        if (!std::isfinite(station.base_yaw_offset)) {
+          throw std::invalid_argument(
+                  "Parameter '" + station_prefix +
+                  "base_yaw_offset' must be finite.");
+        }
+        station.frame_id = declare_parameter<std::string>(
+          station_prefix + "frame_id", navigation_frame_);
+        if (station.frame_id != navigation_frame_) {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' navigation_station frame must match navigation_frame '" +
+                  navigation_frame_ + "'.");
+        }
+        button->navigation_station = std::move(station);
+      }
+      if (button->operable && !button->navigation_station) {
+        throw std::invalid_argument(
+                "Operable control '" + control_id +
+                "' requires an explicit robot-adapter navigation_station.");
       }
       button->parent_control_id = declare_parameter<std::string>(
         prefix + "parent_control_id", "");
@@ -1340,6 +1424,7 @@ private:
     const auto button = find_button(goal_handle->get_goal()->button_id);
     std::shared_ptr<MoveGroupInterface> move_group;
     OperationPoses poses;
+    ControlStagingPoses staging_poses;
     bool should_attempt_retreat = false;
     bool request_success = false;
 
@@ -1381,8 +1466,8 @@ private:
 
       const bool should_navigate_to_staging_pose =
         goal_handle->get_goal()->navigate_to_staging_pose;
-      poses = calculate_operation_poses(
-        *button, should_navigate_to_staging_pose, press_depth_);
+      poses = calculate_operation_poses(*button, press_depth_);
+      staging_poses = calculate_control_staging_poses(*button);
 
       move_group = std::make_shared<MoveGroupInterface>(
         shared_from_this(),
@@ -1415,18 +1500,17 @@ private:
           PressCabinetButton::Feedback::NAVIGATING,
           0.08F,
           "Driving the base to the cabinet staging pose.");
-        navigate_to_staging_pose(goal_handle, poses.staging_pose);
+        navigate_to_staging_pose(
+          goal_handle, staging_poses.navigation_pose);
       }
       set_navigation_mode(goal_handle, false);
-      if (should_navigate_to_staging_pose) {
-        publish_feedback(
-          goal_handle,
-          PressCabinetButton::Feedback::NAVIGATING,
-          0.20F,
-          "Refining the cabinet staging pose from Gazebo odometry.");
-        dock_to_staging_pose(
-          goal_handle, poses.staging_pose_in_planning_frame);
-      }
+      publish_feedback(
+        goal_handle,
+        PressCabinetButton::Feedback::NAVIGATING,
+        0.20F,
+        "Refining the configured control station from odometry.");
+      dock_to_staging_pose(goal_handle, staging_poses.planning_pose);
+      interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
       publish_feedback(
         goal_handle,
@@ -1632,6 +1716,7 @@ private:
     std::shared_ptr<MoveGroupInterface> move_group;
     OperationPoses button_poses;
     RotaryOperationPoses rotary_poses;
+    std::optional<ControlStagingPoses> staging_poses;
     bool should_attempt_retreat = false;
     bool grasp_attached = false;
     bool request_success = false;
@@ -1640,6 +1725,8 @@ private:
     double button_press_depth = 0.0;
     bool button_should_trigger = false;
     bool is_button = false;
+    const bool validation_only = control &&
+      requires_planning_only_validation(control->operable);
     std::string target_state;
     std::unordered_map<std::string, std::string> expected_parent_states;
 
@@ -1663,12 +1750,12 @@ private:
                 OperateCabinetControl::Result::INVALID_CONTROL,
                 "The accepted cabinet control is no longer configured.");
       }
-      if (!control->operable) {
-        throw GenericOperationError(
-                OperateCabinetControl::Result::UNREACHABLE,
-                control->unavailable_reason.empty() ?
-                "The selected control is not reachable with this robot." :
-                control->unavailable_reason);
+      if (validation_only) {
+        result->policy_reason = control->unavailable_reason.empty() ?
+          "The selected control has not passed this robot adapter's complete "
+          "physical operation and recovery validation." :
+          control->unavailable_reason;
+        result->diagnostic_stage = "preflight";
       }
       is_button = control->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
@@ -1692,7 +1779,9 @@ private:
       }
       acquire_operation_lease(goal_handle);
       publish_active_control(control->id);
-      reset_max_button_travel(*control);
+      if (!validation_only) {
+        reset_max_button_travel(*control);
+      }
       publish_operate_feedback(
         goal_handle,
         OperateCabinetControl::Feedback::WAITING_FOR_SYSTEM,
@@ -1719,36 +1808,25 @@ private:
         target_position = button_press_depth;
       }
       latch_cabinet_transform();
-      interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
       const bool navigate =
         goal_handle->get_goal()->navigate_to_staging_pose;
       if (is_button) {
         button_poses = calculate_operation_poses(
-          *control, navigate, button_press_depth);
+          *control, button_press_depth);
       } else {
-        double staging_reference_position = initial_state.position;
-        if (control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
-          target_position < initial_state.position - target_tolerance_)
-        {
-          // Staging normal to a fully open door leaves the closing release
-          // point more than 1.4 m from the base.  Face the door near its
-          // over-center release angle instead: both the initial handle and
-          // complete closing arc then remain inside the arm workspace.
-          staging_reference_position = target_position +
-            door_release_fraction_ *
-            (initial_state.position - target_position);
-        }
         rotary_poses = calculate_rotary_operation_poses(
-          *control, initial_state.position, staging_reference_position,
-          navigate);
+          *control, initial_state.position);
       }
-      const auto & staging_pose = is_button ?
-        button_poses.staging_pose : rotary_poses.staging_pose;
-      const auto & staging_pose_in_planning_frame = is_button ?
-        button_poses.staging_pose_in_planning_frame :
-        rotary_poses.staging_pose_in_planning_frame;
+      if (control->navigation_station) {
+        staging_poses = calculate_control_staging_poses(*control);
+      }
+      if (navigate && !staging_poses) {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::NAVIGATION_FAILED,
+                "Embedded navigation requires an explicit robot-adapter "
+                "navigation_station for control '" + control->id + "'.");
+      }
 
       move_group = std::make_shared<MoveGroupInterface>(
         shared_from_this(),
@@ -1761,35 +1839,78 @@ private:
         active_move_group_ = move_group;
       }
       configure_move_group(*move_group);
-      if (!move_group->getCurrentState(system_wait_timeout_)) {
+      const auto current_robot_state =
+        move_group->getCurrentState(system_wait_timeout_);
+      if (!current_robot_state) {
         throw GenericOperationError(
                 OperateCabinetControl::Result::NOT_READY,
                 "MoveIt did not receive the current robot state.");
       }
 
       if (navigate) {
-        publish_operate_feedback(
-          goal_handle,
-          OperateCabinetControl::Feedback::NAVIGATING,
-          0.05F, target_position,
-          "Returning the arm to its safe transport target.");
-        plan_and_execute_named_target(
-          *move_group, goal_handle, transport_named_target_);
+        if (!validation_only) {
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::NAVIGATING,
+            0.05F, target_position,
+            "Returning the arm to its safe transport target.");
+          plan_and_execute_named_target(
+            *move_group, goal_handle, transport_named_target_,
+            &result->operation_executed);
+        }
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::NAVIGATING,
           0.07F, target_position,
           "Driving the base to the cabinet staging pose.");
-        navigate_to_staging_pose(goal_handle, staging_pose);
+        navigate_to_staging_pose(
+          goal_handle, staging_poses->navigation_pose);
       }
       set_navigation_mode(goal_handle, false);
-      if (navigate) {
+      if (staging_poses) {
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::DOCKING,
           0.18F, target_position,
-          "Refining the staging pose from odometry.");
-        dock_to_staging_pose(goal_handle, staging_pose_in_planning_frame);
+          "Refining the configured control station from odometry.");
+        dock_to_staging_pose(goal_handle, staging_poses->planning_pose);
+      }
+      interruptible_hold(goal_handle, planning_scene_settle_seconds_);
+
+      if (validation_only) {
+        result->validation_performed = true;
+        result->operation_executed = false;
+        const auto docked_robot_state =
+          move_group->getCurrentState(system_wait_timeout_);
+        if (!docked_robot_state) {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::NOT_READY,
+                  "MoveIt did not refresh the robot state after precision "
+                  "docking.");
+        }
+        validate_inoperable_control_path(
+          *move_group, goal_handle, *control, initial_state,
+          target_position, button_poses, rotary_poses,
+          *docked_robot_state, result);
+        result->diagnostic_stage = "complete";
+        result->path_fraction = 1.0;
+        result->required_fraction = 1.0;
+        result->moveit_error_code =
+          moveit_msgs::msg::MoveItErrorCodes::SUCCESS;
+        throw GenericOperationError(
+                OperateCabinetControl::Result::UNREACHABLE,
+                "实时 MoveIt 运动学与碰撞规划验证全部通过，但没有发送任何"
+                "机械臂轨迹、抓取或柜体写入命令；按钮触发、档位到达、串扰"
+                "和安全恢复仍未经过物理闭环验证，因此继续受机器人适配层"
+                "安全策略限制：" + result->policy_reason);
+      }
+
+      if (!physical_motion_is_permitted(
+          control->operable, result->validation_performed))
+      {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::INTERNAL_ERROR,
+                "Robot-adapter policy blocked physical cabinet motion.");
       }
 
       if (is_button) {
@@ -1800,7 +1921,7 @@ private:
           "Planning to the button ready pose.");
         plan_and_execute_pose(
           *move_group, goal_handle, button_poses.prepress_pose,
-          contact_tool_link_);
+          contact_tool_link_, &result->operation_executed);
         should_attempt_retreat = true;
         publish_operate_feedback(
           goal_handle,
@@ -1809,7 +1930,8 @@ private:
           "Approaching the button along its travel axis.");
         execute_cartesian_path(
           *move_group, goal_handle, {button_poses.contact_pose},
-          cartesian_velocity_scale_, cartesian_acceleration_scale_);
+          cartesian_velocity_scale_, cartesian_acceleration_scale_,
+          0.99, &result->operation_executed);
         const auto transition_sequence =
           button_snapshot(*control).pressed_transition_sequence;
         publish_operate_feedback(
@@ -1821,9 +1943,11 @@ private:
           *move_group, goal_handle, {button_poses.pressed_pose},
           cartesian_velocity_scale_ * 0.5,
           cartesian_acceleration_scale_ * 0.5,
-          button_press_minimum_cartesian_fraction_);
+          button_press_minimum_cartesian_fraction_,
+          &result->operation_executed);
         track_button_force(
-          *move_group, goal_handle, *control, button_press_depth);
+          *move_group, goal_handle, *control, button_press_depth,
+          &result->operation_executed);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::VERIFYING,
@@ -1858,7 +1982,8 @@ private:
         execute_cartesian_path(
           *move_group, goal_handle,
           {button_poses.contact_pose, button_poses.prepress_pose},
-          cartesian_velocity_scale_, cartesian_acceleration_scale_);
+          cartesian_velocity_scale_, cartesian_acceleration_scale_,
+          0.99, &result->operation_executed);
         should_attempt_retreat = false;
         if (result->button_triggered && !wait_for_pressed_state(
             goal_handle, *control, false, release_detection_timeout_,
@@ -1894,7 +2019,7 @@ private:
           "Planning the probe to the control ready pose.");
         plan_and_execute_pose(
           *move_group, goal_handle, rotary_poses.ready_pose,
-          contact_tool_link_);
+          contact_tool_link_, &result->operation_executed);
         should_attempt_retreat = true;
         publish_operate_feedback(
           goal_handle,
@@ -1910,12 +2035,13 @@ private:
           // preserve a short straight-line final approach.
           plan_and_execute_pose(
             *move_group, goal_handle, rotary_poses.door_pregrasp_pose,
-            contact_tool_link_);
+            contact_tool_link_, &result->operation_executed);
         }
         execute_cartesian_path(
           *move_group, goal_handle, {rotary_poses.grasp_pose},
           cartesian_velocity_scale_ * 0.5,
-          cartesian_acceleration_scale_ * 0.5);
+          cartesian_acceleration_scale_ * 0.5,
+          0.99, &result->operation_executed);
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::GRASPING,
@@ -1963,13 +2089,15 @@ private:
             static_cast<std::size_t>(door_cartesian_segment_waypoints_),
             cartesian_velocity_scale_ * 0.5,
             cartesian_acceleration_scale_ * 0.5,
-            door_arc_progress.completed_waypoints);
+            door_arc_progress.completed_waypoints,
+            &result->operation_executed);
           door_arc_progress.in_progress = false;
         } else {
           execute_cartesian_path(
             *move_group, goal_handle, waypoints,
             cartesian_velocity_scale_ * 0.5,
-            cartesian_acceleration_scale_ * 0.5);
+            cartesian_acceleration_scale_ * 0.5,
+            0.99, &result->operation_executed);
         }
         if (control->control_type ==
           xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
@@ -2024,7 +2152,8 @@ private:
             "Holding the door angle while clearing its remaining sweep.");
           execute_cartesian_path(
             *move_group, goal_handle, {target_ready},
-            cartesian_velocity_scale_, cartesian_acceleration_scale_);
+            cartesian_velocity_scale_, cartesian_acceleration_scale_,
+            0.99, &result->operation_executed);
           should_attempt_retreat = false;
           publish_operate_feedback(
             goal_handle,
@@ -2050,7 +2179,8 @@ private:
             "Retreating before verifying the released control.");
           execute_cartesian_path(
             *move_group, goal_handle, {target_ready},
-            cartesian_velocity_scale_, cartesian_acceleration_scale_);
+            cartesian_velocity_scale_, cartesian_acceleration_scale_,
+            0.99, &result->operation_executed);
           should_attempt_retreat = false;
         }
         publish_operate_feedback(
@@ -2076,10 +2206,17 @@ private:
         0.98F, target_position,
         "Returning the arm to its safe transport target.");
       plan_and_execute_named_target(
-        *move_group, goal_handle, transport_named_target_);
+        *move_group, goal_handle, transport_named_target_,
+        &result->operation_executed);
 
       const auto final_state = button_snapshot(*control);
       check_cancel(goal_handle);
+      if (!result->operation_executed) {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::INTERNAL_ERROR,
+                "Cabinet operation reached final verification without "
+                "issuing a physical motion command.");
+      }
       result->success = true;
       result->error_code = OperateCabinetControl::Result::SUCCESS;
       result->message = "Operated " + control->id + " successfully.";
@@ -2098,18 +2235,26 @@ private:
       result->success = false;
       result->error_code = error.error_code;
       result->message = error.what();
-      recover_failed_operate_goal(
-        result, control, move_group, should_attempt_retreat,
-        grasp_attached, door_arc_progress,
-        is_operate_goal_canceling(goal_handle));
+      if (validation_only) {
+        snapshot_planning_only_result(result, control);
+      } else {
+        recover_failed_operate_goal(
+          result, control, move_group, should_attempt_retreat,
+          grasp_attached, door_arc_progress,
+          is_operate_goal_canceling(goal_handle));
+      }
     } catch (const OperationError & error) {
       result->success = false;
       result->error_code = map_legacy_error_code(error.error_code);
       result->message = error.what();
-      recover_failed_operate_goal(
-        result, control, move_group, should_attempt_retreat,
-        grasp_attached, door_arc_progress,
-        is_operate_goal_canceling(goal_handle));
+      if (validation_only) {
+        snapshot_planning_only_result(result, control);
+      } else {
+        recover_failed_operate_goal(
+          result, control, move_group, should_attempt_retreat,
+          grasp_attached, door_arc_progress,
+          is_operate_goal_canceling(goal_handle));
+      }
     } catch (const std::exception & error) {
       result->success = false;
       result->error_code = operation_lease_lost_.load() ?
@@ -2122,10 +2267,14 @@ private:
         is_operate_goal_canceling(goal_handle) ?
         "Cabinet operation was canceled." :
         std::string("Cabinet operation failed: ") + error.what();
-      recover_failed_operate_goal(
-        result, control, move_group, should_attempt_retreat,
-        grasp_attached, door_arc_progress,
-        is_operate_goal_canceling(goal_handle));
+      if (validation_only) {
+        snapshot_planning_only_result(result, control);
+      } else {
+        recover_failed_operate_goal(
+          result, control, move_group, should_attempt_retreat,
+          grasp_attached, door_arc_progress,
+          is_operate_goal_canceling(goal_handle));
+      }
     } catch (...) {
       result->success = false;
       result->error_code = operation_lease_lost_.load() ?
@@ -2134,10 +2283,14 @@ private:
       result->message = operation_lease_lost_.load() ?
         "The global robot operation lease was lost; all motion was stopped." :
         "Cabinet operation failed with an unknown error.";
-      recover_failed_operate_goal(
-        result, control, move_group, should_attempt_retreat,
-        grasp_attached, door_arc_progress,
-        is_operate_goal_canceling(goal_handle));
+      if (validation_only) {
+        snapshot_planning_only_result(result, control);
+      } else {
+        recover_failed_operate_goal(
+          result, control, move_group, should_attempt_retreat,
+          grasp_attached, door_arc_progress,
+          is_operate_goal_canceling(goal_handle));
+      }
     }
 
     clear_latched_cabinet_transform();
@@ -2461,11 +2614,64 @@ private:
     return pose;
   }
 
+  ControlStagingPoses calculate_control_staging_poses(
+    const ButtonSpec & control)
+  {
+    if (!control.navigation_station) {
+      throw OperationError(
+              PressCabinetButton::Result::INTERNAL_ERROR,
+              "Control '" + control.id +
+              "' has no explicit robot-adapter navigation station.");
+    }
+    const auto & station = *control.navigation_station;
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const tf2::Vector3 local_position = station.local_anchor +
+      station.outward_axis * station.standoff;
+    const tf2::Vector3 planning_position = cabinet * local_position;
+    tf2::Vector3 planning_outward = tf2::quatRotate(
+      cabinet.getRotation(), station.outward_axis);
+    const double horizontal_norm = std::hypot(
+      planning_outward.x(), planning_outward.y());
+    if (!std::isfinite(horizontal_norm) || horizontal_norm <= 1.0e-9) {
+      throw OperationError(
+              PressCabinetButton::Result::INTERNAL_ERROR,
+              "Control '" + control.id +
+              "' navigation station has no horizontal outward direction.");
+    }
+    planning_outward /= planning_outward.length();
+
+    ControlStagingPoses poses;
+    poses.planning_pose.header.frame_id = planning_frame_;
+    poses.planning_pose.pose.position.x = planning_position.x();
+    poses.planning_pose.pose.position.y = planning_position.y();
+    poses.planning_pose.pose.position.z = planning_position.z();
+    tf2::Quaternion navigation_rotation;
+    navigation_rotation.setRPY(
+      0.0, 0.0,
+      std::atan2(-planning_outward.y(), -planning_outward.x()) +
+      station.base_yaw_offset);
+    navigation_rotation.normalize();
+    poses.planning_pose.pose.orientation = to_message(navigation_rotation);
+    poses.navigation_pose = poses.planning_pose;
+    if (station.frame_id != planning_frame_) {
+      try {
+        poses.navigation_pose = transform_buffer_->transform(
+          poses.planning_pose, station.frame_id,
+          tf2::durationFromSec(system_wait_timeout_));
+      } catch (const tf2::TransformException & error) {
+        throw OperationError(
+                PressCabinetButton::Result::NOT_READY,
+                "Could not transform the configured navigation station for '" +
+                control.id + "' from " + planning_frame_ + " to " +
+                station.frame_id + ": " + error.what());
+      }
+    }
+    return poses;
+  }
+
   RotaryOperationPoses calculate_rotary_operation_poses(
     const ButtonSpec & control,
-    double position,
-    double staging_reference_position,
-    bool include_staging_pose)
+    double position)
   {
     RotaryOperationPoses poses;
     poses.ready_pose = calculate_rotary_tool_pose(
@@ -2475,54 +2681,6 @@ private:
       control.grasp_outward_offset + door_pregrasp_clearance_);
     poses.grasp_pose = calculate_rotary_tool_pose(
       control, position, control.grasp_outward_offset);
-    if (!include_staging_pose) {
-      return poses;
-    }
-
-    const tf2::Transform cabinet = resolve_cabinet_transform();
-    const auto geometry = resolve_control_geometry(control);
-    tf2::Quaternion local_rotation;
-    local_rotation.setRotation(geometry.axis, staging_reference_position);
-    local_rotation.normalize();
-    const tf2::Vector3 local_grasp = geometry.pivot +
-      tf2::quatRotate(
-      local_rotation, geometry.grasp_zero - geometry.pivot);
-    const tf2::Vector3 grasp = cabinet * local_grasp;
-    const tf2::Vector3 outward_zero = tf2::quatRotate(
-      cabinet.getRotation(), geometry.approach_normal);
-    const tf2::Vector3 world_axis = tf2::quatRotate(
-      cabinet.getRotation(), geometry.axis);
-    tf2::Quaternion world_rotation;
-    world_rotation.setRotation(world_axis, staging_reference_position);
-    const tf2::Vector3 outward = tf2::quatRotate(
-      world_rotation, outward_zero).normalized();
-    const tf2::Vector3 inward = -outward;
-    const tf2::Vector3 staging = grasp + outward * staging_distance_;
-
-    geometry_msgs::msg::PoseStamped staging_in_planning_frame;
-    staging_in_planning_frame.header.frame_id = planning_frame_;
-    staging_in_planning_frame.pose.position.x = staging.x();
-    staging_in_planning_frame.pose.position.y = staging.y();
-    staging_in_planning_frame.pose.position.z = 0.0;
-    tf2::Quaternion navigation_rotation;
-    navigation_rotation.setRPY(
-      0.0, 0.0, std::atan2(inward.y(), inward.x()));
-    staging_in_planning_frame.pose.orientation =
-      to_message(navigation_rotation);
-    poses.staging_pose = staging_in_planning_frame;
-    poses.staging_pose_in_planning_frame = staging_in_planning_frame;
-    if (navigation_frame_ != planning_frame_) {
-      try {
-        poses.staging_pose = transform_buffer_->transform(
-          staging_in_planning_frame, navigation_frame_,
-          tf2::durationFromSec(system_wait_timeout_));
-      } catch (const tf2::TransformException & error) {
-        throw GenericOperationError(
-                OperateCabinetControl::Result::NOT_READY,
-                "Could not transform the cabinet staging pose: " +
-                std::string(error.what()));
-      }
-    }
     return poses;
   }
 
@@ -2887,6 +3045,29 @@ private:
     return false;
   }
 
+  void snapshot_planning_only_result(
+    const std::shared_ptr<OperateCabinetControl::Result> & result,
+    const std::shared_ptr<ButtonSpec> & control) noexcept
+  {
+    // This cleanup path is deliberately observation-only.  In particular it
+    // must not call the ordinary recovery helper: recovery is allowed to
+    // execute retreat/stow trajectories and release a physical grasp.
+    if (!result || !control) {
+      return;
+    }
+    const auto state = button_snapshot(*control);
+    result->final_position = state.position;
+    result->peak_position = state.position;
+    result->final_state = state.state_id;
+    if (control->control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
+    {
+      result->estimated_force =
+        state.position * control->spring_stiffness;
+      result->button_triggered = state.pressed;
+    }
+  }
+
   void recover_failed_operate_goal(
     const std::shared_ptr<OperateCabinetControl::Result> & result,
     const std::shared_ptr<ButtonSpec> & control,
@@ -2905,7 +3086,8 @@ private:
       move_group && rclcpp::ok())
     {
       rollback_and_retreat_succeeded = best_effort_rollback_door_arc(
-        *move_group, *control, door_arc_progress);
+        *move_group, *control, door_arc_progress,
+        &result->operation_executed);
     }
     if (motion_recovery_allowed && is_door && grasp_attached &&
       should_attempt_retreat && move_group && rclcpp::ok() &&
@@ -2921,7 +3103,8 @@ private:
         const auto state = button_snapshot(*control);
         const auto retreat_pose = calculate_rotary_tool_pose(
           *control, state.position, door_release_clearance_, false);
-        best_effort_retreat(*move_group, retreat_pose);
+        best_effort_retreat(
+          *move_group, retreat_pose, &result->operation_executed);
       } catch (const std::exception & error) {
         RCLCPP_ERROR(
           get_logger(), "Door pre-release safety retreat failed: %s",
@@ -2929,6 +3112,7 @@ private:
       }
     }
     if (control && (grasp_attached || control->requires_grasp)) {
+      result->operation_executed = true;
       release_control_grasp_noexcept(control->id);
     }
     if (motion_recovery_allowed && control && should_attempt_retreat &&
@@ -2940,18 +3124,19 @@ private:
           xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
         const auto retreat_pose = is_button ?
           calculate_operation_poses(
-          *control, false, press_depth_).prepress_pose :
+          *control, press_depth_).prepress_pose :
           calculate_rotary_tool_pose(
           *control, state.position,
           is_door ? door_release_clearance_ : prepress_distance_, false);
-        best_effort_retreat(*move_group, retreat_pose);
+        best_effort_retreat(
+          *move_group, retreat_pose, &result->operation_executed);
       } catch (const std::exception & error) {
         RCLCPP_ERROR(
           get_logger(), "Generic safety retreat failed: %s", error.what());
       }
     }
     if (motion_recovery_allowed && move_group && rclcpp::ok()) {
-      best_effort_stow(*move_group);
+      best_effort_stow(*move_group, &result->operation_executed);
     }
     if (control) {
       const auto final_state = button_snapshot(*control);
@@ -3149,7 +3334,8 @@ private:
     MoveGroupInterface & move_group,
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const ButtonSpec & button,
-    double target_travel)
+    double target_travel,
+    bool * operation_executed = nullptr)
   {
     double commanded_depth = clamp_button_press_depth(
       target_travel, button.max_position);
@@ -3178,19 +3364,18 @@ private:
         0.70F, target_travel,
         "Correcting the physical button travel to track the requested force.");
       const auto corrected_poses = calculate_operation_poses(
-        button, false, commanded_depth);
+        button, commanded_depth);
       execute_cartesian_path(
         move_group, goal_handle, {corrected_poses.pressed_pose},
         cartesian_velocity_scale_ * 0.35,
         cartesian_acceleration_scale_ * 0.35,
-        button_press_minimum_cartesian_fraction_);
+        button_press_minimum_cartesian_fraction_, operation_executed);
     }
     interruptible_hold(goal_handle, force_tracking_settle_seconds_);
   }
 
   OperationPoses calculate_operation_poses(
     const ButtonSpec & button,
-    bool include_staging_pose,
     double press_depth)
   {
     const double bounded_press_depth = clamp_button_press_depth(
@@ -3241,38 +3426,6 @@ private:
     poses.contact_pose = make_tool_pose(-contact_clearance_);
     poses.pressed_pose = make_tool_pose(bounded_press_depth);
 
-    if (include_staging_pose) {
-      geometry_msgs::msg::PoseStamped staging_in_planning_frame;
-      staging_in_planning_frame.header.frame_id = planning_frame_;
-      const tf2::Vector3 staging_position = button_face -
-        inward * staging_distance_;
-      staging_in_planning_frame.pose.position.x = staging_position.x();
-      staging_in_planning_frame.pose.position.y = staging_position.y();
-      staging_in_planning_frame.pose.position.z = 0.0;
-      const double navigation_yaw = std::atan2(inward.y(), inward.x());
-      tf2::Quaternion navigation_rotation;
-      navigation_rotation.setRPY(0.0, 0.0, navigation_yaw);
-      poses.staging_pose = staging_in_planning_frame;
-      poses.staging_pose_in_planning_frame = staging_in_planning_frame;
-      poses.staging_pose.pose.orientation = to_message(navigation_rotation);
-      poses.staging_pose_in_planning_frame.pose.orientation =
-        to_message(navigation_rotation);
-
-      if (navigation_frame_ != planning_frame_) {
-        try {
-          poses.staging_pose = transform_buffer_->transform(
-            staging_in_planning_frame,
-            navigation_frame_,
-            tf2::durationFromSec(system_wait_timeout_));
-        } catch (const tf2::TransformException & error) {
-          throw OperationError(
-                  PressCabinetButton::Result::NOT_READY,
-                  "Could not transform the cabinet staging pose from " +
-                  planning_frame_ + " to " + navigation_frame_ + ": " +
-                  error.what());
-        }
-      }
-    }
     return poses;
   }
 
@@ -3315,12 +3468,408 @@ private:
     move_group.allowReplanning(allow_replanning_);
   }
 
+  static void update_validation_diagnostic(
+    OperateCabinetControl::Result & result,
+    const std::string & stage,
+    double path_fraction,
+    double required_fraction,
+    std::int32_t moveit_error_code)
+  {
+    result.diagnostic_stage = stage;
+    result.path_fraction = std::isfinite(path_fraction) ?
+      std::max(0.0, std::min(1.0, path_fraction)) : 0.0;
+    result.required_fraction = std::isfinite(required_fraction) ?
+      std::max(0.0, std::min(1.0, required_fraction)) : 0.0;
+    result.moveit_error_code = moveit_error_code;
+  }
+
+  static std::string planning_validation_failure_message(
+    const OperateCabinetControl::Result & result,
+    const std::string & detail)
+  {
+    std::ostringstream message;
+    message << "实时 MoveIt 安全规划验证失败 [" << result.diagnostic_stage
+            << "]：路径完成 " << result.path_fraction * 100.0
+            << "% ，要求 " << result.required_fraction * 100.0 << "%";
+    if (result.moveit_error_code != 0) {
+      const moveit::core::MoveItErrorCode error(result.moveit_error_code);
+      message << "，MoveIt=" << moveit::core::error_code_to_string(error)
+              << "(" << result.moveit_error_code << ")";
+    }
+    if (!detail.empty()) {
+      message << "；" << detail;
+    }
+    if (!result.policy_reason.empty()) {
+      message << "；适配层历史限制：" << result.policy_reason;
+    }
+    return message.str();
+  }
+
+  moveit::core::RobotState validation_trajectory_end_state(
+    MoveGroupInterface & move_group,
+    const moveit::core::RobotState & start_state,
+    const moveit_msgs::msg::RobotTrajectory & trajectory_message) const
+  {
+    robot_trajectory::RobotTrajectory trajectory(
+      move_group.getRobotModel(), move_group_name_);
+    trajectory.setRobotTrajectoryMsg(start_state, trajectory_message);
+    if (trajectory.getWayPointCount() == 0U) {
+      // MoveIt may represent an already-satisfied target as an empty plan.
+      return start_state;
+    }
+    return trajectory.getLastWayPoint();
+  }
+
+  moveit::core::RobotState validate_pose_plan_only(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const moveit::core::RobotState & start_state,
+    const geometry_msgs::msg::Pose & target,
+    const std::string & tool_link,
+    const std::string & stage,
+    const std::shared_ptr<OperateCabinetControl::Result> & result)
+  {
+    check_cancel(goal_handle);
+    update_validation_diagnostic(
+      *result, stage, 0.0, 1.0, 0);
+    move_group.setStartState(start_state);
+    if (!move_group.setPoseTarget(target, tool_link)) {
+      update_validation_diagnostic(
+        *result, stage, 0.0, 1.0,
+        moveit_msgs::msg::MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS);
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              planning_validation_failure_message(
+                *result, "MoveIt 拒绝了目标位姿或工具链接。"));
+    }
+
+    MoveGroupInterface::Plan plan;
+    moveit::core::MoveItErrorCode planning_result;
+    bool planned = false;
+    for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      move_group.setStartState(start_state);
+      planning_result = move_group.plan(plan);
+      if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+        planned = true;
+        break;
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "Planning-only validation stage '%s' failed (attempt %d/%d, "
+        "MoveIt=%d).",
+        stage.c_str(), attempt, motion_planning_attempts_, planning_result.val);
+    }
+    move_group.clearPoseTargets();
+    if (!planned) {
+      update_validation_diagnostic(
+        *result, stage, 0.0, 1.0, planning_result.val);
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              planning_validation_failure_message(
+                *result, "无法生成无碰撞目标位姿轨迹。"));
+    }
+    update_validation_diagnostic(
+      *result, stage, 1.0, 1.0,
+      moveit_msgs::msg::MoveItErrorCodes::SUCCESS);
+    return validation_trajectory_end_state(
+      move_group, start_state, plan.trajectory_);
+  }
+
+  moveit::core::RobotState validate_named_target_plan_only(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const moveit::core::RobotState & start_state,
+    const std::string & target_name,
+    const std::string & stage,
+    const std::shared_ptr<OperateCabinetControl::Result> & result)
+  {
+    check_cancel(goal_handle);
+    update_validation_diagnostic(
+      *result, stage, 0.0, 1.0, 0);
+    move_group.setStartState(start_state);
+    if (!move_group.setNamedTarget(target_name)) {
+      update_validation_diagnostic(
+        *result, stage, 0.0, 1.0,
+        moveit_msgs::msg::MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS);
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              planning_validation_failure_message(
+                *result, "MoveIt 不包含指定的安全命名位姿。"));
+    }
+
+    MoveGroupInterface::Plan plan;
+    moveit::core::MoveItErrorCode planning_result;
+    bool planned = false;
+    for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      move_group.setStartState(start_state);
+      planning_result = move_group.plan(plan);
+      if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+        planned = true;
+        break;
+      }
+    }
+    if (!planned) {
+      update_validation_diagnostic(
+        *result, stage, 0.0, 1.0, planning_result.val);
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              planning_validation_failure_message(
+                *result, "无法规划回到安全运输位姿。"));
+    }
+    update_validation_diagnostic(
+      *result, stage, 1.0, 1.0,
+      moveit_msgs::msg::MoveItErrorCodes::SUCCESS);
+    return validation_trajectory_end_state(
+      move_group, start_state, plan.trajectory_);
+  }
+
+  moveit::core::RobotState validate_cartesian_plan_only(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const moveit::core::RobotState & start_state,
+    const std::vector<geometry_msgs::msg::Pose> & waypoints,
+    double minimum_fraction,
+    const std::string & stage,
+    const std::shared_ptr<OperateCabinetControl::Result> & result)
+  {
+    check_cancel(goal_handle);
+    update_validation_diagnostic(
+      *result, stage, 0.0, minimum_fraction, 0);
+    if (waypoints.empty()) {
+      update_validation_diagnostic(
+        *result, stage, 1.0, minimum_fraction,
+        moveit_msgs::msg::MoveItErrorCodes::SUCCESS);
+      return start_state;
+    }
+    moveit_msgs::msg::RobotTrajectory best_trajectory;
+    moveit_msgs::msg::MoveItErrorCodes best_error;
+    double best_fraction = -1.0;
+    for (int attempt = 0; attempt < cartesian_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      move_group.setStartState(start_state);
+      moveit_msgs::msg::RobotTrajectory candidate;
+      moveit_msgs::msg::MoveItErrorCodes error;
+      const double fraction = move_group.computeCartesianPath(
+        waypoints, 0.002, cartesian_jump_threshold_, candidate, true, &error);
+      if (fraction > best_fraction) {
+        best_fraction = fraction;
+        best_trajectory = std::move(candidate);
+        best_error = error;
+      }
+      if (best_fraction >= minimum_fraction) {
+        break;
+      }
+    }
+    const double reported_fraction = std::max(0.0, best_fraction);
+    update_validation_diagnostic(
+      *result, stage, reported_fraction, minimum_fraction, best_error.val);
+    if (best_fraction < minimum_fraction) {
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              planning_validation_failure_message(
+                *result, "笛卡尔路径没有达到当前执行路径使用的安全门槛。"));
+    }
+
+    robot_trajectory::RobotTrajectory timed_trajectory(
+      move_group.getRobotModel(), move_group_name_);
+    timed_trajectory.setRobotTrajectoryMsg(start_state, best_trajectory);
+    if (timed_trajectory.getWayPointCount() > 0U) {
+      trajectory_processing::TimeOptimalTrajectoryGeneration time_parameterizer;
+      if (!time_parameterizer.computeTimeStamps(
+          timed_trajectory,
+          cartesian_velocity_scale_,
+          cartesian_acceleration_scale_))
+      {
+        update_validation_diagnostic(
+          *result, stage, reported_fraction, minimum_fraction,
+          moveit_msgs::msg::MoveItErrorCodes::INVALID_MOTION_PLAN);
+        throw OperationError(
+                PressCabinetButton::Result::PLANNING_FAILED,
+                planning_validation_failure_message(
+                  *result, "笛卡尔候选轨迹无法生成安全时间参数。"));
+      }
+      update_validation_diagnostic(
+        *result, stage, reported_fraction, minimum_fraction,
+        moveit_msgs::msg::MoveItErrorCodes::SUCCESS);
+      return timed_trajectory.getLastWayPoint();
+    }
+    update_validation_diagnostic(
+      *result, stage, reported_fraction, minimum_fraction,
+      moveit_msgs::msg::MoveItErrorCodes::SUCCESS);
+    return start_state;
+  }
+
+  moveit::core::RobotState validate_segmented_cartesian_plan_only(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    moveit::core::RobotState virtual_state,
+    const std::vector<geometry_msgs::msg::Pose> & waypoints,
+    std::size_t maximum_segment_waypoints,
+    const std::shared_ptr<OperateCabinetControl::Result> & result)
+  {
+    if (maximum_segment_waypoints == 0U) {
+      throw std::invalid_argument(
+              "Planning-only Cartesian segment size must be positive.");
+    }
+    for (std::size_t begin = 0U; begin < waypoints.size();
+      begin += maximum_segment_waypoints)
+    {
+      const auto end = std::min(
+        begin + maximum_segment_waypoints, waypoints.size());
+      const std::vector<geometry_msgs::msg::Pose> segment(
+        waypoints.begin() + begin, waypoints.begin() + end);
+      try {
+        virtual_state = validate_cartesian_plan_only(
+          move_group, goal_handle, virtual_state, segment, 0.99,
+          "manipulation", result);
+      } catch (const OperationError & error) {
+        if (error.error_code != PressCabinetButton::Result::PLANNING_FAILED ||
+          segment.size() == 1U)
+        {
+          throw;
+        }
+        // Match the real door executor's safe fallback without executing a
+        // partial segment: retry each predicted waypoint from the preceding
+        // virtual trajectory endpoint.
+        for (const auto & waypoint : segment) {
+          virtual_state = validate_cartesian_plan_only(
+            move_group, goal_handle, virtual_state, {waypoint}, 0.99,
+            "manipulation", result);
+        }
+      }
+    }
+    return virtual_state;
+  }
+
+  void validate_inoperable_control_path(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const ButtonSpec & control,
+    const ButtonSnapshot & initial_state,
+    double target_position,
+    const OperationPoses & button_poses,
+    const RotaryOperationPoses & rotary_poses,
+    const moveit::core::RobotState & current_robot_state,
+    const std::shared_ptr<OperateCabinetControl::Result> & result)
+  {
+    // SAFETY CONTRACT: this function and every helper it calls are planning
+    // only.  They may query current Gazebo/TF state and the MoveIt planning
+    // scene, but they must never execute a trajectory, navigate, dock, attach
+    // a grasp, wait for a physical transition, or write a cabinet joint.
+    moveit::core::RobotState virtual_state(current_robot_state);
+    const bool is_button = control.control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+    if (is_button) {
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::MOVING_TO_READY,
+        0.25F, target_position,
+        "正在用实时 MoveIt 场景验证按钮预备位姿（不会执行轨迹）。");
+      virtual_state = validate_pose_plan_only(
+        move_group, goal_handle, virtual_state,
+        button_poses.prepress_pose, contact_tool_link_, "ready_pose", result);
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::APPROACHING,
+        0.47F, target_position,
+        "正在验证按钮接近路径（不会移动机械臂）。");
+      virtual_state = validate_cartesian_plan_only(
+        move_group, goal_handle, virtual_state,
+        {button_poses.contact_pose}, 0.99, "approach", result);
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::MANIPULATING,
+        0.65F, target_position,
+        "正在验证请求力对应的按压路径（不会接触按钮）。");
+      virtual_state = validate_cartesian_plan_only(
+        move_group, goal_handle, virtual_state,
+        {button_poses.pressed_pose}, button_press_minimum_cartesian_fraction_,
+        "manipulation", result);
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::RETREATING,
+        0.86F, 0.0,
+        "正在验证按钮撤回路径（不会执行轨迹）。");
+      virtual_state = validate_cartesian_plan_only(
+        move_group, goal_handle, virtual_state,
+        {button_poses.contact_pose, button_poses.prepress_pose},
+        0.99, "retreat", result);
+    } else {
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::MOVING_TO_READY,
+        0.25F, target_position,
+        "正在用实时 MoveIt 场景验证控件预备位姿（不会执行轨迹）。");
+      virtual_state = validate_pose_plan_only(
+        move_group, goal_handle, virtual_state,
+        rotary_poses.ready_pose, contact_tool_link_, "ready_pose", result);
+      if (control.control_type ==
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+      {
+        virtual_state = validate_pose_plan_only(
+          move_group, goal_handle, virtual_state,
+          rotary_poses.door_pregrasp_pose, contact_tool_link_,
+          "pregrasp", result);
+      }
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::APPROACHING,
+        0.43F, target_position,
+        "正在验证抓取接近路径（不会建立物理抓取）。");
+      virtual_state = validate_cartesian_plan_only(
+        move_group, goal_handle, virtual_state,
+        {rotary_poses.grasp_pose}, 0.99, "approach", result);
+
+      double manipulation_position = target_position;
+      const bool is_door = control.control_type ==
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+      if (is_door &&
+        std::abs(target_position - initial_state.position) > target_tolerance_)
+      {
+        manipulation_position = initial_state.position +
+          door_release_fraction_ *
+          (target_position - initial_state.position);
+      }
+      const auto waypoints = calculate_rotation_waypoints(
+        control, initial_state.position, manipulation_position);
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::MANIPULATING,
+        0.62F, target_position,
+        "正在验证控件操作圆弧（不会转动或抓取控件）。");
+      if (is_door) {
+        virtual_state = validate_segmented_cartesian_plan_only(
+          move_group, goal_handle, virtual_state, waypoints,
+          static_cast<std::size_t>(door_cartesian_segment_waypoints_), result);
+      } else {
+        virtual_state = validate_cartesian_plan_only(
+          move_group, goal_handle, virtual_state, waypoints,
+          0.99, "manipulation", result);
+      }
+      const double release_clearance = is_door ?
+        door_release_clearance_ : prepress_distance_;
+      const auto target_ready = calculate_rotary_tool_pose(
+        control, manipulation_position, release_clearance, false);
+      publish_operate_feedback(
+        goal_handle, OperateCabinetControl::Feedback::RETREATING,
+        0.84F, target_position,
+        "正在验证控件撤离路径（不会释放不存在的抓取）。");
+      virtual_state = validate_cartesian_plan_only(
+        move_group, goal_handle, virtual_state, {target_ready},
+        0.99, "retreat", result);
+    }
+
+    publish_operate_feedback(
+      goal_handle, OperateCabinetControl::Feedback::VERIFYING,
+      0.96F, target_position,
+      "正在验证从预测撤回终点返回安全运输位姿。");
+    (void)validate_named_target_plan_only(
+      move_group, goal_handle, virtual_state,
+      transport_named_target_, "transport", result);
+  }
+
   template<typename GoalHandleT>
   void plan_and_execute_pose(
     MoveGroupInterface & move_group,
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const geometry_msgs::msg::Pose & target,
-    const std::string & tool_link)
+    const std::string & tool_link,
+    bool * operation_executed = nullptr)
   {
     check_cancel(goal_handle);
     MoveGroupInterface::Plan plan;
@@ -3354,6 +3903,9 @@ private:
               "in front of the cabinet.");
     }
     check_cancel(goal_handle);
+    if (operation_executed) {
+      *operation_executed = true;
+    }
     if (move_group.execute(plan) !=
       moveit::core::MoveItErrorCode::SUCCESS)
     {
@@ -3369,7 +3921,8 @@ private:
   void plan_and_execute_named_target(
     MoveGroupInterface & move_group,
     const std::shared_ptr<GoalHandleT> & goal_handle,
-    const std::string & target_name)
+    const std::string & target_name,
+    bool * operation_executed = nullptr)
   {
     check_cancel(goal_handle);
     MoveGroupInterface::Plan plan;
@@ -3401,6 +3954,9 @@ private:
               " attempts.");
     }
     check_cancel(goal_handle);
+    if (operation_executed) {
+      *operation_executed = true;
+    }
     if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
       check_cancel(goal_handle);
       throw OperationError(
@@ -3419,7 +3975,8 @@ private:
     std::size_t maximum_segment_waypoints,
     double velocity_scale,
     double acceleration_scale,
-    std::size_t & completed_waypoints)
+    std::size_t & completed_waypoints,
+    bool * operation_executed = nullptr)
   {
     if (maximum_segment_waypoints == 0U) {
       throw std::invalid_argument(
@@ -3448,7 +4005,7 @@ private:
       try {
         execute_cartesian_path(
           move_group, goal_handle, segment,
-          velocity_scale, acceleration_scale);
+          velocity_scale, acceleration_scale, 0.99, operation_executed);
         completed_waypoints = end;
         RCLCPP_INFO(
           get_logger(),
@@ -3477,7 +4034,8 @@ private:
         for (std::size_t offset = 0U; offset < segment.size(); ++offset) {
           execute_cartesian_path(
             move_group, goal_handle, {segment[offset]},
-            velocity_scale, acceleration_scale);
+            velocity_scale, acceleration_scale, 0.99,
+            operation_executed);
           completed_waypoints = begin + offset + 1U;
           RCLCPP_INFO(
             get_logger(),
@@ -3497,7 +4055,8 @@ private:
     const std::vector<geometry_msgs::msg::Pose> & waypoints,
     double velocity_scale,
     double acceleration_scale,
-    double minimum_fraction = 0.99)
+    double minimum_fraction = 0.99,
+    bool * operation_executed = nullptr)
   {
     check_cancel(goal_handle);
     moveit_msgs::msg::RobotTrajectory trajectory_message;
@@ -3535,6 +4094,9 @@ private:
       velocity_scale,
       acceleration_scale);
     check_cancel(goal_handle);
+    if (operation_executed) {
+      *operation_executed = true;
+    }
     if (move_group.execute(trajectory_message) !=
       moveit::core::MoveItErrorCode::SUCCESS)
     {
@@ -3579,7 +4141,8 @@ private:
     const std::vector<geometry_msgs::msg::Pose> & waypoints,
     double velocity_scale,
     double acceleration_scale,
-    const char * description) noexcept
+    const char * description,
+    bool * operation_executed = nullptr) noexcept
   {
     try {
       move_group.stop();
@@ -3602,6 +4165,9 @@ private:
         trajectory_message,
         velocity_scale,
         acceleration_scale);
+      if (operation_executed) {
+        *operation_executed = true;
+      }
       if (move_group.execute(trajectory_message) !=
         moveit::core::MoveItErrorCode::SUCCESS)
       {
@@ -3621,7 +4187,8 @@ private:
   bool best_effort_rollback_door_arc(
     MoveGroupInterface & move_group,
     const ButtonSpec & control,
-    const DoorArcProgress & progress) noexcept
+    const DoorArcProgress & progress,
+    bool * operation_executed = nullptr) noexcept
   {
     try {
       const auto current_state = button_snapshot(control);
@@ -3652,7 +4219,7 @@ private:
             move_group, {rollback_waypoints[index]},
             cartesian_velocity_scale_ * 0.5,
             cartesian_acceleration_scale_ * 0.5,
-            "Door arc rollback waypoint"))
+            "Door arc rollback waypoint", operation_executed))
         {
           RCLCPP_ERROR(
             get_logger(),
@@ -3669,7 +4236,8 @@ private:
         control, progress.initial_position, door_release_clearance_, false);
       if (!best_effort_cartesian_move(
           move_group, {retreat_pose}, cartesian_velocity_scale_,
-          cartesian_acceleration_scale_, "Door post-rollback safety retreat"))
+          cartesian_acceleration_scale_, "Door post-rollback safety retreat",
+          operation_executed))
       {
         return false;
       }
@@ -3690,14 +4258,17 @@ private:
 
   void best_effort_retreat(
     MoveGroupInterface & move_group,
-    const geometry_msgs::msg::Pose & prepress_pose) noexcept
+    const geometry_msgs::msg::Pose & prepress_pose,
+    bool * operation_executed = nullptr) noexcept
   {
     (void)best_effort_cartesian_move(
       move_group, {prepress_pose}, cartesian_velocity_scale_,
-      cartesian_acceleration_scale_, "Safety retreat");
+      cartesian_acceleration_scale_, "Safety retreat", operation_executed);
   }
 
-  void best_effort_stow(MoveGroupInterface & move_group) noexcept
+  void best_effort_stow(
+    MoveGroupInterface & move_group,
+    bool * operation_executed = nullptr) noexcept
   {
     try {
       move_group.stop();
@@ -3712,6 +4283,9 @@ private:
       if (move_group.plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
         RCLCPP_ERROR(get_logger(), "Safety stow planning failed.");
         return;
+      }
+      if (operation_executed) {
+        *operation_executed = true;
       }
       if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
         RCLCPP_ERROR(get_logger(), "Safety stow execution failed.");
@@ -4073,8 +4647,27 @@ private:
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const geometry_msgs::msg::PoseStamped & target)
   {
+    if (target.header.frame_id != planning_frame_ ||
+      !std::isfinite(target.pose.position.x) ||
+      !std::isfinite(target.pose.position.y))
+    {
+      publish_manual_base_stop();
+      throw OperationError(
+              PressCabinetButton::Result::INTERNAL_ERROR,
+              "Precision docking requires a finite target in planning frame '" +
+              planning_frame_ + "'.");
+    }
     tf2::Quaternion target_rotation;
     tf2::fromMsg(target.pose.orientation, target_rotation);
+    if (!std::isfinite(target_rotation.length2()) ||
+      target_rotation.length2() <= 1.0e-12)
+    {
+      publish_manual_base_stop();
+      throw OperationError(
+              PressCabinetButton::Result::INTERNAL_ERROR,
+              "Precision docking received an invalid target orientation.");
+    }
+    target_rotation.normalize();
     // The base router transforms navigation velocity components with
     // R(+offset). The physical docking frame yaw is therefore the desired
     // navigation-base yaw minus that same shared frame offset.
@@ -4084,6 +4677,7 @@ private:
       std::chrono::duration<double>(docking_timeout_);
     auto last_feedback = std::chrono::steady_clock::time_point{};
     int settled_cycles = 0;
+    bool takeover_distance_verified = false;
 
     try {
       while (std::chrono::steady_clock::now() < deadline) {
@@ -4102,15 +4696,43 @@ private:
         tf2::Quaternion current_rotation;
         tf2::fromMsg(
           current_transform.transform.rotation, current_rotation);
+        const double current_x = current_transform.transform.translation.x;
+        const double current_y = current_transform.transform.translation.y;
+        if (!std::isfinite(current_x) || !std::isfinite(current_y) ||
+          !std::isfinite(current_rotation.length2()) ||
+          current_rotation.length2() <= 1.0e-12)
+        {
+          throw OperationError(
+                  PressCabinetButton::Result::NOT_READY,
+                  "Robot odometry is invalid during precision docking.");
+        }
+        current_rotation.normalize();
         const double current_yaw = tf2::getYaw(current_rotation);
-        const double error_x = target.pose.position.x -
-          current_transform.transform.translation.x;
-        const double error_y = target.pose.position.y -
-          current_transform.transform.translation.y;
+        const double error_x = target.pose.position.x - current_x;
+        const double error_y = target.pose.position.y - current_y;
         const double position_error = std::hypot(error_x, error_y);
         const double yaw_error = std::atan2(
           std::sin(target_body_yaw - current_yaw),
           std::cos(target_body_yaw - current_yaw));
+        if (!std::isfinite(position_error) || !std::isfinite(yaw_error)) {
+          throw OperationError(
+                  PressCabinetButton::Result::NOT_READY,
+                  "Precision docking could not compute a finite pose error.");
+        }
+        if (!takeover_distance_verified) {
+          if (position_error >
+            navigation_takeover_distance_ + docking_position_tolerance_)
+          {
+            throw OperationError(
+                    PressCabinetButton::Result::NAVIGATION_FAILED,
+                    "The coarse navigation result is " +
+                    std::to_string(position_error) +
+                    " m from the configured control station, outside the "
+                    "precision-docking takeover distance of " +
+                    std::to_string(navigation_takeover_distance_) + " m.");
+          }
+          takeover_distance_verified = true;
+        }
 
         if (position_error <= docking_position_tolerance_ &&
           std::abs(yaw_error) <= docking_yaw_tolerance_)

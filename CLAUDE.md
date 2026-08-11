@@ -107,7 +107,7 @@ C++ 节点位于 `xczs_inspection_robot_control/src/`（`include/` 存放可复�
 
 ### 多柜体实例
 
-`cabinet_instances.yaml` 每项展开为：Gazebo entity、ROS namespace `/xczs/cabinet/<name>/`、TF `<name>_frame`、操作 Action、控制目录、控件状态 topic 及 reset/grasp service。MoveIt 碰撞对象带实例前缀避免相互覆盖。`cabinet_robot_adapter.yaml` 中 `operable=false` 的控件仍在 Web 显示，但任务在网关预检阶段即返回 `unreachable`，不向底层 Action 发 Goal。
+`cabinet_instances.yaml` 每项展开为：Gazebo entity、ROS namespace `/xczs/cabinet/<name>/`、TF `<name>_frame`、操作 Action、控制目录、控件状态 topic 及 reset/grasp service。MoveIt 碰撞对象带实例前缀避免相互覆盖。`cabinet_robot_adapter.yaml` 中 `operable=false` 表示该机器人尚未通过完整物理闭环验收；控件仍在 Web 显示并可提交。底层 Action 会基于实时 Gazebo 状态、TF 和 MoveIt planning scene 串联验证预备、接近、操作、撤回与归位路径，再返回实际失败阶段和路径比例；该分支绝不执行机械臂轨迹、建立抓取或改变柜体状态。
 
 ### 关键设计模式
 

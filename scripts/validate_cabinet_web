@@ -25,7 +25,7 @@ usage() {
   cat <<'EOF'
 用法: scripts/validate_cabinet_web [选项]
 
-通过多柜体 Web 任务 API 验证独立导航、物理操作、力度判定和不可达失败。
+通过多柜体 Web 任务 API 验证独立导航、物理操作、力度判定和实时规划失败。
 运行前需启动: ./run_all.sh
 
 选项:
@@ -33,7 +33,7 @@ usage() {
   --cabinet NAME      柜体实例（默认 cabinet_a；全量验收时逐实例调用）
   --timeout SECONDS   单个任务超时（默认 360）
   --no-navigate       仅跳过通用工位导航；实际操作仍执行逐控件导航
-  --exhaustive        验收全部 33 项：可操作项实操，不可操作项逐项失败
+  --exhaustive        验收全部 33 项：可操作项实操，受限项逐项实时规划验证
   --contract-tests    追加并发冲突和 /task/{id}/cancel 验证
   -h, --help          显示帮助
 EOF
@@ -366,6 +366,8 @@ run_successful_operation() {
     .request.control_id == $control and
     .result.cabinet == $cabinet and
     .result.control_id == $control and
+    .result.operation_executed == true and
+    .result.validation_performed == false and
     (.result.duration_seconds >= 0)
   ' <<<"$TASK_BODY" >/dev/null || {
     jq . <<<"$TASK_BODY" >&2
@@ -437,29 +439,37 @@ run_unreachable_operation() {
   local expected_reason="$2"
   local request_body=""
   local task_id=""
-  local started=$SECONDS
 
   [[ -n "$expected_reason" ]] ||
     fail "$control_id 未在目录中声明机器人不可操作原因"
   request_body="$(operation_body_for_control "$control_id")"
-  printf '\n[reachability] %s -> fast structured failure\n' "$control_id"
+  navigate_for_control "$control_id"
+  printf '\n[planning-validation] %s -> live structured result\n' "$control_id"
   submit_task operate "$request_body"
   task_id="$ACTIVE_TASK_ID"
-  wait_for_task "$task_id" failed unreachable
-  (( SECONDS - started <= 10 )) ||
-    fail "$control_id 的不可达任务未在 10 秒内快速失败"
+  wait_for_task "$task_id" failed
   jq -e --arg cabinet "$CABINET" --arg control "$control_id" \
     --arg reason "$expected_reason" '
       .request.cabinet == $cabinet and
       .request.control_id == $control and
-      .failure_code == "unreachable" and
+      (.failure_code == "planning_failed" or
+       .failure_code == "unreachable") and
       (.failure_reason | type == "string" and length > 0 and
         contains($reason)) and
       .result.cabinet == $cabinet and
-      .result.control_id == $control
+      .result.control_id == $control and
+      .result.validation_performed == true and
+      .result.operation_executed == false and
+      (.result.diagnostic_stage | type == "string" and length > 0) and
+      (.result.path_fraction | numbers) >= 0 and
+      .result.path_fraction <= 1 and
+      (.result.required_fraction | numbers) > 0 and
+      .result.required_fraction <= 1 and
+      (.result.moveit_error_code | numbers) and
+      (.result.policy_reason | type == "string" and contains($reason))
     ' <<<"$TASK_BODY" >/dev/null || {
     jq . <<<"$TASK_BODY" >&2
-    fail "$control_id 没有返回目录声明的 failed/unreachable 具体原因"
+    fail "$control_id 没有返回实时规划阶段、路径比例和具体原因"
   }
   EXPECTED_FAILURE_TASKS=$((EXPECTED_FAILURE_TASKS + 1))
   UNREACHABLE_TASKS=$((UNREACHABLE_TASKS + 1))

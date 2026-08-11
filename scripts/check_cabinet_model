@@ -862,6 +862,21 @@ def main() -> int:
                 f"expected {sorted(expected_operable_controls)}, got "
                 f"{sorted(operable_controls)}."
             )
+        controls_without_explicit_station = sorted(
+            control_id
+            for control_id in operable_controls
+            if not isinstance(
+                adapter_controls.get(control_id, {}).get("navigation_station"),
+                dict,
+            )
+        )
+        if controls_without_explicit_station:
+            fail(
+                "Every operable control requires an explicit robot-adapter "
+                "navigation_station: "
+                + ", ".join(controls_without_explicit_station)
+                + "."
+            )
         joint_names = [str(controls[control_id].get("joint_name", ""))
                        for control_id in control_ids]
         if "" in joint_names or len(set(joint_names)) != len(joint_names):
@@ -1194,6 +1209,40 @@ def main() -> int:
         )
         if plugin is None:
             fail("libxczs_cabinet_state.so is absent from expanded URDF.")
+        expected_plugin_name = f"xczs_{CABINET_NAME}_state"
+        if plugin.attrib.get("name") != expected_plugin_name:
+            fail(
+                "Cabinet state plugin name must include its instance name; "
+                f"expected '{expected_plugin_name}'."
+            )
+        alternate_name = "cabinet_contract_peer"
+        alternate_root = ElementTree.fromstring(
+            render_xacro(XACRO, f"cabinet_name:={alternate_name}")
+        )
+        alternate_plugin = next(
+            (
+                candidate
+                for candidate in alternate_root.findall(".//plugin")
+                if candidate.attrib.get("filename")
+                == "libxczs_cabinet_state.so"
+            ),
+            None,
+        )
+        if alternate_plugin is None:
+            fail("Alternate cabinet expansion has no state plugin.")
+        alternate_plugin_name = alternate_plugin.attrib.get("name")
+        if (
+            alternate_plugin_name != f"xczs_{alternate_name}_state"
+            or alternate_plugin_name == plugin.attrib.get("name")
+        ):
+            fail("Cabinet instances must expand to unique state-plugin names.")
+        alternate_ros_namespace = alternate_plugin.find("./ros/namespace")
+        if (
+            alternate_ros_namespace is None
+            or (alternate_ros_namespace.text or "").strip()
+            != f"/xczs/cabinet/{alternate_name}"
+        ):
+            fail("Cabinet state-plugin ROS namespace must follow its instance.")
         if not math.isclose(
             float(text(plugin, "state_publish_rate")),
             20.0,
@@ -2089,7 +2138,8 @@ def main() -> int:
         print(
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
-            "topics, a six-axis MoveIt arm without a lift, and the "
+            "topics and per-instance plugin names, a six-axis MoveIt arm "
+            "without a lift, and the "
             "low-friction supported wheels, 500/20 Hz planar, "
             "640x640@15 Hz camera, 360@20 Hz lidar simulation performance "
             "contract."
