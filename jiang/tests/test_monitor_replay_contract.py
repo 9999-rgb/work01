@@ -315,6 +315,7 @@ class MonitorReplayContractTest(unittest.TestCase):
             const assert = require('node:assert/strict');
             let ctrlConnected = true;
             let replayControlReadOnly = true;
+            let authToken = '';
             const fetched = [];
             async function fetch(url, options) {{
               fetched.push({{url, options}});

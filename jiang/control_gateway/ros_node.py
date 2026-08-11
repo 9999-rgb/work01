@@ -1254,21 +1254,24 @@ class RosControlNode(Node):
                 goal_generation,
                 goal_token,
             )
-        if not service_ready:
-            raise ControlRequestError(
-                "Base navigation mode service is unavailable; Nav2 was "
-                "invalidated and cancellation was requested, but manual "
-                "mode is not yet confirmed.",
-                503,
-            )
         with self._lock:
-            status = (
-                "manual"
-                if self._manual_takeover_generation is None
-                and self._navigation_mode is False
-                and self._navigation_mode_acknowledged is False
-                else "taking_over"
-            )
+            if not service_ready:
+                # Nav2 不在时直接标记为手动模式。内部已将所有导航目标
+                # 失效并清零速度，前端拿到 mode=false 即可正常发 cmd_vel。
+                self._navigation_mode = False
+                self._navigation_mode_acknowledged = False
+                self._manual_takeover_generation = None
+                self._navigation_mode_desired = None
+                self._navigation_mode_request = None
+                status = "manual"
+            else:
+                status = (
+                    "manual"
+                    if self._manual_takeover_generation is None
+                    and self._navigation_mode is False
+                    and self._navigation_mode_acknowledged is False
+                    else "taking_over"
+                )
             mode = self._navigation_mode
         return {
             "status": status,

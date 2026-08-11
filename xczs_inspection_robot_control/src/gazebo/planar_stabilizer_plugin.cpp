@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 
+#include "geometry_msgs/msg/twist.hpp"
 #include "rclcpp/rclcpp.hpp"
 #include "std_msgs/msg/bool.hpp"
 
@@ -36,6 +37,7 @@ public:
     // A callback that already holds a lease is allowed to finish below.
     joint_snapshot_connection_.reset();
     update_connection_.reset();
+    cmd_vel_subscription_.reset();
     grasp_active_subscription_.reset();
 
     if (callback_lifetime) {
@@ -63,6 +65,12 @@ public:
       gzerr << "Planar stabilizer grasp_active_topic must be absolute.\n";
       return;
     }
+    const auto cmd_vel_topic = sdf->Get<std::string>(
+      "cmd_vel_topic", "/xczs/cmd_vel").first;
+    if (cmd_vel_topic.empty() || cmd_vel_topic.front() != '/') {
+      gzerr << "Planar stabilizer cmd_vel_topic must be absolute.\n";
+      return;
+    }
     const auto grasp_active = grasp_active_;
     grasp_active_subscription_ =
       ros_node_->create_subscription<std_msgs::msg::Bool>(
@@ -70,6 +78,27 @@ public:
       rclcpp::QoS(1).reliable().transient_local(),
       [grasp_active](const std_msgs::msg::Bool::SharedPtr message) {
         grasp_active->store(message->data);
+      });
+    const auto base_command_moving = base_command_moving_;
+    cmd_vel_subscription_ =
+      ros_node_->create_subscription<geometry_msgs::msg::Twist>(
+      cmd_vel_topic,
+      10,
+      [base_command_moving](
+        const geometry_msgs::msg::Twist::SharedPtr message)
+      {
+        constexpr double command_epsilon = 1.0e-6;
+        const bool command_is_finite =
+        std::isfinite(message->linear.x) &&
+        std::isfinite(message->linear.y) &&
+        std::isfinite(message->angular.z);
+        // Fail open for malformed input: never pin the chassis merely because
+        // an invalid motion command cannot be interpreted as a velocity.
+        const bool command_is_moving = !command_is_finite || (
+          std::abs(message->linear.x) > command_epsilon ||
+          std::abs(message->linear.y) > command_epsilon ||
+          std::abs(message->angular.z) > command_epsilon);
+        base_command_moving->store(command_is_moving);
       });
     settling_duration_ =
       sdf->Get<double>("settling_duration", 0.5).first;
@@ -108,6 +137,9 @@ public:
     std::lock_guard<std::mutex> lock(update_mutex_);
     height_is_locked_ = false;
     has_joint_snapshot_ = false;
+    planar_pose_is_locked_ = false;
+    planar_motion_observed_at_begin_ = false;
+    base_command_moving_->store(false);
     schedule_height_lock();
   }
 
@@ -123,7 +155,7 @@ private:
 
   class UpdateCallbackLease
   {
-  public:
+public:
     explicit UpdateCallbackLease(
       std::shared_ptr<UpdateCallbackLifetime> lifetime)
     : lifetime_(std::move(lifetime)) {}
@@ -140,7 +172,7 @@ private:
       lifetime_->condition.notify_all();
     }
 
-  private:
+private:
     std::shared_ptr<UpdateCallbackLifetime> lifetime_;
   };
 
@@ -183,6 +215,23 @@ private:
 
   void capture_joint_positions(const gazebo::common::UpdateInfo &)
   {
+    // The planar-move plugin is declared before this plugin and writes its
+    // requested model velocity at WorldUpdateBegin.  Sampling here closes the
+    // one-message race between their independent ROS subscriptions: a new
+    // motion command always releases the brake before WorldUpdateEnd, while a
+    // stop command is not latched until the mover has actually written zero.
+    constexpr double command_epsilon = 1.0e-6;
+    const ignition::math::Vector3d linear_velocity =
+      model_->WorldLinearVel();
+    const ignition::math::Vector3d angular_velocity =
+      model_->WorldAngularVel();
+    planar_motion_observed_at_begin_ =
+      !linear_velocity.IsFinite() ||
+      !angular_velocity.IsFinite() ||
+      std::abs(linear_velocity.X()) > command_epsilon ||
+      std::abs(linear_velocity.Y()) > command_epsilon ||
+      std::abs(angular_velocity.Z()) > command_epsilon;
+
     for (std::size_t index = 0; index < held_joints_.size(); ++index) {
       held_joint_positions_[index] = held_joints_[index]->Position(0);
     }
@@ -206,6 +255,8 @@ private:
   {
     constexpr double tilt_tolerance = 1.0e-9;
     constexpr double height_tolerance = 1.0e-9;
+    constexpr double planar_tolerance = 1.0e-9;
+    constexpr double two_pi = 6.28318530717958647692;
 
     const ignition::math::Pose3d world_pose = model_->WorldPose();
     const double roll = world_pose.Rot().Roll();
@@ -217,6 +268,18 @@ private:
       height_is_locked_ = true;
     }
 
+    const bool hold_planar_pose =
+      !base_command_moving_->load() &&
+      !planar_motion_observed_at_begin_;
+    if (hold_planar_pose && !planar_pose_is_locked_) {
+      locked_planar_x_ = world_pose.Pos().X();
+      locked_planar_y_ = world_pose.Pos().Y();
+      locked_planar_yaw_ = world_pose.Rot().Yaw();
+      planar_pose_is_locked_ = true;
+    } else if (!hold_planar_pose) {
+      planar_pose_is_locked_ = false;
+    }
+
     const bool has_tilt =
       std::abs(roll) > tilt_tolerance ||
       std::abs(pitch) > tilt_tolerance;
@@ -224,24 +287,44 @@ private:
       height_is_locked_ &&
       std::abs(world_pose.Pos().Z() - locked_height_) >
       height_tolerance;
+    const bool has_planar_error =
+      planar_pose_is_locked_ && (
+      std::abs(world_pose.Pos().X() - locked_planar_x_) > planar_tolerance ||
+      std::abs(world_pose.Pos().Y() - locked_planar_y_) > planar_tolerance ||
+      std::abs(
+        std::remainder(
+          world_pose.Rot().Yaw() - locked_planar_yaw_,
+          two_pi)) > planar_tolerance);
 
-    if (has_tilt || has_height_error) {
+    if (has_tilt || has_height_error || has_planar_error) {
       ignition::math::Vector3d planar_position = world_pose.Pos();
       if (height_is_locked_) {
         planar_position.Z(locked_height_);
       }
+      if (planar_pose_is_locked_) {
+        planar_position.X(locked_planar_x_);
+        planar_position.Y(locked_planar_y_);
+      }
       const ignition::math::Quaterniond planar_rotation(
-        0.0, 0.0, world_pose.Rot().Yaw());
+        0.0, 0.0,
+        planar_pose_is_locked_ ?
+        locked_planar_yaw_ : world_pose.Rot().Yaw());
       model_->SetWorldPose(
         ignition::math::Pose3d(planar_position, planar_rotation),
         true,
         false);
     }
 
-    if (height_is_locked_) {
+    if (height_is_locked_ || planar_pose_is_locked_) {
       ignition::math::Vector3d linear_velocity =
         model_->WorldLinearVel();
-      linear_velocity.Z(0.0);
+      if (height_is_locked_) {
+        linear_velocity.Z(0.0);
+      }
+      if (planar_pose_is_locked_) {
+        linear_velocity.X(0.0);
+        linear_velocity.Y(0.0);
+      }
       model_->SetLinearVel(linear_velocity);
     }
 
@@ -249,6 +332,9 @@ private:
       model_->WorldAngularVel();
     angular_velocity.X(0.0);
     angular_velocity.Y(0.0);
+    if (planar_pose_is_locked_) {
+      angular_velocity.Z(0.0);
+    }
     model_->SetAngularVel(angular_velocity);
 
     // The planar mover changes the base velocity without holding child
@@ -263,7 +349,11 @@ private:
   gazebo_ros::Node::SharedPtr ros_node_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
     grasp_active_subscription_;
+  rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
+    cmd_vel_subscription_;
   std::shared_ptr<std::atomic<bool>> grasp_active_{
+    std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<std::atomic<bool>> base_command_moving_{
     std::make_shared<std::atomic<bool>>(false)};
   gazebo::event::ConnectionPtr update_connection_;
   gazebo::event::ConnectionPtr joint_snapshot_connection_;
@@ -274,7 +364,12 @@ private:
   double settling_duration_{0.5};
   double height_lock_sim_time_{0.0};
   double locked_height_{0.0};
+  double locked_planar_x_{0.0};
+  double locked_planar_y_{0.0};
+  double locked_planar_yaw_{0.0};
   bool height_is_locked_{false};
+  bool planar_pose_is_locked_{false};
+  bool planar_motion_observed_at_begin_{false};
   bool has_joint_snapshot_{false};
 };
 

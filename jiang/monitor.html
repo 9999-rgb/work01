@@ -753,6 +753,17 @@
       <p>拖动滑块调整机械臂关节角度</p>
     </div>
   </div>
+
+  <!-- Login / Token -->
+  <div class="control-section">
+    <h4>🔐 用户登录</h4>
+    <div class="ctrl-connect">
+      <input type="text" id="loginUser" placeholder="用户名" style="width:90px">
+      <input type="password" id="loginPass" placeholder="密码" style="width:110px">
+      <button class="btn btn-primary" id="btnLogin" style="font-size:11px;padding:4px 10px">登录</button>
+    </div>
+    <span class="ctrl-status" id="loginStatus">未登录</span>
+  </div>
 </div>
 
 <!-- ─── Nav2 and autonomous cabinet operation ─── -->
@@ -1115,13 +1126,20 @@ const replayDetail = $('replayDetail');
 const replayTimeline = $('replayTimeline');
 
 function defaultServiceUrl(port) {
-  const host = window.location.hostname || 'localhost';
-  return `${window.location.protocol}//${host}:${port}`;
+  // 自动使用当前页面的 host，不再硬编码 localhost。
+  // 其他电脑通过 http://<服务器IP>:8090/monitor.html 访问即可。
+  const host = window.location.hostname;
+  const protocol = window.location.protocol;
+  return `${protocol}//${host}:${port}`;
 }
 
-$('restUrl').value = defaultServiceUrl(8001);
-$('sensorUrl').value = defaultServiceUrl(8003);
-$('ctrlUrl').value = defaultServiceUrl(8090);
+// 若页面不是从 8090 加载的（比如 file:// 或旧端口），则用当前 host + 8090。
+const autoHost = window.location.hostname;
+const autoProto = window.location.protocol;
+const unifiedPort = (autoProto === 'https:') ? 443 : (parseInt(window.location.port) || 8090);
+$('restUrl').value = `${autoProto}//${autoHost}:${unifiedPort}`;
+$('sensorUrl').value = `${autoProto}//${autoHost}:${unifiedPort}`;
+$('ctrlUrl').value = `${autoProto}//${autoHost}:${unifiedPort}`;
 
 // ─── Logging ─────────────────────────────────────────────────
 function log(level, msg) {
@@ -1188,8 +1206,8 @@ function subscribe(topic) {
   if (!connected) { toast('请先连接', 'err'); return; }
   if (subs.has(topic)) { toast(`已订阅 ${topic}`, 'err'); return; }
 
-  const baseUrl = ($('restUrl').value || 'http://localhost:8001').trim().replace(/\/+$/, '');
-  const url = `${baseUrl}/${topic}`;
+  const baseUrl = ($('restUrl').value || 'http://localhost:8090').trim().replace(/\/+$/, '');
+  const url = `${baseUrl}/sse/${topic}`;
   log('info', `Subscribing SSE ${url} …`);
 
   try {
@@ -1321,7 +1339,7 @@ function syntaxHighlight(json) {
 
 // ─── Camera and Lidar Streams ───────────────────────────────
 function sensorBaseUrl() {
-  return ($('sensorUrl').value || defaultServiceUrl(8003))
+  return ($('sensorUrl').value || defaultServiceUrl(8090))
     .trim().replace(/\/+$/, '');
 }
 
@@ -1670,7 +1688,67 @@ setStatus('', '未连接');
 
 // ─── Control State ──────────────────────────────────────────
 let ctrlConnected = false;
-let ctrlBaseUrl = 'http://localhost:8090';
+let ctrlBaseUrl = (() => {
+  const proto = window.location.protocol;
+  const host = window.location.hostname;
+  const port = window.location.port || (proto === 'https:' ? '443' : '8090');
+  return `${proto}//${host}:${port}`;
+})();
+// ─── 登录 token ───────────────────────────────────────────────
+let authToken = localStorage.getItem('xczs_token') || '';
+
+// 统一的认证请求头：所有 fetch 调用共用，避免遗漏 Authorization。
+function authHeaders(extra) {
+  const headers = Object.assign({}, extra || {});
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  return headers;
+}
+
+function updateLoginStatus() {
+  const statusEl = $('loginStatus');
+  if (authToken) {
+    statusEl.textContent = '已登录';
+    statusEl.style.color = 'var(--ok, #2e7d32)';
+  } else {
+    statusEl.textContent = '未登录';
+    statusEl.style.color = '';
+  }
+}
+
+// 登录表单回车键触发。
+$('loginPass').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doLogin();
+});
+
+async function doLogin() {
+  const username = ($('loginUser').value || '').trim();
+  const password = $('loginPass').value || '';
+  if (!username || !password) { toast('请输入用户名和密码', 'err'); return; }
+  try {
+    // 登录请求不加 auth header（公开路由）。
+    const response = await fetch(ctrlBaseUrl + '/auth/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({username, password})
+    });
+    const body = await response.json();
+    if (!response.ok) { throw new Error(body.error || `HTTP ${response.status}`); }
+    authToken = body.access_token;
+    localStorage.setItem('xczs_token', authToken);
+    toast(`✓ 登录成功: ${body.user.username} (${body.user.role})`);
+    updateLoginStatus();
+    connectTaskEvents();
+    // 登录成功后自动刷新控制服务连接。
+    testControlConnection();
+  } catch (e) {
+    authToken = '';
+    localStorage.removeItem('xczs_token');
+    updateLoginStatus();
+    toast('登录失败: ' + e.message, 'err');
+  }
+}
+
+$('btnLogin').addEventListener('click', doLogin);
 let robotCapabilities = null;
 let manualLinearAxis = '?';
 let manualJointSpecs = [];
@@ -1895,7 +1973,11 @@ function applyTaskSnapshot(task) {
 
 function connectTaskEvents() {
   if (taskEventSource) taskEventSource.close();
-  taskEventSource = new EventSource(`${ctrlBaseUrl}/task/events`);
+  taskEventSource = null;
+  if (!authToken) return; // 未登录则等待登录后再连接
+  // EventSource 无法携带 Header，鉴权 token 通过查询参数传递。
+  const tokenParam = `?token=${encodeURIComponent(authToken)}`;
+  taskEventSource = new EventSource(`${ctrlBaseUrl}/task/events${tokenParam}`);
   [
     'task_accepted',
     'task_progress',
@@ -2057,13 +2139,29 @@ async function postCmdVel(ly, az) {
   try {
     const r = await fetch(ctrlBaseUrl + '/cmd_vel', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({
         linear_x:0, linear_y:ly, linear_z:0,
         angular_x:0, angular_y:0, angular_z:az
       })
     });
-    return r.ok;
+    if (r.status === 401) { handleTokenExpired(); return false; }
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      const msg = body.error || `HTTP ${r.status}`;
+      // 如果是"需要手动接管"的错误，自动触发接管。
+      if (/manual|unavailable|takeover/i.test(msg) && !isNavigationActive()) {
+        requestStopAndManualTakeover(true);
+        return false;
+      }
+      if (!window._cmdVelErrorShown) {
+        window._cmdVelErrorShown = true;
+        toast('底盘控制失败: ' + msg, 'err');
+      }
+      return false;
+    }
+    window._cmdVelErrorShown = false;
+    return true;
   } catch (_) { ctrlConnected = false; stopBase(); return false; }
 }
 
@@ -2080,12 +2178,22 @@ async function postJointTrajectory(positions) {
   try {
     const r = await fetch(ctrlBaseUrl + '/joint_trajectory', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: authHeaders({'Content-Type': 'application/json'}),
       body: JSON.stringify({positions: positions})
     });
+    if (r.status === 401) { handleTokenExpired(); return false; }
     if (!r.ok) { toast('joint_trajectory 发送失败: HTTP ' + r.status, 'err'); }
     return r.ok;
   } catch (e) { ctrlConnected = false; toast('控制服务器连接失败', 'err'); return false; }
+}
+
+// token 失效统一处理（避免散落各处的 localStorage.removeItem）。
+function handleTokenExpired() {
+  authToken = '';
+  localStorage.removeItem('xczs_token');
+  updateLoginStatus();
+  connectTaskEvents();
+  toast('登录已失效，请重新登录', 'warn');
 }
 
 async function controlRequest(
@@ -2111,13 +2219,19 @@ async function controlRequest(
   }
   const options = {method, cache: 'no-store'};
   if (signal) options.signal = signal;
+  const headers = {'Content-Type': 'application/json'};
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  options.headers = headers;
   if (payload !== null) {
-    options.headers = {'Content-Type': 'application/json'};
     options.body = JSON.stringify(payload);
   }
   const response = await fetch(ctrlBaseUrl + path, options);
   let body = {};
   try { body = await response.json(); } catch (_) {}
+  if (response.status === 401) {
+    handleTokenExpired();
+    throw new Error('登录已失效，请重新登录');
+  }
   if (!response.ok) {
     throw new Error(body.error || `HTTP ${response.status}`);
   }
@@ -5219,9 +5333,18 @@ renderCabinetTarget();
 renderCabinetStatus();
 renderReplayStatus();
 
+// 登录状态初始化（刷新后保留 token）。
+updateLoginStatus();
+
 // Auto-connect monitoring, sensors and control on page load.
 doConnect();
-testControlConnection();
+if (authToken) {
+  // 有 token 时自动连接控制服务。
+  testControlConnection();
+} else {
+  $('ctrlStatus').textContent = '请先登录';
+  ctrlConnected = false;
+}
 </script>
 </body>
 </html>

@@ -414,9 +414,18 @@ class TaskRunnerTest(unittest.TestCase):
             conflict.exception.details["active_task_id"],
         )
 
-    def test_control_gateway_rejects_non_loopback_bind(self) -> None:
-        with self.assertRaisesRegex(ValueError, "loopback"):
+    def test_control_gateway_accepts_non_loopback_bind(self) -> None:
+        # FastAPI 已启用 JWT 鉴权，非 loopback 绑定不再被拒绝。
+        self.assertFalse(ControlServer._is_loopback_host("0.0.0.0"))
+        self.assertFalse(ControlServer._is_loopback_host("192.168.1.100"))
+        # 验证 init 不在 loopback 检查处抛异常（会在后面因缺 ROS 失败，
+        # 但 loopback 本身不再是阻塞点）。
+        try:
             ControlServer(host="0.0.0.0")
+        except ValueError as e:
+            self.assertNotIn("loopback", str(e))
+        except Exception:
+            pass  # 缺 ROS 环境是预期的
 
     def test_loopback_host_validation_accepts_supported_forms(self) -> None:
         self.assertTrue(ControlServer._is_loopback_host("127.0.0.1"))
@@ -878,6 +887,83 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("target_unreachable", task["failure_code"])
         self.assertEqual(1, node.navigation_goal_count)
 
+    def test_navigation_retries_transient_nav2_goal_rejection(self) -> None:
+        server, node = _server()
+        station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+        node.state["current_pose"] = {
+            "x": 0.5,
+            "y": 0.0,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
+
+        with patch.object(
+            runner_module,
+            "NAVIGATION_REJECT_RETRY_DELAY_SEC",
+            0.001,
+        ):
+            accepted = server.submit_navigation_task(
+                "cabinet_a",
+                "button_1",
+            )
+            self.assertIsNotNone(node.wait_for_navigation_goal(1))
+            node.finish_navigation("rejected", message="not active yet")
+            retry_goal = node.wait_for_navigation_goal(2)
+            self.assertIsNotNone(retry_goal)
+            node.finish_navigation(
+                "succeeded",
+                pose={"x": 0.5, "y": 2.0, "yaw": math.pi},
+            )
+
+            task = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=2.0,
+            )
+
+        self.assertEqual("success", task["status"])
+        self.assertEqual(2, node.navigation_goal_count)
+
+    def test_navigation_rejection_retries_are_bounded(self) -> None:
+        server, node = _server()
+
+        with patch.object(
+            runner_module,
+            "NAVIGATION_REJECT_RETRY_LIMIT",
+            2,
+        ), patch.object(
+            runner_module,
+            "NAVIGATION_REJECT_RETRY_DELAY_SEC",
+            0.001,
+        ):
+            accepted = server.submit_navigation_task("cabinet_a")
+            for goal_count in range(1, 4):
+                self.assertIsNotNone(
+                    node.wait_for_navigation_goal(goal_count)
+                )
+                node.finish_navigation(
+                    "rejected",
+                    message="Nav2 lifecycle is inactive",
+                )
+
+            task = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=2.0,
+            )
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("target_unreachable", task["failure_code"])
+        self.assertEqual(3, node.navigation_goal_count)
+        self.assertEqual(2, task["failure_details"]["goal_retries"])
+
     def test_control_navigation_rejects_unknown_catalog_id(self) -> None:
         server, _node = _server()
 
@@ -986,6 +1072,52 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertGreater(
             stale.exception.details["pose_ros_age_seconds"],
             runner_module.NAVIGATION_FINAL_POSE_MAX_AGE_SEC,
+        )
+
+    def test_navigation_result_allows_only_bounded_future_tf_skew(self) -> None:
+        station = {
+            "cabinet": "cabinet_a",
+            "frame_id": "map",
+            "x": 1.0,
+            "y": 0.0,
+            "yaw": 0.0,
+        }
+        pose = {
+            "x": 1.0,
+            "y": 0.0,
+            "yaw": 0.0,
+            "frame_id": "map",
+            "stamp_ros_nanoseconds": 20_050_000_000,
+            "observed_ros_nanoseconds": 20_000_000_000,
+            "received_monotonic": 10.0,
+            "source": "tf",
+        }
+
+        result = ControlServer._navigation_result(
+            station,
+            {"current_pose": pose},
+            2.0,
+            minimum_pose_stamp_ros_nanoseconds=19_000_000_000,
+            minimum_pose_received_monotonic=9.0,
+            observation_monotonic=10.1,
+        )
+        self.assertEqual(0.0, result["error"]["position_m"])
+
+        pose["stamp_ros_nanoseconds"] = 20_101_000_000
+        with self.assertRaises(TaskExecutionError) as inconsistent:
+            ControlServer._navigation_result(
+                station,
+                {"current_pose": pose},
+                2.0,
+                minimum_pose_stamp_ros_nanoseconds=19_000_000_000,
+                minimum_pose_received_monotonic=9.0,
+                observation_monotonic=10.1,
+            )
+
+        self.assertEqual("final_pose_stale", inconsistent.exception.code)
+        self.assertLess(
+            inconsistent.exception.details["pose_ros_age_seconds"],
+            -runner_module.NAVIGATION_FINAL_POSE_MAX_FUTURE_SKEW_SEC,
         )
 
     def test_navigation_result_rejects_zero_or_predating_ros_stamp(

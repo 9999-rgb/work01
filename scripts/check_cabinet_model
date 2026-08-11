@@ -1612,6 +1612,30 @@ def main() -> int:
         ) or lidar_samples != 360:
             fail("Body lidar performance contract must be 360 samples at 20 Hz.")
 
+        wheel_links = {
+            "front_right_wheel",
+            "front_left_wheel",
+            "back_right_wheel",
+            "back_left_wheel",
+        }
+        wheel_gazebo = {
+            candidate.attrib.get("reference", ""): candidate
+            for candidate in robot_root.findall("./gazebo")
+            if candidate.attrib.get("reference", "") in wheel_links
+        }
+        if set(wheel_gazebo) != wheel_links:
+            fail("Expanded robot must configure all four wheel contact surfaces.")
+        for wheel_name, wheel_contact in wheel_gazebo.items():
+            mu1 = float(text(wheel_contact, "mu1"))
+            mu2 = float(text(wheel_contact, "mu2"))
+            if not math.isclose(
+                mu1, 0.10, rel_tol=0.0, abs_tol=1.0e-12
+            ) or not math.isclose(mu2, 0.10, rel_tol=0.0, abs_tol=1.0e-12):
+                fail(
+                    f"{wheel_name} must keep the 0.10 damping surface friction "
+                    "when gazebo_ros_planar_move owns holonomic motion."
+                )
+
         planar_move = next(
             (
                 candidate
@@ -1758,10 +1782,21 @@ def main() -> int:
         )
         if stabilizer is None:
             fail("Gazebo planar stabilizer plugin is absent.")
+        model_plugins = list(robot_root.findall(".//plugin"))
+        if model_plugins.index(planar_move) >= model_plugins.index(stabilizer):
+            fail(
+                "gazebo_ros_planar_move must load before the planar "
+                "stabilizer so its WorldUpdateBegin velocity can be sampled."
+            )
         if text(stabilizer, "grasp_active_topic") != "/xczs/cabinet/grasp_active":
             fail(
                 "Planar stabilizer must consume the aggregated grasp-active "
                 "topic."
+            )
+        if text(stabilizer, "cmd_vel_topic") != "/xczs/cmd_vel":
+            fail(
+                "Planar stabilizer must consume the routed base command so "
+                "it can brake the model at rest."
             )
         cmake_source = CONTROL_CMAKE.read_text(encoding="utf-8")
         for lease_build_requirement in (
@@ -1779,6 +1814,7 @@ def main() -> int:
         if stabilizer_dependencies is None or not {
             "gazebo_dev",
             "gazebo_ros",
+            "geometry_msgs",
             "rclcpp",
             "std_msgs",
         }.issubset(set(stabilizer_dependencies.group(1).split())):
@@ -1791,6 +1827,16 @@ def main() -> int:
             re.DOTALL,
         ):
             fail("Planar stabilizer does not pause joint restore while grasping.")
+        for stop_lock_requirement in (
+            "cmd_vel_subscription_",
+            "base_command_moving_",
+            "planar_pose_is_locked_",
+            "locked_planar_yaw_",
+        ):
+            if stop_lock_requirement not in stabilizer_source:
+                fail(
+                    "Planar stabilizer is missing the zero-command pose lock."
+                )
 
         launch_source = CONTROL_LAUNCH.read_text(encoding="utf-8")
         if launch_source.count('executable="operation_lease_coordinator"') != 1:
@@ -2044,8 +2090,9 @@ def main() -> int:
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
             "topics, a six-axis MoveIt arm without a lift, and the "
-            "500/20 Hz planar, 640x640@15 Hz camera, 360@20 Hz lidar "
-            "simulation performance contract."
+            "low-friction supported wheels, 500/20 Hz planar, "
+            "640x640@15 Hz camera, 360@20 Hz lidar simulation performance "
+            "contract."
         )
         return 0
     except Exception as error:  # noqa: BLE001

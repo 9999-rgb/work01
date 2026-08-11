@@ -70,22 +70,22 @@
       link_name="front_right_wheel"
       material="Gazebo/Black"
       gravity="true"
-      friction="1.2" />
+      friction="${planar_wheel_surface_friction}" />
     <xacro:xczs_gazebo_link_properties
       link_name="front_left_wheel"
       material="Gazebo/Black"
       gravity="true"
-      friction="1.2" />
+      friction="${planar_wheel_surface_friction}" />
     <xacro:xczs_gazebo_link_properties
       link_name="back_right_wheel"
       material="Gazebo/Black"
       gravity="true"
-      friction="1.2" />
+      friction="${planar_wheel_surface_friction}" />
     <xacro:xczs_gazebo_link_properties
       link_name="back_left_wheel"
       material="Gazebo/Black"
       gravity="true"
-      friction="1.2" />
+      friction="${planar_wheel_surface_friction}" />
 
     <gazebo>
       <plugin
@@ -113,6 +113,7 @@
           <namespace>/xczs</namespace>
         </ros>
         <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
+        <cmd_vel_topic>/xczs/cmd_vel</cmd_vel_topic>
         <settling_duration>1.5</settling_duration>
         <hold_joint>body_arm1</hold_joint>
         <hold_joint>arm1_arm2</hold_joint>

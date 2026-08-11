@@ -209,6 +209,7 @@ ament_target_dependencies(
   xczs_planar_stabilizer
   gazebo_dev
   gazebo_ros
+  geometry_msgs
   rclcpp
   std_msgs
 )

@@ -8,10 +8,11 @@
 #   ./run_all.sh --with-proxy     # 附加 CDR→JSON 代理（精细化数据处理）
 #
 #
-# 启动后:
-#   监控面板: http://localhost:8080/monitor.html
-#   SSE 数据:  http://localhost:8001
-#   传感器流:  http://localhost:8003
+# 启动后（默认监听所有网卡 :8090，其他电脑可访问）:
+#   监控面板: http://<服务器IP>:8090/monitor.html
+#   API 文档:  http://<服务器IP>:8090/docs
+#   SSE 数据:  http://<服务器IP>:8090/sse/<key>
+#   传感器流:  http://<服务器IP>:8090/camera.mjpg
 # ============================================================================
 set -eo pipefail
 

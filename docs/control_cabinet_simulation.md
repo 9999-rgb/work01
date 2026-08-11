@@ -110,7 +110,19 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 
 ## Web API
 
-主要接口：
+迁移到 FastAPI 后，**API 参考由 OpenAPI 自动生成**，始终与代码同步：
+
+- Swagger UI（可交互调用）：`http://localhost:8090/docs`
+- ReDoc（只读文档）：`http://localhost:8090/redoc`
+- OpenAPI JSON：`http://localhost:8090/openapi.json`
+
+设置了 `XCZS_SWAGGER_TOKEN` 时，`/docs` 与 `/redoc` 需携带 `?token=` 访问。
+
+除 `/auth/login`、`/health`、传感器流与静态页面外，所有端点需要 JWT Bearer Token
+（`Authorization: Bearer <token>`，登录接口为 `POST /auth/login`）。SSE 端点
+`/task/events` 因 EventSource 无法携带 Header，用 `?token=` 传参。
+
+主要接口（历史表格，字段以 OpenAPI 为准）：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|

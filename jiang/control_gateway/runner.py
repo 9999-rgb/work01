@@ -57,6 +57,12 @@ NAVIGATION_CANCEL_GRACE_SEC = 5.0
 NAVIGATION_CLOCK_STALL_TIMEOUT_SEC = 30.0
 NAVIGATION_FINAL_POSE_WAIT_SEC = 2.0
 NAVIGATION_FINAL_POSE_MAX_AGE_SEC = 1.0
+# TF and /clock travel through independent DDS subscriptions.  A freshly
+# queried transform can therefore be stamped one publication ahead of this
+# node's latest clock sample without indicating a simulation-time reset.
+NAVIGATION_FINAL_POSE_MAX_FUTURE_SKEW_SEC = 0.10
+NAVIGATION_REJECT_RETRY_LIMIT = 10
+NAVIGATION_REJECT_RETRY_DELAY_SEC = 0.50
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
 TASK_MONITOR_PERIOD_SEC = 0.10
@@ -97,10 +103,9 @@ class ControlServer:
         recordings_root: Optional[str] = None,
     ) -> None:
         if not self._is_loopback_host(host):
-            raise ValueError(
-                "The unauthenticated control gateway may only bind to a "
-                "loopback address."
-            )
+            # FastAPI 已启用 JWT 鉴权中间件，允许非 loopback 绑定。
+            # 生产部署建议配合反向代理（nginx）做 TLS 终止与额外访问控制。
+            pass
         if allowed_origins is None:
             allowed_origins = (
                 "http://localhost:8080",
@@ -280,28 +285,35 @@ class ControlServer:
         self._ros_teardown_completed = False
         self._shutdown_report: Optional[Dict[str, Any]] = None
 
-    def start(self) -> "ControlServer":
-        """Start the ROS executor and threaded HTTP listener."""
-        handler = type(
-            "_BoundHandler",
-            (ControlHandler,),
-            {
-                "control_server": self,
-                "allowed_origins": self._allowed_origins,
-            },
-        )
-        self._http_server = ThreadingHTTPServer(
-            (self._host, self._port),
-            handler,
-        )
-        self._http_server.daemon_threads = True
+    def start(self, *, start_http: bool = True) -> "ControlServer":
+        """Start the ROS executor (and optionally the threaded HTTP listener).
+
+        ``start_http=False`` 时由外部 HTTP 框架（FastAPI/uvicorn）接管路由，
+        本方法只启动 ROS executor 线程与任务事件桥；``stop()`` 已对未启动的
+        HTTP server 做空操作，因此两种模式共用同一套关闭流程。
+        """
+        if start_http:
+            handler = type(
+                "_BoundHandler",
+                (ControlHandler,),
+                {
+                    "control_server": self,
+                    "allowed_origins": self._allowed_origins,
+                },
+            )
+            self._http_server = ThreadingHTTPServer(
+                (self._host, self._port),
+                handler,
+            )
+            self._http_server.daemon_threads = True
+            self._http_thread = threading.Thread(
+                target=self._http_server.serve_forever,
+                name="web-control-http-server",
+                daemon=True,
+            )
         self._executor_thread.start()
-        self._http_thread = threading.Thread(
-            target=self._http_server.serve_forever,
-            name="web-control-http-server",
-            daemon=True,
-        )
-        self._http_thread.start()
+        if start_http:
+            self._http_thread.start()
         return self
 
     def _spin_executor(self) -> None:
@@ -1875,6 +1887,7 @@ class ControlServer:
         last_timeout_cancel_at = 0.0
         final_pose_started_active: Optional[float] = None
         last_settling_report_at = 0.0
+        rejection_retry_count = 0
         while True:
             snapshot = self._node.navigation_snapshot()
             state = str(snapshot.get("state", "unknown"))
@@ -2039,6 +2052,44 @@ class ControlServer:
                         result=timeout_result,
                     )
                 raise TaskCanceledError("Navigation task was canceled.")
+            if (
+                state == "rejected"
+                and not timed_out
+                and rejection_retry_count < NAVIGATION_REJECT_RETRY_LIMIT
+            ):
+                rejection_retry_count += 1
+                context.progress(
+                    "navigation_waiting_for_system",
+                    min(0.99, progress_start + progress_span * last_progress),
+                    message=(
+                        "Nav2 is still activating; retrying the rejected "
+                        "goal without releasing the task reservation."
+                    ),
+                    data={
+                        "cabinet": station["cabinet"],
+                        "route_axis": route_axis,
+                        "route_leg_index": route_leg_index + 1,
+                        "route_leg_count": route_leg_count,
+                        "retry": rejection_retry_count,
+                        "retry_limit": NAVIGATION_REJECT_RETRY_LIMIT,
+                    },
+                )
+                time.sleep(NAVIGATION_REJECT_RETRY_DELAY_SEC)
+                with self._task_interlock_scope():
+                    context.raise_if_canceled()
+                    if context.shutdown_requested:
+                        raise TaskCanceledError(
+                            "Navigation task stopped during shutdown."
+                        )
+                    self._node.send_navigation_goal(
+                        float(station["x"]),
+                        float(station["y"]),
+                        float(station["yaw"]),
+                    )
+                    goal_sent_at = time.monotonic()
+                final_pose_started_active = None
+                last_phase = None
+                continue
             if state in {"failed", "rejected"}:
                 code = (
                     "navigation_timeout"
@@ -2047,6 +2098,7 @@ class ControlServer:
                 )
                 failure_details = {
                     "nav2_state": state,
+                    "goal_retries": rejection_retry_count,
                     "classification": (
                         "Nav2 does not expose enough information here to "
                         "distinguish an obstructed path from another "
@@ -2484,7 +2536,7 @@ class ControlServer:
             observed_ros_nanoseconds - stamp_ros_nanoseconds
         ) / 1_000_000_000.0
         if (
-            pose_ros_age < 0.0
+            pose_ros_age < -NAVIGATION_FINAL_POSE_MAX_FUTURE_SKEW_SEC
             or pose_ros_age > NAVIGATION_FINAL_POSE_MAX_AGE_SEC
         ):
             raise TaskExecutionError(
@@ -2495,6 +2547,9 @@ class ControlServer:
                     "pose_ros_age_seconds": pose_ros_age,
                     "maximum_pose_age_seconds": (
                         NAVIGATION_FINAL_POSE_MAX_AGE_SEC
+                    ),
+                    "maximum_future_skew_seconds": (
+                        NAVIGATION_FINAL_POSE_MAX_FUTURE_SKEW_SEC
                     ),
                     "pose_stamp_ros_nanoseconds": stamp_ros_nanoseconds,
                     "pose_observed_ros_nanoseconds": (

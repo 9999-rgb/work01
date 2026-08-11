@@ -8,10 +8,11 @@
 #   ./run_all.sh --with-proxy     # 同时启动 CDR→JSON 代理
 #   ./run_all.sh --keyboard       # 键盘调试控制（不启动 Web 控制服务）
 #
-# 启动后:
-#   - 监控面板: http://localhost:8080/monitor.html
-#   - SSE 数据:  http://localhost:8001
-#   - 传感器流:  http://localhost:8003
+# 启动后（FastAPI 三合一，默认监听所有网卡 :8090）:
+#   - 监控面板: http://<服务器IP>:8090/monitor.html
+#   - API 文档:  http://<服务器IP>:8090/docs
+#   - SSE 数据:  http://<服务器IP>:8090/sse/<key>
+#   - 传感器流:  http://<服务器IP>:8090/camera.mjpg
 #   - Zenoh TCP: tcp/localhost:7447
 # ============================================================================
 set -eo pipefail
@@ -37,7 +38,7 @@ SSE_PORT="${SSE_PORT:-8001}"
 SENSOR_PORT="${SENSOR_PORT:-8003}"
 SENSOR_HOST="${SENSOR_HOST:-0.0.0.0}"
 CONTROL_PORT="${CONTROL_PORT:-8090}"
-CONTROL_HOST="${CONTROL_HOST:-127.0.0.1}"
+CONTROL_HOST="${CONTROL_HOST:-0.0.0.0}"
 CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-http://localhost:$MONITOR_PORT,http://127.0.0.1:$MONITOR_PORT}"
 ROS2_SETUP="/opt/ros/humble/setup.bash"
 WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
@@ -272,7 +273,7 @@ if [ "$NAV2_ENABLED" = "true" ] &&
     exit 1
 fi
 if ! "$PYTHON_BIN" -c \
-    "import aiohttp, rclpy, zenoh; from PIL import Image; from xczs_inspection_robot_control.action import OperateCabinetControl, PressCabinetButton; from xczs_inspection_robot_control.msg import CabinetControlCatalog, CabinetControlState" \
+    "import fastapi, uvicorn, sqlalchemy, aiohttp, rclpy, zenoh; from PIL import Image; from xczs_inspection_robot_control.action import OperateCabinetControl, PressCabinetButton; from xczs_inspection_robot_control.msg import CabinetControlCatalog, CabinetControlState" \
     2>/dev/null; then
     echo "ERROR: Python dependencies are incomplete."
     echo "Run colcon build, source install/setup.bash, then install:"
@@ -341,23 +342,13 @@ _check_process() {
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
 echo "[1/6] Zenoh Bridge..."
 
-# 如果系统桥已存在且有 ros2dds（/zenoh_bridge_ros2dds 节点存在），直接复用
-if lsof -ti:"$BRIDGE_TCP_PORT" >/dev/null 2>&1; then
-    source "$ROS2_SETUP" 2>/dev/null
-    if ros2 node list 2>/dev/null | grep -q zenoh_bridge_ros2dds; then
-        echo "       系统 Zenoh 桥已运行且 ros2dds 正常，直接复用"
-        echo "       TCP: tcp/localhost:$BRIDGE_TCP_PORT"
-        BRIDGE_PID=""
-    else
-        # 端口被非 ROS 2 桥占用，使用不会与 SSE 冲突的备用端口。
-        echo "       系统桥无 ros2dds，使用备用端口 7448"
-        BRIDGE_TCP_PORT=7448
-        BRIDGE_REST_PORT=8002
-        _start_bridge
-    fi
-else
-    _start_bridge
-fi
+# Zenoh 桥必须感知所有后续启动的 ROS 2 节点（Gazebo/Nav2 等）。
+# 复用已有桥会导致只转发"启动时就存在"的话题，新节点的话题被静默忽略。
+# 因此总是 kill 旧桥并重新启动，确保完整转发。
+echo "       停止已有 Zenoh 桥（如有）..."
+pkill -f zenoh-bridge-ros2dds 2>/dev/null || true
+sleep 1
+_start_bridge
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
 if [ "$WITH_PROXY" = "true" ]; then
@@ -375,39 +366,12 @@ else
     PROXY_PID=""
 fi
 
-# ── 3a. 启动 SSE 桥（Zenoh TCP → HTTP SSE） ─────────────────────
-echo "[3a/6] 启动 SSE 数据桥 (port $SSE_PORT)..."
-cd "$JIANG_DIR"
-"$PYTHON_BIN" sse_bridge.py \
-    --port "$SSE_PORT" \
-    --zenoh "tcp/localhost:$BRIDGE_TCP_PORT" &
-SSE_PID=$!
-sleep 1
-_check_process "$SSE_PID" "SSE 数据桥"
-echo "       SSE 数据桥: http://localhost:$SSE_PORT/<key>"
-
-# ── 3b. 启动 ROS 2 传感器 Web 流 ────────────────────────────────
-echo "[3b/6] 启动传感器流服务 (port $SENSOR_PORT)..."
-"$PYTHON_BIN" scripts/sensor_stream_server \
-    --host "$SENSOR_HOST" \
-    --port "$SENSOR_PORT" &
-SENSOR_PID=$!
-sleep 1
-_check_process "$SENSOR_PID" "传感器流服务"
-echo "       相机 MJPEG: http://localhost:$SENSOR_PORT/camera.mjpg"
-echo "       雷达 WebSocket: ws://localhost:$SENSOR_PORT/lidar/ws"
-
-# ── 3c. 启动 HTTP 文件服务器（monitor.html） ────────────────────────
-echo "[3c/6] 启动 HTTP 服务器 (port $MONITOR_PORT)..."
-"$PYTHON_BIN" -m http.server "$MONITOR_PORT" --bind 0.0.0.0 &
-HTTP_PID=$!
-sleep 1
-_check_process "$HTTP_PID" "HTTP 文件服务器"
-echo "       监控面板: http://localhost:$MONITOR_PORT/monitor.html"
-
-# ── 4. 按需启动浏览器控制服务 ───────────────────────────────────
+# ── 3. 启动统一 Web 服务（三合一：控制 API + SSE + 传感器 + 静态页） ──
+# 迁移到 FastAPI 后，原先独立的 SSE 桥、传感器流、HTTP 文件服务器与
+# Web 控制服务合并为单个 uvicorn 进程（默认 CONTROL_PORT 8090）。
 if [ "$CONTROL_MODE" = "web" ]; then
-    echo "[4/6] 启动 Web 控制服务 (port $CONTROL_PORT)..."
+    echo "[3/6] 启动统一 Web 控制服务 (port $CONTROL_PORT)..."
+    cd "$JIANG_DIR"
     "$PYTHON_BIN" control_server.py \
         --host "$CONTROL_HOST" \
         --port "$CONTROL_PORT" \
@@ -418,22 +382,34 @@ if [ "$CONTROL_MODE" = "web" ]; then
         --cabinet-robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
         --robot-control "$ROBOT_CONTROL_PATH" \
         --recordings-root "$RECORDINGS_ROOT" \
+        --zenoh "tcp/localhost:$BRIDGE_TCP_PORT" \
         "${CONTROL_ORIGIN_ARGS[@]}" &
     CONTROL_PID=$!
-    sleep 1
+    sleep 2
     _check_process "$CONTROL_PID" "Web 控制服务"
-    echo "       Web 控制: http://localhost:$CONTROL_PORT"
+    # 输出本机局域网 IP，方便其他电脑直接复制地址。
+    _LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    _SHOW_HOST="${_LAN_IP:-$CONTROL_HOST}"
+    echo "       Web 控制: http://${_SHOW_HOST}:$CONTROL_PORT"
+    echo "       API 文档:  http://${_SHOW_HOST}:$CONTROL_PORT/docs"
+    echo "       监控面板: http://${_SHOW_HOST}:$CONTROL_PORT/monitor.html"
+    echo "       SSE 数据:  http://${_SHOW_HOST}:$CONTROL_PORT/sse/<key>"
+    echo "       相机 MJPEG: http://${_SHOW_HOST}:$CONTROL_PORT/camera.mjpg"
+    echo "       雷达 WebSocket: ws://${_SHOW_HOST}:$CONTROL_PORT/lidar/ws"
 else
-    echo "[4/6] 跳过 Web 控制服务（当前模式由专用 ROS 2 节点控制）"
+    echo "[3/6] 跳过 Web 控制服务（键盘模式由专用 ROS 2 节点控制）"
 fi
 
 # ── 5. 显示访问地址 ───────────────────────────────────────────────
 echo ""
-echo "  ╔══════════════════════════════════════════════════════╗"
-echo "  ║  🌐 监控面板: http://localhost:$MONITOR_PORT/monitor.html"
-echo "  ║  📡 SSE 数据:  http://localhost:$SSE_PORT"
-echo "  ║  📷 传感器流:  http://localhost:$SENSOR_PORT"
-echo "  ╚══════════════════════════════════════════════════════╝"
+if [ "$CONTROL_MODE" = "web" ]; then
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║  🌐 监控面板: http://${_SHOW_HOST}:$CONTROL_PORT/monitor.html"
+    echo "  ║  📚 API 文档:  http://${_SHOW_HOST}:$CONTROL_PORT/docs"
+    echo "  ║  📡 SSE 数据:  http://${_SHOW_HOST}:$CONTROL_PORT/sse/<key>"
+    echo "  ║  📷 传感器流:  http://${_SHOW_HOST}:$CONTROL_PORT/camera.mjpg"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+fi
 echo ""
 
 # ── 6. 启动 Gazebo + 机器人 ───────────────────────────────────────

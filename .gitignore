@@ -16,6 +16,9 @@ export.log
 __pycache__/
 *.py[cod]
 
+# SQLite database (generated)
+/jiang/data/
+
 # CMake generated files
 CMakeFiles/
 CMakeCache.txt

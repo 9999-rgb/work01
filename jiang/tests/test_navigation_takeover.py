@@ -507,10 +507,10 @@ class NavigationTakeoverTest(unittest.TestCase):
         node._navigation_state["state"] = "navigating"
         node._navigation_mode_client.ready = False
 
-        with self.assertRaises(ControlRequestError) as context:
-            node.takeover_navigation()
+        # Nav2 不可用时 takeover 不再抛异常，而是直接进入手动模式。
+        result = node.takeover_navigation()
 
-        self.assertEqual(503, context.exception.status)
+        self.assertEqual("manual", result["status"])
         self.assertEqual(2, node._navigation_generation)
         self.assertEqual(1, goal_handle.cancel_count)
         self.assertIn((1, token), node._navigation_retirements)
