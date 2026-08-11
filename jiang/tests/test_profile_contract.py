@@ -66,7 +66,16 @@ def _documents() -> dict[str, object]:
             "/**": {"ros__parameters": _robot_parameters()},
             "/**/xczs_cabinet_button_operator": {
                 "ros__parameters": {
-                    "controls": {},
+                    "controls": {
+                        "start_button": {
+                            "navigation_station": {
+                                "frame_id": "world_map",
+                                "local_anchor": [0.0, 0.0, 0.0],
+                                "outward_axis": [1.0, 0.0, 0.0],
+                                "standoff": 0.5,
+                            }
+                        }
+                    },
                     "unreachable_control_ids": [],
                 }
             },
@@ -246,6 +255,44 @@ class ProfileContractTest(unittest.TestCase):
         operator["unreachable_control_ids"] = ["start_button"]
         operator["unreachable_control_reason"] = "outside workspace"
         with self.assertRaisesRegex(ProfileContractError, "both"):
+            self._validate(documents)
+
+    def test_allows_station_override_with_shared_unreachable_policy(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        operator = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]
+        operator["controls"] = {
+            "start_button": {
+                "navigation_station": {
+                    "frame_id": "world_map",
+                    "local_anchor": [0.0, 0.0, 0.0],
+                    "outward_axis": [1.0, 0.0, 0.0],
+                    "standoff": 0.5,
+                }
+            }
+        }
+        operator["unreachable_control_ids"] = ["start_button"]
+        operator["unreachable_control_reason"] = "outside workspace"
+
+        report = self._validate(documents)
+
+        self.assertEqual(1, report.control_count)
+
+    def test_rejects_control_without_explicit_navigation_station(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "controls"
+        ] = {}
+
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "Every submitted control.*start_button",
+        ):
             self._validate(documents)
 
     def test_rejects_switch_parent_or_scene_id_mismatch(self) -> None:

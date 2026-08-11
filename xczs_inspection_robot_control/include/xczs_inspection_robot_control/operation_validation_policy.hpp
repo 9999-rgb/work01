@@ -26,4 +26,22 @@ constexpr bool physical_motion_is_permitted(
   return operable && !validation_performed;
 }
 
+/**
+ * Return whether an aborted operation has entered a state that needs physical
+ * recovery.
+ *
+ * Planning, preflight checks and base docking do not move the arm or attach a
+ * cabinet grasp.  A failure in those phases must therefore leave the arm
+ * alone.  Once an arm/cabinet command has been issued, or either explicit
+ * safety flag says that the tool may still be engaged, retreat/stow recovery
+ * remains required.
+ */
+constexpr bool physical_recovery_is_required(
+  bool operation_executed,
+  bool retreat_required,
+  bool grasp_attached) noexcept
+{
+  return operation_executed || retreat_required || grasp_attached;
+}
+
 }  // namespace xczs_inspection_robot_control

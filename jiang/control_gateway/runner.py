@@ -24,6 +24,7 @@ from .inventory import CabinetInventory
 from .inventory import CabinetNotFoundError
 from .inventory import InventoryError
 from .inventory import NavigationStationOutOfBoundsError
+from .inventory import NavigationStationSpec
 from .inventory import OccupancyGridBoundary
 from .recording_manager import RecordingError
 from .recording_manager import RecordingManager
@@ -63,11 +64,25 @@ NAVIGATION_FINAL_POSE_MAX_AGE_SEC = 1.0
 NAVIGATION_FINAL_POSE_MAX_FUTURE_SKEW_SEC = 0.10
 NAVIGATION_REJECT_RETRY_LIMIT = 10
 NAVIGATION_REJECT_RETRY_DELAY_SEC = 0.50
+# A cabinet's map pose can move slightly while Nav2 is driving because AMCL
+# keeps refining map->odom. Refresh the cabinet-local station after arrival,
+# record meaningful drift, and correct only a real base-to-station handoff
+# error so localization noise cannot manufacture extra motion.
+NAVIGATION_STATION_DRIFT_POSITION_M = 0.02
+NAVIGATION_STATION_DRIFT_YAW_RAD = 0.02
+NAVIGATION_LOCALIZATION_JUMP_POSITION_M = 0.50
+NAVIGATION_LOCALIZATION_JUMP_YAW_RAD = 0.35
+NAVIGATION_STATION_CORRECTION_LIMIT = 2
+# The cabinet operator takes over at 0.15 m / 0.15 rad.  Keep a positioning
+# margin at the Web-to-operator handoff instead of accepting a pose exactly on
+# that boundary; Nav2's regular terminal verification remains slightly wider.
+NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.12
+NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.15
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
 TASK_MONITOR_PERIOD_SEC = 0.10
 EXECUTOR_SPIN_PERIOD_SEC = 0.10
-NAVIGATION_POSITION_TOLERANCE_M = 0.20
+NAVIGATION_POSITION_TOLERANCE_M = 0.15
 # Nav2's 0.25 rad goal checker and the following TF sample can differ by a
 # fraction of a degree while the base settles.  Keep a 5 mrad verification
 # margin without relaxing the controller's own stopping criterion.
@@ -962,7 +977,7 @@ class ControlServer:
         """Drive to the cabinet or a robot-calibrated control station."""
         with self._request_scope():
             try:
-                self._inventory.get(cabinet)
+                cabinet_instance = self._inventory.get(cabinet)
                 control_station = None
                 if control_id is not None:
                     client = self._client_for(cabinet)
@@ -987,12 +1002,42 @@ class ControlServer:
                             control_id
                         )
                     )
-                station = self._inventory.station_for(
-                    cabinet,
-                    control_station=control_station,
-                    boundary=self._live_map_bounds(),
-                    margin=MAP_STATION_MARGIN_M,
+                live_map_bounds = self._live_map_bounds()
+                live_station_transform = getattr(
+                    self._node,
+                    "navigation_station_from_tf",
+                    None,
                 )
+                station_refresh = None
+                if callable(live_station_transform):
+                    station_spec = self._inventory.station_spec_for(
+                        cabinet,
+                        control_station=control_station,
+                    )
+                    station = live_station_transform(
+                        cabinet,
+                        cabinet_instance.frame_id,
+                        station_spec,
+                    )
+                    station = self._inventory.validate_station_bounds(
+                        station,
+                        boundary=live_map_bounds,
+                        margin=MAP_STATION_MARGIN_M,
+                    )
+                    station_refresh = (
+                        cabinet_instance.frame_id,
+                        station_spec,
+                    )
+                else:
+                    # Compatibility for isolated lifecycle/test fakes that do
+                    # not own TF. Production RosControlNode always resolves
+                    # the station from the latest localization transform.
+                    station = self._inventory.station_for(
+                        cabinet,
+                        control_station=control_station,
+                        boundary=live_map_bounds,
+                        margin=MAP_STATION_MARGIN_M,
+                    )
             except CabinetNotFoundError as error:
                 raise ControlRequestError(str(error), 404) from error
             except NavigationStationOutOfBoundsError as error:
@@ -1022,6 +1067,7 @@ class ControlServer:
                             context,
                             station.to_dict(),
                             replay_owned,
+                            station_refresh=station_refresh,
                         ),
                         cancel_callback=lambda _task_id: (
                             self._node.cancel_navigation()
@@ -1501,11 +1547,26 @@ class ControlServer:
         context: Any,
         station: Mapping[str, Any],
         replay_owned: bool,
+        *,
+        station_refresh: Optional[
+            Tuple[str, NavigationStationSpec]
+        ] = None,
     ) -> Mapping[str, Any]:
+        navigation_kwargs: Dict[str, Any] = {}
+        if station_refresh is not None:
+            navigation_kwargs["station_refresh"] = station_refresh
         if not replay_owned:
-            return self._execute_navigation_task(context, station)
+            return self._execute_navigation_task(
+                context,
+                station,
+                **navigation_kwargs,
+            )
         with self._replay_internal_scope():
-            return self._execute_navigation_task(context, station)
+            return self._execute_navigation_task(
+                context,
+                station,
+                **navigation_kwargs,
+            )
 
     def _execute_reset_task_owned(
         self,
@@ -1726,70 +1787,85 @@ class ControlServer:
         *,
         progress_start: float = 0.0,
         progress_span: float = 1.0,
+        station_refresh: Optional[
+            Tuple[str, NavigationStationSpec]
+        ] = None,
     ) -> Mapping[str, Any]:
         task_started = time.monotonic()
         initial_snapshot = self._node.navigation_snapshot()
-        initial_pose = initial_snapshot.get("current_pose")
-        legs = self._axis_navigation_legs(initial_pose, station)
         navigation_clock = self._navigation_clock_state(
             initial_snapshot,
             task_started,
         )
-        total_distance = sum(float(leg["distance_m"]) for leg in legs)
-        if total_distance <= NAVIGATION_AXIS_EPSILON_M:
-            weights = [1.0 / len(legs)] * len(legs)
-        else:
-            weights = [
-                float(leg["distance_m"]) / total_distance for leg in legs
-            ]
-
-        route_progress = 0.0
+        current_station = dict(station)
+        route_legs: List[Dict[str, Any]] = []
         final_result: Mapping[str, Any] = {}
-        for index, (leg, weight) in enumerate(zip(legs, weights)):
-            final_result = self._execute_navigation_leg(
-                context,
-                leg["target"],
-                task_started=task_started,
-                progress_start=(
-                    progress_start + progress_span * route_progress
-                ),
-                progress_span=progress_span * weight,
-                route_axis=str(leg["axis"]),
-                route_leg_index=index,
-                route_leg_count=len(legs),
-                navigation_clock=navigation_clock,
+        correction_count = 0
+        station_refresh_count = 0
+        last_station_drift = {"position_m": 0.0, "yaw_rad": 0.0}
+        significant_station_drift = False
+        while True:
+            context.raise_if_canceled()
+            initial_pose = self._node.navigation_snapshot().get(
+                "current_pose"
             )
-            # A retained timeout/shutdown terminal releases its reservation
-            # only after Nav2 later confirms termination and returns an empty
-            # sentinel.  Never submit another axis after that terminal path.
-            if not final_result:
-                return {}
-            route_progress += weight
-            if index + 1 < len(legs):
-                context.progress(
-                    f"navigation_{leg['axis']}_complete",
-                    min(
-                        0.99,
-                        progress_start + progress_span * route_progress,
-                    ),
-                    message=(
-                        f"Navigation {leg['axis'].upper()}-axis leg "
-                        "completed; preparing the next axis."
-                    ),
-                    data={
-                        "cabinet": station["cabinet"],
-                        "route_axis": leg["axis"],
-                        "route_leg_index": index + 1,
-                        "route_leg_count": len(legs),
-                    },
-                )
+            legs = self._axis_navigation_legs(
+                initial_pose,
+                current_station,
+            )
+            total_distance = sum(
+                float(leg["distance_m"]) for leg in legs
+            )
+            if total_distance <= NAVIGATION_AXIS_EPSILON_M:
+                weights = [1.0 / len(legs)] * len(legs)
+            else:
+                weights = [
+                    float(leg["distance_m"]) / total_distance
+                    for leg in legs
+                ]
 
-        result = dict(final_result)
-        result["station"] = dict(station)
-        result["route"] = {
-            "policy": "map_x_then_y",
-            "legs": [
-                {
+            if station_refresh is None:
+                route_progress_start = progress_start
+                route_progress_span = progress_span
+            elif correction_count == 0:
+                route_progress_start = progress_start
+                route_progress_span = progress_span * 0.80
+            else:
+                correction_span = (
+                    progress_span
+                    * 0.20
+                    / NAVIGATION_STATION_CORRECTION_LIMIT
+                )
+                route_progress_start = (
+                    progress_start
+                    + progress_span * 0.80
+                    + correction_span * (correction_count - 1)
+                )
+                route_progress_span = correction_span
+
+            route_progress = 0.0
+            for index, (leg, weight) in enumerate(zip(legs, weights)):
+                final_result = self._execute_navigation_leg(
+                    context,
+                    leg["target"],
+                    task_started=task_started,
+                    progress_start=(
+                        route_progress_start
+                        + route_progress_span * route_progress
+                    ),
+                    progress_span=route_progress_span * weight,
+                    route_axis=str(leg["axis"]),
+                    route_leg_index=index,
+                    route_leg_count=len(legs),
+                    navigation_clock=navigation_clock,
+                )
+                # A retained timeout/shutdown terminal releases its
+                # reservation only after Nav2 later confirms termination and
+                # returns an empty sentinel. Never submit another axis (or a
+                # refreshed correction) after that terminal path.
+                if not final_result:
+                    return {}
+                route_record: Dict[str, Any] = {
                     "axis": leg["axis"],
                     "target": {
                         "x": leg["target"]["x"],
@@ -1797,10 +1873,298 @@ class ControlServer:
                         "yaw": leg["target"]["yaw"],
                     },
                 }
-                for leg in legs
-            ],
+                if correction_count > 0:
+                    route_record.update(
+                        {
+                            "correction": True,
+                            "correction_index": correction_count,
+                        }
+                    )
+                route_legs.append(route_record)
+                route_progress += weight
+                if index + 1 < len(legs):
+                    context.progress(
+                        f"navigation_{leg['axis']}_complete",
+                        min(
+                            0.99,
+                            route_progress_start
+                            + route_progress_span * route_progress,
+                        ),
+                        message=(
+                            f"Navigation {leg['axis'].upper()}-axis leg "
+                            "completed; preparing the next axis."
+                        ),
+                        data={
+                            "cabinet": current_station["cabinet"],
+                            "route_axis": leg["axis"],
+                            "route_leg_index": index + 1,
+                            "route_leg_count": len(legs),
+                            "correction_index": correction_count,
+                        },
+                    )
+
+            if station_refresh is None:
+                break
+
+            context.raise_if_canceled()
+            latest_station = self._refresh_navigation_station_for_task(
+                current_station,
+                station_refresh,
+                task_started=task_started,
+            )
+            station_refresh_count += 1
+            station_drift = self._planar_navigation_error(
+                current_station,
+                latest_station,
+            )
+            last_station_drift = station_drift
+            drift_is_significant = (
+                station_drift["position_m"]
+                > NAVIGATION_STATION_DRIFT_POSITION_M
+                or station_drift["yaw_rad"]
+                > NAVIGATION_STATION_DRIFT_YAW_RAD
+            )
+            significant_station_drift = (
+                significant_station_drift or drift_is_significant
+            )
+            if (
+                station_drift["position_m"]
+                > NAVIGATION_LOCALIZATION_JUMP_POSITION_M
+                or station_drift["yaw_rad"]
+                > NAVIGATION_LOCALIZATION_JUMP_YAW_RAD
+            ):
+                jump_result = dict(final_result)
+                jump_result["station"] = dict(latest_station)
+                jump_result["error"] = self._planar_navigation_error(
+                    final_result["final_pose"],
+                    latest_station,
+                )
+                raise TaskExecutionError(
+                    "The live cabinet station jumped beyond the safe "
+                    "localization-correction limit after Nav2 arrived.",
+                    code="localization_jump",
+                    details={
+                        "station_drift": station_drift,
+                        "maximum_position_jump_m": (
+                            NAVIGATION_LOCALIZATION_JUMP_POSITION_M
+                        ),
+                        "maximum_yaw_jump_rad": (
+                            NAVIGATION_LOCALIZATION_JUMP_YAW_RAD
+                        ),
+                    },
+                    result=jump_result,
+                )
+
+            # Query again immediately after resolving the live station.  On
+            # RosControlNode this refreshes map->base from TF, so the handoff
+            # decision compares a current base pose with the same latest
+            # cabinet-local station instead of reusing a cached Nav2 result.
+            pose_refresh_started = time.monotonic()
+            latest_snapshot = self._node.navigation_snapshot()
+            pose_observed_at = time.monotonic()
+            final_result = self._navigation_result(
+                latest_station,
+                latest_snapshot,
+                pose_observed_at - task_started,
+                minimum_pose_stamp_ros_nanoseconds=latest_snapshot.get(
+                    "goal_sent_ros_nanoseconds"
+                ),
+                minimum_pose_received_monotonic=pose_refresh_started,
+                observation_monotonic=pose_observed_at,
+                expected_frame=self._robot_adapter.navigation_frame,
+            )
+            active_elapsed, clock_issue = self._navigation_elapsed(
+                latest_snapshot,
+                navigation_clock,
+                pose_observed_at,
+            )
+            if (
+                active_elapsed >= NAVIGATION_TIMEOUT_SEC
+                or clock_issue is not None
+            ):
+                raise TaskExecutionError(
+                    (
+                        "The active ROS clock stopped while validating the "
+                        "latest cabinet station."
+                        if clock_issue is not None
+                        else "Navigation timed out while validating the "
+                        "latest cabinet station."
+                    ),
+                    code="navigation_timeout",
+                    details={
+                        "timeout_clock": navigation_clock["source"],
+                        "timeout_cause": (
+                            clock_issue or "active_time_limit"
+                        ),
+                        "active_duration_seconds": active_elapsed,
+                        "wall_duration_seconds": (
+                            pose_observed_at - task_started
+                        ),
+                    },
+                    result=final_result,
+                )
+            pose_error = final_result["error"]
+            current_station = latest_station
+
+            correction_required = (
+                pose_error["position_m"]
+                > NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M
+                or pose_error["yaw_rad"]
+                > NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD
+            )
+            if not correction_required:
+                break
+            if correction_count >= NAVIGATION_STATION_CORRECTION_LIMIT:
+                raise TaskExecutionError(
+                    "The live cabinet station kept moving or remained "
+                    "outside the operation handoff tolerance after the "
+                    "bounded navigation corrections.",
+                    code="navigation_station_unstable",
+                    details={
+                        "correction_limit": (
+                            NAVIGATION_STATION_CORRECTION_LIMIT
+                        ),
+                        "station_drift": station_drift,
+                        "latest_pose_error": pose_error,
+                        "position_tolerance_m": (
+                            NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M
+                        ),
+                        "yaw_tolerance_rad": (
+                            NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD
+                        ),
+                    },
+                    result=final_result,
+                )
+
+            correction_count += 1
+            context.progress(
+                "navigation_station_correction",
+                min(
+                    0.99,
+                    progress_start
+                    + progress_span
+                    * (
+                        0.80
+                        + 0.20
+                        * (correction_count - 1)
+                        / NAVIGATION_STATION_CORRECTION_LIMIT
+                    ),
+                ),
+                message=(
+                    "The base is outside the operation handoff margin for "
+                    "the latest live station; correcting its pose."
+                ),
+                data={
+                    "cabinet": current_station["cabinet"],
+                    "correction_index": correction_count,
+                    "correction_limit": (
+                        NAVIGATION_STATION_CORRECTION_LIMIT
+                    ),
+                    "station_drift": station_drift,
+                    "latest_pose_error": pose_error,
+                },
+            )
+
+        result = dict(final_result)
+        result["station"] = dict(current_station)
+        result["route"] = {
+            "policy": "map_x_then_y",
+            "legs": route_legs,
+            "station_refresh_count": station_refresh_count,
+            "correction_count": correction_count,
+            "last_station_drift": last_station_drift,
+            "significant_station_drift": significant_station_drift,
         }
         return result
+
+    def _refresh_navigation_station_for_task(
+        self,
+        previous_station: Mapping[str, Any],
+        station_refresh: Tuple[str, NavigationStationSpec],
+        *,
+        task_started: float,
+    ) -> Dict[str, Any]:
+        """Resolve and validate the latest live station after Nav2 arrival."""
+        cabinet = str(previous_station.get("cabinet") or "")
+        cabinet_frame, station_spec = station_refresh
+        live_station_transform = getattr(
+            self._node,
+            "navigation_station_from_tf",
+            None,
+        )
+        if not callable(live_station_transform):
+            raise TaskExecutionError(
+                "Live cabinet-station refresh became unavailable after "
+                "navigation started.",
+                code="navigation_station_refresh_failed",
+                result={
+                    "cabinet": cabinet,
+                    "station": dict(previous_station),
+                    "duration_seconds": time.monotonic() - task_started,
+                },
+            )
+        try:
+            station = live_station_transform(
+                cabinet,
+                cabinet_frame,
+                station_spec,
+            )
+            station = self._inventory.validate_station_bounds(
+                station,
+                boundary=self._live_map_bounds(),
+                margin=MAP_STATION_MARGIN_M,
+            )
+        except (ControlRequestError, InventoryError) as error:
+            details = dict(getattr(error, "details", {}) or {})
+            details["refresh_error"] = str(error)
+            raise TaskExecutionError(
+                "Navigation reached the previous station, but the latest "
+                f"live cabinet station could not be resolved: {error}",
+                code="navigation_station_refresh_failed",
+                details=details,
+                result={
+                    "cabinet": cabinet,
+                    "station": dict(previous_station),
+                    "duration_seconds": time.monotonic() - task_started,
+                },
+            ) from error
+        if (
+            station.cabinet != cabinet
+            or station.frame_id != self._robot_adapter.navigation_frame
+        ):
+            raise TaskExecutionError(
+                "The refreshed cabinet station uses an unexpected cabinet "
+                "or navigation frame.",
+                code="navigation_station_refresh_failed",
+                details={
+                    "expected_cabinet": cabinet,
+                    "actual_cabinet": station.cabinet,
+                    "expected_frame": self._robot_adapter.navigation_frame,
+                    "actual_frame": station.frame_id,
+                },
+                result={
+                    "cabinet": cabinet,
+                    "station": dict(previous_station),
+                    "duration_seconds": time.monotonic() - task_started,
+                },
+            )
+        return station.to_dict()
+
+    @staticmethod
+    def _planar_navigation_error(
+        source: Mapping[str, Any],
+        target: Mapping[str, Any],
+    ) -> Dict[str, float]:
+        """Return normalized planar position/yaw error between two poses."""
+        delta_x = float(source["x"]) - float(target["x"])
+        delta_y = float(source["y"]) - float(target["y"])
+        yaw_delta = float(source["yaw"]) - float(target["yaw"])
+        return {
+            "position_m": math.hypot(delta_x, delta_y),
+            "yaw_rad": abs(
+                math.atan2(math.sin(yaw_delta), math.cos(yaw_delta))
+            ),
+        }
 
     def _execute_navigation_leg(
         self,
@@ -1819,10 +2183,10 @@ class ControlServer:
         initial_pose = self._node.navigation_snapshot().get("current_pose")
         if isinstance(initial_pose, Mapping):
             try:
-                initial_distance = math.hypot(
-                    float(station["x"]) - float(initial_pose["x"]),
-                    float(station["y"]) - float(initial_pose["y"]),
-                )
+                initial_distance = self._planar_navigation_error(
+                    initial_pose,
+                    station,
+                )["position_m"]
             except (KeyError, TypeError, ValueError):
                 initial_distance = None
         try:

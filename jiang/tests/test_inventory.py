@@ -115,20 +115,53 @@ class CabinetInventoryTest(unittest.TestCase):
 
     def test_control_station_replaces_common_geometry(self) -> None:
         inventory = self._load({"instances": [self._instance()]})
+        control_spec = NavigationStationSpec(
+            local_anchor=(0.5, 0.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.75,
+            base_yaw_offset=0.25,
+            frame_id="map",
+        )
         station = inventory.station_for(
             "cabinet_a",
-            control_station=NavigationStationSpec(
-                local_anchor=(0.5, 0.0, 0.0),
-                outward_axis=(1.0, 0.0, 0.0),
-                standoff=0.75,
-                base_yaw_offset=0.25,
-                frame_id="map",
-            ),
+            control_station=control_spec,
         )
 
         self.assertAlmostEqual(11.25, station.x)
         self.assertAlmostEqual(20.0, station.y)
         self.assertAlmostEqual(-math.pi + 0.25, station.yaw)
+        self.assertIs(
+            control_spec,
+            inventory.station_spec_for(
+                "cabinet_a",
+                control_station=control_spec,
+            ),
+        )
+
+    def test_exposes_final_instance_overridden_station_spec(self) -> None:
+        inventory = self._load(
+            {
+                "instances": [
+                    self._instance(
+                        navigation_station={
+                            "local_anchor": [0.25, -0.5, 0.75],
+                            "outward_axis": [2.0, 0.0, 0.0],
+                            "standoff": 1.25,
+                            "base_yaw_offset": -0.2,
+                            "frame_id": "map",
+                        }
+                    )
+                ]
+            }
+        )
+
+        spec = inventory.station_spec_for("cabinet_a")
+
+        self.assertEqual((0.25, -0.5, 0.75), spec.local_anchor)
+        self.assertEqual((1.0, 0.0, 0.0), spec.outward_axis)
+        self.assertAlmostEqual(1.25, spec.standoff)
+        self.assertAlmostEqual(-0.2, spec.base_yaw_offset)
+        self.assertEqual("map", spec.frame_id)
 
     def test_project_layout_reserves_front_rear_and_side_workspace(self) -> None:
         config = WORKSPACE / "xczs_inspection_robot_control" / "config"

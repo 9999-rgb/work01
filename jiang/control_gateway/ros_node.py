@@ -38,6 +38,8 @@ from tf2_ros import Buffer
 from tf2_ros import TransformException
 from tf2_ros import TransformListener
 
+from .inventory import NavigationStation
+from .inventory import NavigationStationSpec
 from .robot_adapter import ManualJointConfig
 from .velocity_profile import VelocityProfile
 
@@ -535,6 +537,185 @@ class RosControlNode(Node):
             )
         return snapshot
 
+    def navigation_station_from_tf(
+        self,
+        cabinet: str,
+        cabinet_frame: str,
+        station_spec: NavigationStationSpec,
+    ) -> NavigationStation:
+        """Transform cabinet-local station geometry into the Nav2 frame.
+
+        Inventory poses describe the intended simulation layout, but Nav2
+        plans in the localized navigation frame.  Resolving the latest
+        navigation-frame-to-cabinet TF here includes any current map/odom
+        correction instead of silently treating inventory coordinates as map
+        coordinates.
+        """
+        if not isinstance(cabinet, str) or not cabinet.strip():
+            raise ControlRequestError(
+                "cabinet must be a non-empty string.",
+                400,
+            )
+        if (
+            not isinstance(cabinet_frame, str)
+            or not cabinet_frame.strip()
+            or any(character.isspace() for character in cabinet_frame)
+        ):
+            raise ControlRequestError(
+                "cabinet_frame must be a non-empty ROS frame without "
+                "whitespace.",
+                400,
+            )
+        if not isinstance(station_spec, NavigationStationSpec):
+            raise ControlRequestError(
+                "station_spec must be a NavigationStationSpec.",
+                400,
+            )
+        if station_spec.frame_id != self._navigation_frame:
+            raise ControlRequestError(
+                "Navigation station frame must match the configured "
+                f"navigation frame {self._navigation_frame}.",
+                400,
+            )
+
+        anchor = self._validated_station_vector(
+            station_spec.local_anchor,
+            "station_spec.local_anchor",
+        )
+        outward_axis = self._validated_station_vector(
+            station_spec.outward_axis,
+            "station_spec.outward_axis",
+        )
+        standoff = self._validated_station_number(
+            station_spec.standoff,
+            "station_spec.standoff",
+            status=400,
+        )
+        yaw_offset = self._validated_station_number(
+            station_spec.base_yaw_offset,
+            "station_spec.base_yaw_offset",
+            status=400,
+        )
+        if standoff <= 0.0:
+            raise ControlRequestError(
+                "station_spec.standoff must be positive.",
+                400,
+            )
+        axis_norm = math.hypot(*outward_axis)
+        if axis_norm <= 1.0e-12:
+            raise ControlRequestError(
+                "station_spec.outward_axis must not be zero.",
+                400,
+            )
+        outward_axis = tuple(
+            component / axis_norm for component in outward_axis
+        )
+
+        tf_buffer = getattr(self, "_tf_buffer", None)
+        if tf_buffer is None:
+            raise ControlRequestError(
+                f"Live transform for {cabinet_frame} is not available.",
+                503,
+            )
+        try:
+            transform = tf_buffer.lookup_transform(
+                self._navigation_frame,
+                cabinet_frame,
+                RosTime(),
+            )
+        except TransformException as error:
+            raise ControlRequestError(
+                f"Live transform from {cabinet_frame} to "
+                f"{self._navigation_frame} is not available: {error}",
+                503,
+            ) from error
+
+        try:
+            translation = transform.transform.translation
+            rotation = transform.transform.rotation
+            translation_values = tuple(
+                self._validated_station_number(
+                    getattr(translation, field),
+                    f"live transform translation.{field}",
+                    status=503,
+                )
+                for field in ("x", "y", "z")
+            )
+            quaternion = tuple(
+                self._validated_station_number(
+                    getattr(rotation, field),
+                    f"live transform rotation.{field}",
+                    status=503,
+                )
+                for field in ("x", "y", "z", "w")
+            )
+        except (AttributeError, TypeError) as error:
+            raise ControlRequestError(
+                f"Live transform for {cabinet_frame} is malformed.",
+                503,
+            ) from error
+
+        quaternion_norm = math.hypot(*quaternion)
+        if (
+            quaternion_norm <= 1.0e-12
+            or abs(quaternion_norm - 1.0) > 5.0e-4
+        ):
+            raise ControlRequestError(
+                f"Live transform for {cabinet_frame} has an invalid "
+                "rotation quaternion.",
+                503,
+            )
+        unit_quaternion = tuple(
+            value / quaternion_norm for value in quaternion
+        )
+        local_position = tuple(
+            anchor[index] + outward_axis[index] * standoff
+            for index in range(3)
+        )
+        rotated_position = self._rotate_vector_by_unit_quaternion(
+            local_position,
+            unit_quaternion,
+        )
+        navigation_axis = self._rotate_vector_by_unit_quaternion(
+            outward_axis,
+            unit_quaternion,
+        )
+        horizontal_norm = math.hypot(
+            navigation_axis[0],
+            navigation_axis[1],
+        )
+        if not math.isfinite(horizontal_norm) or horizontal_norm <= 1.0e-9:
+            raise ControlRequestError(
+                f"Navigation outward axis for {cabinet} has no finite "
+                "horizontal component.",
+                400,
+            )
+        unnormalized_yaw = (
+            math.atan2(-navigation_axis[1], -navigation_axis[0])
+            + yaw_offset
+        )
+        yaw = math.atan2(
+            math.sin(unnormalized_yaw),
+            math.cos(unnormalized_yaw),
+        )
+        position = tuple(
+            translation_values[index] + rotated_position[index]
+            for index in range(3)
+        )
+        if not all(math.isfinite(value) for value in (*position, yaw)):
+            raise ControlRequestError(
+                f"Live navigation station for {cabinet} is not finite.",
+                503,
+            )
+        return NavigationStation(
+            cabinet=cabinet,
+            frame_id=self._navigation_frame,
+            x=position[0],
+            y=position[1],
+            z=position[2],
+            yaw=yaw,
+        )
+
     def _refresh_robot_pose_from_tf(self) -> None:
         """Refresh the localized SE(2) pose from the latest TF transform."""
         tf_buffer = getattr(self, "_tf_buffer", None)
@@ -908,9 +1089,19 @@ class RosControlNode(Node):
         button_id: str,
         navigate_to_staging_pose: bool,
     ) -> Dict[str, Any]:
-        """Use the retained PressCabinetButton action for old operators."""
+        """Use the retained PressCabinetButton action for verified buttons."""
         with self._lock:
             self._validate_cabinet_button_locked(button_id)
+            control = self._cabinet_controls[button_id]
+            if not bool(control.get("operable", True)):
+                raise ControlRequestError(
+                    "The generic cabinet operation action is required for "
+                    "live planning validation of an unverified button, but "
+                    "that backend is unavailable. The deprecated legacy "
+                    "PressCabinetButton action only supports verified "
+                    "operable buttons.",
+                    503,
+                )
             self._reject_cabinet_start_conflicts_locked()
         if not self._action_server_ready(self._cabinet_button_client):
             raise ControlRequestError(
@@ -3100,12 +3291,6 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 f"Unsupported cabinet control: {control_id}."
             )
-        if not bool(control.get("operable", True)):
-            reason = str(control.get("unavailable_reason", "")).strip()
-            raise ControlRequestError(
-                reason or f"Cabinet control {control_id} is not operable.",
-                409,
-            )
         default_support = (
             self.CABINET_COMMAND_SUPPORT[
                 OperateCabinetControl.Goal.COMMAND_PRESS
@@ -3223,6 +3408,83 @@ class RosControlNode(Node):
     @staticmethod
     def _duration_seconds(duration: Any) -> float:
         return float(duration.sec) + float(duration.nanosec) / 1.0e9
+
+    @staticmethod
+    def _validated_station_number(
+        value: Any,
+        label: str,
+        *,
+        status: int,
+    ) -> float:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ControlRequestError(
+                f"{label} must be a finite number.",
+                status,
+            )
+        try:
+            converted = float(value)
+        except (OverflowError, TypeError, ValueError) as error:
+            raise ControlRequestError(
+                f"{label} must be a finite number.",
+                status,
+            ) from error
+        if not math.isfinite(converted):
+            raise ControlRequestError(
+                f"{label} must be a finite number.",
+                status,
+            )
+        return converted
+
+    @staticmethod
+    def _validated_station_vector(
+        value: Any,
+        label: str,
+    ) -> Tuple[float, float, float]:
+        if (
+            not isinstance(value, Sequence)
+            or isinstance(value, (str, bytes))
+            or len(value) != 3
+        ):
+            raise ControlRequestError(
+                f"{label} must contain exactly three finite numbers.",
+                400,
+            )
+        return tuple(
+            RosControlNode._validated_station_number(
+                component,
+                f"{label}[{index}]",
+                status=400,
+            )
+            for index, component in enumerate(value)
+        )  # type: ignore[return-value]
+
+    @staticmethod
+    def _rotate_vector_by_unit_quaternion(
+        vector: Tuple[float, float, float],
+        quaternion: Tuple[float, float, float, float],
+    ) -> Tuple[float, float, float]:
+        x, y, z, w = quaternion
+        rotation = (
+            (
+                1.0 - 2.0 * (y * y + z * z),
+                2.0 * (x * y - z * w),
+                2.0 * (x * z + y * w),
+            ),
+            (
+                2.0 * (x * y + z * w),
+                1.0 - 2.0 * (x * x + z * z),
+                2.0 * (y * z - x * w),
+            ),
+            (
+                2.0 * (x * z - y * w),
+                2.0 * (y * z + x * w),
+                1.0 - 2.0 * (x * x + y * y),
+            ),
+        )
+        return tuple(
+            sum(row[index] * vector[index] for index in range(3))
+            for row in rotation
+        )  # type: ignore[return-value]
 
     @staticmethod
     def _quaternion_yaw(quaternion: Any) -> float:

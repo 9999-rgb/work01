@@ -3786,7 +3786,7 @@ function cabinetValidationDetailLines(status) {
   const policyReason = String(status.policy_reason || '').trim();
   const validationPerformed = status.validation_performed === true;
   const showValidationDiagnostics = Boolean(
-    validationPerformed || diagnosticStage || policyReason
+    validationPerformed || policyReason
   );
   const lines = [];
   if (showValidationDiagnostics) {
@@ -3797,13 +3797,18 @@ function cabinetValidationDetailLines(status) {
     );
     const pathFraction = Number(status.path_fraction);
     const requiredFraction = Number(status.required_fraction);
-    if (Number.isFinite(pathFraction) && Number.isFinite(requiredFraction)) {
+    if (
+      validationPerformed && Number.isFinite(pathFraction) &&
+      Number.isFinite(requiredFraction)
+    ) {
       lines.push(
         `路径完成度: ${(pathFraction * 100).toFixed(1)}% / 要求 ${
           (requiredFraction * 100).toFixed(1)
         }%`
       );
     }
+  } else if (diagnosticStage) {
+    lines.push(`操作失败阶段: ${diagnosticStage}`);
   }
   if (typeof status.operation_executed === 'boolean') {
     lines.push(
@@ -3812,7 +3817,10 @@ function cabinetValidationDetailLines(status) {
   }
   if (policyReason) lines.push(`验证原因: ${policyReason}`);
   const moveitErrorCode = Number(status.moveit_error_code);
-  if (showValidationDiagnostics && Number.isFinite(moveitErrorCode)) {
+  if (
+    showValidationDiagnostics && validationPerformed &&
+    Number.isFinite(moveitErrorCode)
+  ) {
     lines.push(`MoveIt 错误码: ${moveitErrorCode}`);
   }
   return lines;

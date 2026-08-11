@@ -308,6 +308,20 @@ class MonitorWebContractTest(unittest.TestCase):
               '验证原因: 工作空间不可达',
               'MoveIt 错误码: -1'
             ]);
+
+            const dockingFailure = cabinetValidationDetailLines({{
+              validation_performed: false,
+              operation_executed: false,
+              diagnostic_stage: 'docking',
+              path_fraction: 0,
+              required_fraction: 0,
+              moveit_error_code: 0,
+              policy_reason: ''
+            }});
+            assert.deepEqual(dockingFailure, [
+              '操作失败阶段: docking',
+              '机械臂/柜体物理操作: 未执行'
+            ]);
         """))
 
     def test_cancel_prevents_posts_in_both_workflow_gaps(self) -> None:

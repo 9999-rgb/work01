@@ -864,7 +864,7 @@ def main() -> int:
             )
         controls_without_explicit_station = sorted(
             control_id
-            for control_id in operable_controls
+            for control_id in control_ids
             if not isinstance(
                 adapter_controls.get(control_id, {}).get("navigation_station"),
                 dict,
@@ -872,10 +872,101 @@ def main() -> int:
         )
         if controls_without_explicit_station:
             fail(
-                "Every operable control requires an explicit robot-adapter "
+                "Every submitted control requires an explicit robot-adapter "
                 "navigation_station: "
                 + ", ".join(controls_without_explicit_station)
                 + "."
+            )
+        front_control_ids = {
+            control_id
+            for control_id in control_ids
+            if controls[control_id].get("type") in {"button", "knob"}
+        }
+        for control_id in sorted(front_control_ids):
+            station = adapter_controls[control_id]["navigation_station"]
+            anchor = numbers(
+                station["local_anchor"],
+                f"Robot adapter {control_id} navigation anchor",
+            )
+            outward = numbers(
+                station["outward_axis"],
+                f"Robot adapter {control_id} navigation outward axis",
+            )
+            outward_norm = math.sqrt(sum(value * value for value in outward))
+            outward_unit = [value / outward_norm for value in outward]
+            if not close_lists(outward_unit, [0.0, 0.0, 1.0]):
+                fail(
+                    f"Front control {control_id} navigation station must "
+                    "approach the cabinet from its local +Z face."
+                )
+            control_position = numbers(
+                controls[control_id].get("local_position"),
+                f"controls.{control_id}.local_position",
+            )
+            expected_anchor = [
+                control_position[0] - 0.161,
+                1.115,
+                0.0,
+            ]
+            if not close_lists(anchor, expected_anchor):
+                fail(
+                    f"Front control {control_id} navigation anchor must align "
+                    "local_position.x minus the calibrated 0.161 m tool "
+                    "offset and retain the common [y, z] anchor."
+                )
+        rear_door_station = adapter_controls["cabinet_rear_door"][
+            "navigation_station"
+        ]
+        main_switch_station = adapter_controls["cabinet_main_switch"][
+            "navigation_station"
+        ]
+        for field in ("local_anchor", "outward_axis"):
+            if not close_lists(
+                numbers(
+                    rear_door_station[field],
+                    f"cabinet_rear_door.navigation_station.{field}",
+                ),
+                numbers(
+                    main_switch_station[field],
+                    f"cabinet_main_switch.navigation_station.{field}",
+                ),
+            ):
+                fail(
+                    "The door-mounted cabinet_main_switch must share the "
+                    f"rear-door navigation station {field}."
+                )
+        for field in ("standoff", "base_yaw_offset"):
+            if not math.isclose(
+                float(rear_door_station.get(field, 0.0)),
+                float(main_switch_station.get(field, 0.0)),
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            ):
+                fail(
+                    "The door-mounted cabinet_main_switch must share the "
+                    f"rear-door navigation station {field}."
+                )
+        if rear_door_station.get("frame_id", navigation_frame) != (
+            main_switch_station.get("frame_id", navigation_frame)
+        ):
+            fail(
+                "The door-mounted cabinet_main_switch must share the "
+                "rear-door navigation station frame."
+            )
+        rear_outward = numbers(
+            rear_door_station["outward_axis"],
+            "cabinet_rear_door.navigation_station.outward_axis",
+        )
+        rear_outward_norm = math.sqrt(
+            sum(value * value for value in rear_outward)
+        )
+        if not close_lists(
+            [value / rear_outward_norm for value in rear_outward],
+            [0.0, 0.0, -1.0],
+        ):
+            fail(
+                "Rear door and its main switch must approach from the "
+                "cabinet local -Z face."
             )
         joint_names = [str(controls[control_id].get("joint_name", ""))
                        for control_id in control_ids]

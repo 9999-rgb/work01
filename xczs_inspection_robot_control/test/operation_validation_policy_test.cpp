@@ -26,4 +26,20 @@ TEST(OperationValidationPolicy, ValidationAlwaysBlocksPhysicalMotion)
   EXPECT_FALSE(physical_motion_is_permitted(false, true));
 }
 
+TEST(OperationValidationPolicy, PreflightAndDockingFailuresNeedNoRecoveryMotion)
+{
+  EXPECT_FALSE(physical_recovery_is_required(false, false, false));
+}
+
+TEST(OperationValidationPolicy, ExecutedOperationStillRequiresSafetyRecovery)
+{
+  EXPECT_TRUE(physical_recovery_is_required(true, false, false));
+}
+
+TEST(OperationValidationPolicy, EngagementFlagsConservativelyRequireRecovery)
+{
+  EXPECT_TRUE(physical_recovery_is_required(false, true, false));
+  EXPECT_TRUE(physical_recovery_is_required(false, false, true));
+}
+
 }  // namespace xczs_inspection_robot_control

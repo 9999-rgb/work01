@@ -342,7 +342,7 @@ navigate_for_control() {
     (.result.final_pose.x | numbers) and
     (.result.final_pose.y | numbers) and
     (.result.final_pose.yaw | numbers) and
-    .result.error.position_m <= 0.20 and
+    .result.error.position_m <= 0.15 and
     .result.error.yaw_rad <= 0.25 and
     (.result.duration_seconds >= 0)
   ' <<<"$TASK_BODY" >/dev/null || {
@@ -353,10 +353,59 @@ navigate_for_control() {
   COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
 }
 
+cabinet_controls_snapshot() {
+  get_json "/cabinets/$CABINET/controls"
+  jq -ce '
+    [.controls[] |
+      {control_id:.control_id,
+       state:.current_state,
+       position:.current_position,
+       sequence:.transition_sequence,
+       valid:.valid,
+       in_motion:.in_motion}] |
+    sort_by(.control_id) |
+    select(
+      length == 33 and
+      all(.[];
+        .valid == true and .in_motion == false and
+        (.state | type) == "string" and (.state | length) > 0 and
+        (.position | type) == "number" and (.position | isfinite) and
+        (.sequence | type) == "number" and (.sequence | isfinite)))
+  ' <<<"$RESPONSE_BODY" ||
+    fail "$CABINET 无法生成33项有效、静止且数值完整的实时状态快照"
+}
+
+assert_cabinet_controls_unchanged() {
+  local before="$1"
+  local excluded_control="${2:-}"
+  local after=""
+
+  after="$(cabinet_controls_snapshot)"
+  jq -ne --arg excluded "$excluded_control" \
+    --argjson before "$before" --argjson after "$after" '
+      ($before | length) == 33 and ($after | length) == 33 and
+      all(range(0; $before | length);
+        . as $index |
+        $before[$index].control_id == $after[$index].control_id and
+        ($before[$index].control_id == $excluded or
+          (($after[$index].position - $before[$index].position) as $delta |
+           $after[$index].state == $before[$index].state and
+           $after[$index].sequence == $before[$index].sequence and
+           $delta >= -0.0001 and $delta <= 0.0001)))
+    ' >/dev/null || {
+    jq -n --argjson before "$before" --argjson after "$after" \
+      --arg excluded "$excluded_control" \
+      '{excluded_control:$excluded, before:$before, after:$after}' >&2
+    fail "$CABINET 柜内非目标控件状态发生变化，检测到物理串扰"
+  }
+}
+
 run_successful_operation() {
   local control_id="$1"
   local request_body="$2"
+  local state_before=""
   navigate_for_control "$control_id"
+  state_before="$(cabinet_controls_snapshot)"
   printf '\n[operate] %s\n' "$control_id"
   submit_task operate "$request_body"
   local task_id="$ACTIVE_TASK_ID"
@@ -373,6 +422,7 @@ run_successful_operation() {
     jq . <<<"$TASK_BODY" >&2
     fail "$control_id 成功结果缺少柜体、控件或耗时字段"
   }
+  assert_cabinet_controls_unchanged "$state_before" "$control_id"
   VALIDATED_OPERABLE_CONTROLS["$control_id"]=1
   COMPLETED_TASKS=$((COMPLETED_TASKS + 1))
 }
@@ -408,50 +458,118 @@ run_state_round_trip() {
 
 operation_body_for_control() {
   local control_id="$1"
+  local requested_command="${2:-auto}"
   local control_type=""
+  local current_state=""
+  local live_controls_body=""
+  local target_position=""
   local target_state=""
 
+  # Re-read retained ROS state immediately before the Goal.  The initial
+  # catalog snapshot may be stale after reset or an earlier round trip.
+  get_json "/cabinets/$CABINET/controls"
+  live_controls_body="$RESPONSE_BODY"
+  jq -e --arg id "$control_id" '
+    ([.controls[] | select(.control_id == $id)] | length) == 1 and
+    (first(.controls[] | select(.control_id == $id)) |
+      .valid == true and .in_motion == false)
+  ' <<<"$live_controls_body" >/dev/null ||
+    fail "$control_id 没有唯一、有效且静止的实时物理状态"
   control_type="$(
     jq -r --arg id "$control_id" '
       .controls[] | select(.control_id == $id) | .control_type
-    ' <<<"$CONTROLS_BODY"
+    ' <<<"$live_controls_body"
   )"
   if [[ "$control_type" == "0" ]]; then
+    [[ "$requested_command" == "auto" || "$requested_command" == "press" ]] ||
+      fail "$control_id 是按钮，不能用于 $requested_command 合同验证"
     jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
       '{cabinet:$cabinet, control_id:$control, command:"press"}'
     return
   fi
-  target_state="$(
+  case "$requested_command" in
+    auto|set_state|set_position|toggle) ;;
+    *) fail "未知柜体验证命令: $requested_command" ;;
+  esac
+  current_state="$(
     jq -r --arg id "$control_id" '
-      .controls[] | select(.control_id == $id) | .state_ids[0] // ""
-    ' <<<"$CONTROLS_BODY"
+      .controls[] | select(.control_id == $id) |
+      if (.current_state | type) == "string" then .current_state else "" end
+    ' <<<"$live_controls_body"
+  )"
+  [[ -n "$current_state" ]] ||
+    fail "NOT APPLICABLE: $control_id 缺少实时 current_state，无法证明非零位移验证"
+  jq -e --arg id "$control_id" --arg current "$current_state" '
+    any(.controls[] | select(.control_id == $id) | .state_ids[];
+        . == $current)
+  ' <<<"$live_controls_body" >/dev/null ||
+    fail "NOT APPLICABLE: $control_id 的实时状态 $current_state 不在离散状态目录中"
+  target_state="$(
+    jq -r --arg id "$control_id" --arg current "$current_state" '
+      first(.controls[] | select(.control_id == $id) |
+        .state_ids[] | select(. != $current)) // ""
+    ' <<<"$live_controls_body"
   )"
   [[ -n "$target_state" ]] ||
-    fail "$control_id 没有可用于不可达验证的离散目标状态"
-  jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
-    --arg state "$target_state" \
-    '{cabinet:$cabinet, control_id:$control,
-      command:"set_state", target_state:$state}'
+    fail "NOT APPLICABLE: $control_id 没有区别于实时状态 $current_state 的有效目标，拒绝伪验证"
+  case "$requested_command" in
+    auto|set_state)
+      jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+        --arg state "$target_state" \
+        '{cabinet:$cabinet, control_id:$control,
+          command:"set_state", target_state:$state}'
+      ;;
+    set_position)
+      target_position="$(
+        jq -r --arg id "$control_id" --arg target "$target_state" '
+          .controls[] | select(.control_id == $id) |
+          .state_ids as $ids | ($ids | index($target)) as $index |
+          .state_positions[$index] |
+          if type == "number" then tostring else "" end
+        ' <<<"$live_controls_body"
+      )"
+      [[ -n "$target_position" ]] ||
+        fail "NOT APPLICABLE: $control_id 的目标状态 $target_state 缺少有效 detent 位置"
+      jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+        --argjson position "$target_position" \
+        '{cabinet:$cabinet, control_id:$control,
+          command:"set_position", target_position:$position}'
+      ;;
+    toggle)
+      jq -cn --arg cabinet "$CABINET" --arg control "$control_id" \
+        '{cabinet:$cabinet, control_id:$control, command:"toggle"}'
+      ;;
+  esac
 }
 
 run_unreachable_operation() {
   local control_id="$1"
   local expected_reason="$2"
+  local requested_command="${3:-auto}"
+  local count_inventory="${4:-true}"
+  local effective_command=""
   local request_body=""
+  local states_before=""
   local task_id=""
 
   [[ -n "$expected_reason" ]] ||
     fail "$control_id 未在目录中声明机器人不可操作原因"
-  request_body="$(operation_body_for_control "$control_id")"
   navigate_for_control "$control_id"
-  printf '\n[planning-validation] %s -> live structured result\n' "$control_id"
+  request_body="$(
+    operation_body_for_control "$control_id" "$requested_command"
+  )"
+  effective_command="$(jq -r '.command' <<<"$request_body")"
+  states_before="$(cabinet_controls_snapshot)"
+  printf '\n[planning-validation] %s %s -> live structured result\n' \
+    "$control_id" "$effective_command"
   submit_task operate "$request_body"
   task_id="$ACTIVE_TASK_ID"
   wait_for_task "$task_id" failed
   jq -e --arg cabinet "$CABINET" --arg control "$control_id" \
-    --arg reason "$expected_reason" '
+    --arg reason "$expected_reason" --arg command "$effective_command" '
       .request.cabinet == $cabinet and
       .request.control_id == $control and
+      .request.command == $command and
       (.failure_code == "planning_failed" or
        .failure_code == "unreachable") and
       (.failure_reason | type == "string" and length > 0 and
@@ -471,8 +589,25 @@ run_unreachable_operation() {
     jq . <<<"$TASK_BODY" >&2
     fail "$control_id 没有返回实时规划阶段、路径比例和具体原因"
   }
+  assert_cabinet_controls_unchanged "$states_before"
   EXPECTED_FAILURE_TASKS=$((EXPECTED_FAILURE_TASKS + 1))
-  UNREACHABLE_TASKS=$((UNREACHABLE_TASKS + 1))
+  if [[ "$count_inventory" == "true" ]]; then
+    UNREACHABLE_TASKS=$((UNREACHABLE_TASKS + 1))
+  fi
+}
+
+run_unavailable_knob_command_contracts() {
+  local control_id="$1"
+  local expected_reason="$2"
+
+  [[ -n "$control_id" ]] ||
+    fail "NOT APPLICABLE: 目录中没有受限 knob，无法验证 SET_POSITION/TOGGLE 规划合同"
+  run_unreachable_operation \
+    "$control_id" "$expected_reason" set_position false
+  # The previous planning-only result is required to leave physical state
+  # unchanged.  The second request still re-reads current_state independently.
+  run_unreachable_operation \
+    "$control_id" "$expected_reason" toggle false
 }
 
 validate_sse_capture() {
@@ -553,6 +688,17 @@ UNREACHABLE_REASON="$(
     '.controls[] | select(.control_id == $id) | .unavailable_reason' \
     <<<"$CONTROLS_BODY"
 )"
+UNAVAILABLE_KNOB_ID="$(
+  jq -r 'first(.controls[] |
+    select(.control_type == 1 and .operable == false) |
+    .control_id) // ""' <<<"$CONTROLS_BODY"
+)"
+UNAVAILABLE_KNOB_REASON="$(
+  jq -r --arg id "$UNAVAILABLE_KNOB_ID" '
+    first(.controls[] | select(.control_id == $id) |
+      .unavailable_reason) // ""
+  ' <<<"$CONTROLS_BODY"
+)"
 UNAVAILABLE_COUNT="$(
   jq '[.controls[] | select(.operable == false)] | length' \
     <<<"$CONTROLS_BODY"
@@ -564,6 +710,9 @@ OPERABLE_COUNT="$(
 [[ -n "$BUTTON_ID" ]] || fail "目录中没有可达按钮，无法验证力度"
 if [[ -n "$UNREACHABLE_ID" && -z "$UNREACHABLE_REASON" ]]; then
   fail "$UNREACHABLE_ID 没有声明机器人不可操作的具体原因"
+fi
+if [[ -n "$UNAVAILABLE_KNOB_ID" && -z "$UNAVAILABLE_KNOB_REASON" ]]; then
+  fail "$UNAVAILABLE_KNOB_ID 没有声明机器人不可操作的具体原因"
 fi
 
 PEER_CABINET="$(
@@ -616,7 +765,7 @@ if [[ "$RUN_NAVIGATION" == "true" ]]; then
     (.result.final_pose.x | numbers) and
     (.result.final_pose.y | numbers) and
     (.result.final_pose.yaw | numbers) and
-    .result.error.position_m <= 0.20 and
+    .result.error.position_m <= 0.15 and
     .result.error.yaw_rad <= 0.25 and
     (.result.duration_seconds >= 0)
   ' <<<"$TASK_BODY" >/dev/null || {
@@ -764,6 +913,11 @@ if [[ "$RUN_EXHAUSTIVE" == "true" ]]; then
 else
   run_representative_rotary_controls
 fi
+
+# SET_STATE alone does not cover the other advertised rotary commands.  Run
+# both against one limited knob in representative and exhaustive validation.
+run_unavailable_knob_command_contracts \
+  "$UNAVAILABLE_KNOB_ID" "$UNAVAILABLE_KNOB_REASON"
 
 if [[ "$RUN_CONTRACT_TESTS" == "true" ]]; then
   printf '\n[contract] global conflict and task cancellation\n'

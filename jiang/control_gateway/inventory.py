@@ -372,6 +372,63 @@ class CabinetInventory:
             cabinets.append(cabinet)
         return cabinets
 
+    def station_spec_for(
+        self,
+        name: str,
+        *,
+        control_station: Optional[NavigationStationSpec] = None,
+    ) -> NavigationStationSpec:
+        """Return the final cabinet-local station geometry for one request.
+
+        Instance overrides are applied to the common scene geometry first.  A
+        robot-adapter control station, when supplied, is already a complete
+        specification and therefore replaces that result.  Exposing this
+        resolved value lets ROS-backed callers apply the latest TF transform
+        without duplicating inventory precedence rules.
+        """
+        instance = self.get(name)
+        spec = self._station_spec.with_override(
+            instance.station_override,
+            cabinet=instance.name,
+        )
+        if control_station is None:
+            return spec
+        if not isinstance(control_station, NavigationStationSpec):
+            raise InventoryError(
+                "control_station must be a NavigationStationSpec."
+            )
+        return control_station
+
+    @staticmethod
+    def validate_station_bounds(
+        station: NavigationStation,
+        *,
+        boundary: Optional[Any] = None,
+        margin: float = 0.0,
+    ) -> NavigationStation:
+        """Validate a precomputed station against a live map boundary."""
+        if not isinstance(station, NavigationStation):
+            raise InventoryError("station must be a NavigationStation.")
+        if not all(
+            _is_finite_number(value)
+            for value in (station.x, station.y, station.z, station.yaw)
+        ):
+            raise InventoryError(
+                "Navigation station must contain only finite coordinates."
+            )
+        if boundary is not None and not _boundary_contains(
+            boundary,
+            station.x,
+            station.y,
+            margin,
+        ):
+            raise NavigationStationOutOfBoundsError(
+                station.cabinet,
+                station.x,
+                station.y,
+            )
+        return station
+
     def station_for(
         self,
         name: str,
@@ -391,16 +448,10 @@ class CabinetInventory:
         predicate.  This keeps occupancy-grid policy in the ROS adapter.
         """
         instance = self.get(name)
-        spec = self._station_spec.with_override(
-            instance.station_override,
-            cabinet=instance.name,
+        spec = self.station_spec_for(
+            name,
+            control_station=control_station,
         )
-        if control_station is not None:
-            if not isinstance(control_station, NavigationStationSpec):
-                raise InventoryError(
-                    "control_station must be a NavigationStationSpec."
-                )
-            spec = control_station
         rotation = _rpy_rotation(instance.roll, instance.pitch, instance.yaw)
         local_position = tuple(
             spec.local_anchor[index] + spec.outward_axis[index] * spec.standoff
@@ -426,18 +477,11 @@ class CabinetInventory:
             z=instance.z + rotated_position[2],
             yaw=yaw,
         )
-        if boundary is not None and not _boundary_contains(
-            boundary,
-            station.x,
-            station.y,
-            margin,
-        ):
-            raise NavigationStationOutOfBoundsError(
-                station.cabinet,
-                station.x,
-                station.y,
-            )
-        return station
+        return self.validate_station_bounds(
+            station,
+            boundary=boundary,
+            margin=margin,
+        )
 
 
 def load_inventory(

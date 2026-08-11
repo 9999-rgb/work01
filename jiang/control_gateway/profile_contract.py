@@ -289,17 +289,39 @@ def _validate_robot_control_overrides(
             "unreachable_control_ids contains unknown IDs: "
             + ", ".join(sorted(unknown_unreachable))
         )
-    overlap = set(unreachable) & set(overrides)
-    if overlap:
+    # A shared unreachable policy and a per-control navigation station are
+    # orthogonal: every submitted control still needs a robot-visible station
+    # so the live planning-only validation can run.  Reject only a second
+    # availability policy for an ID already covered by the shared list.
+    policy_overlap = {
+        control_id
+        for control_id in set(unreachable) & set(overrides)
+        if "operable" in overrides[control_id]
+        or "unavailable_reason" in overrides[control_id]
+    }
+    if policy_overlap:
         raise ProfileContractError(
-            "Controls must not be present in both per-control overrides and "
-            "unreachable_control_ids: "
-            + ", ".join(sorted(overlap))
+            "Controls must not define availability in both per-control "
+            "overrides and unreachable_control_ids: "
+            + ", ".join(sorted(policy_overlap))
         )
     if unreachable:
         _string(
             operator.get("unreachable_control_reason"),
             "unreachable_control_reason",
+        )
+    station_ids = {
+        str(control_id)
+        for control_id, override in overrides.items()
+        if isinstance(override, Mapping)
+        and isinstance(override.get("navigation_station"), Mapping)
+    }
+    missing_stations = control_ids - station_ids
+    if missing_stations:
+        raise ProfileContractError(
+            "Every submitted control requires an explicit robot-adapter "
+            "navigation_station: "
+            + ", ".join(sorted(missing_stations))
         )
 
 

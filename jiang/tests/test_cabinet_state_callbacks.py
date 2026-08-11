@@ -597,6 +597,54 @@ class CabinetStateCallbackTest(unittest.TestCase):
         )
         self.assertEqual(1, len(published))
 
+    def test_generic_operation_sends_unverified_control_for_validation(self) -> None:
+        node = _make_node()
+        node._cabinet_controls["box_10_button_1"].update(
+            {"operable": False, "unavailable_reason": "workspace limit"}
+        )
+        action_client = _ActionClient()
+        node._cabinet_operation_client = action_client
+        node._cabinet_goal_handle = None
+        node._cabinet_state["state"] = "idle"
+        node._navigation_state = {"state": "idle"}
+        node._navigation_mode_request = None
+        node._navigation_mode_desired = None
+        node._navigation_retirements = {}
+        node._linear_profile = SimpleNamespace(reset=lambda: None)
+        node._angular_profile = SimpleNamespace(reset=lambda: None)
+        node._pending_trajectory = None
+        node._pending_trajectory_repeats = 0
+        node._cmd_vel_publisher = SimpleNamespace(publish=lambda _msg: None)
+
+        response = node.operate_cabinet_control(
+            "box_10_button_1",
+            "press",
+        )
+
+        self.assertEqual("accepted", response["status"])
+        self.assertEqual("box_10_button_1", action_client.goal.control_id)
+
+    def test_legacy_action_requires_generic_backend_for_unverified_button(
+        self,
+    ) -> None:
+        node = _make_node()
+        node._cabinet_controls["box_10_button_1"].update(
+            {"operable": False, "unavailable_reason": "workspace limit"}
+        )
+        node._cabinet_goal_handle = None
+        node._cabinet_state["state"] = "idle"
+        node._navigation_state = {"state": "idle"}
+        node._navigation_mode_request = None
+        node._navigation_mode_desired = None
+        node._navigation_retirements = {}
+
+        with self.assertRaises(ControlRequestError) as rejected:
+            node.press_cabinet_button("box_10_button_1", False)
+
+        self.assertEqual(503, rejected.exception.status)
+        self.assertIn("generic", str(rejected.exception).lower())
+        self.assertIsNone(node._cabinet_goal_handle)
+
     def test_generic_operation_validates_command_targets(self) -> None:
         node = _make_node()
         _add_knob(node)

@@ -17,8 +17,10 @@ sys.path.insert(0, str(JIANG_DIR))
 
 from action_msgs.msg import GoalStatus  # noqa: E402
 from builtin_interfaces.msg import Time as TimeMessage  # noqa: E402
+from control_gateway.inventory import NavigationStationSpec  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway.ros_node import RosControlNode  # noqa: E402
+from tf2_ros import TransformException  # noqa: E402
 
 
 class _DeferredFuture:
@@ -110,6 +112,12 @@ class _TransformBuffer:
     def lookup_transform(self, target: str, source: str, stamp: Any) -> Any:
         self.requests.append((target, source, stamp))
         return self.transform
+
+
+class _MissingTransformBuffer:
+    def lookup_transform(self, target: str, source: str, stamp: Any) -> Any:
+        del target, source, stamp
+        raise TransformException("frame is not connected")
 
 
 class _GoalHandle:
@@ -313,6 +321,112 @@ class NavigationTakeoverTest(unittest.TestCase):
             0.499999955,
             node._robot_pose["stamp_age_seconds"],
         )
+
+    def test_live_station_tf_includes_current_map_odom_correction(self) -> None:
+        node = _make_node()
+        cabinet_yaw = math.pi / 2.0
+        transform = SimpleNamespace(
+            transform=SimpleNamespace(
+                # This is the live map->cabinet result after TF has composed
+                # the current map->odom localization correction.
+                translation=SimpleNamespace(x=10.0, y=-4.0, z=1.0),
+                rotation=SimpleNamespace(
+                    x=0.0,
+                    y=0.0,
+                    z=math.sin(cabinet_yaw / 2.0),
+                    w=math.cos(cabinet_yaw / 2.0),
+                ),
+            )
+        )
+        node._tf_buffer = _TransformBuffer(transform)
+        spec = NavigationStationSpec(
+            local_anchor=(1.0, 2.0, 0.5),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.2,
+            frame_id="map",
+        )
+
+        station = node.navigation_station_from_tf(
+            "cabinet_a",
+            "cabinet_a_frame",
+            spec,
+        )
+
+        self.assertEqual(
+            ("map", "cabinet_a_frame"),
+            node._tf_buffer.requests[0][:2],
+        )
+        self.assertAlmostEqual(8.0, station.x)
+        self.assertAlmostEqual(-2.5, station.y)
+        self.assertAlmostEqual(1.5, station.z)
+        self.assertAlmostEqual(-math.pi / 2.0 + 0.2, station.yaw)
+        self.assertEqual("map", station.frame_id)
+
+    def test_live_station_requires_available_cabinet_tf(self) -> None:
+        node = _make_node()
+        node._tf_buffer = _MissingTransformBuffer()
+        spec = NavigationStationSpec(
+            local_anchor=(0.0, 0.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=1.0,
+            frame_id="map",
+        )
+
+        with self.assertRaises(ControlRequestError) as unavailable:
+            node.navigation_station_from_tf(
+                "cabinet_a",
+                "cabinet_a_frame",
+                spec,
+            )
+
+        self.assertEqual(503, unavailable.exception.status)
+        self.assertIn("not available", str(unavailable.exception))
+
+    def test_live_station_rejects_nonfinite_tf_and_spec_values(self) -> None:
+        node = _make_node()
+        node._tf_buffer = _TransformBuffer(
+            SimpleNamespace(
+                transform=SimpleNamespace(
+                    translation=SimpleNamespace(
+                        x=float("nan"),
+                        y=0.0,
+                        z=0.0,
+                    ),
+                    rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                )
+            )
+        )
+        valid_spec = NavigationStationSpec(
+            local_anchor=(0.0, 0.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=1.0,
+            frame_id="map",
+        )
+
+        with self.assertRaises(ControlRequestError) as invalid_tf:
+            node.navigation_station_from_tf(
+                "cabinet_a",
+                "cabinet_a_frame",
+                valid_spec,
+            )
+        self.assertEqual(503, invalid_tf.exception.status)
+        self.assertIn("finite", str(invalid_tf.exception))
+
+        invalid_spec = NavigationStationSpec(
+            local_anchor=(0.0, 0.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=float("inf"),
+            frame_id="map",
+        )
+        with self.assertRaises(ControlRequestError) as invalid_geometry:
+            node.navigation_station_from_tf(
+                "cabinet_a",
+                "cabinet_a_frame",
+                invalid_spec,
+            )
+        self.assertEqual(400, invalid_geometry.exception.status)
+        self.assertIn("finite", str(invalid_geometry.exception))
 
     def test_old_enable_finishes_before_queued_manual_switch(self) -> None:
         node = _make_node(mode=False)

@@ -20,6 +20,7 @@ from control_gateway.cabinet_client import CabinetClientError  # noqa: E402
 from control_gateway.inventory import CabinetInstance  # noqa: E402
 from control_gateway.inventory import CabinetInventory  # noqa: E402
 from control_gateway.inventory import MapBounds  # noqa: E402
+from control_gateway.inventory import NavigationStation  # noqa: E402
 from control_gateway.inventory import NavigationStationSpec  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway import runner as runner_module  # noqa: E402
@@ -111,6 +112,19 @@ class _NavigationNode:
 
     def navigation_snapshot(self) -> Dict[str, Any]:
         with self._lock:
+            current_pose = self.state.get("current_pose")
+            if (
+                isinstance(current_pose, Mapping)
+                and "stamp_ros_nanoseconds" in current_pose
+            ):
+                # Production RosControlNode refreshes map->base from TF on
+                # every snapshot. Mirror its fresh monotonic receipt time so
+                # post-station-refresh handoff checks exercise the same rule.
+                refreshed_pose = dict(current_pose)
+                refreshed_pose["received_monotonic"] = (
+                    runner_module.time.monotonic()
+                )
+                self.state["current_pose"] = refreshed_pose
             return dict(self.state)
 
     def set_navigation_ros_time(self, nanoseconds: int) -> None:
@@ -610,6 +624,462 @@ class TaskRunnerTest(unittest.TestCase):
             [leg["axis"] for leg in task["result"]["route"]["legs"]],
         )
 
+    def test_navigation_uses_live_tf_station_when_node_supports_it(self) -> None:
+        server, node = _server()
+        calls = []
+
+        def live_station(
+            cabinet: str,
+            cabinet_frame: str,
+            spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            calls.append((cabinet, cabinet_frame, spec))
+            # The static inventory station is x=1.0.  This shifted value
+            # represents the latest composed map->odom->cabinet transform.
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=2.5,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+
+        accepted = server.submit_navigation_task("cabinet_a")
+        goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertAlmostEqual(2.5, goal["x"])
+        self.assertAlmostEqual(2.5, accepted["request"]["station"]["x"])
+        self.assertEqual("cabinet_a", calls[0][0])
+        self.assertEqual("cabinet_a_frame", calls[0][1])
+        self.assertIsInstance(calls[0][2], NavigationStationSpec)
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 2.5, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_navigation_refreshes_live_station_and_corrects_x_then_y(
+        self,
+    ) -> None:
+        server, node = _server()
+        calls = []
+
+        def live_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            calls.append(cabinet)
+            if len(calls) == 1:
+                x, y = 1.0, 0.0
+            else:
+                x, y = 1.3, 0.4
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=x,
+                y=y,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+        accepted = server.submit_navigation_task("cabinet_a")
+
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+        correction_x = node.wait_for_navigation_goal(2)
+        self.assertIsNotNone(correction_x)
+        assert correction_x is not None
+        self.assertAlmostEqual(1.3, correction_x["x"])
+        self.assertAlmostEqual(0.0, correction_x["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.3, "y": 0.0, "yaw": math.pi},
+        )
+        correction_y = node.wait_for_navigation_goal(3)
+        self.assertIsNotNone(correction_y)
+        assert correction_y is not None
+        self.assertAlmostEqual(1.3, correction_y["x"])
+        self.assertAlmostEqual(0.4, correction_y["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.3, "y": 0.4, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(3, len(calls))
+        self.assertEqual(1, task["result"]["route"]["correction_count"])
+        self.assertEqual(
+            ["x", "x", "y"],
+            [leg["axis"] for leg in task["result"]["route"]["legs"]],
+        )
+        self.assertNotIn("correction", task["result"]["route"]["legs"][0])
+        self.assertTrue(task["result"]["route"]["legs"][1]["correction"])
+        self.assertTrue(task["result"]["route"]["legs"][2]["correction"])
+        self.assertAlmostEqual(1.3, task["result"]["station"]["x"])
+        self.assertAlmostEqual(0.4, task["result"]["station"]["y"])
+
+    def test_navigation_live_station_refresh_never_falls_back_to_static(
+        self,
+    ) -> None:
+        server, node = _server()
+        calls = 0
+
+        def live_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise ControlRequestError("cabinet TF unavailable", 503)
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual(
+            "navigation_station_refresh_failed",
+            task["failure_code"],
+        )
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertIn("TF unavailable", task["message"])
+
+    def test_navigation_corrects_when_latest_handoff_pose_is_outside_margin(
+        self,
+    ) -> None:
+        server, node = _server()
+        calls = 0
+
+        def live_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0 if calls == 1 else 1.019,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        # The first goal is valid against its own station (0.11 m error), but
+        # the sub-threshold 0.019 m TF shift puts it outside the stricter
+        # 0.12 m operation handoff margin.
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.89, "y": 0.0, "yaw": math.pi},
+        )
+        correction = node.wait_for_navigation_goal(2)
+        self.assertIsNotNone(correction)
+        assert correction is not None
+        self.assertAlmostEqual(1.019, correction["x"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.019, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(1, task["result"]["route"]["correction_count"])
+        self.assertAlmostEqual(1.019, task["result"]["station"]["x"])
+
+    def test_navigation_records_station_drift_without_a_redundant_goal(
+        self,
+    ) -> None:
+        server, node = _server()
+        calls = 0
+
+        def live_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0 if calls == 1 else 1.1,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        # The localized base and cabinet station moved together.  The station
+        # drift is diagnostically meaningful, but the live handoff pose is
+        # already exact and must not cause a redundant correction goal.
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.1, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertEqual(0, task["result"]["route"]["correction_count"])
+        self.assertTrue(
+            task["result"]["route"]["significant_station_drift"]
+        )
+        self.assertAlmostEqual(1.1, task["result"]["station"]["x"])
+
+    def test_navigation_fails_on_unsafe_live_localization_jump(self) -> None:
+        server, node = _server()
+        calls = 0
+
+        def jumping_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0 if calls == 1 else 1.6,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = jumping_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("localization_jump", task["failure_code"])
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertAlmostEqual(
+            0.6,
+            task["failure_details"]["station_drift"]["position_m"],
+        )
+
+    def test_navigation_live_station_corrections_are_bounded(self) -> None:
+        server, node = _server()
+        calls = 0
+
+        def moving_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0 + 0.25 * (calls - 1),
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = moving_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        for goal_count, goal_x in enumerate((1.0, 1.25, 1.5), start=1):
+            goal = node.wait_for_navigation_goal(goal_count)
+            self.assertIsNotNone(goal)
+            assert goal is not None
+            self.assertAlmostEqual(goal_x, goal["x"])
+            node.finish_navigation(
+                "succeeded",
+                pose={"x": goal_x, "y": 0.0, "yaw": math.pi},
+            )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual(
+            "navigation_station_unstable",
+            task["failure_code"],
+        )
+        self.assertEqual(3, node.navigation_goal_count)
+        self.assertAlmostEqual(1.75, task["result"]["station"]["x"])
+
+    def test_navigation_correction_reuses_original_ros_time_budget(self) -> None:
+        server, node = _server()
+        node.set_navigation_ros_time(100_000_000_000)
+        calls = 0
+
+        def live_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                # Advance the shared active ROS clock beyond the patched task
+                # budget while the post-arrival station is being refreshed.
+                node.set_navigation_ros_time(100_700_000_000)
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0 if calls == 1 else 1.3,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+        with patch.object(runner_module, "NAVIGATION_TIMEOUT_SEC", 0.5):
+            accepted = server.submit_navigation_task("cabinet_a")
+            self.assertIsNotNone(node.wait_for_navigation_goal(1))
+            node.finish_navigation(
+                "succeeded",
+                pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+            )
+            task = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=2.0,
+            )
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("navigation_timeout", task["failure_code"])
+        self.assertEqual(1, node.navigation_goal_count)
+
+    def test_navigation_refresh_enforces_budget_without_correction(
+        self,
+    ) -> None:
+        server, node = _server()
+        node.set_navigation_ros_time(100_000_000_000)
+        calls = 0
+
+        def stable_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                # The refreshed station and base pose are already aligned,
+                # but their handoff validation must not bypass the task's
+                # shared active-ROS-time budget.
+                node.set_navigation_ros_time(100_700_000_000)
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = stable_station
+        with patch.object(runner_module, "NAVIGATION_TIMEOUT_SEC", 0.5):
+            accepted = server.submit_navigation_task("cabinet_a")
+            self.assertIsNotNone(node.wait_for_navigation_goal(1))
+            node.finish_navigation(
+                "succeeded",
+                pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+            )
+            task = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=2.0,
+            )
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("navigation_timeout", task["failure_code"])
+        self.assertEqual(1, node.navigation_goal_count)
+
+    def test_navigation_cancel_still_applies_to_live_station_correction(
+        self,
+    ) -> None:
+        server, node = _server()
+        calls = 0
+
+        def live_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            nonlocal calls
+            calls += 1
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0 if calls == 1 else 1.3,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = live_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+        self.assertIsNotNone(node.wait_for_navigation_goal(2))
+
+        canceling = server.cancel_task(accepted["task_id"])
+        self.assertEqual("canceling", canceling["status"])
+        node.finish_navigation("canceled")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("canceled", task["status"])
+        self.assertEqual(1, node.cancel_count)
+
+    def test_navigation_keeps_static_fallback_for_tf_less_fake_node(self) -> None:
+        server, node = _server()
+        self.assertFalse(hasattr(node, "navigation_station_from_tf"))
+
+        accepted = server.submit_navigation_task("cabinet_a")
+        goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertAlmostEqual(1.0, goal["x"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
     def test_navigation_ignores_sub_cell_cross_axis_localization_noise(
         self,
     ) -> None:
@@ -1003,6 +1473,26 @@ class TaskRunnerTest(unittest.TestCase):
 
         self.assertEqual(400, outside.exception.status)
         self.assertIn("outside the map", str(outside.exception))
+
+    def test_live_tf_station_is_checked_against_live_map_bounds(self) -> None:
+        server, node = _server()
+        node.navigation_station_from_tf = (
+            lambda cabinet, _cabinet_frame, _spec: NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=5.0,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+        )
+
+        with self.assertRaises(ControlRequestError) as outside:
+            server.submit_navigation_task("cabinet_a")
+
+        self.assertEqual(400, outside.exception.status)
+        self.assertIn("outside the map", str(outside.exception))
+        self.assertIsNone(server._task_manager.active_task_id)
 
     def test_navigation_result_rejects_pose_that_stopped_updating(self) -> None:
         station = {

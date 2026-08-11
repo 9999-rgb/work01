@@ -1712,6 +1712,7 @@ private:
   {
     const auto operation_started_at = std::chrono::steady_clock::now();
     auto result = std::make_shared<OperateCabinetControl::Result>();
+    result->diagnostic_stage = "preflight";
     const auto control = find_button(goal_handle->get_goal()->control_id);
     std::shared_ptr<MoveGroupInterface> move_group;
     OperationPoses button_poses;
@@ -1848,6 +1849,7 @@ private:
       }
 
       if (navigate) {
+        result->diagnostic_stage = "navigation";
         if (!validation_only) {
           publish_operate_feedback(
             goal_handle,
@@ -1866,6 +1868,7 @@ private:
         navigate_to_staging_pose(
           goal_handle, staging_poses->navigation_pose);
       }
+      result->diagnostic_stage = "docking";
       set_navigation_mode(goal_handle, false);
       if (staging_poses) {
         publish_operate_feedback(
@@ -1878,7 +1881,6 @@ private:
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
       if (validation_only) {
-        result->validation_performed = true;
         result->operation_executed = false;
         const auto docked_robot_state =
           move_group->getCurrentState(system_wait_timeout_);
@@ -1888,6 +1890,7 @@ private:
                   "MoveIt did not refresh the robot state after precision "
                   "docking.");
         }
+        result->validation_performed = true;
         validate_inoperable_control_path(
           *move_group, goal_handle, *control, initial_state,
           target_position, button_poses, rotary_poses,
@@ -1914,6 +1917,7 @@ private:
       }
 
       if (is_button) {
+        result->diagnostic_stage = "ready";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MOVING_TO_READY,
@@ -1923,6 +1927,7 @@ private:
           *move_group, goal_handle, button_poses.prepress_pose,
           contact_tool_link_, &result->operation_executed);
         should_attempt_retreat = true;
+        result->diagnostic_stage = "approach";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::APPROACHING,
@@ -1934,6 +1939,7 @@ private:
           0.99, &result->operation_executed);
         const auto transition_sequence =
           button_snapshot(*control).pressed_transition_sequence;
+        result->diagnostic_stage = "manipulation";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MANIPULATING,
@@ -1948,6 +1954,7 @@ private:
         track_button_force(
           *move_group, goal_handle, *control, button_press_depth,
           &result->operation_executed);
+        result->diagnostic_stage = "verification";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::VERIFYING,
@@ -1975,6 +1982,7 @@ private:
         }
         const auto release_sequence =
           button_snapshot(*control).pressed_transition_sequence;
+        result->diagnostic_stage = "retreat";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::RETREATING,
@@ -1985,6 +1993,7 @@ private:
           cartesian_velocity_scale_, cartesian_acceleration_scale_,
           0.99, &result->operation_executed);
         should_attempt_retreat = false;
+        result->diagnostic_stage = "verification";
         if (result->button_triggered && !wait_for_pressed_state(
             goal_handle, *control, false, release_detection_timeout_,
             release_sequence))
@@ -2012,6 +2021,7 @@ private:
                   " mm）才能触发。");
         }
       } else {
+        result->diagnostic_stage = "ready";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MOVING_TO_READY,
@@ -2021,6 +2031,7 @@ private:
           *move_group, goal_handle, rotary_poses.ready_pose,
           contact_tool_link_, &result->operation_executed);
         should_attempt_retreat = true;
+        result->diagnostic_stage = "approach";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::APPROACHING,
@@ -2042,6 +2053,7 @@ private:
           cartesian_velocity_scale_ * 0.5,
           cartesian_acceleration_scale_ * 0.5,
           0.99, &result->operation_executed);
+        result->diagnostic_stage = "grasp";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::GRASPING,
@@ -2069,6 +2081,7 @@ private:
         }
         const auto waypoints = calculate_rotation_waypoints(
           *control, initial_state.position, manipulation_position);
+        result->diagnostic_stage = "manipulation";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::MANIPULATING,
@@ -2145,6 +2158,7 @@ private:
           // Keep that coupling active while translating the tool beyond the
           // remaining door sweep.  Releasing first lets the closer drive the
           // visible panel through the retreating arm.
+          result->diagnostic_stage = "retreat";
           publish_operate_feedback(
             goal_handle,
             OperateCabinetControl::Feedback::RETREATING,
@@ -2155,6 +2169,7 @@ private:
             cartesian_velocity_scale_, cartesian_acceleration_scale_,
             0.99, &result->operation_executed);
           should_attempt_retreat = false;
+          result->diagnostic_stage = "release";
           publish_operate_feedback(
             goal_handle,
             OperateCabinetControl::Feedback::RELEASING,
@@ -2164,6 +2179,7 @@ private:
           grasp_attached = false;
           released_at = std::chrono::steady_clock::now();
         } else {
+          result->diagnostic_stage = "release";
           publish_operate_feedback(
             goal_handle,
             OperateCabinetControl::Feedback::RELEASING,
@@ -2172,6 +2188,7 @@ private:
           set_control_grasp(goal_handle, control->id, false);
           grasp_attached = false;
           released_at = std::chrono::steady_clock::now();
+          result->diagnostic_stage = "retreat";
           publish_operate_feedback(
             goal_handle,
             OperateCabinetControl::Feedback::RETREATING,
@@ -2183,6 +2200,7 @@ private:
             0.99, &result->operation_executed);
           should_attempt_retreat = false;
         }
+        result->diagnostic_stage = "verification";
         publish_operate_feedback(
           goal_handle,
           OperateCabinetControl::Feedback::VERIFYING,
@@ -2200,6 +2218,7 @@ private:
           goal_handle, *control, target_position, target_state, released_at);
       }
 
+      result->diagnostic_stage = "transport";
       publish_operate_feedback(
         goal_handle,
         OperateCabinetControl::Feedback::RETREATING,
@@ -2220,6 +2239,10 @@ private:
       result->success = true;
       result->error_code = OperateCabinetControl::Result::SUCCESS;
       result->message = "Operated " + control->id + " successfully.";
+      // ``diagnostic_stage`` describes the origin of a physical-operation
+      // failure.  Keep successful physical results empty so clients do not
+      // mistake them for planning-only validation diagnostics.
+      result->diagnostic_stage.clear();
       result->final_position = final_state.position;
       result->peak_position = final_state.max_position;
       result->final_state = final_state.state_id;
@@ -3077,7 +3100,17 @@ private:
     const DoorArcProgress & door_arc_progress,
     bool canceled) noexcept
   {
-    const bool motion_recovery_allowed = !operation_lease_lost_.load();
+    const bool physical_recovery_required = physical_recovery_is_required(
+      result->operation_executed, should_attempt_retreat, grasp_attached);
+    const bool motion_recovery_allowed =
+      physical_recovery_required && !operation_lease_lost_.load();
+    if (!physical_recovery_required) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Skipping arm/grasp recovery after '%s': the operation failed "
+        "before any manipulator command, grasp, or required retreat.",
+        result->diagnostic_stage.c_str());
+    }
     const bool is_door = control && control->control_type ==
       xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
     bool rollback_and_retreat_succeeded = false;
@@ -3111,7 +3144,9 @@ private:
           error.what());
       }
     }
-    if (control && (grasp_attached || control->requires_grasp)) {
+    if (physical_recovery_required && control &&
+      (grasp_attached || control->requires_grasp))
+    {
       result->operation_executed = true;
       release_control_grasp_noexcept(control->id);
     }

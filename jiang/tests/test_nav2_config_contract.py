@@ -156,6 +156,27 @@ class Nav2ConfigContractTest(unittest.TestCase):
         self.assertLessEqual(task_yaw_tolerance - nav2_yaw_tolerance, 0.01)
         self.assertLess(task_yaw_tolerance, takeover_yaw_tolerance)
 
+    def test_position_tolerances_preserve_controller_and_takeover_layers(
+        self,
+    ) -> None:
+        nav2 = yaml.safe_load(NAV2_PARAMS.read_text(encoding="utf-8"))
+        controller = nav2["controller_server"]["ros__parameters"]
+        nav2_position_tolerance = controller["general_goal_checker"][
+            "xy_goal_tolerance"
+        ]
+        adapter = yaml.safe_load(ROBOT_ADAPTER.read_text(encoding="utf-8"))
+        operator = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]
+        takeover_distance = operator["navigation_takeover_distance"]
+        task_position_tolerance = _numeric_constant(
+            RUNNER_SOURCE,
+            "NAVIGATION_POSITION_TOLERANCE_M",
+        )
+
+        self.assertLess(nav2_position_tolerance, task_position_tolerance)
+        self.assertLessEqual(task_position_tolerance, takeover_distance)
+
 
 if __name__ == "__main__":
     unittest.main()

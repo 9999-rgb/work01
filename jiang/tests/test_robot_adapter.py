@@ -275,6 +275,12 @@ class RobotAdapterTest(unittest.TestCase):
             joint.name: joint.default_position for joint in adapter.manual_joints
         }
         self.assertAlmostEqual(-pi / 2.0, defaults["arm1_arm2"])
+        stations = dict(adapter.control_navigation_stations)
+        self.assertEqual(33, len(stations))
+        self.assertEqual(
+            stations["cabinet_rear_door"],
+            stations["cabinet_main_switch"],
+        )
 
     def test_navigation_frame_defaults_to_map(self) -> None:
         parameters = _parameters()
