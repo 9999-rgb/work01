@@ -181,7 +181,7 @@ class ProfileContractTest(unittest.TestCase):
 
         self.assertEqual(3, report.cabinet_count)
         self.assertEqual(33, report.control_count)
-        self.assertEqual("odom", report.planning_frame)
+        self.assertEqual("map", report.planning_frame)
         self.assertEqual("map", report.navigation_frame)
 
     def test_rejects_planning_and_navigation_frame_mismatches(self) -> None:

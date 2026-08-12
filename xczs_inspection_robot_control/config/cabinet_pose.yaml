@@ -3,7 +3,7 @@
     # static：由 launch 中的柜体生成位姿提供 TF。
     # topic：只接受 PoseWithCovarianceStamped，不会回退到旧静态坐标。
     pose_source: static
-    parent_frame: odom
+    parent_frame: map
     cabinet_frame: control_cabinet_frame
     measurement_topic: pose_measurement
     validity_topic: pose_valid

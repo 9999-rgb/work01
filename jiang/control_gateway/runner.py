@@ -73,11 +73,12 @@ NAVIGATION_STATION_DRIFT_YAW_RAD = 0.02
 NAVIGATION_LOCALIZATION_JUMP_POSITION_M = 0.50
 NAVIGATION_LOCALIZATION_JUMP_YAW_RAD = 0.35
 NAVIGATION_STATION_CORRECTION_LIMIT = 2
-# The cabinet operator takes over at 0.15 m / 0.15 rad.  Keep a positioning
-# margin at the Web-to-operator handoff instead of accepting a pose exactly on
-# that boundary; Nav2's regular terminal verification remains slightly wider.
-NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.12
-NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.15
+# The cabinet operator's docking controller takes over after handoff and
+# refines the pose to its own tighter tolerances (0.015 m / 0.10 rad).
+# The handoff tolerances must accept Nav2's actual stopping accuracy so
+# that navigation can succeed; the docking phase then narrows the gap.
+NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.15
+NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.25
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
 TASK_MONITOR_PERIOD_SEC = 0.10
