@@ -257,6 +257,11 @@ if [ "$GAZEBO_ENABLED" = "true" ]; then
     _require_file "$SIMULATION_WORLD_PATH"
 fi
 
+# ── ROS 域隔离 ─────────────────────────────────────────────────────
+# 局域网内可能有其他 ROS 2 / Gazebo 仿真，使用独立的 ROS_DOMAIN_ID 避免
+# DDS 流量互相干扰。可通过环境变量覆盖。
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"

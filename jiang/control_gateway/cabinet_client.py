@@ -1100,14 +1100,14 @@ class CabinetClient(Node):
                 f"Unsupported cabinet control: {control_id}.",
                 {"control_id": control_id},
             )
-        required_support = self.COMMAND_SUPPORT[command_code]
-        if int(control.get("supported_commands", 0)) & required_support == 0:
-            return (
-                "unsupported_command",
-                f"Control {control_id} does not support command "
-                f"{self.COMMAND_NAMES[command_code]}.",
-                {},
-            )
+        # NOTE: We intentionally do NOT reject ``unsupported_command`` here.
+        # When the command does not match the control's ``supported_commands``
+        # bitmask, the request is forwarded to the C++ action server which
+        # performs real-time planning validation and returns a structured
+        # ``UNSUPPORTED_COMMAND`` failure with diagnostic details.  This
+        # ensures every reachable task goes through simulation testing before
+        # reporting failure, rather than being rejected outright at the Python
+        # layer.
         if command_code == OperateCabinetControl.Goal.COMMAND_SET_STATE:
             if target_state is None:
                 return (

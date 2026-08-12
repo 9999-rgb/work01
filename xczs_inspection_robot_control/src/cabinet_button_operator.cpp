@@ -1261,51 +1261,13 @@ private:
     const rclcpp_action::GoalUUID & uuid,
     const std::shared_ptr<const OperateCabinetControl::Goal> goal)
   {
+    // Only reject when the control itself is unknown.  Command-level
+    // validation (type mismatch, unsupported command, bad target) is
+    // deferred to ``execute_operate`` so that the action server can run
+    // its full planning-validation path and return a structured failure
+    // with diagnostic details, rather than silently rejecting the goal.
     const auto control = find_button(goal->control_id);
     if (!control) {
-      return rclcpp_action::GoalResponse::REJECT;
-    }
-    const bool is_button = control->control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
-    bool command_valid = false;
-    if (is_button) {
-      command_valid = goal->command ==
-        OperateCabinetControl::Goal::COMMAND_PRESS;
-    } else {
-      command_valid = goal->command ==
-        OperateCabinetControl::Goal::COMMAND_SET_STATE ||
-        goal->command ==
-        OperateCabinetControl::Goal::COMMAND_SET_POSITION ||
-        goal->command == OperateCabinetControl::Goal::COMMAND_TOGGLE;
-      if (goal->command ==
-        OperateCabinetControl::Goal::COMMAND_SET_STATE)
-      {
-        command_valid = std::find(
-          control->state_ids.begin(), control->state_ids.end(),
-          goal->target_state) != control->state_ids.end();
-      } else if (goal->command ==
-        OperateCabinetControl::Goal::COMMAND_SET_POSITION)
-      {
-        command_valid = goal->use_target_position &&
-          std::isfinite(goal->target_position) &&
-          goal->target_position >= control->min_position &&
-          goal->target_position <= control->max_position &&
-          std::any_of(
-          control->state_positions.begin(), control->state_positions.end(),
-          [this, &goal](double preset) {
-            return std::abs(preset - goal->target_position) <=
-            target_tolerance_;
-          });
-      } else if (goal->command ==
-        OperateCabinetControl::Goal::COMMAND_TOGGLE)
-      {
-        command_valid = control->state_ids.size() >= 2U;
-      }
-    }
-    if (!command_valid) {
-      RCLCPP_WARN(
-        get_logger(), "Rejected unsupported operation for '%s'.",
-        goal->control_id.c_str());
       return rclcpp_action::GoalResponse::REJECT;
     }
     bool expected = false;
@@ -1760,6 +1722,81 @@ private:
       }
       is_button = control->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+      // Command-level validation: check that the command is compatible with
+      // the control type and that its parameters are valid.  This runs inside
+      // the accepted goal so that the caller receives a structured failure
+      // with diagnostic details instead of a silent goal rejection.
+      {
+        bool command_valid = false;
+        std::string command_reason;
+        if (is_button) {
+          command_valid = goal_handle->get_goal()->command ==
+            OperateCabinetControl::Goal::COMMAND_PRESS;
+          if (!command_valid) {
+            command_reason = "Buttons only support the 'press' command.";
+          }
+        } else {
+          const auto cmd = goal_handle->get_goal()->command;
+          if (cmd == OperateCabinetControl::Goal::COMMAND_SET_STATE) {
+            command_valid = std::find(
+              control->state_ids.begin(), control->state_ids.end(),
+              goal_handle->get_goal()->target_state) !=
+              control->state_ids.end();
+            if (!command_valid) {
+              command_reason = "target_state '" +
+                goal_handle->get_goal()->target_state +
+                "' is not in the control's state list.";
+            }
+          } else if (cmd ==
+            OperateCabinetControl::Goal::COMMAND_SET_POSITION)
+          {
+            command_valid = goal_handle->get_goal()->use_target_position &&
+              std::isfinite(goal_handle->get_goal()->target_position) &&
+              goal_handle->get_goal()->target_position >=
+              control->min_position &&
+              goal_handle->get_goal()->target_position <=
+              control->max_position &&
+              std::any_of(
+              control->state_positions.begin(),
+              control->state_positions.end(),
+              [this, &goal_handle](double preset) {
+                return std::abs(
+                  preset - goal_handle->get_goal()->target_position) <=
+                  target_tolerance_;
+              });
+            if (!command_valid) {
+              command_reason = "target_position is out of range or does " \
+                "not match a configured detent.";
+            }
+          } else if (cmd == OperateCabinetControl::Goal::COMMAND_TOGGLE) {
+            command_valid = control->state_ids.size() >= 2U;
+            if (!command_valid) {
+              command_reason = "Toggle requires at least 2 states.";
+            }
+          } else {
+            command_reason = "Unknown command code " +
+              std::to_string(static_cast<int>(cmd)) + ".";
+          }
+        }
+        if (!command_valid) {
+          result->success = false;
+          result->error_code =
+            OperateCabinetControl::Result::UNSUPPORTED_COMMAND;
+          result->message = "Command not valid for control '" +
+            control->id + "': " + command_reason;
+          result->validation_performed = true;
+          result->operation_executed = false;
+          result->diagnostic_stage = "command_validation";
+          result->policy_reason = command_reason;
+          RCLCPP_WARN(
+            get_logger(), "%s", result->message.c_str());
+          finish_operate_goal_noexcept(goal_handle, result, false);
+          clear_active_goal(
+            ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+          operation_active_.store(false);
+          return;
+        }
+      }
       if (is_button) {
         const double requested_force = goal_handle->get_goal()->force == 0.0 ?
           control->default_force : goal_handle->get_goal()->force;
