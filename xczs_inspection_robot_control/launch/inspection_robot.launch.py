@@ -210,6 +210,7 @@ def _read_robot_adapter_interfaces(path):
         "navigation_frame",
         "joint_state_topic",
     )
+    optional = ("pose_parent_frame",)
     interfaces = {}
     for field in required:
         value = parameters.get(field)
@@ -224,6 +225,10 @@ def _read_robot_adapter_interfaces(path):
         raise RuntimeError("navigation_frame must be a relative TF frame.")
     if not interfaces["joint_state_topic"].startswith("/"):
         raise RuntimeError("joint_state_topic must be an absolute ROS name.")
+    for field in optional:
+        value = parameters.get(field)
+        if isinstance(value, str) and value.strip():
+            interfaces[field] = value.strip()
     return interfaces
 
 
@@ -464,9 +469,10 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                         "pose_source": LaunchConfiguration(
                             "cabinet_pose_source"
                         ),
-                        "parent_frame": adapter_interfaces[
-                            "planning_frame"
-                        ],
+                        "parent_frame": adapter_interfaces.get(
+                            "pose_parent_frame",
+                            adapter_interfaces["planning_frame"],
+                        ),
                         "cabinet_frame": cabinet_frame,
                         "static_pose.x": instance["x"],
                         "static_pose.y": instance["y"],

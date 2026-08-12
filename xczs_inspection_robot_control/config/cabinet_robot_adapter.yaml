@@ -2,7 +2,10 @@
   ros__parameters:
     # 跨节点共享的机器人接口契约。更换机器人时，Web、Nav2 路由和
     # 柜体操作节点统一从这里取得坐标系及 ROS 接口，避免各自硬编码。
-    planning_frame: map
+    planning_frame: odom
+    # 柜体 TF 发布的父坐标系。使用 map 帧可避免 AMCL 修正 map→odom
+    # 变换时柜体位置漂移。MoveIt 规划场景仍使用 planning_frame (odom)。
+    pose_parent_frame: map
     # Web 前后控制只暴露一个标量；当前全向底盘的模型前向为 +Y。
     manual_linear_axis: y
     # Nav2 使用常规 +X 前向，路由到当前 +Y 前向模型时旋转速度坐标。

@@ -447,10 +447,10 @@ def validate_profile(
         "cabinet pose",
     )
     pose_parent = _string(pose.get("parent_frame"), "parent_frame")
-    if pose_parent != adapter.planning_frame:
+    if pose_parent != adapter.pose_parent_frame:
         raise ProfileContractError(
             f"cabinet pose parent_frame '{pose_parent}' does not match robot "
-            f"planning_frame '{adapter.planning_frame}'."
+            f"pose_parent_frame '{adapter.pose_parent_frame}'."
         )
 
     for cabinet in inventory:

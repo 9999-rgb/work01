@@ -259,7 +259,7 @@ class RobotAdapterTest(unittest.TestCase):
 
         adapter = load(path)
 
-        self.assertEqual("map", adapter.planning_frame)
+        self.assertEqual("odom", adapter.planning_frame)
         self.assertEqual("map", adapter.navigation_frame)
         self.assertEqual("y", adapter.manual_linear_axis)
         self.assertEqual(6, len(adapter.arm_joint_names))

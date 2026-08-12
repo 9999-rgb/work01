@@ -107,6 +107,7 @@ class RobotAdapterConfig:
     """Immutable ROS/TF interface contract for one robot adapter."""
 
     planning_frame: str
+    pose_parent_frame: str
     manual_linear_axis: str
     navigation_velocity_yaw_offset: float
     navigation_frame: str
@@ -590,8 +591,15 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
             gripper_status_topic,
             "gripper_controller_status_topic",
         )
+    pose_parent_frame_raw = parameters.get("pose_parent_frame")
+    pose_parent_frame = (
+        _relative_name(pose_parent_frame_raw, "pose_parent_frame")
+        if pose_parent_frame_raw
+        else planning_frame
+    )
     return RobotAdapterConfig(
         planning_frame=planning_frame,
+        pose_parent_frame=pose_parent_frame,
         manual_linear_axis=manual_linear_axis_value,
         navigation_velocity_yaw_offset=_finite_number(
             _required(
