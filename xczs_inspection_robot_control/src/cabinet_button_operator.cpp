@@ -2684,48 +2684,75 @@ private:
               "' has no explicit robot-adapter navigation station.");
     }
     const auto & station = *control.navigation_station;
-    const tf2::Transform cabinet = resolve_cabinet_transform();
+
+    // Resolve the cabinet transform in the navigation frame (typically
+    // "map") so the station position is authoritative for Nav2 and not
+    // subject to AMCL map→odom drift.  Then transform to the planning
+    // frame for MoveIt.
+    const std::string nav_frame =
+      station.frame_id.empty() ? navigation_frame_ : station.frame_id;
+    tf2::Transform cabinet_nav;
+    try {
+      const auto tf = transform_buffer_->lookupTransform(
+        nav_frame, cabinet_frame_, tf2::TimePointZero,
+        tf2::durationFromSec(system_wait_timeout_));
+      tf2::fromMsg(tf.transform, cabinet_nav);
+      cabinet_nav.getRotation().normalize();
+    } catch (const tf2::TransformException & error) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Cabinet TF '" + nav_frame + "' -> '" + cabinet_frame_ +
+              "' is unavailable for staging pose: " + error.what());
+    }
+
     const tf2::Vector3 local_position = station.local_anchor +
       station.outward_axis * station.standoff;
-    const tf2::Vector3 planning_position = cabinet * local_position;
-    tf2::Vector3 planning_outward = tf2::quatRotate(
-      cabinet.getRotation(), station.outward_axis);
+    const tf2::Vector3 nav_position = cabinet_nav * local_position;
+    tf2::Vector3 nav_outward = tf2::quatRotate(
+      cabinet_nav.getRotation(), station.outward_axis);
     const double horizontal_norm = std::hypot(
-      planning_outward.x(), planning_outward.y());
+      nav_outward.x(), nav_outward.y());
     if (!std::isfinite(horizontal_norm) || horizontal_norm <= 1.0e-9) {
       throw OperationError(
               PressCabinetButton::Result::INTERNAL_ERROR,
               "Control '" + control.id +
               "' navigation station has no horizontal outward direction.");
     }
-    planning_outward /= planning_outward.length();
+    nav_outward /= nav_outward.length();
 
+    // Build the navigation pose in the nav frame.
     ControlStagingPoses poses;
+    poses.navigation_pose.header.frame_id = nav_frame;
+    poses.navigation_pose.pose.position.x = nav_position.x();
+    poses.navigation_pose.pose.position.y = nav_position.y();
+    poses.navigation_pose.pose.position.z = nav_position.z();
+    tf2::Quaternion nav_rotation;
+    nav_rotation.setRPY(
+      0.0, 0.0,
+      std::atan2(-nav_outward.y(), -nav_outward.x()) +
+      station.base_yaw_offset);
+    nav_rotation.normalize();
+    poses.navigation_pose.pose.orientation = to_message(nav_rotation);
+
+    // Build the planning pose in the planning frame (for MoveIt).
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const tf2::Vector3 planning_position = cabinet * local_position;
+    tf2::Vector3 planning_outward = tf2::quatRotate(
+      cabinet.getRotation(), station.outward_axis);
+    planning_outward.normalize();
+
     poses.planning_pose.header.frame_id = planning_frame_;
     poses.planning_pose.pose.position.x = planning_position.x();
     poses.planning_pose.pose.position.y = planning_position.y();
     poses.planning_pose.pose.position.z = planning_position.z();
-    tf2::Quaternion navigation_rotation;
-    navigation_rotation.setRPY(
+    tf2::Quaternion planning_rotation;
+    planning_rotation.setRPY(
       0.0, 0.0,
       std::atan2(-planning_outward.y(), -planning_outward.x()) +
       station.base_yaw_offset);
-    navigation_rotation.normalize();
-    poses.planning_pose.pose.orientation = to_message(navigation_rotation);
-    poses.navigation_pose = poses.planning_pose;
-    if (station.frame_id != planning_frame_) {
-      try {
-        poses.navigation_pose = transform_buffer_->transform(
-          poses.planning_pose, station.frame_id,
-          tf2::durationFromSec(system_wait_timeout_));
-      } catch (const tf2::TransformException & error) {
-        throw OperationError(
-                PressCabinetButton::Result::NOT_READY,
-                "Could not transform the configured navigation station for '" +
-                control.id + "' from " + planning_frame_ + " to " +
-                station.frame_id + ": " + error.what());
-      }
-    }
+    planning_rotation.normalize();
+    poses.planning_pose.pose.orientation = to_message(planning_rotation);
+
     return poses;
   }
 
