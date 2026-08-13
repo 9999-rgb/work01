@@ -222,6 +222,7 @@ class _Node:
 
     def map_snapshot(self) -> Dict[str, Any]:
         return {
+            "frame_id": "map",
             "width": 100,
             "height": 100,
             "resolution": 0.1,

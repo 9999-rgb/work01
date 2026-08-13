@@ -18,6 +18,9 @@ import yaml
 
 
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_RELATIVE_TOPIC_PATTERN = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
 _POSE_FIELDS = ("x", "y", "z", "roll", "pitch", "yaw")
 
 
@@ -315,6 +318,7 @@ class CabinetInventory:
         self,
         instances: Iterable[CabinetInstance],
         station_spec: NavigationStationSpec,
+        pose_valid_topic: str = "pose_valid",
     ) -> None:
         by_name: Dict[str, CabinetInstance] = {}
         ordered = []
@@ -330,6 +334,14 @@ class CabinetInventory:
         self._instances = tuple(ordered)
         self._by_name = by_name
         self._station_spec = station_spec
+        if (
+            not isinstance(pose_valid_topic, str)
+            or _RELATIVE_TOPIC_PATTERN.fullmatch(pose_valid_topic.strip()) is None
+        ):
+            raise InventoryError(
+                "pose_valid_topic must be a non-empty relative ROS topic."
+            )
+        self._pose_valid_topic = pose_valid_topic.strip()
 
     @classmethod
     def load(
@@ -343,7 +355,8 @@ class CabinetInventory:
         instances = _parse_instances(instance_document)
         station_parameters = _find_navigation_station(scene_document)
         station_spec = NavigationStationSpec.from_mapping(station_parameters)
-        return cls(instances, station_spec)
+        pose_valid_topic = _find_pose_valid_topic(scene_document)
+        return cls(instances, station_spec, pose_valid_topic)
 
     def __len__(self) -> int:
         return len(self._instances)
@@ -360,6 +373,11 @@ class CabinetInventory:
             return self._by_name[name]
         except (KeyError, TypeError) as error:
             raise CabinetNotFoundError(str(name)) from error
+
+    def pose_valid_topic_for(self, name: str) -> str:
+        """Return the authoritative, instance-scoped pose-validity topic."""
+        instance = self.get(name)
+        return f"{instance.namespace}/{self._pose_valid_topic}"
 
     def list_cabinets(self, *, include_station: bool = True) -> list[Dict[str, Any]]:
         cabinets = []
@@ -609,6 +627,46 @@ def _find_navigation_station(document: Mapping[str, Any]) -> Mapping[str, Any]:
             "cabinet_scene.yaml defines navigation_station for multiple nodes."
         )
     return matches[0]
+
+
+def _find_pose_valid_topic(document: Mapping[str, Any]) -> str:
+    """Find the pose-validity topic beside the scene navigation contract."""
+    parameter_candidates = []
+    direct_topic = document.get("pose_valid_topic")
+    direct_parameters = document.get("ros__parameters")
+    if isinstance(direct_parameters, Mapping):
+        parameter_candidates.append(direct_parameters)
+    for node_config in document.values():
+        if not isinstance(node_config, Mapping):
+            continue
+        parameters = node_config.get("ros__parameters")
+        if (
+            isinstance(parameters, Mapping)
+            and "navigation_station" in parameters
+        ):
+            parameter_candidates.append(parameters)
+
+    raw_values = ([] if direct_topic is None else [direct_topic]) + [
+        parameters["pose_valid_topic"]
+        for parameters in parameter_candidates
+        if "pose_valid_topic" in parameters
+    ]
+    if any(not isinstance(value, str) for value in raw_values):
+        raise InventoryError("pose_valid_topic must be a string.")
+    values = {value.strip() for value in raw_values}
+    if not values:
+        # Compatibility for older standalone profiles.
+        return "pose_valid"
+    if len(values) != 1:
+        raise InventoryError(
+            "cabinet_scene.yaml defines conflicting pose_valid_topic values."
+        )
+    value = next(iter(values))
+    if _RELATIVE_TOPIC_PATTERN.fullmatch(value) is None:
+        raise InventoryError(
+            "pose_valid_topic must be a non-empty relative ROS topic."
+        )
+    return value
 
 
 def _is_finite_number(value: Any) -> bool:

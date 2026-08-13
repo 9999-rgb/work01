@@ -28,6 +28,26 @@ def _source_block(start_marker: str, end_marker: str) -> str:
     return source[start:end]
 
 
+class MonitorSecurityContractTest(unittest.TestCase):
+    def test_dynamic_content_never_uses_html_injection_sinks(self) -> None:
+        source = _inline_script()
+        for sink in (
+            ".innerHTML",
+            ".outerHTML",
+            "insertAdjacentHTML",
+            "document.write",
+        ):
+            self.assertNotIn(sink, source)
+
+    def test_stream_urls_and_sensor_health_carry_authentication(self) -> None:
+        source = _inline_script()
+        self.assertIn("url.searchParams.set('token', authToken)", source)
+        self.assertIn("/sensors/health", source)
+        self.assertIn("headers: authHeaders()", source)
+        self.assertIn("sessionStorage.getItem('xczs_token')", source)
+        self.assertIn("if (authToken) connectSensorStreams()", source)
+
+
 @unittest.skipUnless(shutil.which("node"), "Node.js is required for Web tests")
 class MonitorWebContractTest(unittest.TestCase):
     maxDiff = None
@@ -489,7 +509,7 @@ class MonitorWebContractTest(unittest.TestCase):
               }}]);
               assert.equal(snapshots[0].type, 'reset');
               assert.equal(refreshed, 1);
-              assert.match(messages[0].message, /机器人 \+ cabinet_b/);
+              assert.match(messages[0].message, /机器人 [+] cabinet_b/);
 
               cabinetResetAvailable = false;
               await resetCabinetControls();

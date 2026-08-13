@@ -46,6 +46,7 @@ class CabinetInventoryTest(unittest.TestCase):
         self,
         instances: Dict[str, Any],
         station: Dict[str, Any] | None = None,
+        pose_valid_topic: str | None = None,
     ) -> CabinetInventory:
         instances_path = self.directory / "cabinet_instances.yaml"
         scene_path = self.directory / "cabinet_scene.yaml"
@@ -60,14 +61,17 @@ class CabinetInventoryTest(unittest.TestCase):
             "base_yaw_offset": 0.0,
             "frame_id": "map",
         }
+        scene_parameters: Dict[str, Any] = {
+            "frame_parts": {},
+            "navigation_station": station,
+        }
+        if pose_valid_topic is not None:
+            scene_parameters["pose_valid_topic"] = pose_valid_topic
         scene_path.write_text(
             yaml.safe_dump(
                 {
                     "/**/xczs_cabinet_planning_scene": {
-                        "ros__parameters": {
-                            "frame_parts": {},
-                            "navigation_station": station,
-                        }
+                        "ros__parameters": scene_parameters
                     }
                 },
                 sort_keys=False,
@@ -112,6 +116,59 @@ class CabinetInventoryTest(unittest.TestCase):
         listed = inventory.list_cabinets()
         self.assertEqual("cabinet_a", listed[0]["name"])
         self.assertEqual("map", listed[0]["navigation_station"]["frame_id"])
+
+    def test_exposes_scoped_pose_validity_topic(self) -> None:
+        inventory = self._load(
+            {"instances": [self._instance()]},
+            pose_valid_topic="status/pose_valid",
+        )
+
+        self.assertEqual(
+            "/xczs/cabinet/cabinet_a/status/pose_valid",
+            inventory.pose_valid_topic_for("cabinet_a"),
+        )
+
+    def test_reads_pose_validity_topic_from_direct_scene_layout(self) -> None:
+        instances_path = self.directory / "direct_instances.yaml"
+        scene_path = self.directory / "direct_scene.yaml"
+        instances_path.write_text(
+            yaml.safe_dump({"instances": [self._instance()]}),
+            encoding="utf-8",
+        )
+        scene_path.write_text(
+            yaml.safe_dump(
+                {
+                    "navigation_station": {
+                        "local_anchor": [0.0, 0.0, 0.0],
+                        "outward_axis": [1.0, 0.0, 0.0],
+                        "standoff": 1.0,
+                        "frame_id": "map",
+                    },
+                    "pose_valid_topic": "status/pose_valid",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        inventory = CabinetInventory.load(instances_path, scene_path)
+
+        self.assertEqual(
+            "/xczs/cabinet/cabinet_a/status/pose_valid",
+            inventory.pose_valid_topic_for("cabinet_a"),
+        )
+
+    def test_rejects_invalid_pose_validity_topic(self) -> None:
+        with self.assertRaisesRegex(InventoryError, "relative ROS topic"):
+            self._load(
+                {"instances": [self._instance()]},
+                pose_valid_topic="/absolute/pose_valid",
+            )
+
+        with self.assertRaisesRegex(InventoryError, "must be a string"):
+            self._load(
+                {"instances": [self._instance()]},
+                pose_valid_topic=42,  # type: ignore[arg-type]
+            )
 
     def test_control_station_replaces_common_geometry(self) -> None:
         inventory = self._load({"instances": [self._instance()]})

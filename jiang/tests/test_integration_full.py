@@ -564,5 +564,11 @@ def test_docs_protection() -> None:
             c.get("/docs", params={"token": "wrong"}).status_code == 403
         ), "wrong token should 403"
         assert (
-            c.get("/openapi.json").status_code == 200
-        ), "openapi.json always public"
+            c.get("/openapi.json").status_code == 403
+        ), "openapi.json must be protected together with Swagger UI"
+        assert (
+            c.get("/openapi.json", params={"token": "docs-secret"}).status_code
+            == 200
+        ), "correct token should expose the OpenAPI schema"
+        docs = c.get("/docs", params={"token": "docs-secret"}).text
+        assert "/openapi.json?token=docs-secret" in docs

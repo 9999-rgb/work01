@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Request, status
@@ -11,7 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import ROLE_ADMIN, User
 from app.auth.service import InvalidTokenError, decode_access_token
-from app.database.engine import get_db
+from app.database.engine import async_session, get_db
+
+logger = logging.getLogger(__name__)
+STREAM_AUTH_RECHECK_SECONDS = 5.0
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -42,9 +47,20 @@ async def _resolve_user(
             detail="缺少认证凭证。请在 Authorization: Bearer <token> 中携带登录 token。",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    return await resolve_active_user(credentials.credentials, session)
+
+
+async def resolve_active_user(token: str, session: AsyncSession) -> User:
+    """校验 token 并从数据库重新解析启用状态的用户。
+
+    不信任 JWT 中缓存的角色或启用状态，因此删除、禁用和角色
+    变更在下一个请求立即生效。
+    """
     try:
-        payload = decode_access_token(credentials.credentials)
+        payload = decode_access_token(token)
         user_id = int(payload["sub"])
+        if user_id <= 0:
+            raise ValueError("user id must be positive")
     except (InvalidTokenError, KeyError, TypeError, ValueError):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -57,8 +73,59 @@ async def _resolve_user(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户不存在或已被禁用。",
+            headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+class ActiveTokenChecker:
+    """为长连接定期重验 token 过期时间和数据库用户状态。"""
+
+    def __init__(
+        self,
+        *,
+        token: str | None,
+        user_id: int | None,
+        enabled: bool,
+        initially_validated: bool = True,
+        recheck_seconds: float = STREAM_AUTH_RECHECK_SECONDS,
+    ) -> None:
+        self._token = token
+        self._user_id = user_id
+        self._enabled = enabled
+        self.recheck_seconds = max(0.0, recheck_seconds)
+        self._next_check = (
+            time.monotonic() + self.recheck_seconds
+            if initially_validated and enabled
+            else 0.0
+        )
+
+    @classmethod
+    def from_request(cls, request: Request) -> "ActiveTokenChecker":
+        return cls(
+            token=getattr(request.state, "auth_token", None),
+            user_id=getattr(request.state, "auth_user_id", None),
+            enabled=bool(getattr(request.app.state, "auth_enabled", True)),
+        )
+
+    async def is_valid(self) -> bool:
+        if not self._enabled:
+            return True
+        now = time.monotonic()
+        if now < self._next_check:
+            return True
+        if not self._token or self._user_id is None:
+            return False
+        self._next_check = now + self.recheck_seconds
+        try:
+            async with async_session() as session:
+                user = await resolve_active_user(self._token, session)
+        except HTTPException:
+            return False
+        except Exception:  # noqa: BLE001 - 长连接鉴权必须 fail closed
+            logger.exception("长连接用户状态重验失败")
+            return False
+        return user.id == self._user_id
 
 
 async def get_current_user(

@@ -9,12 +9,15 @@
 from __future__ import annotations
 
 import json
+import os
 import queue
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
+from unittest.mock import patch
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(JIANG_DIR))
@@ -264,6 +267,29 @@ class _FakeControlServer:
         return {"status": "ok"}
 
 
+class _FakeSensorState:
+    def health(self) -> Dict[str, Any]:
+        return {
+            "camera": {"ready": True, "age_seconds": 0.1},
+            "lidar": {"ready": True, "age_seconds": 0.2},
+        }
+
+    def camera_snapshot(self):
+        return 1, b"\xff\xd8\xff\xd9", {"frame_id": "camera_frame"}
+
+    def lidar_snapshot(self):
+        payload = {"ranges": [1.0], "sample_count": 1}
+        return 1, payload, json.dumps(payload)
+
+
+class _FakeZenohSource:
+    def add_listener(self, key: str, callback: Any) -> None:
+        del key, callback
+
+    def remove_listener(self, key: str, callback: Any) -> None:
+        del key, callback
+
+
 def _build_app(fake: _FakeControlServer):
     from app.main import create_app
 
@@ -289,6 +315,130 @@ class FastAPIAppContractTest(unittest.TestCase):
         self.assertEqual(data["status"], "ok")
         self.assertEqual(data["cabinet_count"], 3)
         self.assertEqual(self.fake.health_calls, 1)
+
+    def test_sensor_health_has_a_distinct_path(self) -> None:
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(
+            control_server=self.fake,
+            sensor_state=_FakeSensorState(),
+            enable_db=False,
+            auth_enabled=False,
+        )
+        client = TestClient(app)
+        self.assertEqual(client.get("/health").json()["status"], "ok")
+        sensor_health = client.get("/sensors/health")
+        self.assertEqual(sensor_health.status_code, 200)
+        self.assertTrue(sensor_health.json()["camera"]["ready"])
+        self.assertEqual(
+            client.get("/sensors").json()["endpoints"]["health"],
+            "/sensors/health",
+        )
+
+    def test_lidar_websocket_accepts_lan_same_origin(self) -> None:
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(
+            control_server=self.fake,
+            sensor_state=_FakeSensorState(),
+            enable_db=False,
+            auth_enabled=False,
+        )
+        client = TestClient(app)
+        with client.websocket_connect(
+            "/lidar/ws",
+            headers={
+                "Host": "192.168.1.20:8090",
+                "Origin": "http://192.168.1.20:8090",
+            },
+        ) as websocket:
+            self.assertEqual(json.loads(websocket.receive_text())["sample_count"], 1)
+
+    def test_cors_uses_configured_origin_and_all_api_methods(self) -> None:
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(
+            control_server=self.fake,
+            enable_db=False,
+            auth_enabled=False,
+            allowed_origins=["https://console.example"],
+        )
+        client = TestClient(app)
+        response = client.options(
+            "/users/1",
+            headers={
+                "Origin": "https://console.example",
+                "Access-Control-Request-Method": "PATCH",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers["access-control-allow-origin"],
+            "https://console.example",
+        )
+        methods = response.headers["access-control-allow-methods"]
+        self.assertIn("PATCH", methods)
+        self.assertIn("DELETE", methods)
+
+        denied = client.options(
+            "/users/1",
+            headers={
+                "Origin": "https://attacker.example",
+                "Access-Control-Request-Method": "DELETE",
+            },
+        )
+        self.assertEqual(denied.status_code, 400)
+        self.assertNotIn("access-control-allow-origin", denied.headers)
+
+    def test_zenoh_sse_rejects_wildcard_key_over_http(self) -> None:
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        app = create_app(
+            control_server=self.fake,
+            zenoh_source=_FakeZenohSource(),
+            enable_db=False,
+            auth_enabled=False,
+        )
+        response = TestClient(app).get("/sse/xczs/%2A")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("规范 ROS 话题", response.json()["error"])
+
+    def test_static_allowlist_only_serves_monitor_page(self) -> None:
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        with tempfile.TemporaryDirectory(prefix="xczs_static_test_") as tmp:
+            static_dir = Path(tmp)
+            (static_dir / "monitor.html").write_text(
+                "<!doctype html><title>monitor</title>",
+                encoding="utf-8",
+            )
+            (static_dir / "private.py").write_text(
+                "SECRET = 'must-not-be-served'",
+                encoding="utf-8",
+            )
+            app = create_app(
+                control_server=self.fake,
+                enable_db=False,
+                auth_enabled=False,
+                static_dir=static_dir,
+            )
+            client = TestClient(app)
+            self.assertEqual(client.get("/").status_code, 200)
+            monitor = client.get("/monitor.html")
+            self.assertEqual(monitor.status_code, 200)
+            self.assertEqual(monitor.headers["cache-control"], "no-store")
+            self.assertEqual(monitor.headers["x-frame-options"], "DENY")
+            self.assertIn(
+                "frame-ancestors 'none'",
+                monitor.headers["content-security-policy"],
+            )
+            self.assertEqual(client.get("/private.py").status_code, 404)
 
     def test_cabinets(self) -> None:
         response = self.client.get("/cabinets")
@@ -538,6 +688,166 @@ class FastAPIAuthGateTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
 
+    def test_sensor_and_zenoh_streams_require_token(self) -> None:
+        self.assertEqual(self.client.get("/sensors/health").status_code, 401)
+        self.assertEqual(self.client.get("/camera.jpg").status_code, 401)
+        self.assertEqual(self.client.get("/sse/xczs/odom").status_code, 401)
+
+        from starlette.websockets import WebSocketDisconnect
+
+        with self.assertRaises(WebSocketDisconnect) as raised:
+            with self.client.websocket_connect(
+                "/lidar/ws",
+                headers={"Origin": "http://localhost:8090"},
+            ):
+                pass
+        self.assertEqual(raised.exception.code, 4401)
+
+    def test_auth_401_keeps_cors_headers(self) -> None:
+        for authorization in (None, "Bearer invalid.jwt.token"):
+            headers = {"Origin": "http://localhost:8090"}
+            if authorization:
+                headers["Authorization"] = authorization
+            response = self.client.get("/robot/capabilities", headers=headers)
+            self.assertEqual(response.status_code, 401)
+            self.assertEqual(
+                response.headers.get("access-control-allow-origin"),
+                "http://localhost:8090",
+            )
+
+    def test_query_token_is_rejected_for_rest_control_routes(self) -> None:
+        token = self._login()
+        response = self.client.get(
+            "/robot/capabilities",
+            params={"token": token},
+        )
+        self.assertEqual(response.status_code, 401)
+
+        header_response = self.client.get(
+            "/robot/capabilities",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        self.assertEqual(header_response.status_code, 200)
+
+    def test_lidar_websocket_rejects_missing_and_untrusted_origin(self) -> None:
+        from starlette.websockets import WebSocketDisconnect
+
+        token = self._login()
+        for headers in ({}, {"Origin": "https://attacker.example"}):
+            with self.assertRaises(WebSocketDisconnect) as raised:
+                with self.client.websocket_connect(
+                    f"/lidar/ws?token={token}",
+                    headers=headers,
+                ):
+                    pass
+            self.assertEqual(raised.exception.code, 4403)
+
+    def test_disabled_and_deleted_user_tokens_are_rejected(self) -> None:
+        import asyncio
+
+        from app.auth.deps import ActiveTokenChecker
+
+        admin_token = self._login()
+        headers = {"Authorization": f"Bearer {admin_token}"}
+
+        disabled = self.client.post(
+            "/users",
+            json={
+                "username": "disabled_token_user",
+                "password": "operator-pass",
+                "role": "operator",
+            },
+            headers=headers,
+        )
+        self.assertEqual(disabled.status_code, 201)
+        disabled_token = self.client.post(
+            "/auth/login",
+            json={
+                "username": "disabled_token_user",
+                "password": "operator-pass",
+            },
+        ).json()["access_token"]
+        self.assertEqual(
+            self.client.patch(
+                f"/users/{disabled.json()['id']}",
+                json={"is_active": False},
+                headers=headers,
+            ).status_code,
+            200,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/robot/capabilities",
+                headers={"Authorization": f"Bearer {disabled_token}"},
+            ).status_code,
+            401,
+        )
+        self.assertFalse(
+            asyncio.run(
+                ActiveTokenChecker(
+                    token=disabled_token,
+                    user_id=disabled.json()["id"],
+                    enabled=True,
+                    initially_validated=False,
+                    recheck_seconds=0.0,
+                ).is_valid()
+            )
+        )
+
+        deleted = self.client.post(
+            "/users",
+            json={
+                "username": "deleted_token_user",
+                "password": "operator-pass",
+                "role": "operator",
+            },
+            headers=headers,
+        )
+        self.assertEqual(deleted.status_code, 201)
+        deleted_token = self.client.post(
+            "/auth/login",
+            json={
+                "username": "deleted_token_user",
+                "password": "operator-pass",
+            },
+        ).json()["access_token"]
+        self.assertEqual(
+            self.client.delete(
+                f"/users/{deleted.json()['id']}",
+                headers=headers,
+            ).status_code,
+            204,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/robot/capabilities",
+                headers={"Authorization": f"Bearer {deleted_token}"},
+            ).status_code,
+            401,
+        )
+
+    def test_last_admin_cannot_be_demoted_or_disabled(self) -> None:
+        login = self.client.post(
+            "/auth/login",
+            json={"username": "admin", "password": _ADMIN_PASS},
+        )
+        token = login.json()["access_token"]
+        admin_id = login.json()["user"]["id"]
+        headers = {"Authorization": f"Bearer {token}"}
+
+        demotion = self.client.patch(
+            f"/users/{admin_id}",
+            json={"role": "operator"},
+            headers=headers,
+        )
+        self.assertEqual(demotion.status_code, 409)
+        disabled = self.client.patch(
+            f"/users/{admin_id}",
+            json={"is_active": False},
+            headers=headers,
+        )
+        self.assertEqual(disabled.status_code, 409)
+
     def test_wrong_password_rejected(self) -> None:
         response = self.client.post(
             "/auth/login",
@@ -591,6 +901,200 @@ class FastAPIAuthGateTest(unittest.TestCase):
             json={"username": "admin", "password": _ADMIN_PASS},
         )
         return response.json()["access_token"]
+
+
+class SecurityConfigUnitTest(unittest.TestCase):
+    def test_default_jwt_secret_is_random_and_not_the_known_legacy_value(self) -> None:
+        from app.config import Settings
+
+        with patch.dict(os.environ, {}, clear=True):
+            first = Settings(_env_file=None).secret_key
+            second = Settings(_env_file=None).secret_key
+        self.assertGreaterEqual(len(first), 48)
+        self.assertNotEqual(first, "dev-secret-change-me")
+        self.assertNotEqual(first, second)
+
+    def test_weak_jwt_configuration_is_rejected(self) -> None:
+        from pydantic import ValidationError
+        from app.config import Settings
+
+        with self.assertRaises(ValidationError):
+            Settings(secret_key="too-short", _env_file=None)
+        with self.assertRaises(ValidationError):
+            Settings(
+                secret_key="a" * 32,
+                jwt_algorithm="HS512",
+                _env_file=None,
+            )
+
+    def test_zenoh_key_rejects_wildcards_and_malformed_segments(self) -> None:
+        from fastapi import HTTPException
+        from app.sse.router import _normalize_ros_key
+
+        self.assertEqual(
+            _normalize_ros_key("xczs/joint_states/json"),
+            "xczs/joint_states",
+        )
+        for key in (
+            "",
+            "**",
+            "xczs/*",
+            "xczs/$router",
+            "xczs/topic?query",
+            "xczs/topic#fragment",
+            "xczs//odom",
+            "xczs/../odom",
+        ):
+            with self.subTest(key=key), self.assertRaises(HTTPException) as raised:
+                _normalize_ros_key(key)
+            self.assertEqual(raised.exception.status_code, 400)
+
+    def test_lidar_websocket_origin_accepts_lan_same_origin_only(self) -> None:
+        from app.sensors.router import _websocket_origin_allowed
+
+        configured = frozenset({"http://localhost:8090"})
+        self.assertTrue(
+            _websocket_origin_allowed(
+                "http://192.168.1.20:8090",
+                "192.168.1.20:8090",
+                configured,
+            )
+        )
+        self.assertFalse(
+            _websocket_origin_allowed(
+                "https://attacker.example",
+                "192.168.1.20:8090",
+                configured,
+            )
+        )
+        self.assertFalse(
+            _websocket_origin_allowed(None, "192.168.1.20:8090", configured)
+        )
+
+    def test_production_uvicorn_disables_access_log_for_query_tokens(self) -> None:
+        source = (JIANG_DIR / "control_server.py").read_text(encoding="utf-8")
+        self.assertIn("uvicorn.run(", source)
+        self.assertIn("access_log=False", source)
+
+    def test_control_server_origin_defaults_follow_selected_port(self) -> None:
+        import argparse
+        from control_server import _effective_allowed_origins
+
+        args = argparse.Namespace(port=12345, allowed_origins=None)
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(
+                _effective_allowed_origins(args),
+                [
+                    "http://localhost:12345",
+                    "http://127.0.0.1:12345",
+                ],
+            )
+        with patch.dict(
+            os.environ,
+            {"XCZS_ALLOWED_ORIGINS": "https://console.example"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _effective_allowed_origins(args),
+                ["https://console.example"],
+            )
+        args.allowed_origins = ["https://cli.example"]
+        with patch.dict(
+            os.environ,
+            {"XCZS_ALLOWED_ORIGINS": "https://env.example"},
+            clear=True,
+        ):
+            self.assertEqual(
+                _effective_allowed_origins(args),
+                ["https://cli.example"],
+            )
+
+    def test_bootstrap_recovers_without_modifying_existing_users(self) -> None:
+        import asyncio
+
+        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.auth.bootstrap import bootstrap_admin
+        from app.auth.models import User
+        from app.auth.service import hash_password
+        from app.database.base import Base
+
+        async def exercise() -> None:
+            with tempfile.TemporaryDirectory(prefix="xczs_recovery_test_") as tmp:
+                recovery_engine = create_async_engine(
+                    f"sqlite+aiosqlite:///{Path(tmp) / 'recovery.db'}"
+                )
+                session_factory = async_sessionmaker(
+                    recovery_engine,
+                    expire_on_commit=False,
+                )
+                async with recovery_engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+                async with session_factory() as session:
+                    operator = User(
+                        username="recovery_existing_operator",
+                        hashed_password=hash_password("operator-pass"),
+                        role="operator",
+                        is_active=True,
+                    )
+                    disabled_admin = User(
+                        username="recovery_disabled_admin",
+                        hashed_password=hash_password("disabled-pass"),
+                        role="admin",
+                        is_active=False,
+                    )
+                    session.add_all([operator, disabled_admin])
+                    await session.commit()
+
+                    await bootstrap_admin(session)
+
+                    result = await session.execute(
+                        select(User).where(
+                            User.username.in_(
+                                {
+                                    "recovery_existing_operator",
+                                    "recovery_disabled_admin",
+                                }
+                            )
+                        )
+                    )
+                    existing = {user.username: user for user in result.scalars()}
+                    self.assertEqual(
+                        existing["recovery_existing_operator"].role,
+                        "operator",
+                    )
+                    self.assertFalse(
+                        existing["recovery_disabled_admin"].is_active
+                    )
+
+                    active_result = await session.execute(
+                        select(User).where(
+                            User.role == "admin",
+                            User.is_active.is_(True),
+                        )
+                    )
+                    active_admins = list(active_result.scalars())
+                    self.assertEqual(len(active_admins), 1)
+                    self.assertTrue(
+                        active_admins[0].username.startswith("recovery_admin")
+                    )
+
+                    recovery_id = active_admins[0].id
+                    await bootstrap_admin(session)
+                    active_result = await session.execute(
+                        select(User).where(
+                            User.role == "admin",
+                            User.is_active.is_(True),
+                        )
+                    )
+                    self.assertEqual(
+                        [user.id for user in active_result.scalars()],
+                        [recovery_id],
+                    )
+                await recovery_engine.dispose()
+
+        asyncio.run(exercise())
 
 
 class SSEEEncodingUnitTest(unittest.TestCase):

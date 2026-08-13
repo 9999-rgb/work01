@@ -646,7 +646,58 @@ private:
     std::lock_guard<std::mutex> lock(active_goal_mutex_);
     active_goal_type_ = type;
     active_goal_id_ = goal_id;
+    // An accepted goal does not own shared MoveIt/Nav2/base resources.  The
+    // worker promotes this flag only after it has acquired the global lease.
+    active_goal_owns_physical_motion_resources_ = false;
     cancel_requested_.store(false);
+  }
+
+  void claim_active_goal_physical_motion_resources(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id,
+    bool resources_required)
+  {
+    if (!resources_required) {
+      return;
+    }
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    const bool goal_is_active =
+      active_goal_matches_locked(type, goal_id) &&
+      !cancel_requested_.load() && !shutdown_requested_.load();
+    const bool lease_is_active =
+      operation_lease_held_.load() && !operation_lease_lost_.load();
+    if (!physical_motion_resources_are_owned(
+        resources_required, lease_is_active, goal_is_active))
+    {
+      throw OperationError(
+              lease_is_active ? PressCabinetButton::Result::CANCELED :
+              PressCabinetButton::Result::LEASE_LOST,
+              lease_is_active ?
+              "Cabinet button operation was canceled before it acquired "
+              "physical motion resources." :
+              "The global robot operation lease was lost before physical "
+              "motion resources were acquired.");
+    }
+    active_goal_owns_physical_motion_resources_ = true;
+  }
+
+  bool active_goal_owns_physical_motion_resources(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id) const
+  {
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    return active_goal_matches_locked(type, goal_id) &&
+           active_goal_owns_physical_motion_resources_;
+  }
+
+  void relinquish_active_goal_physical_motion_resources(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id) noexcept
+  {
+    std::lock_guard<std::mutex> lock(active_goal_mutex_);
+    if (active_goal_matches_locked(type, goal_id)) {
+      active_goal_owns_physical_motion_resources_ = false;
+    }
   }
 
   bool active_goal_matches_locked(
@@ -728,6 +779,7 @@ private:
     if (active_goal_matches_locked(type, goal_id)) {
       active_goal_type_ = ActiveGoalType::NONE;
       active_goal_id_ = {};
+      active_goal_owns_physical_motion_resources_ = false;
     }
   }
 
@@ -743,9 +795,11 @@ private:
       return rclcpp_action::CancelResponse::REJECT;
     }
     cancel_requested_.store(true);
-    stop_active_motion();
-    cancel_active_navigation();
-    publish_manual_base_stop();
+    if (active_goal_owns_physical_motion_resources_) {
+      stop_active_motion();
+      cancel_active_navigation();
+      publish_manual_base_stop();
+    }
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
@@ -1412,8 +1466,13 @@ private:
                 PressCabinetButton::Result::INTERNAL_ERROR,
                 "The accepted cabinet button is no longer configured.");
       }
-      acquire_operation_lease(goal_handle);
-      publish_active_control(button->id);
+      const bool should_navigate_to_staging_pose =
+        goal_handle->get_goal()->navigate_to_staging_pose;
+      acquire_operation_lease(
+        goal_handle, ActiveGoalType::PRESS, true);
+      if (!should_navigate_to_staging_pose) {
+        publish_active_control(button->id);
+      }
       reset_max_button_travel(*button);
       publish_feedback(
         goal_handle,
@@ -1426,8 +1485,6 @@ private:
       latch_cabinet_transform();
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
 
-      const bool should_navigate_to_staging_pose =
-        goal_handle->get_goal()->navigate_to_staging_pose;
       poses = calculate_operation_poses(*button, press_depth_);
       staging_poses = calculate_control_staging_poses(*button);
 
@@ -1462,8 +1519,24 @@ private:
           PressCabinetButton::Feedback::NAVIGATING,
           0.08F,
           "Driving the base to the cabinet staging pose.");
+        // map->odom is expected to evolve while AMCL observes a moving base.
+        // The pre-navigation latch was only needed to build the map-frame
+        // goal and to stow safely; do not treat localization corrections as
+        // cabinet motion while Nav2 is active.
+        clear_latched_cabinet_transform();
         navigate_to_staging_pose(
           goal_handle, staging_poses.navigation_pose);
+
+        // AMCL may update map->odom while Nav2 is moving.  Refresh every
+        // planning-frame target after navigation instead of docking and
+        // manipulating against the odom snapshot captured before the goal.
+        // Keep active_control empty during this settle interval so the
+        // planning-scene node is also allowed to adopt the refreshed TF.
+        latch_cabinet_transform();
+        poses = calculate_operation_poses(*button, press_depth_);
+        staging_poses = calculate_control_staging_poses(*button);
+        interruptible_hold(goal_handle, planning_scene_settle_seconds_);
+        publish_active_control(button->id);
       }
       set_navigation_mode(goal_handle, false);
       publish_feedback(
@@ -1647,13 +1720,23 @@ private:
     }
 
     clear_latched_cabinet_transform();
-    stop_active_motion();
-    cancel_active_navigation();
-    request_navigation_mode_without_wait(false);
+    const bool owned_physical_motion_resources =
+      active_goal_owns_physical_motion_resources(
+      ActiveGoalType::PRESS, goal_handle->get_goal_id());
+    if (owned_physical_motion_resources) {
+      stop_active_motion();
+      cancel_active_navigation();
+      request_navigation_mode_without_wait(false);
+    }
     {
       std::lock_guard<std::mutex> lock(motion_mutex_);
       active_move_group_.reset();
     }
+    // Drop the ownership flag before releasing the lease.  A late cancel may
+    // still bind to this goal until its terminal transition, but must not stop
+    // a subsequent lease holder.
+    relinquish_active_goal_physical_motion_resources(
+      ActiveGoalType::PRESS, goal_handle->get_goal_id());
     release_operation_lease_noexcept();
     publish_active_control("");
     const bool goal_succeeded =
@@ -1819,8 +1902,13 @@ private:
         button_should_trigger =
           button_press_depth + 1.0e-9 >= control->press_threshold;
       }
-      acquire_operation_lease(goal_handle);
-      publish_active_control(control->id);
+      acquire_operation_lease(
+        goal_handle,
+        ActiveGoalType::OPERATE,
+        preparation_policy.requires_physical_motion_resources);
+      if (!preparation_policy.execute_embedded_navigation) {
+        publish_active_control(control->id);
+      }
       if (!validation_only) {
         reset_max_button_travel(*control);
       }
@@ -1933,8 +2021,28 @@ private:
           OperateCabinetControl::Feedback::NAVIGATING,
           0.07F, target_position,
           "Driving the base to the cabinet staging pose.");
+        // The cabinet is map-fixed, so AMCL corrections to map->odom during
+        // navigation are normal.  Release the pre-navigation odom latch and
+        // establish a new manipulation latch only after Nav2 has stopped.
+        clear_latched_cabinet_transform();
         navigate_to_staging_pose(
           goal_handle, staging_poses->navigation_pose);
+
+        // Embedded Nav2 can change map->odom through localization updates.
+        // Rebuild all odom-frame manipulation targets from the post-navigation
+        // TF.  active_control is deliberately still empty here so the
+        // planning scene can refresh its matching cabinet transform too.
+        latch_cabinet_transform();
+        if (is_button) {
+          button_poses = calculate_operation_poses(
+            *control, button_press_depth);
+        } else {
+          rotary_poses = calculate_rotary_operation_poses(
+            *control, initial_state.position);
+        }
+        staging_poses = calculate_control_staging_poses(*control);
+        interruptible_hold(goal_handle, planning_scene_settle_seconds_);
+        publish_active_control(control->id);
       }
       if (preparation_policy.enter_manual_base_mode) {
         result->diagnostic_stage = "docking";
@@ -2322,6 +2430,9 @@ private:
         OperateCabinetControl::Result::CANCELED :
         OperateCabinetControl::Result::INTERNAL_ERROR;
       result->message = operation_lease_lost_.load() ?
+        validation_only ?
+        "The global robot operation lease was lost; planning-only validation "
+        "was canceled without publishing a physical motion command." :
         "The global robot operation lease was lost; all motion was stopped." :
         is_operate_goal_canceling(goal_handle) ?
         "Cabinet operation was canceled." :
@@ -2340,6 +2451,9 @@ private:
         OperateCabinetControl::Result::LEASE_LOST :
         OperateCabinetControl::Result::INTERNAL_ERROR;
       result->message = operation_lease_lost_.load() ?
+        validation_only ?
+        "The global robot operation lease was lost; planning-only validation "
+        "was canceled without publishing a physical motion command." :
         "The global robot operation lease was lost; all motion was stopped." :
         "Cabinet operation failed with an unknown error.";
       if (validation_only) {
@@ -2353,15 +2467,22 @@ private:
     }
 
     clear_latched_cabinet_transform();
-    stop_active_motion();
-    cancel_active_navigation();
-    if (preparation_policy.enter_manual_base_mode) {
-      request_navigation_mode_without_wait(false);
+    const bool owned_physical_motion_resources =
+      active_goal_owns_physical_motion_resources(
+      ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+    if (owned_physical_motion_resources) {
+      stop_active_motion();
+      cancel_active_navigation();
+      if (preparation_policy.enter_manual_base_mode) {
+        request_navigation_mode_without_wait(false);
+      }
     }
     {
       std::lock_guard<std::mutex> lock(motion_mutex_);
       active_move_group_.reset();
     }
+    relinquish_active_goal_physical_motion_resources(
+      ActiveGoalType::OPERATE, goal_handle->get_goal_id());
     release_operation_lease_noexcept();
     publish_active_control("");
     finish_operate_goal_noexcept(goal_handle, result, request_success);
@@ -4950,17 +5071,24 @@ private:
 
   template<typename GoalHandleT>
   void acquire_operation_lease(
-    const std::shared_ptr<GoalHandleT> & goal_handle)
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    ActiveGoalType goal_type,
+    bool resources_required)
   {
     operation_lease_lost_.store(false);
-    if (!operation_lease_client_->wait_for_service(
-        std::chrono::duration<double>(operation_lease_request_timeout_)))
-    {
-      throw OperationError(
-              PressCabinetButton::Result::LEASE_LOST,
-              "The global robot operation lease service is unavailable; "
-              "motion is disabled.");
+    check_cancel(goal_handle);
+    const auto service_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(operation_lease_request_timeout_);
+    while (!operation_lease_client_->wait_for_service(20ms)) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= service_deadline) {
+        throw OperationError(
+                PressCabinetButton::Result::LEASE_LOST,
+                "The global robot operation lease service is unavailable; "
+                "motion is disabled.");
+      }
     }
+    check_cancel(goal_handle);
 
     const std::string owner_id = std::string(get_fully_qualified_name()) +
       ":" + std::to_string(++operation_lease_owner_sequence_);
@@ -4975,6 +5103,7 @@ private:
       const auto deadline = std::chrono::steady_clock::now() +
         std::chrono::duration<double>(operation_lease_request_timeout_);
       while (future.wait_for(20ms) != std::future_status::ready) {
+        check_cancel(goal_handle);
         if (std::chrono::steady_clock::now() >= deadline) {
           throw OperationError(
                   PressCabinetButton::Result::LEASE_LOST,
@@ -5028,6 +5157,9 @@ private:
               "Could not start the operation lease renewal worker; "
               "motion is disabled.");
     }
+    check_cancel(goal_handle);
+    claim_active_goal_physical_motion_resources(
+      goal_type, goal_handle->get_goal_id(), resources_required);
     check_cancel(goal_handle);
   }
 
@@ -5116,13 +5248,25 @@ private:
     {
       return;
     }
-    RCLCPP_ERROR(
-      get_logger(), "%s All MoveIt and Nav2 motion is being stopped.",
-      reason.c_str());
-    stop_active_motion();
-    cancel_active_navigation();
-    publish_manual_base_stop();
-    request_navigation_mode_without_wait(false);
+    bool owns_physical_motion_resources = false;
+    {
+      std::lock_guard<std::mutex> lock(active_goal_mutex_);
+      owns_physical_motion_resources =
+        active_goal_owns_physical_motion_resources_;
+    }
+    if (owns_physical_motion_resources) {
+      RCLCPP_ERROR(
+        get_logger(), "%s All MoveIt and Nav2 motion is being stopped.",
+        reason.c_str());
+      stop_active_motion();
+      cancel_active_navigation();
+      publish_manual_base_stop();
+      request_navigation_mode_without_wait(false);
+    } else {
+      RCLCPP_ERROR(
+        get_logger(), "%s Planning-only validation is being canceled without "
+        "publishing a physical stop command.", reason.c_str());
+    }
     publish_active_control("");
   }
 
@@ -5205,8 +5349,7 @@ private:
     if (operation_lease_lost_.load()) {
       throw OperationError(
               PressCabinetButton::Result::LEASE_LOST,
-              "The global robot operation lease was lost; all motion was "
-              "stopped.");
+              "The global robot operation lease was lost.");
     }
     if (goal_should_stop(goal_handle)) {
       throw OperationError(
@@ -5446,6 +5589,7 @@ private:
   mutable std::mutex active_goal_mutex_;
   ActiveGoalType active_goal_type_{ActiveGoalType::NONE};
   rclcpp_action::GoalUUID active_goal_id_{};
+  bool active_goal_owns_physical_motion_resources_{false};
   std::atomic<bool> cancel_requested_{false};
   std::atomic<bool> shutdown_requested_{false};
   std::atomic<bool> cabinet_pose_valid_{false};

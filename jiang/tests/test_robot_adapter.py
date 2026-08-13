@@ -433,6 +433,9 @@ class RobotAdapterTest(unittest.TestCase):
 
         with (
             patch(
+                "control_gateway.runner.validate_profile"
+            ) as validate_profile_mock,
+            patch(
                 "control_gateway.runner.CabinetInventory.load",
                 return_value=[],
             ),
@@ -462,6 +465,7 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("/adapter/joints", captured[0][1])
         self.assertEqual("/legacy/cmd_vel", captured[1][0])
         self.assertEqual("/legacy/joints", captured[1][1])
+        self.assertEqual(2, validate_profile_mock.call_count)
         self.assertEqual(
             "world_map",
             captured_keywords[0]["navigation_frame"],

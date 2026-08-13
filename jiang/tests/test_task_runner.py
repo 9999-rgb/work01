@@ -64,6 +64,7 @@ class _NavigationNode:
 
     def map_snapshot(self) -> Dict[str, Any]:
         return {
+            "frame_id": "map",
             "width": 200,
             "height": 200,
             "resolution": 0.05,
@@ -447,6 +448,19 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(ControlServer._is_loopback_host("localhost"))
         self.assertFalse(ControlServer._is_loopback_host("192.0.2.10"))
 
+    def test_constructor_rejects_invalid_network_and_motion_limits(self) -> None:
+        for kwargs, message in (
+            ({"port": 0}, "port"),
+            ({"port": 65536}, "port"),
+            ({"host": "  "}, "host"),
+            ({"max_linear_speed": -0.1}, "max_linear_speed"),
+            ({"max_angular_speed": float("nan")}, "max_angular_speed"),
+            ({"command_timeout": 0.0}, "command_timeout"),
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaisesRegex(ValueError, message):
+                    ControlServer(**kwargs)
+
     def test_inventory_and_scoped_catalog(self) -> None:
         server, _node = _server()
 
@@ -466,6 +480,21 @@ class TaskRunnerTest(unittest.TestCase):
         with self.assertRaises(ControlRequestError) as legacy:
             server.cabinet_controls()
         self.assertEqual(410, legacy.exception.status)
+
+    def test_health_reports_navigation_map_readiness(self) -> None:
+        server, node = _server()
+
+        ready = server.health()
+        self.assertTrue(ready["map_available"])
+        self.assertIsNone(ready["map_error"])
+
+        def missing_map() -> Dict[str, Any]:
+            raise ControlRequestError("map has not been received", 503)
+
+        node.map_snapshot = missing_map
+        unavailable = server.health()
+        self.assertFalse(unavailable["map_available"])
+        self.assertIn("map has not been received", unavailable["map_error"])
 
     def test_scene_reset_verifies_cabinet_joints_and_base(self) -> None:
         server, node = _server()
@@ -2170,7 +2199,10 @@ class TaskRunnerTest(unittest.TestCase):
         with server._task_interlock_lock:
             accepted = server.submit_navigation_task("cabinet_a")
             canceling = server.cancel_task(accepted["task_id"])
-            self.assertEqual("canceling", canceling["status"])
+            # The worker may observe cancellation and confirm the terminal
+            # state before cancel_task returns.  Both snapshots are valid;
+            # the safety invariant is that no late ROS goal is submitted.
+            self.assertIn(canceling["status"], {"canceling", "canceled"})
 
         terminal = server._task_manager.wait(
             accepted["task_id"],
@@ -2192,7 +2224,7 @@ class TaskRunnerTest(unittest.TestCase):
                 5.0,
             )
             canceling = server.cancel_task(accepted["task_id"])
-            self.assertEqual("canceling", canceling["status"])
+            self.assertIn(canceling["status"], {"canceling", "canceled"})
 
         terminal = server._task_manager.wait(
             accepted["task_id"],

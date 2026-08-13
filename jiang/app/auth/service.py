@@ -61,6 +61,11 @@ def decode_access_token(token: str) -> dict[str, Any]:
             token,
             settings.secret_key,
             algorithms=[settings.jwt_algorithm],
+            options={
+                "require_exp": True,
+                "require_iat": True,
+                "require_sub": True,
+            },
         )
     except JWTError as error:
         raise InvalidTokenError(str(error)) from error

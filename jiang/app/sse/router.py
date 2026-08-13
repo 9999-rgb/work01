@@ -1,7 +1,7 @@
 """Zenoh CDR → HTTP SSE 桥（FastAPI 版）。
 
 从 ``sse_bridge.py`` 迁移，复用其 ``ZenohSource``（线程安全、按 key 订阅扇出）。
-每个 SSE 连接注册一个 listener，通过 ``threading.Queue(maxsize=1)`` 节流，
+每个 SSE 连接注册一个 listener，用有界 asyncio Queue 和合并调度
 保持浏览器端高频 ROS 2 话题不堆积。
 """
 
@@ -9,18 +9,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
+import threading
 import time
 from collections.abc import AsyncIterator
-from queue import Empty, Queue
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from app.auth.deps import ActiveTokenChecker
 from sse_bridge import ZenohSource
 
 MONITOR_UPDATE_INTERVAL_SECONDS = 1.0
 HEARTBEAT_SECONDS = 15.0
+_ROS_KEY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
 
 router = APIRouter(tags=["SSE 事件"])
 
@@ -30,6 +33,27 @@ def _get_zenoh_source(request: Request) -> ZenohSource:
     if source is None:
         raise HTTPException(status_code=503, detail="Zenoh 桥未初始化。")
     return source
+
+
+def _normalize_ros_key(key: str) -> str:
+    """只允许单个确定的 ROS 话题 key，禁止 Zenoh 通配订阅。"""
+    value = key[:-5] if key.endswith("/json") else key
+    segments = value.split("/")
+    if (
+        not value
+        or len(value) > 255
+        or any(
+            not segment
+            or len(segment) > 64
+            or _ROS_KEY_SEGMENT_RE.fullmatch(segment) is None
+            for segment in segments
+        )
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="key 必须是不含通配符的规范 ROS 话题。",
+        )
+    return value
 
 
 @router.get(
@@ -44,19 +68,52 @@ def _get_zenoh_source(request: Request) -> ZenohSource:
 )
 async def zenoh_sse(request: Request, key: str) -> StreamingResponse:
     source = _get_zenoh_source(request)
-    if not key:
-        raise HTTPException(status_code=400, detail="缺少 key 表达式")
-    if key.endswith("/json"):
-        key = key[:-5]
+    key = _normalize_ros_key(key)
+    authorization = ActiveTokenChecker.from_request(request)
 
-    events: Queue[tuple[str, str]] = Queue(maxsize=1)
+    events: asyncio.Queue[tuple[str, str]] = asyncio.Queue(maxsize=1)
+    event_loop = asyncio.get_running_loop()
+    pending_lock = threading.Lock()
+    pending_item: tuple[str, str] | None = None
+    delivery_scheduled = False
+
+    def deliver_latest() -> None:
+        nonlocal delivery_scheduled, pending_item
+        with pending_lock:
+            item = pending_item
+            pending_item = None
+            delivery_scheduled = False
+        if item is None:
+            return
+        if events.full():
+            try:
+                events.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+        try:
+            events.put_nowait(item)
+        except asyncio.QueueFull:
+            # 另一个并发回调已经放入了更新的数据。
+            pass
 
     def on_data(topic: str, json_str: str) -> None:
+        nonlocal delivery_scheduled, pending_item
+        # Zenoh 回调位于中间件线程。投递回事件循环后始终只保留
+        # 最新一条。delivery_scheduled 确保高频样本不会在事件循环
+        # callback 队列中无界堆积。
+        with pending_lock:
+            pending_item = (topic, json_str)
+            if delivery_scheduled:
+                return
+            delivery_scheduled = True
         try:
-            events.get_nowait()
-        except Empty:
-            pass
-        events.put_nowait((topic, json_str))
+            event_loop.call_soon_threadsafe(deliver_latest)
+        except RuntimeError:
+            # 应用正在关闭，事件循环已停止。
+            with pending_lock:
+                delivery_scheduled = False
+                pending_item = None
+            return
 
     source.add_listener(key, on_data)
 
@@ -64,14 +121,20 @@ async def zenoh_sse(request: Request, key: str) -> StreamingResponse:
         next_send_time = 0.0
         try:
             while True:
-                if await request.is_disconnected():
+                if (
+                    await request.is_disconnected()
+                    or not await authorization.is_valid()
+                ):
                     return
                 try:
-                    latest_item = await asyncio.to_thread(
-                        events.get,
-                        timeout=HEARTBEAT_SECONDS,
+                    latest_item = await asyncio.wait_for(
+                        events.get(),
+                        timeout=min(
+                            HEARTBEAT_SECONDS,
+                            authorization.recheck_seconds,
+                        ),
                     )
-                except Empty:
+                except asyncio.TimeoutError:
                     yield b":heartbeat\n\n"
                     continue
                 remaining = next_send_time - time.monotonic()
@@ -79,14 +142,18 @@ async def zenoh_sse(request: Request, key: str) -> StreamingResponse:
                     await asyncio.sleep(remaining)
                     try:
                         latest_item = events.get_nowait()
-                    except Empty:
+                    except asyncio.QueueEmpty:
                         pass
                 topic, json_str = latest_item
                 ts = int(time.time() * 1000)
+                try:
+                    value = json.loads(json_str)
+                except (TypeError, ValueError):
+                    value = {"_raw": str(json_str)}
                 sse_data = json.dumps(
                     {
                         "key": topic,
-                        "value": json.loads(json_str),
+                        "value": value,
                         "encoding": "application/json",
                         "timestamp": str(ts),
                     },

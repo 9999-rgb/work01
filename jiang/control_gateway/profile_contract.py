@@ -22,6 +22,9 @@ from .robot_adapter import load as load_robot_adapter
 
 
 _CONTROL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+_RELATIVE_TOPIC_PATTERN = re.compile(
+    r"^[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
+)
 _CONTROL_TYPES = {"button", "knob", "switch", "door"}
 
 
@@ -87,6 +90,15 @@ def _string(value: Any, field: str, *, allow_empty: bool = False) -> str:
     result = value.strip()
     if not result and not allow_empty:
         raise ProfileContractError(f"{field} must not be empty.")
+    return result
+
+
+def _relative_topic(value: Any, field: str) -> str:
+    result = _string(value, field)
+    if _RELATIVE_TOPIC_PATTERN.fullmatch(result) is None:
+        raise ProfileContractError(
+            f"{field} must be a non-empty relative ROS topic."
+        )
     return result
 
 
@@ -451,6 +463,42 @@ def validate_profile(
         raise ProfileContractError(
             f"cabinet pose parent_frame '{pose_parent}' does not match robot "
             f"pose_parent_frame '{adapter.pose_parent_frame}'."
+        )
+
+    operator = _parameters(
+        adapter_document,
+        "/**/xczs_cabinet_button_operator",
+        "robot adapter",
+    )
+    scene_pose_topic = _relative_topic(
+        scene.get("pose_valid_topic", "pose_valid"),
+        "cabinet scene pose_valid_topic",
+    )
+    authority_pose_topic = _relative_topic(
+        pose.get("validity_topic", "pose_valid"),
+        "cabinet pose validity_topic",
+    )
+    operator_pose_topic = _relative_topic(
+        operator.get("cabinet_pose_valid_topic", "pose_valid"),
+        "robot adapter cabinet_pose_valid_topic",
+    )
+    pose_topics = {
+        scene_pose_topic,
+        authority_pose_topic,
+        operator_pose_topic,
+    }
+    if len(pose_topics) != 1:
+        raise ProfileContractError(
+            "Cabinet pose-validity topics must match across cabinet_scene, "
+            "cabinet_pose, and cabinet_robot_adapter."
+        )
+    if scene.get("require_pose_valid") is not True:
+        raise ProfileContractError(
+            "cabinet scene require_pose_valid must be true."
+        )
+    if operator.get("require_cabinet_pose_valid", True) is not True:
+        raise ProfileContractError(
+            "robot adapter require_cabinet_pose_valid must be true."
         )
 
     for cabinet in inventory:

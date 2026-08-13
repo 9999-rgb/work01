@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import Request
 
+from app.auth.deps import ActiveTokenChecker
 from control_gateway.task_manager import EventHubClosed
 
 
@@ -45,6 +46,7 @@ async def stream_task_events(
     request: Request,
     *,
     heartbeat_seconds: float = 15.0,
+    authorization: ActiveTokenChecker | None = None,
 ) -> AsyncIterator[bytes]:
     """把阻塞式事件订阅桥接到异步 SSE 流。
 
@@ -54,12 +56,23 @@ async def stream_task_events(
     """
     try:
         while True:
-            if await request.is_disconnected():
+            if (
+                await request.is_disconnected()
+                or (
+                    authorization is not None
+                    and not await authorization.is_valid()
+                )
+            ):
                 return
+            poll_seconds = (
+                min(heartbeat_seconds, authorization.recheck_seconds)
+                if authorization is not None
+                else heartbeat_seconds
+            )
             try:
                 event = await asyncio.to_thread(
                     subscription.get,
-                    timeout=heartbeat_seconds,
+                    timeout=poll_seconds,
                 )
             except queue.Empty:
                 yield b": heartbeat\n\n"

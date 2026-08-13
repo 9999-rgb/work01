@@ -7,14 +7,27 @@ PostgreSQL 仅需修改该变量，无需改代码。
 
 from __future__ import annotations
 
+import logging
+import secrets
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # ``jiang/`` 目录（本文件所在目录的上一级即为工作区根目录的相对基准）。
 _JIANG_DIR = Path(__file__).resolve().parents[1]
 _WORKSPACE = _JIANG_DIR.parent
+
+logger = logging.getLogger(__name__)
+
+
+def _generate_ephemeral_secret_key() -> str:
+    logger.warning(
+        "未配置 XCZS_SECRET_KEY，已为当前进程生成强随机 JWT "
+        "密钥；服务重启后现有 token 会失效。"
+    )
+    return secrets.token_urlsafe(48)
 
 
 class Settings(BaseSettings):
@@ -36,9 +49,14 @@ class Settings(BaseSettings):
     database_url: str = f"sqlite+aiosqlite:///{_JIANG_DIR / 'data' / 'xczs.db'}"
 
     # ── 认证 ────────────────────────────────────────────────────────
-    # 生产环境必须通过环境变量覆盖。
-    secret_key: str = "dev-secret-change-me"
-    jwt_algorithm: str = "HS256"
+    # 未配置时为当前进程生成强随机密钥，避免使用可预测的开发
+    # 默认值。重启后旧 token 会失效；需要持久会话时应显式配置
+    # XCZS_SECRET_KEY。
+    secret_key: str = Field(
+        default_factory=_generate_ephemeral_secret_key,
+        min_length=32,
+    )
+    jwt_algorithm: Literal["HS256"] = "HS256"
     access_token_expire_minutes: int = 480  # 8 小时
     # 初始 admin 账号密码；为空时启动随机生成并打印。
     admin_password: str = ""
@@ -53,7 +71,7 @@ class Settings(BaseSettings):
 
     # ── 允许的浏览器 Origin（逗号分隔，兼容 XCZS_CONTROL_ORIGINS） ──
     # pydantic-settings 读取 XCZS_ALLOWED_ORIGINS；旧变量由 launcher 换算。
-    allowed_origins: str = "http://localhost:8080,http://127.0.0.1:8080"
+    allowed_origins: str = "http://localhost:8090,http://127.0.0.1:8090"
 
     # ── 数据目录 ────────────────────────────────────────────────────
     recordings_root: Optional[str] = str(_WORKSPACE / "recordings")
@@ -62,12 +80,12 @@ class Settings(BaseSettings):
     def allowed_origin_list(self) -> list[str]:
         """解析逗号分隔的 Origin 列表。"""
         origins = [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
-        return origins or ["http://localhost:8080"]
+        return origins or ["http://localhost:8090"]
 
     @property
     def is_production(self) -> bool:
         """启发式判断：生产模式关闭可写文档等暴露面。"""
-        return self.secret_key not in {"dev-secret-change-me", ""}
+        return len(self.secret_key) >= 32
 
 
 settings = Settings()

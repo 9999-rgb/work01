@@ -270,6 +270,7 @@ ament_export_dependencies(rosidl_default_runtime)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+  find_package(ament_cmake_pytest REQUIRED)
   ament_add_gtest(
     operation_lease_state_test
     test/operation_lease_state_test.cpp
@@ -310,6 +311,10 @@ if(BUILD_TESTING)
     PUBLIC
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
       "$<INSTALL_INTERFACE:include>"
+  )
+  ament_add_pytest_test(
+    launch_startup_policy_test
+    test/test_launch_startup_policy.py
   )
 endif()
 

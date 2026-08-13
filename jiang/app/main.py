@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote, urlsplit
 
 from fastapi import FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_redoc_html, get_swagger_ui_html
-from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 
 from app.api.exceptions import register_exception_handlers
 from app.api.router import api_router
@@ -34,7 +36,7 @@ logger = logging.getLogger(__name__)
 _DESCRIPTION = """XCZS 巡操机器人控制柜操作闭环仿真系统的 Web 控制网关。
 
 ## 认证
-除 `/auth/login`、`/health`、传感器流与静态页面外，所有端点需要 JWT Bearer Token。
+除 `/auth/login`、`/health` 与静态页面外，所有端点需要 JWT Bearer Token。
 在 Swagger UI 右上角点击 **Authorize** 输入 token，或使用：
 ```
 Authorization: Bearer <access_token>
@@ -62,6 +64,11 @@ _OPENAPI_TAGS = [
 ]
 
 
+def _docs_openapi_url(token: str) -> str:
+    """为文档页生成不会打断 JavaScript 字符串的 schema URL。"""
+    return f"/openapi.json?token={quote(token, safe='')}"
+
+
 def create_app(
     *,
     control_server: Any = None,
@@ -73,6 +80,7 @@ def create_app(
     docs: bool = True,
     swagger_token: str | None = None,
     static_dir: str | Path | None = None,
+    allowed_origins: Iterable[str] | None = None,
 ) -> FastAPI:
     """创建 FastAPI 应用。
 
@@ -96,10 +104,21 @@ def create_app(
         openapi_tags=_OPENAPI_TAGS,
         docs_url=None if protect_docs else ("/docs" if docs else None),
         redoc_url=None if protect_docs else ("/redoc" if docs else None),
-        openapi_url="/openapi.json" if docs else None,
+        openapi_url=None if protect_docs else ("/openapi.json" if docs else None),
     )
 
     if protect_docs:
+        @app.get("/openapi.json", include_in_schema=False)
+        async def _protected_openapi(
+            token: str | None = Query(default=None),
+        ) -> Any:
+            if token != _token:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="OpenAPI 文档需要 ?token= 访问。",
+                )
+            return app.openapi()
+
         @app.get("/docs", include_in_schema=False)
         async def _protected_swagger(
             token: str | None = Query(default=None),
@@ -110,7 +129,7 @@ def create_app(
                     detail="Swagger UI 需要 ?token= 访问。",
                 )
             return get_swagger_ui_html(
-                openapi_url="/openapi.json",
+                openapi_url=_docs_openapi_url(_token),
                 title="XCZS API Docs",
             )
 
@@ -124,7 +143,7 @@ def create_app(
                     detail="ReDoc 需要 ?token= 访问。",
                 )
             return get_redoc_html(
-                openapi_url="/openapi.json",
+                openapi_url=_docs_openapi_url(_token),
                 title="XCZS API Docs",
             )
 
@@ -135,16 +154,24 @@ def create_app(
     app.state.zenoh_source = zenoh_source
     app.state.auth_enabled = effective_auth
 
-    # CORS：内网工具 + JWT 鉴权，允许任意 Origin（兼容不同主机访问）。
+    normalized_origins = _normalize_allowed_origins(
+        settings.allowed_origin_list if allowed_origins is None else allowed_origins
+    )
+    app.state.allowed_origins = frozenset(normalized_origins)
+
+    # CORS：仅回显明确配置的浏览器 Origin。Bearer token 由
+    # Authorization 头携带，不使用跨域 cookie。
+    if effective_auth:
+        app.add_middleware(AuthMiddleware, enabled=True)
+    # Starlette 后添加的中间件位于外层。CORS 必须包裹鉴权门禁，
+    # 否则门禁直接返回的 401 没有 ACAO，跨域页面无法识别会话失效。
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=normalized_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Last-Event-ID", "Authorization"],
     )
-    if effective_auth:
-        app.add_middleware(AuthMiddleware)
 
     register_exception_handlers(app)
 
@@ -158,12 +185,42 @@ def create_app(
     app.include_router(sensor_router)
     app.include_router(sse_router)
 
-    # 静态页面（monitor.html）。路由未匹配时才回退到文件服务。
+    # 只暴露监控页本身。禁止把 jiang/ 整个目录挂载到 Web 根路径，
+    # 避免泄露源码、配置、数据库与录制元数据。
     if static_dir is not None:
-        app.mount(
+        monitor_path = (Path(static_dir) / "monitor.html").resolve()
+        if not monitor_path.is_file():
+            raise RuntimeError(f"监控页不存在：{monitor_path}")
+
+        def _monitor_response() -> FileResponse:
+            return FileResponse(
+                monitor_path,
+                media_type="text/html",
+                headers={
+                    "Cache-Control": "no-store",
+                    "Content-Security-Policy": (
+                        "frame-ancestors 'none'; base-uri 'none'; "
+                        "object-src 'none'"
+                    ),
+                    "Referrer-Policy": "no-referrer",
+                    "X-Frame-Options": "DENY",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+
+        app.add_api_route(
             "/",
-            StaticFiles(directory=str(static_dir), html=True),
-            name="static",
+            _monitor_response,
+            methods=["GET"],
+            include_in_schema=False,
+            name="monitor-root",
+        )
+        app.add_api_route(
+            "/monitor.html",
+            _monitor_response,
+            methods=["GET"],
+            include_in_schema=False,
+            name="monitor-page",
         )
 
     _attach_lifespan(
@@ -174,6 +231,31 @@ def create_app(
         enable_db=enable_db,
     )
     return app
+
+
+def _normalize_allowed_origins(origins: Iterable[str]) -> list[str]:
+    """验证并规范化 CORS Origin，拒绝通配符和带路径的 URL。"""
+    normalized: set[str] = set()
+    for origin in origins:
+        if not isinstance(origin, str) or not origin.strip():
+            continue
+        value = origin.strip().rstrip("/")
+        parsed = urlsplit(value)
+        if (
+            value == "*"
+            or parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(f"无效的 Web Origin：{origin!r}")
+        normalized.add(value)
+    if not normalized:
+        raise ValueError("至少需要配置一个 Web Origin。")
+    return sorted(normalized)
 
 
 def _attach_lifespan(

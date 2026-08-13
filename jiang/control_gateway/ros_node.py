@@ -6,7 +6,7 @@ import math
 import json
 import threading
 import time
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import rclpy
 from action_msgs.msg import GoalStatus
@@ -127,6 +127,7 @@ class RosControlNode(Node):
         manual_linear_axis: str = "y",
         manual_joints: Sequence[ManualJointConfig] = (),
         joint_state_topic: str = "/xczs/joint_states",
+        cabinet_pose_valid_topics: Optional[Mapping[str, str]] = None,
     ) -> None:
         super().__init__(
             "xczs_web_control_server",
@@ -248,6 +249,25 @@ class RosControlNode(Node):
             self._robot_joint_state_callback,
             qos_profile_sensor_data,
         )
+        self._cabinet_pose_validity: Dict[str, Optional[bool]] = {}
+        self._cabinet_pose_validity_subscriptions = []
+        for cabinet, topic in dict(cabinet_pose_valid_topics or {}).items():
+            if not isinstance(cabinet, str) or not cabinet.strip():
+                raise ValueError("cabinet pose-validity names must be non-empty.")
+            if not isinstance(topic, str) or not topic.strip():
+                raise ValueError("cabinet pose-validity topics must be non-empty.")
+            normalized_cabinet = cabinet.strip()
+            self._cabinet_pose_validity[normalized_cabinet] = None
+            self._cabinet_pose_validity_subscriptions.append(
+                self.create_subscription(
+                    Bool,
+                    topic.strip(),
+                    lambda message, name=normalized_cabinet: (
+                        self._cabinet_pose_validity_callback(name, message)
+                    ),
+                    transient_qos,
+                )
+            )
         self.create_subscription(
             CabinetControlCatalog,
             "/xczs/cabinet/control_catalog",
@@ -280,6 +300,7 @@ class RosControlNode(Node):
             "updated_at": time.time(),
         }
         self._map_state: Optional[Dict[str, Any]] = None
+        self._map_error = "Nav2 occupancy map has not been received."
         self._robot_pose: Optional[Dict[str, Any]] = None
         self._robot_pose_sequence = 0
 
@@ -577,6 +598,17 @@ class RosControlNode(Node):
                 f"navigation frame {self._navigation_frame}.",
                 400,
             )
+        pose_validity = getattr(self, "_cabinet_pose_validity", {})
+        if cabinet in pose_validity:
+            with self._lock:
+                pose_valid = self._cabinet_pose_validity.get(cabinet)
+            if pose_valid is not True:
+                state = "invalid" if pose_valid is False else "not confirmed"
+                raise ControlRequestError(
+                    f"Live pose for {cabinet} is {state}; refusing to use a "
+                    "possibly stale TF transform.",
+                    503,
+                )
 
         anchor = self._validated_station_vector(
             station_spec.local_anchor,
@@ -782,7 +814,13 @@ class RosControlNode(Node):
         with self._lock:
             if self._map_state is None:
                 raise ControlRequestError(
-                    "Nav2 occupancy map is not available.",
+                    str(
+                        getattr(
+                            self,
+                            "_map_error",
+                            "Nav2 occupancy map is not available.",
+                        )
+                    ),
                     503,
                 )
             return {
@@ -3096,21 +3134,91 @@ class RosControlNode(Node):
                 self._cabinet_state.update(state)
 
     def _map_callback(self, message: OccupancyGrid) -> None:
+        try:
+            frame_id = str(message.header.frame_id).strip()
+            resolution = float(message.info.resolution)
+            width = int(message.info.width)
+            height = int(message.info.height)
+            origin_x = float(message.info.origin.position.x)
+            origin_y = float(message.info.origin.position.y)
+            orientation = message.info.origin.orientation
+            quaternion = tuple(
+                float(getattr(orientation, field))
+                for field in ("x", "y", "z", "w")
+            )
+            data = [int(value) for value in message.data]
+        except (AttributeError, TypeError, ValueError) as error:
+            map_error = f"Nav2 occupancy map metadata is malformed: {error}"
+            with self._lock:
+                self._map_state = None
+                self._map_error = map_error
+            return
+
+        quaternion_norm = math.hypot(*quaternion)
+        if not frame_id:
+            map_error = "Nav2 occupancy map frame_id is empty."
+        elif frame_id != self._navigation_frame:
+            map_error = (
+                "Nav2 occupancy map frame does not match the navigation frame; "
+                f"expected {self._navigation_frame}, received {frame_id}."
+            )
+        elif (
+            not math.isfinite(resolution)
+            or resolution <= 0.0
+            or width <= 0
+            or height <= 0
+            or not math.isfinite(origin_x)
+            or not math.isfinite(origin_y)
+            or not all(math.isfinite(value) for value in quaternion)
+            or quaternion_norm <= 1.0e-12
+        ):
+            map_error = "Nav2 occupancy map geometry is invalid."
+        elif len(data) != width * height:
+            map_error = (
+                "Nav2 occupancy map data length does not match width * height."
+            )
+        elif any(value < -1 or value > 100 for value in data):
+            map_error = "Nav2 occupancy map contains an invalid occupancy value."
+        else:
+            map_error = None
+
+        if map_error is not None:
+            with self._lock:
+                self._map_state = None
+                self._map_error = map_error
+            return
+
+        unit_x, unit_y, unit_z, unit_w = (
+            value / quaternion_norm for value in quaternion
+        )
+        origin_yaw = math.atan2(
+            2.0 * (unit_w * unit_z + unit_x * unit_y),
+            1.0 - 2.0 * (unit_y * unit_y + unit_z * unit_z),
+        )
         with self._lock:
             self._map_state = {
-                "frame_id": message.header.frame_id,
-                "resolution": float(message.info.resolution),
-                "width": int(message.info.width),
-                "height": int(message.info.height),
+                "frame_id": frame_id,
+                "resolution": resolution,
+                "width": width,
+                "height": height,
                 "origin": {
-                    "x": float(message.info.origin.position.x),
-                    "y": float(message.info.origin.position.y),
-                    "yaw": self._quaternion_yaw(
-                        message.info.origin.orientation
-                    ),
+                    "x": origin_x,
+                    "y": origin_y,
+                    "yaw": origin_yaw,
                 },
-                "data": list(message.data),
+                "data": data,
             }
+            self._map_error = None
+
+    def _cabinet_pose_validity_callback(
+        self,
+        cabinet: str,
+        message: Bool,
+    ) -> None:
+        """Track the authority signal that invalidates cached cabinet TF."""
+        with self._lock:
+            if cabinet in self._cabinet_pose_validity:
+                self._cabinet_pose_validity[cabinet] = bool(message.data)
 
     def _robot_joint_state_callback(self, message: JointState) -> None:
         """Store only finite positions for the configured manual joints."""
@@ -3181,10 +3289,28 @@ class RosControlNode(Node):
             }
 
     def _validate_navigation_goal(self, x: float, y: float) -> None:
+        if not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(float(value))
+            for value in (x, y)
+        ):
+            raise ControlRequestError(
+                "Navigation goal coordinates must be finite numbers."
+            )
         with self._lock:
             map_state = self._map_state
         if map_state is None:
-            return
+            raise ControlRequestError(
+                "Nav2 occupancy map is not available.",
+                503,
+            )
+        map_frame = map_state.get("frame_id")
+        if map_frame != self._navigation_frame:
+            raise ControlRequestError(
+                "Nav2 occupancy map frame does not match the navigation frame.",
+                503,
+            )
         resolution = map_state["resolution"]
         delta_x = x - map_state["origin"]["x"]
         delta_y = y - map_state["origin"]["y"]

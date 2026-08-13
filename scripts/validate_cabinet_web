@@ -4,6 +4,9 @@
 set -euo pipefail
 
 API_URL="${XCZS_CONTROL_API_URL:-http://127.0.0.1:8090}"
+API_TOKEN="${XCZS_CONTROL_TOKEN:-}"
+AUTH_USERNAME="${XCZS_CONTROL_USERNAME:-}"
+AUTH_PASSWORD="${XCZS_CONTROL_PASSWORD:-}"
 CABINET="cabinet_a"
 TASK_TIMEOUT="${XCZS_CABINET_TIMEOUT:-360}"
 RUN_NAVIGATION="true"
@@ -20,6 +23,7 @@ COMPLETED_TASKS=0
 EXPECTED_FAILURE_TASKS=0
 UNREACHABLE_TASKS=0
 declare -A VALIDATED_OPERABLE_CONTROLS=()
+AUTH_CURL_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -30,6 +34,9 @@ usage() {
 
 选项:
   --api URL           控制服务地址（默认 http://127.0.0.1:8090）
+  --token TOKEN       JWT Bearer token（也可用 XCZS_CONTROL_TOKEN）
+  --username NAME     登录用户名（也可用 XCZS_CONTROL_USERNAME）
+  --password PASSWORD 登录密码（建议使用 XCZS_CONTROL_PASSWORD）
   --cabinet NAME      柜体实例（默认 cabinet_a；全量验收时逐实例调用）
   --timeout SECONDS   单个任务超时（默认 360）
   --no-navigate       仅跳过通用工位导航；实际操作仍执行逐控件导航
@@ -62,6 +69,21 @@ while [[ $# -gt 0 ]]; do
     --cabinet)
       [[ $# -ge 2 ]] || fail "--cabinet 缺少实例名"
       CABINET="$2"
+      shift 2
+      ;;
+    --token)
+      [[ $# -ge 2 ]] || fail "--token 缺少 TOKEN"
+      API_TOKEN="$2"
+      shift 2
+      ;;
+    --username)
+      [[ $# -ge 2 ]] || fail "--username 缺少 NAME"
+      AUTH_USERNAME="$2"
+      shift 2
+      ;;
+    --password)
+      [[ $# -ge 2 ]] || fail "--password 缺少 PASSWORD"
+      AUTH_PASSWORD="$2"
       shift 2
       ;;
     --timeout)
@@ -98,6 +120,54 @@ require_command curl
 require_command jq
 require_command mktemp
 
+if [[ -z "$API_TOKEN" && -z "$AUTH_PASSWORD" && -n "${XCZS_ADMIN_PASSWORD:-}" ]]; then
+  AUTH_PASSWORD="$XCZS_ADMIN_PASSWORD"
+fi
+if [[ -n "$API_TOKEN" && ( -n "$AUTH_USERNAME" || -n "$AUTH_PASSWORD" ) ]]; then
+  fail "--token 不能与用户名/密码同时使用"
+fi
+if [[ -n "$AUTH_PASSWORD" && -z "$AUTH_USERNAME" ]]; then
+  AUTH_USERNAME="admin"
+fi
+if [[ -n "$AUTH_USERNAME" && -z "$AUTH_PASSWORD" ]]; then
+  fail "提供用户名时必须同时提供密码"
+fi
+
+configure_auth() {
+  local login_body=""
+  local raw_response=""
+  local response_code=""
+  if [[ -n "$API_TOKEN" ]]; then
+    AUTH_CURL_ARGS=(-H "Authorization: Bearer $API_TOKEN")
+    return
+  fi
+  if [[ -z "$AUTH_USERNAME" ]]; then
+    AUTH_CURL_ARGS=()
+    return
+  fi
+  login_body="$(
+    jq -cn --arg username "$AUTH_USERNAME" --arg password "$AUTH_PASSWORD" \
+      '{username:$username,password:$password}'
+  )"
+  raw_response="$(
+    curl -sS --connect-timeout 5 --max-time 30 \
+      -H 'Content-Type: application/json' -X POST --data-binary @- \
+      -w $'\n%{http_code}' "$API_URL/auth/login" <<<"$login_body"
+  )" || fail "POST /auth/login 请求失败"
+  response_code="${raw_response##*$'\n'}"
+  RESPONSE_BODY="${raw_response%$'\n'*}"
+  if [[ "$response_code" != "200" ]]; then
+    jq . <<<"$RESPONSE_BODY" >&2 2>/dev/null || printf '%s\n' "$RESPONSE_BODY" >&2
+    fail "POST /auth/login 期望 HTTP 200，实际 $response_code"
+  fi
+  API_TOKEN="$(jq -er '.access_token | select(type == "string" and length > 0)' \
+    <<<"$RESPONSE_BODY")" || fail "/auth/login 未返回 access_token"
+  AUTH_CURL_ARGS=(-H "Authorization: Bearer $API_TOKEN")
+  printf '已以用户 %s 登录。\n' "$AUTH_USERNAME"
+}
+
+configure_auth
+
 request_json() {
   local method="$1"
   local path="$2"
@@ -109,6 +179,7 @@ request_json() {
   if [[ -n "$request_body" ]]; then
     raw_response="$(
       curl -sS --connect-timeout 5 --max-time 30 \
+        "${AUTH_CURL_ARGS[@]}" \
         -H 'Content-Type: application/json' \
         -X "$method" --data "$request_body" \
         -w $'\n%{http_code}' "$API_URL$path"
@@ -116,6 +187,7 @@ request_json() {
   else
     raw_response="$(
       curl -sS --connect-timeout 5 --max-time 30 \
+        "${AUTH_CURL_ARGS[@]}" \
         -X "$method" -w $'\n%{http_code}' "$API_URL$path"
     )" || fail "$method $path 请求失败"
   fi
@@ -132,7 +204,8 @@ request_json() {
 get_json() {
   local path="$1"
   RESPONSE_BODY="$(
-    curl -fsS --connect-timeout 5 --max-time 30 "$API_URL$path"
+    curl -fsS --connect-timeout 5 --max-time 30 \
+      "${AUTH_CURL_ARGS[@]}" "$API_URL$path"
   )" || fail "GET $path 请求失败"
   jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
     fail "GET $path 返回的不是有效 JSON"
@@ -153,6 +226,7 @@ best_effort_wait_terminal() {
   while (( SECONDS < deadline )); do
     body="$(
       curl -fsS --connect-timeout 2 --max-time 5 \
+        "${AUTH_CURL_ARGS[@]}" \
         "$API_URL/task/$task_id/status" 2>/dev/null || true
     )"
     if jq -e . >/dev/null 2>&1 <<<"$body"; then
@@ -175,11 +249,13 @@ best_effort_cleanup() {
   if [[ -n "$ACTIVE_TASK_ID" ]]; then
     status_body="$(
       curl -fsS --connect-timeout 2 --max-time 5 \
+        "${AUTH_CURL_ARGS[@]}" \
         "$API_URL/task/$ACTIVE_TASK_ID/status" 2>/dev/null || true
     )"
     status="$(jq -r '.status // ""' <<<"$status_body" 2>/dev/null || true)"
     if ! task_is_terminal "$status"; then
       curl -sS --connect-timeout 2 --max-time 5 \
+        "${AUTH_CURL_ARGS[@]}" \
         -H 'Content-Type: application/json' -X POST --data '{}' \
         "$API_URL/task/$ACTIVE_TASK_ID/cancel" >/dev/null 2>&1 || true
       best_effort_wait_terminal "$ACTIVE_TASK_ID" || true
@@ -193,6 +269,7 @@ best_effort_cleanup() {
   if [[ -n "$PENDING_CLEANUP_BODY" ]]; then
     cleanup_response="$(
       curl -fsS --connect-timeout 2 --max-time 10 \
+        "${AUTH_CURL_ARGS[@]}" \
         -H 'Content-Type: application/json' -X POST \
         --data "$PENDING_CLEANUP_BODY" \
         "$API_URL/task/operate" 2>/dev/null || true
@@ -222,14 +299,27 @@ wait_for_system_ready() {
   local deadline=$((SECONDS + 120))
   local health_body=""
   local controls_body=""
+  local controls_raw=""
+  local controls_code=""
   while (( SECONDS < deadline )); do
-    health_body="$(curl -fsS "$API_URL/health" 2>/dev/null || true)"
-    controls_body="$(
-      curl -fsS "$API_URL/cabinets/$CABINET/controls" 2>/dev/null || true
+    health_body="$(
+      curl -fsS "${AUTH_CURL_ARGS[@]}" "$API_URL/health" 2>/dev/null || true
     )"
+    controls_raw="$(
+      curl -sS "${AUTH_CURL_ARGS[@]}" \
+        -w $'\n%{http_code}' \
+        "$API_URL/cabinets/$CABINET/controls" 2>/dev/null || true
+    )"
+    controls_code="${controls_raw##*$'\n'}"
+    controls_body="${controls_raw%$'\n'*}"
+    if [[ "$controls_code" == "401" || "$controls_code" == "403" ]]; then
+      jq . <<<"$controls_body" >&2 2>/dev/null || true
+      fail "鉴权失败：请用 --token，或设置 XCZS_CONTROL_USERNAME/XCZS_CONTROL_PASSWORD"
+    fi
     if jq -e --arg cabinet "$CABINET" '
         .status == "ok" and
         .navigation_available == true and
+        .map_available == true and
         (.cabinet_count >= 1)
       ' <<<"$health_body" >/dev/null 2>&1 &&
       jq -e --arg cabinet "$CABINET" '
@@ -250,7 +340,8 @@ wait_for_system_ready() {
 
 start_sse_capture() {
   SSE_FILE="$(mktemp /tmp/xczs-task-events.XXXXXX)"
-  curl -sS -N --connect-timeout 5 "$API_URL/task/events" \
+  curl -sS -N --connect-timeout 5 "${AUTH_CURL_ARGS[@]}" \
+    "$API_URL/task/events" \
     >"$SSE_FILE" 2>/dev/null &
   SSE_PID=$!
   sleep 1

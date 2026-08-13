@@ -5,7 +5,16 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Annotated
 
-from fastapi import APIRouter, Depends, Header, Path, Request, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    Header,
+    HTTPException,
+    Path,
+    Request,
+    Response,
+    status,
+)
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import ControlServerDep
@@ -16,6 +25,7 @@ from app.api.schemas import (
 )
 from app.api.sse_utils import stream_task_events
 from app.api.validators import reject_json_body
+from app.auth.deps import ActiveTokenChecker
 
 router = APIRouter(tags=["任务操作"])
 
@@ -118,7 +128,11 @@ async def task_events(
     _validate_last_event_id(last_event_id)
     subscription = await asyncio.to_thread(server.subscribe_task_events, last_event_id)
     return StreamingResponse(
-        stream_task_events(subscription, request),
+        stream_task_events(
+            subscription,
+            request,
+            authorization=ActiveTokenChecker.from_request(request),
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -134,6 +148,7 @@ def _validate_last_event_id(last_event_id: str | None) -> None:
         return
     value = last_event_id.strip()
     if not value or not value.isascii() or not value.isdigit():
-        from control_gateway.ros_node import ControlRequestError
-
-        raise ControlRequestError("Last-Event-ID 必须是非负整数。")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Last-Event-ID 必须是非负整数。",
+        )

@@ -65,7 +65,7 @@ pip install -r jiang/requirements.txt
 XCZS_PREFLIGHT_ONLY=true ./run_all.sh
 ```
 
-启动后：监控面板 `http://localhost:8080/monitor.html`，SSE 数据 `http://localhost:8001`，传感器流 `http://localhost:8003`。全部路径与开关均可用环境变量覆盖（见 `jiang/start_xczs_bridge.sh` 顶部）；外部机器人栈模式用 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false`。
+启动后 Web 功能统一使用 `http://localhost:8090`：监控面板 `/monitor.html`、SSE `/sse/<key>`、相机 `/camera.mjpg`，雷达 `/lidar/ws`。Zenoh 默认使用 TCP 7447 和 REST 8000。全部路径与开关均可用环境变量覆盖（见 `jiang/start_xczs_bridge.sh` 顶部）；外部机器人栈模式用 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false`。
 
 ### 测试
 
@@ -75,7 +75,7 @@ colcon test --packages-select xczs_inspection_robot_control --event-handlers con
 colcon test-result --verbose
 
 # Python 测试（需已 source workspace；纯逻辑模块不依赖 ROS，ros_node 相关用例需要）
-python3 -m pytest jiang/tests/ -q        # 全部 233 个用例
+python3 -m pytest jiang/tests/ -q        # 全部 Python 用例
 python3 -m pytest jiang/tests/test_inventory.py -q   # 单个文件
 ```
 
@@ -83,7 +83,7 @@ python3 -m pytest jiang/tests/test_inventory.py -q   # 单个文件
 
 - `scripts/check_adapter_contract` — 校验跨文件机器人/导航/柜体 profile 合同（不依赖运行）。
 - `scripts/check_cabinet_model` — 校验柜体 Xacro 与 controls 目录的物理合同一致性。
-- `scripts/validate_cabinet_web [--exhaustive]` — 经 Web → 任务层 → ROS 2 → Gazebo 的完整柜体操作验收。
+- `scripts/validate_cabinet_web [--exhaustive]` — 经 Web → 任务层 → ROS 2 → Gazebo 的完整柜体操作验收；用 `XCZS_CONTROL_TOKEN`，或 `XCZS_CONTROL_USERNAME` + `XCZS_CONTROL_PASSWORD` 鉴权。
 - `scripts/validate_cabinet_simulation` — 确定性底层控件检查（不跑 Nav2，需预先就位）。
 - `scripts/validate_recording_replay [--runtime]` — 录制/回放 HTTP 合同检查；默认只读，`--runtime` 才被动记录，`--allow-motion` 才允许任务重演。
 
@@ -99,7 +99,7 @@ python3 -m pytest jiang/tests/test_inventory.py -q   # 单个文件
 
 ### 运行时组件
 
-`start_xczs_bridge.sh` 依次拉起 Zenoh bridge、SSE 桥、传感器流、HTTP 文件服务器、Web 控制服务，最后执行 `ros2 launch xczs_inspection_robot_control inspection_robot.launch.py`（913 行）按需 include Gazebo、MoveIt、Nav2、机器人 bringup 和各柜体节点。所有配置路径以 launch 参数下发。
+`start_xczs_bridge.sh` 先校验配置合同、Python/ROS 依赖、Zenoh 二进制和端口，再依次拉起 Zenoh bridge、可选 CDR→JSON 代理、统一 FastAPI Web 服务，最后执行 `ros2 launch xczs_inspection_robot_control inspection_robot.launch.py` 按需 include Gazebo、MoveIt、Nav2、机器人 bringup 和各柜体节点。SSE、相机、雷达和静态页已合并到同一 FastAPI 进程。脚本只终止本次注册的进程组；外部服务占用端口时会明确报错，不会扫描或终止全机同名进程。
 
 C++ 节点位于 `xczs_inspection_robot_control/src/`（`include/` 存放可复用的纯逻辑头文件），包括底盘路由 `base_command_router`、手动轨迹路由、规划场景适配 `cabinet_planning_scene`、位姿权威 `cabinet_pose_authority`、按钮 operator、`operation_lease_coordinator`（防并发租约）、`cabinet_grasp_aggregator`，以及 Gazebo 插件 `src/gazebo/planar_stabilizer_plugin.cpp` 与 `cabinet_state_plugin.cpp`。自定义接口定义于 `action/`、`msg/`、`srv/`。
 

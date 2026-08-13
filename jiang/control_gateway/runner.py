@@ -26,6 +26,8 @@ from .inventory import InventoryError
 from .inventory import NavigationStationOutOfBoundsError
 from .inventory import NavigationStationSpec
 from .inventory import OccupancyGridBoundary
+from .profile_contract import ProfileContractError
+from .profile_contract import validate_profile
 from .recording_manager import RecordingError
 from .recording_manager import RecordingManager
 from .ros_node import ControlRequestError
@@ -118,14 +120,34 @@ class ControlServer:
         robot_control_path: Optional[str] = None,
         recordings_root: Optional[str] = None,
     ) -> None:
+        if (
+            isinstance(port, bool)
+            or not isinstance(port, int)
+            or not 1 <= port <= 65535
+        ):
+            raise ValueError("port must be an integer in [1, 65535].")
+        if not isinstance(host, str) or not host.strip():
+            raise ValueError("host must be a non-empty string.")
+        for label, value in (
+            ("max_linear_speed", max_linear_speed),
+            ("max_angular_speed", max_angular_speed),
+            ("command_timeout", command_timeout),
+        ):
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) <= 0.0
+            ):
+                raise ValueError(f"{label} must be a positive finite number.")
         if not self._is_loopback_host(host):
             # FastAPI 已启用 JWT 鉴权中间件，允许非 loopback 绑定。
             # 生产部署建议配合反向代理（nginx）做 TLS 终止与额外访问控制。
             pass
         if allowed_origins is None:
             allowed_origins = (
-                "http://localhost:8080",
-                "http://127.0.0.1:8080",
+                f"http://localhost:{port}",
+                f"http://127.0.0.1:{port}",
             )
         normalized_origin_values = set()
         for origin in allowed_origins:
@@ -169,6 +191,18 @@ class ControlServer:
         )
         recordings_path = recordings_root or str(workspace / "recordings")
         try:
+            validate_profile(
+                robot_adapter_path=robot_adapter_path,
+                instances_path=instances_path,
+                controls_path=controls_path,
+                scene_path=scene_path,
+                pose_path=pose_path,
+            )
+        except ProfileContractError as error:
+            raise RuntimeError(
+                f"Invalid robot/cabinet profile contract: {error}"
+            ) from error
+        try:
             self._inventory = CabinetInventory.load(instances_path, scene_path)
         except InventoryError as error:
             raise RuntimeError(
@@ -192,7 +226,7 @@ class ControlServer:
         self._joint_trajectory_topic = resolved_joint_trajectory_topic
 
         self._port = port
-        self._host = host
+        self._host = host.strip()
         self._allowed_origins = normalized_origins
         self._context = Context()
         # The process entry point owns SIGINT/SIGTERM and requests an ordered
@@ -223,6 +257,10 @@ class ControlServer:
             manual_linear_axis=self._robot_adapter.manual_linear_axis,
             manual_joints=self._robot_adapter.manual_joints,
             joint_state_topic=self._robot_adapter.joint_state_topic,
+            cabinet_pose_valid_topics={
+                cabinet.name: self._inventory.pose_valid_topic_for(cabinet.name)
+                for cabinet in self._inventory
+            },
         )
         self._executor = SingleThreadedExecutor(context=self._context)
         self._executor.add_node(self._node)
@@ -722,6 +760,14 @@ class ControlServer:
         """Return gateway, Nav2, cabinet, and global task availability."""
         with self._request_scope():
             navigation = self._node.navigation_snapshot()
+            try:
+                self._live_map_bounds()
+                map_available = True
+                map_error = None
+            except ControlRequestError as error:
+                map_available = False
+                details = dict(getattr(error, "details", {}) or {})
+                map_error = str(details.get("map_error") or error)
             clients = getattr(self, "_cabinet_clients", {})
             if clients:
                 cabinet_states = {
@@ -759,6 +805,8 @@ class ControlServer:
             return {
                 "status": "ok",
                 "navigation_available": navigation["available"],
+                "map_available": map_available,
+                "map_error": map_error,
                 "cabinet_available": cabinet_available,
                 "cabinet_active": cabinet_active,
                 "cabinet_count": len(clients) if clients else 1,
@@ -1525,11 +1573,23 @@ class ControlServer:
         except Exception:  # noqa: BLE001 - shutdown diagnostics are best effort
             return
 
-    def _live_map_bounds(self) -> Optional[OccupancyGridBoundary]:
+    def _live_map_bounds(self) -> OccupancyGridBoundary:
         try:
             map_state = self._node.map_snapshot()
-        except ControlRequestError:
-            return None
+        except ControlRequestError as error:
+            raise ControlRequestError(
+                "Navigation cannot start until the occupancy map is available.",
+                503,
+                details={"map_error": str(error)},
+            ) from error
+        map_frame = map_state.get("frame_id")
+        if map_frame != self._robot_adapter.navigation_frame:
+            raise ControlRequestError(
+                "The occupancy map frame does not match the robot navigation "
+                f"frame; expected {self._robot_adapter.navigation_frame}, "
+                f"received {map_frame}.",
+                503,
+            )
         origin = map_state.get("origin", {})
         try:
             return OccupancyGridBoundary(
@@ -1540,8 +1600,11 @@ class ControlServer:
                 origin_y=float(origin["y"]),
                 origin_yaw=float(origin.get("yaw", 0.0)),
             )
-        except (KeyError, TypeError, ValueError, InventoryError):
-            return None
+        except (KeyError, TypeError, ValueError, InventoryError) as error:
+            raise ControlRequestError(
+                f"The occupancy map metadata is invalid: {error}",
+                503,
+            ) from error
 
     def _execute_navigation_task_owned(
         self,

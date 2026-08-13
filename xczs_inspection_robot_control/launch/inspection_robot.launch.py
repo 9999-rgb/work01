@@ -1,5 +1,6 @@
 """Start the XCZS simulation with a configurable cabinet inventory."""
 
+from functools import partial
 import math
 from pathlib import Path
 import re
@@ -9,6 +10,7 @@ import tempfile
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.actions import EmitEvent
 from launch.actions import IncludeLaunchDescription
 from launch.actions import LogInfo
 from launch.actions import OpaqueFunction
@@ -17,6 +19,7 @@ from launch.actions import SetLaunchConfiguration
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.event_handlers import OnShutdown
+from launch.events import Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command
 from launch.substitutions import FindExecutable
@@ -38,6 +41,26 @@ XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_XACRO_FILENAME = "control_cabinet.urdf.xacro"
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
+
+
+def _continue_or_shutdown_required_process(
+    event,
+    _context,
+    *,
+    process_label,
+    success_actions,
+):
+    """Continue a startup chain only after a required process succeeds."""
+    if event.returncode == 0:
+        return success_actions
+    reason = (
+        f"Required startup process '{process_label}' exited with code "
+        f"{event.returncode}; downstream robot nodes will not be started."
+    )
+    return [
+        LogInfo(msg=reason),
+        EmitEvent(event=Shutdown(reason=reason)),
+    ]
 
 
 def _launch_boolean(context, name):
@@ -876,18 +899,29 @@ def generate_launch_description() -> LaunchDescription:
     after_controllers = RegisterEventHandler(
         OnProcessExit(
             target_action=controllers,
-            on_exit=[
-                base_router,
-                trajectory_router,
-                keyboard,
-                control_gui,
-                move_group,
-                nav2,
-            ],
+            on_exit=partial(
+                _continue_or_shutdown_required_process,
+                process_label="ros2_control controller spawner",
+                success_actions=[
+                    base_router,
+                    trajectory_router,
+                    keyboard,
+                    control_gui,
+                    move_group,
+                    nav2,
+                ],
+            ),
         )
     )
     start_controllers = RegisterEventHandler(
-        OnProcessExit(target_action=spawn_robot, on_exit=[controllers])
+        OnProcessExit(
+            target_action=spawn_robot,
+            on_exit=partial(
+                _continue_or_shutdown_required_process,
+                process_label="Gazebo robot spawn",
+                success_actions=[controllers],
+            ),
+        )
     )
     cabinet_loader = OpaqueFunction(
         function=_cabinet_nodes,
@@ -906,14 +940,18 @@ def generate_launch_description() -> LaunchDescription:
         arguments
         + [
             adapter_configuration,
+            # Register the required-process handlers before either short-lived
+            # process can start.  In particular, a spawn failure may exit
+            # immediately and must not race handler registration while cabinet
+            # Xacros are being generated.
+            start_controllers,
+            after_controllers,
             gazebo_server,
             gazebo_client,
             robot_state_publisher,
             spawn_robot,
             operation_lease_coordinator,
             cabinet_loader,
-            start_controllers,
-            after_controllers,
             cleanup,
         ]
     )

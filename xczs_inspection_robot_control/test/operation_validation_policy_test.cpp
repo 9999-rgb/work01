@@ -18,6 +18,7 @@ TEST(OperationValidationPolicy, PlanningOnlyPreparationNeverOwnsBaseMotion)
       EXPECT_FALSE(policy.enter_manual_base_mode);
       EXPECT_FALSE(policy.execute_precision_docking);
       EXPECT_FALSE(policy.wait_for_scene_settle);
+      EXPECT_FALSE(policy.requires_physical_motion_resources);
     }
   }
 }
@@ -30,6 +31,7 @@ TEST(OperationValidationPolicy, PhysicalPreparationUsesConfiguredMotionLayers)
   EXPECT_TRUE(task_layer_navigation.enter_manual_base_mode);
   EXPECT_TRUE(task_layer_navigation.execute_precision_docking);
   EXPECT_TRUE(task_layer_navigation.wait_for_scene_settle);
+  EXPECT_TRUE(task_layer_navigation.requires_physical_motion_resources);
 
   const auto embedded_navigation = operation_preparation_policy(
     false, true, true);
@@ -37,12 +39,32 @@ TEST(OperationValidationPolicy, PhysicalPreparationUsesConfiguredMotionLayers)
   EXPECT_TRUE(embedded_navigation.enter_manual_base_mode);
   EXPECT_TRUE(embedded_navigation.execute_precision_docking);
   EXPECT_TRUE(embedded_navigation.wait_for_scene_settle);
+  EXPECT_TRUE(embedded_navigation.requires_physical_motion_resources);
 
   const auto no_station = operation_preparation_policy(false, false, false);
   EXPECT_FALSE(no_station.execute_embedded_navigation);
   EXPECT_TRUE(no_station.enter_manual_base_mode);
   EXPECT_FALSE(no_station.execute_precision_docking);
   EXPECT_TRUE(no_station.wait_for_scene_settle);
+  EXPECT_TRUE(no_station.requires_physical_motion_resources);
+}
+
+TEST(OperationValidationPolicy, AcceptedOrPendingGoalDoesNotOwnMotionResources)
+{
+  EXPECT_FALSE(physical_motion_resources_are_owned(true, false, true));
+  EXPECT_FALSE(physical_motion_resources_are_owned(true, false, false));
+}
+
+TEST(OperationValidationPolicy, ActivePhysicalGoalOwnsResourcesAfterLease)
+{
+  EXPECT_TRUE(physical_motion_resources_are_owned(true, true, true));
+  EXPECT_FALSE(physical_motion_resources_are_owned(true, true, false));
+}
+
+TEST(OperationValidationPolicy, PlanningOnlyNeverOwnsMotionResources)
+{
+  EXPECT_FALSE(physical_motion_resources_are_owned(false, false, true));
+  EXPECT_FALSE(physical_motion_resources_are_owned(false, true, true));
 }
 
 TEST(OperationValidationPolicy, UnverifiedControlRequiresPlanningOnly)

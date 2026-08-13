@@ -120,9 +120,11 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 
 设置了 `XCZS_SWAGGER_TOKEN` 时，`/docs` 与 `/redoc` 需携带 `?token=` 访问。
 
-除 `/auth/login`、`/health`、传感器流与静态页面外，所有端点需要 JWT Bearer Token
-（`Authorization: Bearer <token>`，登录接口为 `POST /auth/login`）。SSE 端点
-`/task/events` 因 EventSource 无法携带 Header，用 `?token=` 传参。
+只有 `/auth/login`、`/health` 与监控静态页面公开；控制接口、相机/LiDAR
+传感器流和 Zenoh SSE 均需要 JWT Bearer Token（`Authorization: Bearer <token>`，
+登录接口为 `POST /auth/login`）。浏览器原生 EventSource/WebSocket 无法携带自定义
+Header，因此任务 SSE、Zenoh SSE、MJPEG 和 LiDAR WebSocket 使用 `?token=` 传参；
+普通 REST 接口不接受 URL 中的 token。
 
 主要接口（历史表格，字段以 OpenAPI 为准）：
 
@@ -144,6 +146,7 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 
 ```bash
 curl -sS -X POST http://localhost:8090/task/navigate \
+  -H "Authorization: Bearer $XCZS_CONTROL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"cabinet":"cabinet_a","control_id":"box_11_button_1"}'
 ```
@@ -154,6 +157,7 @@ curl -sS -X POST http://localhost:8090/task/navigate \
 
 ```bash
 curl -sS -X POST http://localhost:8090/task/operate \
+  -H "Authorization: Bearer $XCZS_CONTROL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"cabinet":"cabinet_a","control_id":"box_10_button_1","command":"press","force":5.0}'
 ```
@@ -162,6 +166,7 @@ curl -sS -X POST http://localhost:8090/task/operate \
 
 ```bash
 curl -sS -X POST http://localhost:8090/task/operate \
+  -H "Authorization: Bearer $XCZS_CONTROL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"cabinet":"cabinet_a","control_id":"box_10_button_1","command":"press","force":4.0}'
 ```
@@ -170,6 +175,7 @@ curl -sS -X POST http://localhost:8090/task/operate \
 
 ```bash
 curl -sS -X POST http://localhost:8090/task/reset \
+  -H "Authorization: Bearer $XCZS_CONTROL_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"cabinet":"cabinet_a"}'
 ```
@@ -296,8 +302,10 @@ steps:
 统一入口运行后，先执行不会改变系统状态的合同检查：
 
 ```bash
-scripts/validate_recording_replay
+XCZS_CONTROL_TOKEN=<login-token> scripts/validate_recording_replay
 ```
+
+也可用 `XCZS_CONTROL_USERNAME` 和 `XCZS_CONTROL_PASSWORD` 让脚本先调用 `/auth/login`；浏览器中的当前 token 可直接通过 `XCZS_CONTROL_TOKEN` 传入。
 
 默认模式只读取列表、详情、时间线和状态，并用必然无效的 JSON 验证 POST 路由，不开始录制或回放。显式加入 `--runtime` 后，脚本会创建短时被动记录，检查 Git/配置哈希/inventory/时间线/scenario，暂停隔离数据回放，确认所有回放 Topic 均位于 `/xczs/replay/<recording_id>/`，并用一次零速度请求验证后端只读互锁；它仍不会导航或操作机械臂：
 
@@ -347,7 +355,7 @@ NAV2_PARAMS_FILE=/path/to/nav2_params.yaml \
 ./run_all.sh
 ```
 
-当前 XCZS 仿真 bringup 只是默认 profile，不是通用任务层的硬依赖。还可用 `USE_SIM_TIME`、`MOVEIT_ENABLED`、`CABINET_BRINGUP`、`SPAWN_CABINET`、`SPAWN_Z` 和 `CABINET_POSE_SOURCE` 控制启动边界。`XCZS_PREFLIGHT_ONLY=true` 只检查最终组合需要的文件、依赖和参数，不启动任何进程；被关闭的子系统不会再强制要求其模型文件存在。
+当前 XCZS 仿真 bringup 只是默认 profile，不是通用任务层的硬依赖。还可用 `USE_SIM_TIME`、`MOVEIT_ENABLED`、`CABINET_BRINGUP`、`SPAWN_CABINET`、`SPAWN_Z` 和 `CABINET_POSE_SOURCE` 控制启动边界。`XCZS_PREFLIGHT_ONLY=true` 会在不启动进程的前提下检查最终组合需要的文件、参数、ROS 包、Web/ROS Python 导入、跨 YAML profile 合同、Zenoh 可执行文件以及预定端口是否可绑定。被关闭的子系统不会强制要求其专属模型文件或 Web 依赖存在。正式启动会继续等待 Web HTTP 就绪，以及 Nav2 Action、occupancy map 和需要的柜体 Action 同时可用；可用 `XCZS_STARTUP_TIMEOUT_SEC`、`XCZS_ROBOT_READY_TIMEOUT_SEC` 和 `XCZS_SHUTDOWN_TIMEOUT_SEC` 调整有界等待时间。
 
 如果新机器人已有自己的 Gazebo、controller、MoveIt 和 Nav2 bringup，先启动它，再以 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false` 运行本入口。此时本项目仍可加载设备实例、位姿权威、碰撞场景、操作节点和 Web 任务层；新机器人必须提供适配文件中声明的 ROS 2 接口。内置键盘控制在该模式下会明确拒绝启动，不会静默失效；请使用动态 Web 控制或外部机器人自己的手动界面。
 
@@ -361,7 +369,7 @@ NAV2_PARAMS_FILE=/path/to/nav2_params.yaml \
 4. 先运行与机型无关的 `scripts/check_adapter_contract`；当前 XCZS profile 还应运行 `scripts/check_cabinet_model` 和单元测试，再用统一入口做 launch 冒烟；
 5. 重新标定工位与控件能力，只有完整接近、操作、物理反馈和撤回均通过的控件才设为 `operable=true`。
 
-Web 任务网关与仿真 launch 必须使用同一份 instances/scene 参数包。控制 API 默认且强制绑定 loopback，不会把未鉴权的机器人控制端口暴露到局域网。浏览器 Origin 默认限制为当前 monitor 端口；更换静态页面地址时可设置逗号分隔的 `XCZS_CONTROL_ORIGINS`。
+Web 任务网关与仿真 launch 必须使用同一份 instances/scene 参数包。统一入口默认监听 `0.0.0.0:8090`，便于局域网访问；控制路由默认启用 JWT 鉴权。未配置 `XCZS_SECRET_KEY` 时每次启动生成强随机密钥，服务重启后旧 token 失效；需要持久会话时应显式设置至少 32 字符的密钥，JWT 算法固定为 `HS256`，并按需用 `CONTROL_HOST` 收紧监听地址。浏览器 Origin 默认限制为同端口的 localhost 地址；更换静态页面地址时可设置逗号分隔的 `XCZS_CONTROL_ORIGINS`。启动脚本不会停止已有 Zenoh 或 Web 进程；二者占用预定端口时预检会显示可获取的监听进程信息并退出。
 
 ## 安全与已知边界
 

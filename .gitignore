@@ -18,6 +18,7 @@ __pycache__/
 
 # SQLite database (generated)
 /jiang/data/
+/jiang/tmp/
 
 # CMake generated files
 CMakeFiles/

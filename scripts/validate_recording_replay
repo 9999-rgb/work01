@@ -4,6 +4,9 @@
 set -euo pipefail
 
 API_URL="${XCZS_CONTROL_API_URL:-http://127.0.0.1:8090}"
+API_TOKEN="${XCZS_CONTROL_TOKEN:-}"
+AUTH_USERNAME="${XCZS_CONTROL_USERNAME:-}"
+AUTH_PASSWORD="${XCZS_CONTROL_PASSWORD:-}"
 RUN_RUNTIME="false"
 ALLOW_MOTION="false"
 INCLUDE_SENSORS="false"
@@ -16,6 +19,7 @@ RESPONSE_CODE=""
 OWN_RECORDING="false"
 OWN_REPLAY="false"
 TEMP_DIR=""
+AUTH_CURL_ARGS=()
 
 usage() {
   cat <<'EOF'
@@ -26,6 +30,9 @@ usage() {
 
 选项:
   --api URL                 控制服务地址（默认 http://127.0.0.1:8090）
+  --token TOKEN             JWT Bearer token（也可用 XCZS_CONTROL_TOKEN）
+  --username NAME           登录用户名（也可用 XCZS_CONTROL_USERNAME）
+  --password PASSWORD       登录密码（建议使用 XCZS_CONTROL_PASSWORD）
   --runtime                 创建一段被动记录并验证隔离数据回放和只读互锁
   --include-sensors         与 --runtime 一起记录相机和激光雷达 Topic
   --record-seconds N        被动记录秒数，范围 5..30（默认 8）
@@ -69,6 +76,21 @@ while [[ $# -gt 0 ]]; do
     --runtime)
       RUN_RUNTIME="true"
       shift
+      ;;
+    --token)
+      [[ $# -ge 2 ]] || fail "--token 缺少 TOKEN"
+      API_TOKEN="$2"
+      shift 2
+      ;;
+    --username)
+      [[ $# -ge 2 ]] || fail "--username 缺少 NAME"
+      AUTH_USERNAME="$2"
+      shift 2
+      ;;
+    --password)
+      [[ $# -ge 2 ]] || fail "--password 缺少 PASSWORD"
+      AUTH_PASSWORD="$2"
+      shift 2
       ;;
     --include-sensors)
       INCLUDE_SENSORS="true"
@@ -137,6 +159,54 @@ require_command curl
 require_command jq
 require_command mktemp
 
+if [[ -z "$API_TOKEN" && -z "$AUTH_PASSWORD" && -n "${XCZS_ADMIN_PASSWORD:-}" ]]; then
+  AUTH_PASSWORD="$XCZS_ADMIN_PASSWORD"
+fi
+if [[ -n "$API_TOKEN" && ( -n "$AUTH_USERNAME" || -n "$AUTH_PASSWORD" ) ]]; then
+  fail "--token 不能与用户名/密码同时使用"
+fi
+if [[ -n "$AUTH_PASSWORD" && -z "$AUTH_USERNAME" ]]; then
+  AUTH_USERNAME="admin"
+fi
+if [[ -n "$AUTH_USERNAME" && -z "$AUTH_PASSWORD" ]]; then
+  fail "提供用户名时必须同时提供密码"
+fi
+
+configure_auth() {
+  local login_body=""
+  local raw_response=""
+  local response_code=""
+  if [[ -n "$API_TOKEN" ]]; then
+    AUTH_CURL_ARGS=(-H "Authorization: Bearer $API_TOKEN")
+    return
+  fi
+  if [[ -z "$AUTH_USERNAME" ]]; then
+    AUTH_CURL_ARGS=()
+    return
+  fi
+  login_body="$(
+    jq -cn --arg username "$AUTH_USERNAME" --arg password "$AUTH_PASSWORD" \
+      '{username:$username,password:$password}'
+  )"
+  raw_response="$(
+    curl -sS --connect-timeout 5 --max-time 30 \
+      -H 'Content-Type: application/json' -X POST --data-binary @- \
+      -w $'\n%{http_code}' "$API_URL/auth/login" <<<"$login_body"
+  )" || fail "POST /auth/login 请求失败"
+  response_code="${raw_response##*$'\n'}"
+  RESPONSE_BODY="${raw_response%$'\n'*}"
+  if [[ "$response_code" != "200" ]]; then
+    jq . <<<"$RESPONSE_BODY" >&2 2>/dev/null || printf '%s\n' "$RESPONSE_BODY" >&2
+    fail "POST /auth/login 期望 HTTP 200，实际 $response_code"
+  fi
+  API_TOKEN="$(jq -er '.access_token | select(type == "string" and length > 0)' \
+    <<<"$RESPONSE_BODY")" || fail "/auth/login 未返回 access_token"
+  AUTH_CURL_ARGS=(-H "Authorization: Bearer $API_TOKEN")
+  printf '已以用户 %s 登录。\n' "$AUTH_USERNAME"
+}
+
+configure_auth
+
 TEMP_DIR="$(mktemp -d /tmp/xczs-recording-replay.XXXXXX)"
 
 cleanup() {
@@ -144,11 +214,13 @@ cleanup() {
   trap - EXIT INT TERM
   if [[ "$OWN_REPLAY" == "true" ]]; then
     curl -sS --connect-timeout 2 --max-time 10 \
+      "${AUTH_CURL_ARGS[@]}" \
       -H 'Content-Type: application/json' -X POST --data '{}' \
       "$API_URL/replay/cancel" >/dev/null 2>&1 || true
   fi
   if [[ "$OWN_RECORDING" == "true" ]]; then
     curl -sS --connect-timeout 2 --max-time 15 \
+      "${AUTH_CURL_ARGS[@]}" \
       -H 'Content-Type: application/json' -X POST --data '{}' \
       "$API_URL/recording/stop" >/dev/null 2>&1 || true
   fi
@@ -172,12 +244,14 @@ request_json() {
   if [[ -n "$body" ]]; then
     code="$(
       curl -sS --connect-timeout 5 --max-time 30 \
+        "${AUTH_CURL_ARGS[@]}" \
         -H 'Content-Type: application/json' -X "$method" --data "$body" \
         -o "$output_file" -w '%{http_code}' "$API_URL$path"
     )" || fail "$method $path 请求失败"
   else
     code="$(
       curl -sS --connect-timeout 5 --max-time 30 \
+        "${AUTH_CURL_ARGS[@]}" \
         -X "$method" -o "$output_file" -w '%{http_code}' \
         "$API_URL$path"
     )" || fail "$method $path 请求失败"
@@ -193,6 +267,9 @@ expect_code() {
   local operation="$2"
   if [[ "$RESPONSE_CODE" != "$expected" ]]; then
     jq . <<<"$RESPONSE_BODY" >&2
+    if [[ "$RESPONSE_CODE" == "401" || "$RESPONSE_CODE" == "403" ]]; then
+      fail "鉴权失败：请用 --token，或设置 XCZS_CONTROL_USERNAME/XCZS_CONTROL_PASSWORD"
+    fi
     fail "$operation 期望 HTTP $expected，实际 $RESPONSE_CODE"
   fi
 }

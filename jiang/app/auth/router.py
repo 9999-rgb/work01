@@ -21,7 +21,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_admin
-from app.auth.models import User
+from app.auth.models import ROLE_ADMIN, User
 from app.auth.schemas import (
     LoginRequest,
     TokenResponse,
@@ -169,26 +169,27 @@ async def update_user(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"用户 {user_id} 不存在。",
         )
+    # 防止把最后一个 active admin 禁用或降级，导致系统无人可管理。
+    # 必须在赋值前保留原角色，否则 admin -> operator 会绕过检查。
+    was_active_admin = user.role == ROLE_ADMIN and user.is_active
+    next_role = body.role if body.role is not None else user.role
+    next_is_active = (
+        body.is_active if body.is_active is not None else user.is_active
+    )
+    will_lose_admin = was_active_admin and not (
+        next_role == ROLE_ADMIN and next_is_active
+    )
+    if will_lose_admin and await _last_admin_would_be_locked_out(
+        session, user_id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="不能禁用或降级最后一个 admin 账号。",
+        )
     if body.password is not None:
         user.hashed_password = hash_password(body.password)
-    if body.role is not None:
-        user.role = body.role
-    if body.is_active is not None:
-        user.is_active = body.is_active
-    # 防止把最后一个 active admin 禁用或降级，导致系统无人可管理。
-    # 仅当修改的是 admin 且变更会移除其有效 admin 身份时才检查。
-    if user.role == "admin":
-        will_lose_admin = (
-            (body.is_active is not None and not body.is_active)
-            or (body.role is not None and body.role != "admin")
-        )
-        if will_lose_admin and await _last_admin_would_be_locked_out(
-            session, user_id
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="不能禁用或降级最后一个 admin 账号。",
-            )
+    user.role = next_role
+    user.is_active = next_is_active
     await session.commit()
     await session.refresh(user)
     return UserResponse.model_validate(user)
@@ -230,7 +231,10 @@ async def _last_admin_would_be_locked_out(
     count_result = await session.execute(
         select(func.count())
         .select_from(User)
-        .where(User.role == "admin", User.is_active.is_(True))
+        .where(
+            User.id != exclude_user_id,
+            User.role == ROLE_ADMIN,
+            User.is_active.is_(True),
+        )
     )
-    active_admin_count = count_result.scalar_one()
-    return active_admin_count <= 1
+    return count_result.scalar_one() == 0

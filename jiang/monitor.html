@@ -758,8 +758,8 @@
   <div class="control-section">
     <h4>🔐 用户登录</h4>
     <div class="ctrl-connect">
-      <input type="text" id="loginUser" placeholder="用户名" style="width:90px">
-      <input type="password" id="loginPass" placeholder="密码" style="width:110px">
+      <input type="text" id="loginUser" placeholder="用户名" autocomplete="username" style="width:90px">
+      <input type="password" id="loginPass" placeholder="密码" autocomplete="current-password" style="width:110px">
       <button class="btn btn-primary" id="btnLogin" style="font-size:11px;padding:4px 10px">登录</button>
     </div>
     <span class="ctrl-status" id="loginStatus">未登录</span>
@@ -1097,6 +1097,14 @@ let replayTimelineRequestInFlightId = null;
 
 // ─── DOM refs ────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
+
+function textElement(tagName, className, text) {
+  const element = document.createElement(tagName);
+  if (className) element.className = className;
+  element.textContent = String(text);
+  return element;
+}
+
 const statusDot    = $('statusDot');
 const statusText   = $('statusText');
 const btnConnect   = $('btnConnect');
@@ -1144,9 +1152,13 @@ $('ctrlUrl').value = `${autoProto}//${autoHost}:${unifiedPort}`;
 // ─── Logging ─────────────────────────────────────────────────
 function log(level, msg) {
   const el = document.createElement('div');
-  el.className = `log-entry ${level}`;
+  const normalizedLevel = ['ok', 'err', 'info', 'data', 'warn'].includes(level)
+    ? level
+    : 'info';
+  el.className = `log-entry ${normalizedLevel}`;
   const ts = new Date().toLocaleTimeString();
-  el.innerHTML = `<span class="log-ts">[${ts}]</span>${msg}`;
+  el.appendChild(textElement('span', 'log-ts', `[${ts}]`));
+  el.appendChild(document.createTextNode(String(msg)));
   logPanel.appendChild(el);
   logPanel.scrollTop = logPanel.scrollHeight;
   while (logPanel.children.length > 100) logPanel.removeChild(logPanel.firstChild);
@@ -1169,14 +1181,14 @@ function setStatus(state, text) {
 // ─── Connection ──────────────────────────────────────────────
 function doConnect() {
   if (connected) return;
-  const baseUrl = ($('restUrl').value || 'http://localhost:8001').trim().replace(/\/+$/, '');
+  const baseUrl = ($('restUrl').value || 'http://localhost:8090').trim().replace(/\/+$/, '');
   connected = true;
   setStatus('connected', `已连接 (${baseUrl})`);
   btnConnect.disabled = true;
   btnDisconnect.disabled = false;
   sessionInfo.textContent = baseUrl;
   log('ok', `REST API ${baseUrl}`);
-  connectSensorStreams();
+  if (authToken) connectSensorStreams();
   toast('连接成功');
 }
 
@@ -1188,7 +1200,7 @@ function doDisconnect() {
   }
   disconnectSensorStreams();
   subs.clear();
-  dataGrid.innerHTML = '';
+  dataGrid.replaceChildren();
   dataGrid.style.display = 'none';
   emptyState.style.display = 'flex';
   connected = false;
@@ -1207,8 +1219,9 @@ function subscribe(topic) {
   if (subs.has(topic)) { toast(`已订阅 ${topic}`, 'err'); return; }
 
   const baseUrl = ($('restUrl').value || 'http://localhost:8090').trim().replace(/\/+$/, '');
-  const url = `${baseUrl}/sse/${topic}`;
-  log('info', `Subscribing SSE ${url} …`);
+  const encodedTopic = topic.split('/').map(encodeURIComponent).join('/');
+  const url = authenticatedUrl(baseUrl, `/sse/${encodedTopic}`);
+  log('info', `Subscribing SSE ${baseUrl}/sse/${encodedTopic} …`);
 
   try {
     const es = new EventSource(url);
@@ -1265,6 +1278,22 @@ function unsubscribe(topic) {
   log('info', `取消订阅: ${topic}`);
 }
 
+function reconnectAuthenticatedStreams() {
+  if (!connected) return;
+  const topics = Array.from(subs.keys());
+  for (const entry of subs.values()) {
+    if (entry._errTimer) clearTimeout(entry._errTimer);
+    try { entry.es.close(); } catch (_) {}
+  }
+  subs.clear();
+  dataGrid.replaceChildren();
+  dataGrid.style.display = 'none';
+  emptyState.style.display = 'flex';
+  renderSubList();
+  topics.forEach(subscribe);
+  connectSensorStreams();
+}
+
 function ensureCard(topic) {
   const entry = subs.get(topic);
   if (!entry) return;
@@ -1276,14 +1305,19 @@ function ensureCard(topic) {
   const card = document.createElement('div');
   card.className = 'data-card';
   card.id = `card-${entry.cardId}`;
-  card.innerHTML =
-    `<div class="data-card-header">
-      <span class="topic-name">${topic}</span>
-      <span class="ts" id="ts-${entry.cardId}">等待数据…</span>
-    </div>
-    <div class="data-card-body" id="body-${entry.cardId}">
-      <div style="color:var(--text-dim);font-size:12px">等待数据…</div>
-    </div>`;
+  const header = document.createElement('div');
+  header.className = 'data-card-header';
+  header.appendChild(textElement('span', 'topic-name', topic));
+  const timestamp = textElement('span', 'ts', '等待数据…');
+  timestamp.id = `ts-${entry.cardId}`;
+  header.appendChild(timestamp);
+  const body = document.createElement('div');
+  body.className = 'data-card-body';
+  body.id = `body-${entry.cardId}`;
+  const waiting = textElement('div', '', '等待数据…');
+  waiting.style.cssText = 'color:var(--text-dim);font-size:12px';
+  body.appendChild(waiting);
+  card.append(header, body);
   dataGrid.appendChild(card);
 }
 
@@ -1307,7 +1341,7 @@ function onData(topic, jsonStr) {
   if (entry.history.length > historyMax) entry.history.shift();
 
   renderCard(topic, entry);
-  log('data', `<span style="color:var(--text-dim)">[${ts}]</span> ${topic}`);
+  log('data', `[${ts}] ${topic}`);
 }
 
 function renderCard(topic, entry) {
@@ -1320,21 +1354,18 @@ function renderCard(topic, entry) {
   tsEl.textContent = latest.ts;
 
   const show = entry.history.slice(-15).reverse();
-  bodyEl.innerHTML = show.map(h => {
-    const pretty = syntaxHighlight(JSON.stringify(h.data, null, 2));
-    return `<div class="entry"><span class="entry-ts">${h.ts}</span>\n<pre style="margin:2px 0 0 0;white-space:pre-wrap">${pretty}</pre></div>`;
-  }).join('');
+  const rows = show.map(historyEntry => {
+    const row = document.createElement('div');
+    row.className = 'entry';
+    row.appendChild(textElement('span', 'entry-ts', historyEntry.ts));
+    const pre = document.createElement('pre');
+    pre.style.cssText = 'margin:2px 0 0 0;white-space:pre-wrap';
+    pre.textContent = JSON.stringify(historyEntry.data, null, 2);
+    row.appendChild(pre);
+    return row;
+  });
+  bodyEl.replaceChildren(...rows);
   bodyEl.scrollTop = 0;
-}
-
-function syntaxHighlight(json) {
-  return json
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"([^"]+)":/g, '<span class="key">"$1"</span>:')
-    .replace(/:\s*(-?\d+\.?\d*(?:e[+-]?\d+)?)/gi, ': <span class="number">$1</span>')
-    .replace(/:\s*"([^"]*)"/g, ': <span class="string">"$1"</span>')
-    .replace(/:\s*(true|false)/g, ': <span class="bool">$1</span>')
-    .replace(/:\s*null/g, ': <span class="null">null</span>');
 }
 
 // ─── Camera and Lidar Streams ───────────────────────────────
@@ -1343,8 +1374,17 @@ function sensorBaseUrl() {
     .trim().replace(/\/+$/, '');
 }
 
-function websocketUrl(baseUrl, path) {
+function authenticatedUrl(baseUrl, path, query = {}) {
   const url = new URL(baseUrl + path);
+  Object.entries(query).forEach(([name, value]) => {
+    url.searchParams.set(name, String(value));
+  });
+  if (authToken) url.searchParams.set('token', authToken);
+  return url.toString();
+}
+
+function websocketUrl(baseUrl, path) {
+  const url = new URL(authenticatedUrl(baseUrl, path));
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   return url.toString();
 }
@@ -1401,16 +1441,24 @@ function connectCameraStream() {
     clearTimeout(cameraReconnectTimer);
     cameraReconnectTimer = null;
   }
-  cameraStream.src =
-    `${sensorBaseUrl()}/camera.mjpg?t=${Date.now()}`;
+  cameraStream.src = authenticatedUrl(
+    sensorBaseUrl(),
+    '/camera.mjpg',
+    {t: Date.now()}
+  );
 }
 
 async function checkSensorHealth() {
   if (!sensorEnabled) return;
   try {
-    const response = await fetch(`${sensorBaseUrl()}/health`, {
-      cache: 'no-store'
+    const response = await fetch(`${sensorBaseUrl()}/sensors/health`, {
+      cache: 'no-store',
+      headers: authHeaders()
     });
+    if (response.status === 401) {
+      handleTokenExpired();
+      return;
+    }
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const health = await response.json();
     if (health.camera && health.camera.ready) {
@@ -1562,17 +1610,27 @@ function renderSubList() {
   const keys = Array.from(subs.keys());
   subCount.textContent = keys.length;
   if (keys.length === 0) {
-    subList.innerHTML = '<div style="color:var(--text-dim);font-size:12px;padding:8px 0">暂无订阅</div>';
+    const empty = textElement('div', '', '暂无订阅');
+    empty.style.cssText =
+      'color:var(--text-dim);font-size:12px;padding:8px 0';
+    subList.replaceChildren(empty);
     return;
   }
-  subList.innerHTML = keys.map(topic => {
+  const items = keys.map(topic => {
     const entry = subs.get(topic);
     const count = entry ? entry.history.length : 0;
-    return `<div class="sub-item">
-      <span>${topic}<span class="count">${count}</span></span>
-      <button class="unsub-btn" onclick="unsubscribe('${topic}')" title="取消订阅">✕</button>
-    </div>`;
-  }).join('');
+    const item = document.createElement('div');
+    item.className = 'sub-item';
+    const label = textElement('span', '', topic);
+    label.appendChild(textElement('span', 'count', count));
+    const button = textElement('button', 'unsub-btn', '✕');
+    button.type = 'button';
+    button.title = '取消订阅';
+    button.addEventListener('click', () => unsubscribe(topic));
+    item.append(label, button);
+    return item;
+  });
+  subList.replaceChildren(...items);
 }
 
 // ─── Custom Subscribe ────────────────────────────────────────
@@ -1602,7 +1660,7 @@ function displayLimitsForJoint(name) {
 function buildJointBars() {
   const container = document.getElementById('jointBarContainer');
   if (!container) return;
-  container.innerHTML = jointNames.map((name, i) => {
+  const rows = jointNames.map((name, i) => {
     const limits = displayLimitsForJoint(name);
     const spec = manualJointSpecs.find(joint => joint.name === name);
     const initial = spec ? spec.default_position : 0.0;
@@ -1610,12 +1668,23 @@ function buildJointBars() {
     const zeroPct = span > 0
       ? ((initial - limits[0]) / span) * 100
       : 50;
-    return `<div class="joint-row">
-      <span class="joint-label">${name}</span>
-      <div class="joint-track"><div class="joint-fill" id="jointFill${i}" style="width:${zeroPct}%"></div></div>
-      <span class="joint-val" id="jointVal${i}">${initial.toFixed(2)}</span>
-    </div>`;
-  }).join('');
+    const row = document.createElement('div');
+    row.className = 'joint-row';
+    row.appendChild(textElement('span', 'joint-label', name));
+    const track = document.createElement('div');
+    track.className = 'joint-track';
+    const fill = document.createElement('div');
+    fill.className = 'joint-fill';
+    fill.id = `jointFill${i}`;
+    fill.style.width = `${zeroPct}%`;
+    track.appendChild(fill);
+    row.appendChild(track);
+    const value = textElement('span', 'joint-val', initial.toFixed(2));
+    value.id = `jointVal${i}`;
+    row.appendChild(value);
+    return row;
+  });
+  container.replaceChildren(...rows);
   document.getElementById('jointBars').style.display = 'block';
 }
 
@@ -1695,7 +1764,10 @@ let ctrlBaseUrl = (() => {
   return `${proto}//${host}:${port}`;
 })();
 // ─── 登录 token ───────────────────────────────────────────────
-let authToken = localStorage.getItem('xczs_token') || '';
+let authToken = sessionStorage.getItem('xczs_token') || '';
+// 清理旧版长期保存的 token，避免共用浏览器在关闭页面后
+// 仍保留机器控制凭证。
+localStorage.removeItem('xczs_token');
 
 // 统一的认证请求头：所有 fetch 调用共用，避免遗漏 Authorization。
 function authHeaders(extra) {
@@ -1734,15 +1806,18 @@ async function doLogin() {
     const body = await response.json();
     if (!response.ok) { throw new Error(body.error || `HTTP ${response.status}`); }
     authToken = body.access_token;
-    localStorage.setItem('xczs_token', authToken);
+    sessionStorage.setItem('xczs_token', authToken);
+    $('loginPass').value = '';
     toast(`✓ 登录成功: ${body.user.username} (${body.user.role})`);
     updateLoginStatus();
     connectTaskEvents();
+    reconnectAuthenticatedStreams();
     // 登录成功后自动刷新控制服务连接。
     testControlConnection();
   } catch (e) {
     authToken = '';
-    localStorage.removeItem('xczs_token');
+    sessionStorage.removeItem('xczs_token');
+    $('loginPass').value = '';
     updateLoginStatus();
     toast('登录失败: ' + e.message, 'err');
   }
@@ -1976,8 +2051,9 @@ function connectTaskEvents() {
   taskEventSource = null;
   if (!authToken) return; // 未登录则等待登录后再连接
   // EventSource 无法携带 Header，鉴权 token 通过查询参数传递。
-  const tokenParam = `?token=${encodeURIComponent(authToken)}`;
-  taskEventSource = new EventSource(`${ctrlBaseUrl}/task/events${tokenParam}`);
+  taskEventSource = new EventSource(
+    authenticatedUrl(ctrlBaseUrl, '/task/events')
+  );
   [
     'task_accepted',
     'task_progress',
@@ -2187,10 +2263,15 @@ async function postJointTrajectory(positions) {
   } catch (e) { ctrlConnected = false; toast('控制服务器连接失败', 'err'); return false; }
 }
 
-// token 失效统一处理（避免散落各处的 localStorage.removeItem）。
+// token 失效统一处理。
 function handleTokenExpired() {
   authToken = '';
-  localStorage.removeItem('xczs_token');
+  sessionStorage.removeItem('xczs_token');
+  for (const entry of subs.values()) {
+    if (entry._errTimer) clearTimeout(entry._errTimer);
+    try { entry.es.close(); } catch (_) {}
+  }
+  disconnectSensorStreams();
   updateLoginStatus();
   connectTaskEvents();
   toast('登录已失效，请重新登录', 'warn');
@@ -5176,31 +5257,40 @@ stopButton.addEventListener('click', event => {
 function buildJointSliders() {
   const ct = $('jointSliders'); if (!ct) return;
   if (armJointSpecs.length === 0) {
-    ct.innerHTML = (
-      '<div style="color:var(--text-dim);font-size:11px">' +
-      '等待 /robot/capabilities…</div>'
-    );
+    const waiting = textElement('div', '', '等待 /robot/capabilities…');
+    waiting.style.cssText = 'color:var(--text-dim);font-size:11px';
+    ct.replaceChildren(waiting);
     return;
   }
-  ct.innerHTML = armJointSpecs.map((spec, i) => {
+  const rows = armJointSpecs.map((spec, i) => {
     const manualIndex = manualJointSpecs.findIndex(
       joint => joint.name === spec.name
     );
     const value = manualPositions[manualIndex] ?? spec.default_position;
-    return (
-    '<div class="joint-slider-row">' +
-      '<span class="joint-slider-label">' + spec.name + '</span>' +
-      '<input type="range" id="armSlider' + i + '" min="' +
-        spec.min_position + '" max="' + spec.max_position + '" value="' +
-        value + '" step="' + jointStep(spec) + '" title="范围 [' +
-        spec.min_position + ', ' + spec.max_position + '] · 复位 ' +
-        spec.default_position + '" ' +
-        'oninput="onArmSlider(' + i + ', this.value)">' +
-      '<span class="joint-slider-val" id="armSliderVal' + i + '">' +
-        value.toFixed(2) + '</span>' +
-    '</div>'
+    const row = document.createElement('div');
+    row.className = 'joint-slider-row';
+    row.appendChild(textElement('span', 'joint-slider-label', spec.name));
+    const input = document.createElement('input');
+    input.type = 'range';
+    input.id = `armSlider${i}`;
+    input.min = String(spec.min_position);
+    input.max = String(spec.max_position);
+    input.value = String(value);
+    input.step = String(jointStep(spec));
+    input.title = `范围 [${spec.min_position}, ${spec.max_position}] · ` +
+      `复位 ${spec.default_position}`;
+    input.addEventListener('input', () => onArmSlider(i, input.value));
+    row.appendChild(input);
+    const valueElement = textElement(
+      'span',
+      'joint-slider-val',
+      value.toFixed(2)
     );
-  }).join('');
+    valueElement.id = `armSliderVal${i}`;
+    row.appendChild(valueElement);
+    return row;
+  });
+  ct.replaceChildren(...rows);
 }
 
 function onArmSlider(idx, val) {
@@ -5248,20 +5338,23 @@ function buildGripperControls() {
   const specs = $('gripperJointSpecs');
   if (!section || !specs) return;
   section.style.display = gripperJointSpecs.length ? '' : 'none';
-  specs.innerHTML = gripperJointSpecs.map(spec => {
+  const rows = gripperJointSpecs.map(spec => {
     const openText = spec.open_position === null
       ? '未配置'
       : spec.open_position.toFixed(3);
-    return (
-      '<div class="gripper-joint-spec">' +
-        '<strong>' + spec.name + '</strong>' +
-        '<span>范围 [' + spec.min_position.toFixed(3) + ', ' +
-          spec.max_position.toFixed(3) + '] · 复位 ' +
-          spec.default_position.toFixed(3) + ' · 打开 ' + openText +
-        '</span>' +
-      '</div>'
-    );
-  }).join('');
+    const row = document.createElement('div');
+    row.className = 'gripper-joint-spec';
+    row.appendChild(textElement('strong', '', spec.name));
+    row.appendChild(textElement(
+      'span',
+      '',
+      `范围 [${spec.min_position.toFixed(3)}, ` +
+        `${spec.max_position.toFixed(3)}] · 复位 ` +
+        `${spec.default_position.toFixed(3)} · 打开 ${openText}`
+    ));
+    return row;
+  });
+  specs.replaceChildren(...rows);
   $('btnGripperOpen').disabled = gripperJointSpecs.every(
     spec => spec.open_position === null
   );

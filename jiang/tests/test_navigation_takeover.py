@@ -172,6 +172,7 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
     node._map_state = None
     node._robot_pose = None
     node._robot_pose_sequence = 0
+    node._cabinet_pose_validity = {}
     node._navigation_frame = "map"
     node._navigation_base_frame = "base_link"
     node._manual_linear_axis = "y"
@@ -231,6 +232,7 @@ class NavigationTakeoverTest(unittest.TestCase):
     ) -> None:
         node = _make_node()
         node._map_state = {
+            "frame_id": "map",
             "resolution": 1.0,
             "width": 2,
             "height": 2,
@@ -241,6 +243,39 @@ class NavigationTakeoverTest(unittest.TestCase):
         node._validate_navigation_goal(9.8, 20.2)
         with self.assertRaisesRegex(ControlRequestError, "occupied"):
             node._validate_navigation_goal(9.8, 21.2)
+
+    def test_map_callback_rejects_wrong_frame_and_truncated_data(self) -> None:
+        node = _make_node()
+
+        def message(frame_id: str, data: list[int]) -> Any:
+            return SimpleNamespace(
+                header=SimpleNamespace(frame_id=frame_id),
+                info=SimpleNamespace(
+                    resolution=1.0,
+                    width=2,
+                    height=1,
+                    origin=SimpleNamespace(
+                        position=SimpleNamespace(x=0.0, y=0.0),
+                        orientation=SimpleNamespace(
+                            x=0.0, y=0.0, z=0.0, w=1.0
+                        ),
+                    ),
+                ),
+                data=data,
+            )
+
+        node._map_callback(message("other_map", [0, 0]))
+        with self.assertRaisesRegex(ControlRequestError, "does not match"):
+            node.map_snapshot()
+
+        node._map_callback(message("map", [0]))
+        with self.assertRaisesRegex(ControlRequestError, "data length"):
+            node.map_snapshot()
+
+        node._map_callback(message("map", [0, 100]))
+        snapshot = node.map_snapshot()
+        self.assertEqual("map", snapshot["frame_id"])
+        self.assertEqual([0, 100], snapshot["data"])
 
     def test_pose_snapshot_retains_frame_stamp_and_freshness(self) -> None:
         node = _make_node()
@@ -382,6 +417,67 @@ class NavigationTakeoverTest(unittest.TestCase):
 
         self.assertEqual(503, unavailable.exception.status)
         self.assertIn("not available", str(unavailable.exception))
+
+    def test_live_station_rejects_invalid_or_unconfirmed_pose_authority(
+        self,
+    ) -> None:
+        node = _make_node()
+        node._cabinet_pose_validity = {"cabinet_a": None}
+        node._tf_buffer = _TransformBuffer(
+            SimpleNamespace(
+                transform=SimpleNamespace(
+                    translation=SimpleNamespace(x=1.0, y=2.0, z=0.0),
+                    rotation=SimpleNamespace(x=0.0, y=0.0, z=0.0, w=1.0),
+                )
+            )
+        )
+        spec = NavigationStationSpec(
+            local_anchor=(0.0, 0.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=1.0,
+            frame_id="map",
+        )
+
+        with self.assertRaisesRegex(ControlRequestError, "not confirmed"):
+            node.navigation_station_from_tf(
+                "cabinet_a", "cabinet_a_frame", spec
+            )
+        node._cabinet_pose_validity["cabinet_a"] = False
+        with self.assertRaisesRegex(ControlRequestError, "invalid"):
+            node.navigation_station_from_tf(
+                "cabinet_a", "cabinet_a_frame", spec
+            )
+
+        node._cabinet_pose_validity_callback(
+            "cabinet_a", SimpleNamespace(data=True)
+        )
+        station = node.navigation_station_from_tf(
+            "cabinet_a", "cabinet_a_frame", spec
+        )
+        self.assertAlmostEqual(2.0, station.x)
+
+    def test_navigation_goal_requires_map_and_matching_frame(self) -> None:
+        node = _make_node()
+        with self.assertRaisesRegex(ControlRequestError, "not available") as missing:
+            node._validate_navigation_goal(0.0, 0.0)
+        self.assertEqual(503, missing.exception.status)
+
+        node._map_state = {
+            "frame_id": "other_map",
+            "resolution": 1.0,
+            "width": 1,
+            "height": 1,
+            "origin": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+            "data": [0],
+        }
+        with self.assertRaisesRegex(ControlRequestError, "does not match") as frame:
+            node._validate_navigation_goal(0.0, 0.0)
+        self.assertEqual(503, frame.exception.status)
+
+    def test_navigation_goal_rejects_nonfinite_coordinates(self) -> None:
+        node = _make_node()
+        with self.assertRaisesRegex(ControlRequestError, "finite"):
+            node._validate_navigation_goal(float("nan"), 0.0)
 
     def test_live_station_rejects_nonfinite_tf_and_spec_values(self) -> None:
         node = _make_node()

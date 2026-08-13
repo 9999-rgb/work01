@@ -18,7 +18,10 @@ import tempfile
 _SESSION_TMP = tempfile.TemporaryDirectory(prefix="xczs_pytest_")
 
 os.environ.setdefault("XCZS_AUTH_ENABLED", "true")
-os.environ.setdefault("XCZS_SECRET_KEY", "pytest-global-secret")
+os.environ.setdefault(
+    "XCZS_SECRET_KEY",
+    "pytest-global-secret-key-at-least-32-chars",
+)
 os.environ.setdefault("XCZS_ADMIN_PASSWORD", "pytest-admin-pass")
 os.environ.setdefault(
     "XCZS_DATABASE_URL",

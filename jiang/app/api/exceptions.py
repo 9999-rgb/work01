@@ -31,7 +31,7 @@ def register_exception_handlers(app: FastAPI) -> None:
     """
     try:
         from control_gateway.ros_node import ControlRequestError
-    except ModuleNotFoundError:
+    except (ImportError, ModuleNotFoundError):
         ControlRequestError = None  # type: ignore[assignment]
 
     if ControlRequestError is not None:

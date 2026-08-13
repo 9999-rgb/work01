@@ -111,6 +111,7 @@ def _documents() -> dict[str, object]:
         "scene": {
             "/**/xczs_cabinet_planning_scene": {
                 "ros__parameters": {
+                    "require_pose_valid": True,
                     "navigation_station": {
                         "frame_id": "world_map",
                         "local_anchor": [0.0, 0.0, 0.0],
@@ -222,6 +223,47 @@ class ProfileContractTest(unittest.TestCase):
             ProfileContractError,
             "device_a/start_button.*expected 'world_map'",
         ):
+            self._validate(documents)
+
+    def test_rejects_pose_validity_contract_mismatches(self) -> None:
+        documents = _documents()
+        pose = documents["pose"]
+        assert isinstance(pose, dict)
+        pose["/**/xczs_cabinet_pose_authority"]["ros__parameters"][
+            "validity_topic"
+        ] = "authority_pose_valid"
+        with self.assertRaisesRegex(
+            ProfileContractError,
+            "pose-validity topics must match",
+        ):
+            self._validate(documents)
+
+        documents = _documents()
+        scene = documents["scene"]
+        assert isinstance(scene, dict)
+        scene["/**/xczs_cabinet_planning_scene"]["ros__parameters"][
+            "pose_valid_topic"
+        ] = "/absolute/pose_valid"
+        with self.assertRaisesRegex(ProfileContractError, "relative ROS topic"):
+            self._validate(documents)
+
+    def test_rejects_disabling_pose_validity_guards(self) -> None:
+        documents = _documents()
+        scene = documents["scene"]
+        assert isinstance(scene, dict)
+        scene["/**/xczs_cabinet_planning_scene"]["ros__parameters"][
+            "require_pose_valid"
+        ] = False
+        with self.assertRaisesRegex(ProfileContractError, "must be true"):
+            self._validate(documents)
+
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "require_cabinet_pose_valid"
+        ] = False
+        with self.assertRaisesRegex(ProfileContractError, "must be true"):
             self._validate(documents)
 
     def test_rejects_unknown_or_overlapping_robot_overrides(self) -> None:

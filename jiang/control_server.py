@@ -10,6 +10,7 @@ LiDAR WebSocket）+ Zenoh SSE + 用户认证 + 静态页面（monitor.html）。
 
 import argparse
 import logging
+import os
 from pathlib import Path
 
 import uvicorn
@@ -19,6 +20,23 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
+
+
+def _effective_allowed_origins(args: argparse.Namespace) -> list[str]:
+    """用同一组 Origin 配置 ControlServer 与 FastAPI。
+
+    优先级：命令行 ``--allowed-origin`` > XCZS_ALLOWED_ORIGINS >
+    按当前 ``--port`` 生成的本地同源默认值。
+    """
+    if args.allowed_origins:
+        return list(args.allowed_origins)
+    configured = os.environ.get("XCZS_ALLOWED_ORIGINS", "")
+    if configured.strip():
+        return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    return [
+        f"http://localhost:{args.port}",
+        f"http://127.0.0.1:{args.port}",
+    ]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -135,6 +153,7 @@ def _build_zenoh_source(args: argparse.Namespace):
 def main() -> None:
     """解析参数、构造子系统、创建 FastAPI app 并启动 uvicorn。"""
     args = _parser().parse_args()
+    allowed_origins = _effective_allowed_origins(args)
 
     from control_gateway import ControlServer
 
@@ -151,7 +170,7 @@ def main() -> None:
         cabinet_robot_adapter_path=args.cabinet_robot_adapter,
         robot_control_path=args.robot_control,
         recordings_root=args.recordings_root,
-        allowed_origins=args.allowed_origins,
+        allowed_origins=allowed_origins,
     )
 
     sensor_state = None
@@ -169,6 +188,7 @@ def main() -> None:
         zenoh_source=zenoh_source,
         enable_db=True,
         static_dir=Path(__file__).resolve().parent,
+        allowed_origins=allowed_origins,
     )
     print(f"Control server: http://{args.host}:{args.port}")
     print(f"API 文档:      http://localhost:{args.port}/docs")
@@ -184,6 +204,9 @@ def main() -> None:
         host=args.host,
         port=args.port,
         log_level="info",
+        # EventSource/MJPEG/WebSocket 需要在查询参数传递 token。
+        # 禁用请求行日志，防止凭证落入终端或日志文件。
+        access_log=False,
     )
 
 

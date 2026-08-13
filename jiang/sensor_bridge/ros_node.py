@@ -57,13 +57,12 @@ def _alternate_camera_topic(topic: str) -> str:
 class SensorStreamNode(Node):
     """Convert ROS 2 Image and LaserScan messages for web clients."""
 
-    # Camera data is continuous and bandwidth-heavy; use RELIABLE QoS so
-    # that the subscriber always matches the Gazebo publisher regardless
-    # of which reliability level the plugin declares.  (ros2 topic echo
-    # auto-detects the publisher's QoS and upgrades accordingly.)
+    # A BEST_EFFORT reader is compatible with both BEST_EFFORT and RELIABLE
+    # writers.  Requesting RELIABLE here would not match the common
+    # BEST_EFFORT sensor publishers used by Gazebo and physical cameras.
     CAMERA_QOS = QoSProfile(
         depth=10,
-        reliability=ReliabilityPolicy.RELIABLE,
+        reliability=ReliabilityPolicy.BEST_EFFORT,
         durability=DurabilityPolicy.VOLATILE,
         history=HistoryPolicy.KEEP_LAST,
     )
