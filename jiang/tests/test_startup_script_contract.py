@@ -211,6 +211,7 @@ class StartupScriptContractTests(unittest.TestCase):
             BRIDGE_TCP_PORT=str(ports[0]),
             BRIDGE_REST_PORT=str(ports[1]),
             CONTROL_PORT=str(ports[2]),
+            XCZS_STARTUP_TIMEOUT_SEC="08",
             CONTROL_HOST="127.0.0.1",
             XCZS_CONTROL_ORIGINS=(
                 f"http://localhost:{ports[2]},"

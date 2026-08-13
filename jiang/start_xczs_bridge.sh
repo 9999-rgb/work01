@@ -354,21 +354,22 @@ _require_integer_range() {
     local value="$1"
     local minimum="$2"
     local maximum="$3"
-    local name="$4"
+    local target_name="$4"
+    local display_name="${5:-$target_name}"
     local decimal=""
     # Bash arithmetic treats a leading zero as octal.  Normalize validated
     # decimal text before it participates in ranges or derived ports, so
     # values such as ROS_DOMAIN_ID=08 behave like ordinary decimal input.
     if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "${#value}" -gt 10 ]; then
-        echo "ERROR: $name 必须是 ${minimum}..${maximum} 的整数。"
+        echo "ERROR: $display_name 必须是 ${minimum}..${maximum} 的整数。"
         exit 1
     fi
     decimal=$((10#$value))
     if (( decimal < minimum || decimal > maximum )); then
-        echo "ERROR: $name 必须是 ${minimum}..${maximum} 的整数。"
+        echo "ERROR: $display_name 必须是 ${minimum}..${maximum} 的整数。"
         exit 1
     fi
-    printf -v "$name" '%d' "$decimal"
+    printf -v "$target_name" '%d' "$decimal"
 }
 
 _describe_port_owner() {
@@ -428,9 +429,14 @@ PY
 
 _require_integer_range "$BRIDGE_TCP_PORT" 1 65535 BRIDGE_TCP_PORT
 _require_integer_range "$BRIDGE_REST_PORT" 1 65535 BRIDGE_REST_PORT
-_require_integer_range "$STARTUP_TIMEOUT_SEC" 1 60 XCZS_STARTUP_TIMEOUT_SEC
-_require_integer_range "$ROBOT_READY_TIMEOUT_SEC" 1 300 XCZS_ROBOT_READY_TIMEOUT_SEC
-_require_integer_range "$SHUTDOWN_TIMEOUT_SEC" 1 60 XCZS_SHUTDOWN_TIMEOUT_SEC
+_require_integer_range \
+    "$STARTUP_TIMEOUT_SEC" 1 60 STARTUP_TIMEOUT_SEC XCZS_STARTUP_TIMEOUT_SEC
+_require_integer_range \
+    "$ROBOT_READY_TIMEOUT_SEC" 1 300 \
+    ROBOT_READY_TIMEOUT_SEC XCZS_ROBOT_READY_TIMEOUT_SEC
+_require_integer_range \
+    "$SHUTDOWN_TIMEOUT_SEC" 1 60 \
+    SHUTDOWN_TIMEOUT_SEC XCZS_SHUTDOWN_TIMEOUT_SEC
 if [ "$BRIDGE_TCP_PORT" = "$BRIDGE_REST_PORT" ]; then
     echo "ERROR: BRIDGE_TCP_PORT 与 BRIDGE_REST_PORT 不能相同。"
     exit 1
