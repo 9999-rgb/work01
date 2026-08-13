@@ -50,10 +50,21 @@ async def stream_task_events(
 ) -> AsyncIterator[bytes]:
     """把阻塞式事件订阅桥接到异步 SSE 流。
 
-    ``subscription.get(timeout)`` 是阻塞调用（EventHub 基于线程 Condition），
-    通过 ``asyncio.to_thread`` 放到线程池，避免阻塞事件循环。
-    每个 SSE 客户端短期占有一个线程池线程，单操作员场景（1-2 个浏览器）足够。
+    EventHub 通过线程安全回调唤醒 asyncio Event；读取本身使用非阻塞
+    ``get_nowait``。因此空闲 SSE 不占用 FastAPI 默认线程池，多个长连接也
+    不会饿死依赖 ``asyncio.to_thread`` 的控制 API。
     """
+    event_loop = asyncio.get_running_loop()
+    wake_event = asyncio.Event()
+
+    def notify() -> None:
+        try:
+            event_loop.call_soon_threadsafe(wake_event.set)
+        except RuntimeError:
+            # 应用关闭后事件循环可能已停止。
+            return
+
+    subscription.set_notify(notify)
     try:
         while True:
             if (
@@ -70,15 +81,24 @@ async def stream_task_events(
                 else heartbeat_seconds
             )
             try:
-                event = await asyncio.to_thread(
-                    subscription.get,
-                    timeout=poll_seconds,
-                )
+                event = subscription.get_nowait()
             except queue.Empty:
-                yield b": heartbeat\n\n"
-                continue
+                # clear 后再检查一次，封闭“数据在 clear 前到达”的竞态。
+                wake_event.clear()
+                try:
+                    event = subscription.get_nowait()
+                except queue.Empty:
+                    try:
+                        await asyncio.wait_for(
+                            wake_event.wait(),
+                            timeout=poll_seconds,
+                        )
+                    except asyncio.TimeoutError:
+                        yield b": heartbeat\n\n"
+                    continue
             yield encode_sse_event(event)
     except EventHubClosed:
         return
     finally:
+        subscription.set_notify(None)
         subscription.close()

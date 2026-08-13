@@ -435,12 +435,18 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertFalse(ControlServer._is_loopback_host("192.168.1.100"))
         # 验证 init 不在 loopback 检查处抛异常（会在后面因缺 ROS 失败，
         # 但 loopback 本身不再是阻塞点）。
+        server = None
         try:
-            ControlServer(host="0.0.0.0")
+            server = ControlServer(host="0.0.0.0")
         except ValueError as e:
             self.assertNotIn("loopback", str(e))
         except Exception:
             pass  # 缺 ROS 环境是预期的
+        finally:
+            # 构造成功时会创建 ROS context 与事件桥线程；测试必须像生产
+            # lifespan 一样显式回收，不能把 daemon 线程留到解释器退出。
+            if server is not None:
+                server.stop()
 
     def test_loopback_host_validation_accepts_supported_forms(self) -> None:
         self.assertTrue(ControlServer._is_loopback_host("127.0.0.1"))
@@ -485,8 +491,29 @@ class TaskRunnerTest(unittest.TestCase):
         server, node = _server()
 
         ready = server.health()
+        self.assertTrue(ready["navigation_available"])
+        self.assertTrue(ready["navigation_action_available"])
+        self.assertTrue(ready["navigation_lifecycle_active"])
         self.assertTrue(ready["map_available"])
         self.assertIsNone(ready["map_error"])
+
+        node.state.update(
+            {
+                "available": False,
+                "action_server_available": True,
+                "lifecycle_active": False,
+                "lifecycle_state": "inactive",
+                "lifecycle_message": "managed nodes are inactive",
+            }
+        )
+        lifecycle_inactive = server.health()
+        self.assertFalse(lifecycle_inactive["navigation_available"])
+        self.assertTrue(lifecycle_inactive["navigation_action_available"])
+        self.assertFalse(lifecycle_inactive["navigation_lifecycle_active"])
+        self.assertEqual(
+            "inactive",
+            lifecycle_inactive["navigation_lifecycle_state"],
+        )
 
         def missing_map() -> Dict[str, Any]:
             raise ControlRequestError("map has not been received", 503)
@@ -495,6 +522,27 @@ class TaskRunnerTest(unittest.TestCase):
         unavailable = server.health()
         self.assertFalse(unavailable["map_available"])
         self.assertIn("map has not been received", unavailable["map_error"])
+
+    def test_health_never_reports_navigation_ready_after_executor_fatal(
+        self,
+    ) -> None:
+        server, _node = _server()
+        server._executor_fatal_lock = threading.Lock()
+        server._executor_fatal_error = None
+        server._executor_fatal_callback = None
+
+        self.assertTrue(
+            server._record_executor_fatal(RuntimeError("executor crashed"))
+        )
+        failed = server.health()
+
+        self.assertEqual(failed["status"], "error")
+        self.assertFalse(failed["navigation_available"])
+        self.assertFalse(failed["navigation_action_available"])
+        self.assertFalse(failed["navigation_lifecycle_active"])
+        self.assertFalse(failed["cabinet_available"])
+        self.assertFalse(failed["executor"]["healthy"])
+        self.assertIn("executor crashed", failed["executor"]["error"]["message"])
 
     def test_scene_reset_verifies_cabinet_joints_and_base(self) -> None:
         server, node = _server()
@@ -1431,6 +1479,87 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("success", task["status"])
         self.assertEqual(2, node.navigation_goal_count)
 
+    def test_navigation_initial_submission_error_keeps_backend_contract(
+        self,
+    ) -> None:
+        server, node = _server()
+
+        def reject_goal(x: float, y: float, yaw: float) -> Dict[str, Any]:
+            del x, y, yaw
+            raise ControlRequestError(
+                "Nav2 is not active",
+                503,
+                details={"navigation_lifecycle_state": "inactive"},
+            )
+
+        node.send_navigation_goal = reject_goal
+        accepted = server.submit_navigation_task("cabinet_a")
+        terminal = server._task_manager.wait(
+            accepted["task_id"],
+            timeout=2.0,
+        )
+
+        self.assertEqual("failed", terminal["status"])
+        self.assertEqual("backend_unavailable", terminal["failure_code"])
+        self.assertEqual("Nav2 is not active", terminal["failure_reason"])
+        self.assertEqual(
+            {
+                "navigation_lifecycle_state": "inactive",
+                "backend_status": 503,
+            },
+            terminal["failure_details"],
+        )
+
+    def test_navigation_retry_submission_error_keeps_backend_contract(
+        self,
+    ) -> None:
+        server, node = _server()
+        original_send = node.send_navigation_goal
+        send_count = 0
+
+        def fail_retry(x: float, y: float, yaw: float) -> Dict[str, Any]:
+            nonlocal send_count
+            send_count += 1
+            if send_count == 2:
+                raise ControlRequestError(
+                    "Previous Nav2 goal is still retiring",
+                    409,
+                    details={
+                        "retirement_state": "pending",
+                        "attempt": send_count,
+                    },
+                )
+            return original_send(x, y, yaw)
+
+        node.send_navigation_goal = fail_retry
+        with patch.object(
+            runner_module,
+            "NAVIGATION_REJECT_RETRY_DELAY_SEC",
+            0.001,
+        ):
+            accepted = server.submit_navigation_task("cabinet_a")
+            self.assertIsNotNone(node.wait_for_navigation_goal(1))
+            node.finish_navigation("rejected", message="not active yet")
+            terminal = server._task_manager.wait(
+                accepted["task_id"],
+                timeout=2.0,
+            )
+
+        self.assertEqual("failed", terminal["status"])
+        self.assertEqual("navigation_rejected", terminal["failure_code"])
+        self.assertEqual(
+            "Previous Nav2 goal is still retiring",
+            terminal["failure_reason"],
+        )
+        self.assertEqual(
+            {
+                "retirement_state": "pending",
+                "attempt": 2,
+                "backend_status": 409,
+            },
+            terminal["failure_details"],
+        )
+
     def test_navigation_rejection_retries_are_bounded(self) -> None:
         server, node = _server()
 
@@ -1923,6 +2052,70 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("canceled", terminal["status"])
         self.assertIsNone(server._task_manager.active_task_id)
 
+    def test_nav2_success_wins_cancel_requested_after_backend_terminal(
+        self,
+    ) -> None:
+        server, node = _server()
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertTrue(node.goal_event.wait(timeout=1.0))
+
+        # Serialize result verification behind the same node lock used by
+        # cancel_navigation(). This deterministically places the cancel after
+        # Nav2's terminal success but before the runner returns its result.
+        with node._lock:
+            node.state.update(
+                {
+                    "state": "succeeded",
+                    "message": "done",
+                    "distance_remaining": 0.0,
+                    "current_pose": {
+                        "x": 1.0,
+                        "y": 0.0,
+                        "yaw": math.pi,
+                        "frame_id": "map",
+                        "stamp_ros_nanoseconds": (
+                            node.ros_time_nanoseconds + 100_000_000
+                        ),
+                        "observed_ros_nanoseconds": (
+                            node.ros_time_nanoseconds + 100_000_000
+                        ),
+                        "received_monotonic": time.monotonic(),
+                    },
+                }
+            )
+            cancel_result: Dict[str, Any] = {}
+            cancel_done = threading.Event()
+
+            def cancel() -> None:
+                cancel_result.update(server.cancel_task(accepted["task_id"]))
+                cancel_done.set()
+
+            cancel_thread = threading.Thread(target=cancel)
+            cancel_thread.start()
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                if server._task_manager.is_cancel_requested(
+                    accepted["task_id"]
+                ):
+                    break
+                time.sleep(0.001)
+            self.assertTrue(
+                server._task_manager.is_cancel_requested(accepted["task_id"])
+            )
+
+        cancel_thread.join(timeout=1.0)
+        self.assertFalse(cancel_thread.is_alive())
+        self.assertTrue(cancel_done.is_set())
+        self.assertIn(cancel_result["status"], {"canceling", "success"})
+        terminal = server._task_manager.wait(
+            accepted["task_id"],
+            timeout=2.0,
+        )
+
+        self.assertEqual("success", terminal["status"])
+        self.assertTrue(terminal["cancel_requested"])
+        self.assertEqual("cabinet_a", terminal["result"]["cabinet"])
+
     def test_cancel_between_axis_legs_never_submits_second_goal(self) -> None:
         server, node = _server()
         station = NavigationStationSpec(
@@ -2044,6 +2237,36 @@ class TaskRunnerTest(unittest.TestCase):
             timeout=2.0,
         )
         self.assertEqual("canceled", terminal["status"])
+
+    def test_operation_success_wins_cancel_requested_after_terminal_event(
+        self,
+    ) -> None:
+        server, _node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        self.assertTrue(client.submit_event.wait(timeout=1.0))
+
+        # The action result says success first. Request cancellation before
+        # TaskManager can commit the runner's authoritative return value.
+        with server._task_manager._condition:
+            client.finish("success")
+            canceling = server.cancel_task(accepted["task_id"])
+            self.assertEqual("canceling", canceling["status"])
+
+        terminal = server._task_manager.wait(
+            accepted["task_id"],
+            timeout=2.0,
+        )
+        self.assertEqual("success", terminal["status"])
+        self.assertTrue(terminal["cancel_requested"])
+        self.assertTrue(terminal["result"]["button_triggered"])
 
     def test_operation_timeout_is_terminal_but_retains_backend_lock(
         self,

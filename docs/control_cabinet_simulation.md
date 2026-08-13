@@ -13,7 +13,7 @@
 `cabinet_robot_adapter.yaml` 的 `/**.ros__parameters` 是跨节点接口合同，Web 网关、底盘路由、手动轨迹路由和柜体 operator 必须读取同一份文件。当前合同包括：
 
 - MoveIt 规划坐标系、规划组、末端执行器、命名安全位姿和规划约束；
-- Nav2 Action、模式 Service/Topic、地图、定位和底盘 TF；
+- Nav2 Action、lifecycle readiness Service、模式 Service/Topic、地图、定位和底盘 TF；
 - 手动底盘输入、Nav2 速度输入、实际底盘输出及两坐标系的平面旋转；
 - 机械臂与夹爪关节分组、逐关节安全范围、默认位置、夹爪打开位置和 controller Topic。
 
@@ -355,7 +355,7 @@ NAV2_PARAMS_FILE=/path/to/nav2_params.yaml \
 ./run_all.sh
 ```
 
-当前 XCZS 仿真 bringup 只是默认 profile，不是通用任务层的硬依赖。还可用 `USE_SIM_TIME`、`MOVEIT_ENABLED`、`CABINET_BRINGUP`、`SPAWN_CABINET`、`SPAWN_Z` 和 `CABINET_POSE_SOURCE` 控制启动边界。`XCZS_PREFLIGHT_ONLY=true` 会在不启动进程的前提下检查最终组合需要的文件、参数、ROS 包、Web/ROS Python 导入、跨 YAML profile 合同、Zenoh 可执行文件以及预定端口是否可绑定。被关闭的子系统不会强制要求其专属模型文件或 Web 依赖存在。正式启动会继续等待 Web HTTP 就绪，以及 Nav2 Action、occupancy map 和需要的柜体 Action 同时可用；可用 `XCZS_STARTUP_TIMEOUT_SEC`、`XCZS_ROBOT_READY_TIMEOUT_SEC` 和 `XCZS_SHUTDOWN_TIMEOUT_SEC` 调整有界等待时间。
+当前 XCZS 仿真 bringup 只是默认 profile，不是通用任务层的硬依赖。还可用 `USE_SIM_TIME`、`MOVEIT_ENABLED`、`CABINET_BRINGUP`、`SPAWN_CABINET`、`SPAWN_Z` 和 `CABINET_POSE_SOURCE` 控制启动边界。`XCZS_PREFLIGHT_ONLY=true` 会在不启动进程的前提下检查最终组合需要的文件、参数、ROS 包、Web/ROS Python 导入、跨 YAML profile 合同、Zenoh 可执行文件以及预定端口是否可绑定。被关闭的子系统不会强制要求其专属模型文件或 Web 依赖存在。正式启动会继续等待 Web HTTP 就绪，以及 Nav2 Action、Nav2 lifecycle manager 明确报告全部受管导航节点已 active、occupancy map 和需要的柜体 Action 同时可用；可用 `XCZS_STARTUP_TIMEOUT_SEC`、`XCZS_ROBOT_READY_TIMEOUT_SEC` 和 `XCZS_SHUTDOWN_TIMEOUT_SEC` 调整有界等待时间。就绪检查只调用 adapter 的 `navigation_readiness_service`（标准 Nav2 为 `/lifecycle_manager_navigation/is_active`），不会为探测状态发送移动 Goal。外部 Nav2 使用不同 lifecycle manager 名称或命名空间时必须在 adapter 中显式配置该服务。
 
 如果新机器人已有自己的 Gazebo、controller、MoveIt 和 Nav2 bringup，先启动它，再以 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false` 运行本入口。此时本项目仍可加载设备实例、位姿权威、碰撞场景、操作节点和 Web 任务层；新机器人必须提供适配文件中声明的 ROS 2 接口。内置键盘控制在该模式下会明确拒绝启动，不会静默失效；请使用动态 Web 控制或外部机器人自己的手动界面。
 

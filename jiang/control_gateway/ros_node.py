@@ -92,6 +92,8 @@ class RosControlNode(Node):
     }
     CABINET_DETENT_TOLERANCE = 0.035
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
+    NAVIGATION_READINESS_POLL_SECONDS = 0.25
+    NAVIGATION_READINESS_REQUEST_TIMEOUT_SECONDS = 2.0
 
     TASK_PUBLISHER_HISTORY_LIMIT = 256
     DEFAULT_MANUAL_TRAJECTORY_DURATION_SECONDS = 0.50
@@ -120,6 +122,7 @@ class RosControlNode(Node):
         navigation_frame: str = "map",
         navigation_base_frame: str = "base_link",
         navigation_action: str = "/navigate_to_pose",
+        navigation_readiness_service: Optional[str] = None,
         navigation_mode_service: str = "/xczs/set_navigation_mode",
         navigation_mode_topic: str = "/xczs/navigation_mode",
         map_topic: str = "/map",
@@ -202,6 +205,22 @@ class RosControlNode(Node):
             NavigateToPose,
             navigation_action,
         )
+        self._navigation_readiness_service = (
+            navigation_readiness_service
+            or self._navigation_readiness_service_for_action(navigation_action)
+        )
+        self._navigation_readiness_client = self.create_client(
+            Trigger,
+            self._navigation_readiness_service,
+        )
+        self._navigation_readiness_active = False
+        self._navigation_readiness_state = "checking"
+        self._navigation_readiness_message = (
+            "Waiting for the Nav2 lifecycle manager readiness response."
+        )
+        self._navigation_readiness_future: Any = None
+        self._navigation_readiness_future_started: Optional[float] = None
+        self._navigation_readiness_generation = 0
         self._navigation_mode_client = self.create_client(
             SetBool,
             navigation_mode_service,
@@ -338,6 +357,10 @@ class RosControlNode(Node):
             "button_state_updated_at": None,
         }
         self.create_timer(0.02, self._update_manual_control)
+        self.create_timer(
+            self.NAVIGATION_READINESS_POLL_SECONDS,
+            self._poll_navigation_readiness,
+        )
 
     def publish_task_event(self, event: Dict[str, Any]) -> None:
         """Mirror one task event to its ROS 2 progress or result topic."""
@@ -530,14 +553,13 @@ class RosControlNode(Node):
         # message is many seconds old.  Query TF at snapshot time so task
         # completion validates the pose Nav2 itself is using.
         self._refresh_robot_pose_from_tf()
+        readiness = self._navigation_availability_snapshot()
         with self._lock:
             snapshot = dict(self._navigation_state)
             manual_control_ready = self._manual_control_ready_locked()
             snapshot.update(
                 {
-                    "available": self._action_server_ready(
-                        self._navigation_client
-                    ),
+                    **readiness,
                     "mode": self._navigation_mode,
                     "mode_acknowledged": (
                         self._navigation_mode_acknowledged
@@ -1516,10 +1538,24 @@ class RosControlNode(Node):
         """Enable navigation mode and submit one NavigateToPose goal."""
         with self._lock:
             self._reject_if_cabinet_active_locked()
-        if not self._action_server_ready(self._navigation_client):
+        readiness = self._navigation_availability_snapshot()
+        if not readiness["action_server_available"]:
             raise ControlRequestError(
                 "Nav2 NavigateToPose action server is unavailable.",
                 503,
+            )
+        if not readiness["lifecycle_active"]:
+            raise ControlRequestError(
+                "Nav2 navigation stack is not active yet.",
+                503,
+                {
+                    "navigation_lifecycle_state": readiness[
+                        "lifecycle_state"
+                    ],
+                    "navigation_lifecycle_message": readiness[
+                        "lifecycle_message"
+                    ],
+                },
             )
         if not self._navigation_mode_client.service_is_ready():
             raise ControlRequestError(
@@ -3523,6 +3559,162 @@ class RosControlNode(Node):
             return bool(client.server_is_ready())
         except Exception:  # noqa: BLE001
             return False
+
+    @staticmethod
+    def _navigation_readiness_service_for_action(
+        navigation_action: str,
+    ) -> str:
+        """Derive the standard Nav2 lifecycle-manager service namespace."""
+        namespace, _, _action_name = navigation_action.rstrip("/").rpartition(
+            "/"
+        )
+        if not namespace:
+            return "/lifecycle_manager_navigation/is_active"
+        return f"{namespace}/lifecycle_manager_navigation/is_active"
+
+    def _navigation_availability_snapshot(self) -> Dict[str, Any]:
+        """Combine action discovery with Nav2's managed lifecycle state."""
+        action_available = self._action_server_ready(self._navigation_client)
+        lifecycle_service_available = self._service_ready(
+            self._navigation_readiness_client
+        )
+        with self._lock:
+            lifecycle_active = bool(
+                self._navigation_readiness_active
+                and lifecycle_service_available
+            )
+            lifecycle_state = self._navigation_readiness_state
+            lifecycle_message = self._navigation_readiness_message
+        return {
+            "available": bool(action_available and lifecycle_active),
+            "action_server_available": action_available,
+            "lifecycle_service_available": lifecycle_service_available,
+            "lifecycle_active": lifecycle_active,
+            "lifecycle_state": lifecycle_state,
+            "lifecycle_message": lifecycle_message,
+            "lifecycle_service": self._navigation_readiness_service,
+        }
+
+    def _poll_navigation_readiness(self) -> None:
+        """Refresh Nav2 lifecycle readiness without submitting a motion goal."""
+        action_available = self._action_server_ready(self._navigation_client)
+        service_available = self._service_ready(
+            self._navigation_readiness_client
+        )
+        now = time.monotonic()
+        stale_future: Any = None
+        with self._lock:
+            future = self._navigation_readiness_future
+            started = self._navigation_readiness_future_started
+            timed_out = bool(
+                future is not None
+                and started is not None
+                and now - started
+                >= self.NAVIGATION_READINESS_REQUEST_TIMEOUT_SECONDS
+            )
+            if not action_available or not service_available or timed_out:
+                self._navigation_readiness_generation += 1
+                stale_future = future
+                self._navigation_readiness_future = None
+                self._navigation_readiness_future_started = None
+                self._navigation_readiness_active = False
+                if not action_available:
+                    self._navigation_readiness_state = "unavailable"
+                    self._navigation_readiness_message = (
+                        "Nav2 NavigateToPose action server is unavailable."
+                    )
+                elif not service_available:
+                    self._navigation_readiness_state = "unavailable"
+                    self._navigation_readiness_message = (
+                        "Nav2 lifecycle manager readiness service is "
+                        "unavailable."
+                    )
+                else:
+                    self._navigation_readiness_state = "timeout"
+                    self._navigation_readiness_message = (
+                        "Nav2 lifecycle manager readiness request timed out."
+                    )
+            elif future is not None:
+                return
+
+        if stale_future is not None:
+            try:
+                self._navigation_readiness_client.remove_pending_request(
+                    stale_future
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        if not action_available or not service_available:
+            return
+
+        with self._lock:
+            self._navigation_readiness_generation += 1
+            generation = self._navigation_readiness_generation
+            if not self._navigation_readiness_active:
+                self._navigation_readiness_state = "checking"
+                self._navigation_readiness_message = (
+                    "Checking the Nav2 lifecycle manager readiness state."
+                )
+        try:
+            future = self._navigation_readiness_client.call_async(
+                Trigger.Request()
+            )
+        except Exception as error:  # noqa: BLE001
+            with self._lock:
+                if generation == self._navigation_readiness_generation:
+                    self._navigation_readiness_active = False
+                    self._navigation_readiness_state = "error"
+                    self._navigation_readiness_message = str(error)
+            return
+
+        with self._lock:
+            if generation != self._navigation_readiness_generation:
+                try:
+                    self._navigation_readiness_client.remove_pending_request(
+                        future
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
+                return
+            self._navigation_readiness_future = future
+            self._navigation_readiness_future_started = now
+        future.add_done_callback(
+            lambda completed, token=generation: (
+                self._navigation_readiness_response(completed, token)
+            )
+        )
+
+    def _navigation_readiness_response(
+        self,
+        future: Any,
+        generation: int,
+    ) -> None:
+        try:
+            response = future.result()
+            active = bool(response is not None and response.success)
+            state = "active" if active else "inactive"
+            message = str(getattr(response, "message", "") or "").strip()
+            if not message:
+                message = (
+                    "Nav2 managed lifecycle nodes are active."
+                    if active
+                    else "Nav2 managed lifecycle nodes are not active."
+                )
+        except Exception as error:  # noqa: BLE001
+            active = False
+            state = "error"
+            message = str(error)
+        with self._lock:
+            if (
+                generation != self._navigation_readiness_generation
+                or future is not self._navigation_readiness_future
+            ):
+                return
+            self._navigation_readiness_future = None
+            self._navigation_readiness_future_started = None
+            self._navigation_readiness_active = active
+            self._navigation_readiness_state = state
+            self._navigation_readiness_message = message
 
     @staticmethod
     def _service_ready(client: Any) -> bool:

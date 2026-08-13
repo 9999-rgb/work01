@@ -27,6 +27,7 @@ STARTUP_TIMEOUT_SEC="${XCZS_STARTUP_TIMEOUT_SEC:-30}"
 ROBOT_READY_TIMEOUT_SEC="${XCZS_ROBOT_READY_TIMEOUT_SEC:-120}"
 SHUTDOWN_TIMEOUT_SEC="${XCZS_SHUTDOWN_TIMEOUT_SEC:-60}"
 MANAGED_PIDS=()
+MANAGED_PGIDS=()
 MANAGED_LABELS=()
 
 # ── 路径配置 ──────────────────────────────────────────────────────
@@ -141,17 +142,25 @@ _register_process() {
         exit 1
     fi
     MANAGED_PIDS+=("$pid")
+    # 每个后台命令都由 setsid 启动，预期 PGID 与 leader PID 相同。
+    # PGID 独立保存；leader 退出后仍可清理同组的 launch 子进程。
+    MANAGED_PGIDS+=("$pid")
     MANAGED_LABELS+=("$label")
     # setsid 应使该 PID 同时成为新进程组的 ID。确认后才继续，
     # 避免清理时只停主进程却遗留 launch/uvicorn 子进程。
     for ((attempt=0; attempt < 20; attempt++)); do
         process_group="$(
-            ps -o pgid= -p "$pid" 2>/dev/null | tr -d '[:space:]'
+            ps -o pgid= -p "$pid" 2>/dev/null |
+                tr -d '[:space:]' || true
         )"
         if [ "$process_group" = "$pid" ]; then
             return 0
         fi
-        kill -0 "$pid" 2>/dev/null || return 0
+        if ! kill -0 "$pid" 2>/dev/null; then
+            # leader 可能在登记期间退出；此时精确的进程组仍可能包含
+            # 它启动的子进程，保留已知 PGID 供监控和 cleanup 使用。
+            return 0
+        fi
         sleep 0.01
     done
     echo "ERROR: $label 未进入独立进程组（PID=$pid, PGID=${process_group:-unknown}）。" >&2
@@ -162,37 +171,83 @@ _register_process() {
 _unregister_last_process() {
     local pid="$1"
     local last_index=$((${#MANAGED_PIDS[@]} - 1))
+    local process_group=""
     if (( last_index < 0 )) || [ "${MANAGED_PIDS[$last_index]}" != "$pid" ]; then
         echo "ERROR: 只能逆序注销最后一个受管进程: $pid" >&2
         exit 1
     fi
+    process_group="${MANAGED_PGIDS[$last_index]}"
+    if _process_group_is_running "$process_group"; then
+        echo "ERROR: 受管进程组 PGID=$process_group 仍有子进程，不能注销。" >&2
+        exit 1
+    fi
     unset "MANAGED_PIDS[$last_index]"
+    unset "MANAGED_PGIDS[$last_index]"
     unset "MANAGED_LABELS[$last_index]"
 }
 
-_process_is_running() {
+_managed_leader_is_running() {
     local pid="$1"
+    local expected_group="$2"
+    local process_details=""
+    local process_group=""
     local state=""
-    kill -0 "$pid" 2>/dev/null || return 1
-    state="$(ps -o stat= -p "$pid" 2>/dev/null | tr -d '[:space:]')"
-    [ -n "$state" ] && [[ "$state" != Z* ]]
+    process_details="$(ps -o pgid=,stat= -p "$pid" 2>/dev/null)" || return 1
+    read -r process_group state <<< "$process_details"
+    # 同时核对 PGID，不能把后来复用相同数值 PID 的外部进程误认为
+    # 本次启动的 leader。
+    [ "$process_group" = "$expected_group" ] &&
+        [ -n "$state" ] && [[ "$state" != Z* ]]
+}
+
+_process_group_is_running() {
+    local expected_group="$1"
+    local process_group=""
+    local state=""
+    while read -r process_group state; do
+        if [ "$process_group" = "$expected_group" ] &&
+            [ -n "$state" ] && [[ "$state" != Z* ]]; then
+            return 0
+        fi
+    done < <(ps -eo pgid=,stat= 2>/dev/null)
+    return 1
 }
 
 _signal_process_group() {
-    local pid="$1"
+    local process_group="$1"
     local signal="$2"
-    # 后台命令由 setsid 启动，PID 同时是进程组 ID。只终止本次
-    # 注册的进程组，不扫描或终止全机同名进程。
-    kill "-$signal" -- "-$pid" 2>/dev/null ||
-        kill "-$signal" "$pid" 2>/dev/null || true
+    # 只向登记时确认的精确进程组发信号。绝不退化为按 leader PID
+    # 发信号，以免 leader 退出后误伤复用相同 PID 的外部进程。
+    _process_group_is_running "$process_group" || return 0
+    kill "-$signal" -- "-$process_group" 2>/dev/null || true
+}
+
+_wait_for_managed_groups() {
+    local timeout="$1"
+    local deadline=$((SECONDS + timeout))
+    local process_group=""
+    local still_running="false"
+    while true; do
+        still_running="false"
+        for process_group in "${MANAGED_PGIDS[@]}"; do
+            if _process_group_is_running "$process_group"; then
+                still_running="true"
+                break
+            fi
+        done
+        [ "$still_running" = "false" ] && return 0
+        (( SECONDS >= deadline )) && return 1
+        sleep 0.2
+    done
 }
 
 cleanup() {
     local exit_code=$?
-    local deadline=0
+    local all_closed="true"
+    local forced="false"
     local index=0
     local pid=""
-    local still_running="false"
+    local process_group=""
     if [ "$CLEANUP_DONE" = "true" ]; then
         return "$exit_code"
     fi
@@ -206,37 +261,40 @@ cleanup() {
 
     # 按逆启动顺序停止：先 launch，再 Web/代理，最后 bridge。
     for ((index=${#MANAGED_PIDS[@]} - 1; index >= 0; index--)); do
-        pid="${MANAGED_PIDS[$index]}"
-        if _process_is_running "$pid"; then
-            _signal_process_group "$pid" TERM
+        process_group="${MANAGED_PGIDS[$index]}"
+        if _process_group_is_running "$process_group"; then
+            _signal_process_group "$process_group" TERM
         fi
     done
 
-    deadline=$((SECONDS + SHUTDOWN_TIMEOUT_SEC))
-    while (( SECONDS < deadline )); do
-        still_running="false"
-        for pid in "${MANAGED_PIDS[@]}"; do
-            if _process_is_running "$pid"; then
-                still_running="true"
-                break
-            fi
-        done
-        [ "$still_running" = "false" ] && break
-        sleep 0.2
-    done
+    _wait_for_managed_groups "$SHUTDOWN_TIMEOUT_SEC" || true
 
     for ((index=${#MANAGED_PIDS[@]} - 1; index >= 0; index--)); do
-        pid="${MANAGED_PIDS[$index]}"
-        if _process_is_running "$pid"; then
+        process_group="${MANAGED_PGIDS[$index]}"
+        if _process_group_is_running "$process_group"; then
             echo "WARNING: ${MANAGED_LABELS[$index]} 未在 ${SHUTDOWN_TIMEOUT_SEC}s 内退出，强制终止。" >&2
-            _signal_process_group "$pid" KILL
+            _signal_process_group "$process_group" KILL
+            forced="true"
         fi
     done
+    if [ "$forced" = "true" ]; then
+        _wait_for_managed_groups "$SHUTDOWN_TIMEOUT_SEC" || true
+    fi
     for pid in "${MANAGED_PIDS[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
     if [ "${#MANAGED_PIDS[@]}" -gt 0 ]; then
-        echo "  本次启动的进程已全部关闭"
+        for process_group in "${MANAGED_PGIDS[@]}"; do
+            if _process_group_is_running "$process_group"; then
+                all_closed="false"
+                echo "ERROR: 受管进程组 PGID=$process_group 仍未退出。" >&2
+            fi
+        done
+        if [ "$all_closed" = "true" ]; then
+            echo "  本次启动的进程已全部关闭"
+        elif [ "$exit_code" -eq 0 ]; then
+            exit_code=1
+        fi
     fi
     return "$exit_code"
 }
@@ -377,6 +435,12 @@ for boolean_value in \
         exit 1
     fi
 done
+CABINET_ACTION_REQUIRED="false"
+if [ "$CABINET_BRINGUP" = "true" ] && [ "$MOVEIT_ENABLED" = "true" ]; then
+    # cabinet_button_operator 只在这两个子系统同时启用时启动；其他组合
+    # 仍可提供导航能力，不应等待一个按配置不会存在的 Action。
+    CABINET_ACTION_REQUIRED="true"
+fi
 if [ "$CABINET_POSE_SOURCE" != "static" ] && [ "$CABINET_POSE_SOURCE" != "topic" ]; then
     echo "ERROR: CABINET_POSE_SOURCE 必须为 static 或 topic。"
     exit 1
@@ -616,7 +680,8 @@ _assert_managed_processes_running() {
     local index=0
     local status=0
     for ((index=0; index < ${#MANAGED_PIDS[@]}; index++)); do
-        if ! _process_is_running "${MANAGED_PIDS[$index]}"; then
+        if ! _managed_leader_is_running \
+            "${MANAGED_PIDS[$index]}" "${MANAGED_PGIDS[$index]}"; then
             if wait "${MANAGED_PIDS[$index]}" 2>/dev/null; then
                 status=0
             else
@@ -670,19 +735,9 @@ _wait_for_http() {
     exit 1
 }
 
-_wait_for_task_stack() {
-    local url="$1"
-    local require_cabinet="$2"
-    local deadline=$((SECONDS + ROBOT_READY_TIMEOUT_SEC))
-    local health_body=""
-    local health_summary=""
-    while (( SECONDS < deadline )); do
-        _assert_managed_processes_running
-        health_body="$(
-            curl -fsS --connect-timeout 1 --max-time 2 "$url" 2>/dev/null ||
-                true
-        )"
-        if printf '%s' "$health_body" | "$PYTHON_BIN" -c '
+_task_stack_is_ready() {
+    local require_cabinet="$1"
+    "$PYTHON_BIN" -c '
 import json
 import sys
 
@@ -700,7 +755,23 @@ if not (
     and (not require_cabinet or health.get("cabinet_available") is True)
 ):
     raise SystemExit(1)
-' "$require_cabinet"; then
+' "$require_cabinet"
+}
+
+_wait_for_task_stack() {
+    local url="$1"
+    local require_cabinet="$2"
+    local deadline=$((SECONDS + ROBOT_READY_TIMEOUT_SEC))
+    local health_body=""
+    local health_summary=""
+    while (( SECONDS < deadline )); do
+        _assert_managed_processes_running
+        health_body="$(
+            curl -fsS --connect-timeout 1 --max-time 2 "$url" 2>/dev/null ||
+                true
+        )"
+        if printf '%s' "$health_body" |
+            _task_stack_is_ready "$require_cabinet"; then
             return 0
         fi
         sleep 0.5
@@ -718,6 +789,9 @@ summary = {
     for key in (
         "status",
         "navigation_available",
+        "navigation_action_available",
+        "navigation_lifecycle_active",
+        "navigation_lifecycle_state",
         "map_available",
         "map_error",
         "cabinet_available",
@@ -751,21 +825,21 @@ _wait_for_stable_processes() {
 }
 
 _monitor_managed_processes() {
+    local consecutive_health_failures=0
+    local health_body=""
     local index=0
+    local next_health_check=$SECONDS
     local pid=""
     local status=0
     while true; do
         for ((index=0; index < ${#MANAGED_PIDS[@]}; index++)); do
             pid="${MANAGED_PIDS[$index]}"
-            if ! _process_is_running "$pid"; then
+            if ! _managed_leader_is_running \
+                "$pid" "${MANAGED_PGIDS[$index]}"; then
                 if wait "$pid" 2>/dev/null; then
                     status=0
                 else
                     status=$?
-                fi
-                if [ "$pid" = "$LAUNCH_PID" ] && [ "$status" -eq 0 ]; then
-                    echo "ROS 2 launch 已正常结束。"
-                    return 0
                 fi
                 echo "ERROR: ${MANAGED_LABELS[$index]} 意外退出（status=$status）。" >&2
                 if [ "$status" -eq 0 ]; then
@@ -774,6 +848,30 @@ _monitor_managed_processes() {
                 return "$status"
             fi
         done
+        # 进程 leader 存活不代表 ROS task stack 仍可执行。持续复用启动
+        # readiness 合同，覆盖外部完整栈掉线、Nav2 lifecycle 降级以及
+        # 柜体 Action 运行期消失。允许短暂的 3 次失败，避免瞬时抖动误退。
+        if [ "$CONTROL_MODE" = "web" ] &&
+            (( SECONDS >= next_health_check )); then
+            next_health_check=$((SECONDS + 2))
+            health_body="$(
+                curl -fsS --connect-timeout 1 --max-time 2 \
+                    "http://${_READY_URL_HOST}:$CONTROL_PORT/health" \
+                    2>/dev/null || true
+            )"
+            if printf '%s' "$health_body" |
+                _task_stack_is_ready "$CABINET_ACTION_REQUIRED"; then
+                consecutive_health_failures=0
+            else
+                consecutive_health_failures=$((
+                    consecutive_health_failures + 1
+                ))
+                if (( consecutive_health_failures >= 3 )); then
+                    echo "ERROR: ROS 任务栈连续 3 次未通过运行期健康检查。" >&2
+                    return 1
+                fi
+            fi
+        fi
         sleep 0.5
     done
 }
@@ -937,8 +1035,8 @@ else
 fi
 if [ "$CONTROL_MODE" = "web" ]; then
     _wait_for_task_stack \
-        "http://${_READY_URL_HOST}:$CONTROL_PORT/health" "$MOVEIT_ENABLED"
-    if [ "$MOVEIT_ENABLED" = "true" ]; then
+        "http://${_READY_URL_HOST}:$CONTROL_PORT/health" "$CABINET_ACTION_REQUIRED"
+    if [ "$CABINET_ACTION_REQUIRED" = "true" ]; then
         echo "       ROS 任务栈已就绪（Nav2 和柜体 Action 可用）"
     else
         echo "       ROS 任务栈已就绪（Nav2 可用）"

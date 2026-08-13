@@ -158,6 +158,13 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
     node._navigation_retirements = {}
     node._navigation_mode_client = _ModeClient()
     node._navigation_client = _NavigationClient()
+    node._navigation_readiness_client = _ModeClient()
+    node._navigation_readiness_active = True
+    node._navigation_readiness_state = "active"
+    node._navigation_readiness_message = "all managed nodes are active"
+    node._navigation_readiness_service = (
+        "/lifecycle_manager_navigation/is_active"
+    )
     node._navigation_state = {
         "state": "idle",
         "message": "idle",

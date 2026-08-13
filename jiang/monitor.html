@@ -1054,6 +1054,7 @@ const subs = new Map();       // topic -> { es, cardId, history:[] }
 const historyMax = 50;
 let cardCounter = 0;
 let sensorEnabled = false;
+let sensorConnectionKey = null;
 let cameraReconnectTimer = null;
 let lidarSocket = null;
 let lidarReconnectTimer = null;
@@ -1188,7 +1189,7 @@ function doConnect() {
   btnDisconnect.disabled = false;
   sessionInfo.textContent = baseUrl;
   log('ok', `REST API ${baseUrl}`);
-  if (authToken) connectSensorStreams();
+  if (!authRequired || authToken) connectSensorStreams();
   toast('连接成功');
 }
 
@@ -1216,6 +1217,10 @@ function doDisconnect() {
 // ─── Subscribe / Unsubscribe ─────────────────────────────────
 function subscribe(topic) {
   if (!connected) { toast('请先连接', 'err'); return; }
+  if (authRequired && !authToken) {
+    toast('请先登录后订阅受保护的数据流', 'err');
+    return;
+  }
   if (subs.has(topic)) { toast(`已订阅 ${topic}`, 'err'); return; }
 
   const baseUrl = ($('restUrl').value || 'http://localhost:8090').trim().replace(/\/+$/, '');
@@ -1279,7 +1284,7 @@ function unsubscribe(topic) {
 }
 
 function reconnectAuthenticatedStreams() {
-  if (!connected) return;
+  if (!connected || (authRequired && !authToken)) return;
   const topics = Array.from(subs.keys());
   for (const entry of subs.values()) {
     if (entry._errTimer) clearTimeout(entry._errTimer);
@@ -1396,9 +1401,12 @@ function setSensorState(element, text, stateClass = '') {
 }
 
 function connectSensorStreams() {
+  const baseUrl = sensorBaseUrl();
+  const connectionKey = `${baseUrl}|${authToken}`;
+  if (sensorEnabled && sensorConnectionKey === connectionKey) return;
   disconnectSensorStreams(false);
   sensorEnabled = true;
-  const baseUrl = sensorBaseUrl();
+  sensorConnectionKey = connectionKey;
   setSensorState(cameraState, '正在连接…');
   setSensorState(lidarState, '正在连接…');
   connectCameraStream();
@@ -1410,6 +1418,7 @@ function connectSensorStreams() {
 
 function disconnectSensorStreams(updateState = true) {
   sensorEnabled = false;
+  sensorConnectionKey = null;
   if (cameraReconnectTimer) {
     clearTimeout(cameraReconnectTimer);
     cameraReconnectTimer = null;
@@ -1757,6 +1766,7 @@ setStatus('', '未连接');
 
 // ─── Control State ──────────────────────────────────────────
 let ctrlConnected = false;
+let authRequired = true;
 let ctrlBaseUrl = (() => {
   const proto = window.location.protocol;
   const host = window.location.hostname;
@@ -1778,7 +1788,10 @@ function authHeaders(extra) {
 
 function updateLoginStatus() {
   const statusEl = $('loginStatus');
-  if (authToken) {
+  if (!authRequired) {
+    statusEl.textContent = '鉴权已关闭';
+    statusEl.style.color = 'var(--warn, #f9a825)';
+  } else if (authToken) {
     statusEl.textContent = '已登录';
     statusEl.style.color = 'var(--ok, #2e7d32)';
   } else {
@@ -2049,7 +2062,7 @@ function applyTaskSnapshot(task) {
 function connectTaskEvents() {
   if (taskEventSource) taskEventSource.close();
   taskEventSource = null;
-  if (!authToken) return; // 未登录则等待登录后再连接
+  if (authRequired && !authToken) return; // 需鉴权时等待登录后再连接
   // EventSource 无法携带 Header，鉴权 token 通过查询参数传递。
   taskEventSource = new EventSource(
     authenticatedUrl(ctrlBaseUrl, '/task/events')
@@ -2086,7 +2099,16 @@ async function testControlConnection() {
     const r = await fetch(url + '/health');
     if (r.ok) {
       const health = await r.json();
-      ctrlConnected = true;
+      authRequired = health.auth_required !== false;
+      updateLoginStatus();
+      ctrlConnected = !authRequired || Boolean(authToken);
+      if (!ctrlConnected) {
+        st.textContent = '请先登录';
+        st.className = 'ctrl-status err';
+        disconnectSensorStreams();
+        updateControlInterlocks();
+        return;
+      }
       // Fail closed until the replay service explicitly confirms an idle
       // state. This avoids a writable window when the page reconnects while
       // playback is already active in another client.
@@ -2144,6 +2166,7 @@ async function testControlConnection() {
         } catch (_) {}
       }
       connectTaskEvents();
+      if (connected) connectSensorStreams();
       renderCabinetStatus();
       startAutonomyPolling();
       startReplayPolling();
@@ -2265,15 +2288,30 @@ async function postJointTrajectory(positions) {
 
 // token 失效统一处理。
 function handleTokenExpired() {
+  if (!authToken && !ctrlConnected) return;
   authToken = '';
   sessionStorage.removeItem('xczs_token');
+  ctrlConnected = false;
+  cabinetAvailableFromHealth = false;
+  cabinetActiveFromHealth = false;
+  cabinetStatusCurrent = false;
+  replayControlReadOnly = true;
+  freezeManualOutputsForReplay();
+  stopAutonomyPolling();
+  stopReplayPolling();
+  markReplayDisconnected('登录已失效，控制与回放状态不可用。');
   for (const entry of subs.values()) {
     if (entry._errTimer) clearTimeout(entry._errTimer);
     try { entry.es.close(); } catch (_) {}
   }
+  if (taskEventSource) taskEventSource.close();
+  taskEventSource = null;
   disconnectSensorStreams();
   updateLoginStatus();
-  connectTaskEvents();
+  $('ctrlStatus').textContent = '请先登录';
+  $('ctrlStatus').className = 'ctrl-status err';
+  renderCabinetStatus();
+  updateControlInterlocks();
   toast('登录已失效，请重新登录', 'warn');
 }
 
@@ -5466,15 +5504,10 @@ renderReplayStatus();
 // 登录状态初始化（刷新后保留 token）。
 updateLoginStatus();
 
-// Auto-connect monitoring, sensors and control on page load.
+// Auto-connect monitoring, sensors and control on page load. /health 声明
+// 服务是否要求认证；迁移模式关闭鉴权时无需 token。
 doConnect();
-if (authToken) {
-  // 有 token 时自动连接控制服务。
-  testControlConnection();
-} else {
-  $('ctrlStatus').textContent = '请先登录';
-  ctrlConnected = false;
-}
+testControlConnection();
 </script>
 </body>
 </html>

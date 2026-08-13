@@ -11,7 +11,10 @@ LiDAR WebSocket）+ Zenoh SSE + 用户认证 + 静态页面（monitor.html）。
 import argparse
 import logging
 import os
+import signal
+import threading
 from pathlib import Path
+from typing import Callable
 
 import uvicorn
 
@@ -20,6 +23,36 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE = Path(__file__).resolve().parents[1]
 CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
+
+ExecutorFatalCallback = Callable[[str, BaseException], None]
+
+
+def _build_process_fatal_callback() -> ExecutorFatalCallback:
+    """Build an idempotent callback that asks uvicorn to shut down.
+
+    Uvicorn owns the process signal handlers before application lifespan
+    startup, so SIGTERM reaches its normal graceful-shutdown path.  The outer
+    ``run_all.sh`` watchdog then observes this persistent process exiting and
+    tears down the complete managed process group.
+    """
+    lock = threading.Lock()
+    signal_sent = False
+
+    def request_shutdown(component: str, error: BaseException) -> None:
+        nonlocal signal_sent
+        with lock:
+            if signal_sent:
+                return
+            signal_sent = True
+        logger.critical(
+            "%s failed fatally (%s): %s; requesting process shutdown",
+            component,
+            type(error).__name__,
+            str(error) or repr(error),
+        )
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    return request_shutdown
 
 
 def _effective_allowed_origins(args: argparse.Namespace) -> list[str]:
@@ -118,7 +151,10 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _build_sensor_subsystem(args: argparse.Namespace):
+def _build_sensor_subsystem(
+    args: argparse.Namespace,
+    fatal_callback: ExecutorFatalCallback | None = None,
+):
     """构造 SensorStreamState + SensorRosRuntime；失败则返回 (None, None)。"""
     from sensor_bridge.state import SensorStreamState
 
@@ -132,6 +168,7 @@ def _build_sensor_subsystem(args: argparse.Namespace):
             lidar_topic=args.lidar_topic,
             jpeg_quality=80,
             camera_fps=10.0,
+            fatal_callback=fatal_callback,
         )
     except Exception as error:  # noqa: BLE001 - 传感器子系统尽力而为
         logger.warning("传感器子系统未启动：%s", error)
@@ -154,6 +191,7 @@ def main() -> None:
     """解析参数、构造子系统、创建 FastAPI app 并启动 uvicorn。"""
     args = _parser().parse_args()
     allowed_origins = _effective_allowed_origins(args)
+    fatal_callback = _build_process_fatal_callback()
 
     from control_gateway import ControlServer
 
@@ -171,12 +209,16 @@ def main() -> None:
         robot_control_path=args.robot_control,
         recordings_root=args.recordings_root,
         allowed_origins=allowed_origins,
+        fatal_callback=fatal_callback,
     )
 
     sensor_state = None
     sensor_runtime = None
     if not args.no_sensors:
-        sensor_state, sensor_runtime = _build_sensor_subsystem(args)
+        sensor_state, sensor_runtime = _build_sensor_subsystem(
+            args,
+            fatal_callback,
+        )
     zenoh_source = None if args.no_sse else _build_zenoh_source(args)
 
     from app.main import create_app

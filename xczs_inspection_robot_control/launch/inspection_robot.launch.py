@@ -41,6 +41,27 @@ XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_XACRO_FILENAME = "control_cabinet.urdf.xacro"
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
+_INCLUDED_REQUIRED_RUNTIME_NODES = {
+    ("nav2_map_server", "map_server"): "Nav2 map server",
+    ("nav2_amcl", "amcl"): "Nav2 AMCL",
+    ("nav2_controller", "controller_server"): "Nav2 controller server",
+    ("nav2_smoother", "smoother_server"): "Nav2 smoother server",
+    ("nav2_planner", "planner_server"): "Nav2 planner server",
+    ("nav2_behaviors", "behavior_server"): "Nav2 behavior server",
+    ("nav2_bt_navigator", "bt_navigator"): "Nav2 BT navigator",
+    (
+        "nav2_waypoint_follower",
+        "waypoint_follower",
+    ): "Nav2 waypoint follower",
+    (
+        "nav2_velocity_smoother",
+        "velocity_smoother",
+    ): "Nav2 velocity smoother",
+    (
+        "nav2_lifecycle_manager",
+        "lifecycle_manager",
+    ): "Nav2 lifecycle manager",
+}
 
 
 def _continue_or_shutdown_required_process(
@@ -55,12 +76,70 @@ def _continue_or_shutdown_required_process(
         return success_actions
     reason = (
         f"Required startup process '{process_label}' exited with code "
-        f"{event.returncode}; downstream robot nodes will not be started."
+        f"{event.returncode}; downstream nodes will not be started."
     )
     return [
         LogInfo(msg=reason),
         EmitEvent(event=Shutdown(reason=reason)),
     ]
+
+
+def _shutdown_on_required_runtime_exit(
+    event,
+    context,
+    *,
+    process_label,
+):
+    """Shut down when a required long-running process exits unexpectedly."""
+    if context.is_shutdown:
+        return []
+    reason = (
+        f"Required runtime process '{process_label}' exited with code "
+        f"{event.returncode}; the robot stack is no longer operational."
+    )
+    return [
+        LogInfo(msg=reason),
+        EmitEvent(event=Shutdown(reason=reason)),
+    ]
+
+
+def _required_runtime_handler(process, process_label):
+    """Create an exit watchdog for a required long-running process."""
+    return RegisterEventHandler(
+        OnProcessExit(
+            target_action=process,
+            on_exit=partial(
+                _shutdown_on_required_runtime_exit,
+                process_label=process_label,
+            ),
+        )
+    )
+
+
+def _guard_required_runtime_nodes(labeled_nodes):
+    """Register every watchdog before scheduling any guarded node."""
+    labeled_nodes = list(labeled_nodes)
+    return [
+        _required_runtime_handler(process, label)
+        for process, label in labeled_nodes
+    ] + [process for process, _label in labeled_nodes]
+
+
+def _included_required_runtime_node(action):
+    """Match known required Nodes created by the upstream Nav2 include."""
+    return isinstance(action, Node) and (
+        action.node_package,
+        action.node_executable,
+    ) in _INCLUDED_REQUIRED_RUNTIME_NODES
+
+
+def _shutdown_on_included_required_runtime_exit(event, context):
+    key = (event.action.node_package, event.action.node_executable)
+    return _shutdown_on_required_runtime_exit(
+        event,
+        context,
+        process_label=_INCLUDED_REQUIRED_RUNTIME_NODES[key],
+    )
 
 
 def _launch_boolean(context, name):
@@ -426,6 +505,7 @@ def _cabinet_nodes(context, *, cabinet_xacro):
         name = instance["name"]
         namespace = f"/xczs/cabinet/{name}"
         cabinet_frame = f"{name}_frame"
+        spawn_node = None
         if spawn_cabinet:
             assert generated_directory is not None
             urdf_path = generated_directory / f"{name}.urdf"
@@ -456,131 +536,166 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                     f"Could not generate URDF for cabinet '{name}': {error}"
                 ) from error
 
-            nodes.append(
-                Node(
-                    package="gazebo_ros",
-                    executable="spawn_entity.py",
-                    name=f"spawn_{name}",
-                    output="screen",
-                    prefix="/usr/bin/python3",
-                    arguments=[
-                        "-entity", name,
-                        "-file", str(urdf_path),
-                        "-x", str(instance["x"]),
-                        "-y", str(instance["y"]),
-                        "-z", str(instance["z"]),
-                        "-R", str(instance["roll"]),
-                        "-P", str(instance["pitch"]),
-                        "-Y", str(instance["yaw"]),
-                    ],
-                )
-            )
-        nodes.append(
-            Node(
-                package=CONTROL_PACKAGE,
-                executable="cabinet_pose_authority",
-                namespace=namespace,
-                name="xczs_cabinet_pose_authority",
+            spawn_node = Node(
+                package="gazebo_ros",
+                executable="spawn_entity.py",
+                name=f"spawn_{name}",
                 output="screen",
-                parameters=[
-                    pose_config,
-                    {
-                        "use_sim_time": ParameterValue(
-                            LaunchConfiguration("use_sim_time"),
-                            value_type=bool,
-                        ),
-                        "pose_source": LaunchConfiguration(
-                            "cabinet_pose_source"
-                        ),
-                        "parent_frame": adapter_interfaces.get(
-                            "pose_parent_frame",
-                            adapter_interfaces["planning_frame"],
-                        ),
-                        "cabinet_frame": cabinet_frame,
-                        "static_pose.x": instance["x"],
-                        "static_pose.y": instance["y"],
-                        "static_pose.z": instance["z"],
-                        "static_pose.roll": instance["roll"],
-                        "static_pose.pitch": instance["pitch"],
-                        "static_pose.yaw": instance["yaw"],
-                    },
+                prefix="/usr/bin/python3",
+                arguments=[
+                    "-entity", name,
+                    "-file", str(urdf_path),
+                    "-x", str(instance["x"]),
+                    "-y", str(instance["y"]),
+                    "-z", str(instance["z"]),
+                    "-R", str(instance["roll"]),
+                    "-P", str(instance["pitch"]),
+                    "-Y", str(instance["yaw"]),
                 ],
             )
-        )
-        if moveit_enabled:
-            nodes.append(
+        cabinet_runtime_nodes = [
+            (
                 Node(
                     package=CONTROL_PACKAGE,
-                    executable="cabinet_planning_scene",
+                    executable="cabinet_pose_authority",
                     namespace=namespace,
-                    name="xczs_cabinet_planning_scene",
+                    name="xczs_cabinet_pose_authority",
                     output="screen",
                     parameters=[
-                        controls_config,
-                        scene_config,
+                        pose_config,
                         {
                             "use_sim_time": ParameterValue(
                                 LaunchConfiguration("use_sim_time"),
                                 value_type=bool,
                             ),
-                            "frame_id": adapter_interfaces[
-                                "planning_frame"
-                            ],
+                            "pose_source": LaunchConfiguration(
+                                "cabinet_pose_source"
+                            ),
+                            "parent_frame": adapter_interfaces.get(
+                                "pose_parent_frame",
+                                adapter_interfaces["planning_frame"],
+                            ),
                             "cabinet_frame": cabinet_frame,
-                            "collision_object_prefix": name,
+                            "static_pose.x": instance["x"],
+                            "static_pose.y": instance["y"],
+                            "static_pose.z": instance["z"],
+                            "static_pose.roll": instance["roll"],
+                            "static_pose.pitch": instance["pitch"],
+                            "static_pose.yaw": instance["yaw"],
                         },
                     ],
+                ),
+                f"cabinet pose authority '{name}'",
+            )
+        ]
+        if moveit_enabled:
+            cabinet_runtime_nodes.append(
+                (
+                    Node(
+                        package=CONTROL_PACKAGE,
+                        executable="cabinet_planning_scene",
+                        namespace=namespace,
+                        name="xczs_cabinet_planning_scene",
+                        output="screen",
+                        parameters=[
+                            controls_config,
+                            scene_config,
+                            {
+                                "use_sim_time": ParameterValue(
+                                    LaunchConfiguration("use_sim_time"),
+                                    value_type=bool,
+                                ),
+                                "frame_id": adapter_interfaces[
+                                    "planning_frame"
+                                ],
+                                "cabinet_frame": cabinet_frame,
+                                "collision_object_prefix": name,
+                            },
+                        ],
+                    ),
+                    f"cabinet planning scene '{name}'",
                 )
             )
-            nodes.append(
-                Node(
-                    package=CONTROL_PACKAGE,
-                    executable="cabinet_button_operator",
-                    namespace=namespace,
-                    name="xczs_cabinet_button_operator",
-                    output="screen",
-                    remappings=[
-                        (
-                            "joint_states",
-                            adapter_interfaces["joint_state_topic"],
-                        )
-                    ],
-                    parameters=[
-                        controls_config,
-                        adapter_config,
-                        moveit_client_config.robot_description,
-                        moveit_client_config.robot_description_semantic,
-                        moveit_client_config.robot_description_kinematics,
-                        moveit_client_config.joint_limits,
-                        {
-                            "use_sim_time": ParameterValue(
-                                LaunchConfiguration("use_sim_time"),
-                                value_type=bool,
-                            ),
-                            "cabinet_frame": cabinet_frame,
-                        },
-                    ],
+            cabinet_runtime_nodes.append(
+                (
+                    Node(
+                        package=CONTROL_PACKAGE,
+                        executable="cabinet_button_operator",
+                        namespace=namespace,
+                        name="xczs_cabinet_button_operator",
+                        output="screen",
+                        remappings=[
+                            (
+                                "joint_states",
+                                adapter_interfaces["joint_state_topic"],
+                            )
+                        ],
+                        parameters=[
+                            controls_config,
+                            adapter_config,
+                            moveit_client_config.robot_description,
+                            moveit_client_config.robot_description_semantic,
+                            moveit_client_config.robot_description_kinematics,
+                            moveit_client_config.joint_limits,
+                            {
+                                "use_sim_time": ParameterValue(
+                                    LaunchConfiguration("use_sim_time"),
+                                    value_type=bool,
+                                ),
+                                "cabinet_frame": cabinet_frame,
+                            },
+                        ],
+                    ),
+                    f"cabinet button operator '{name}'",
                 )
             )
             grasp_topics.append(f"{namespace}/grasp_active")
 
+        guarded_cabinet_runtime = _guard_required_runtime_nodes(
+            cabinet_runtime_nodes
+        )
+        if spawn_node is None:
+            nodes.extend(guarded_cabinet_runtime)
+        else:
+            # A spawn process can exit immediately.  Register its handler
+            # before scheduling the process so a fast success or failure
+            # cannot race the cabinet runtime-node dependency chain.
+            nodes.extend(
+                [
+                    RegisterEventHandler(
+                        OnProcessExit(
+                            target_action=spawn_node,
+                            on_exit=partial(
+                                _continue_or_shutdown_required_process,
+                                process_label=f"Gazebo cabinet spawn '{name}'",
+                                success_actions=guarded_cabinet_runtime,
+                            ),
+                        )
+                    ),
+                    spawn_node,
+                ]
+            )
+
     if moveit_enabled:
-        nodes.append(
-            Node(
-                package=CONTROL_PACKAGE,
-                executable="cabinet_grasp_aggregator",
-                name="xczs_cabinet_grasp_aggregator",
-                output="screen",
-                parameters=[
-                    {
-                        "use_sim_time": ParameterValue(
-                            LaunchConfiguration("use_sim_time"),
-                            value_type=bool,
-                        ),
-                        "input_topics": grasp_topics,
-                        "output_topic": "/xczs/cabinet/grasp_active",
-                    }
-                ],
+        grasp_aggregator = Node(
+            package=CONTROL_PACKAGE,
+            executable="cabinet_grasp_aggregator",
+            name="xczs_cabinet_grasp_aggregator",
+            output="screen",
+            parameters=[
+                {
+                    "use_sim_time": ParameterValue(
+                        LaunchConfiguration("use_sim_time"),
+                        value_type=bool,
+                    ),
+                    "input_topics": grasp_topics,
+                    "output_topic": "/xczs/cabinet/grasp_active",
+                }
+            ],
+        )
+        nodes.extend(
+            _guard_required_runtime_nodes(
+                [(grasp_aggregator, "cabinet grasp aggregator")]
             )
         )
     return nodes
@@ -720,6 +835,7 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "pause": LaunchConfiguration("paused"),
             "world": LaunchConfiguration("world"),
+            "server_required": "true",
         }.items(),
         condition=IfCondition(LaunchConfiguration("gazebo")),
     )
@@ -896,6 +1012,30 @@ def generate_launch_description() -> LaunchDescription:
         ),
         parameters=[LaunchConfiguration("cabinet_robot_adapter")],
     )
+    runtime_watchdogs = [
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=_included_required_runtime_node,
+                on_exit=_shutdown_on_included_required_runtime_exit,
+            )
+        ),
+        _required_runtime_handler(
+            robot_state_publisher,
+            "robot state publisher",
+        ),
+        _required_runtime_handler(
+            base_router,
+            "base command router",
+        ),
+        _required_runtime_handler(
+            trajectory_router,
+            "manual trajectory router",
+        ),
+        _required_runtime_handler(
+            operation_lease_coordinator,
+            "operation lease coordinator",
+        ),
+    ]
     after_controllers = RegisterEventHandler(
         OnProcessExit(
             target_action=controllers,
@@ -946,6 +1086,7 @@ def generate_launch_description() -> LaunchDescription:
             # Xacros are being generated.
             start_controllers,
             after_controllers,
+            *runtime_watchdogs,
             gazebo_server,
             gazebo_client,
             robot_state_publisher,

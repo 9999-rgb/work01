@@ -10,7 +10,8 @@ from __future__ import annotations
 import logging
 import secrets
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import ROLE_ADMIN, User
@@ -25,12 +26,21 @@ RECOVERY_ADMIN_USERNAME_PREFIX = "recovery_admin"
 
 async def bootstrap_admin(session: AsyncSession) -> None:
     """确保存在至少一个启用状态的 admin 账号。"""
+    # SQLite 没有 SELECT FOR UPDATE；启动时先取得写事务，避免同一数据库
+    # 的两个 worker 同时判断“没有 admin”并创建同名账号。
+    bind = session.get_bind()
+    if bind.dialect.name == "sqlite":
+        if session.in_transaction():
+            await session.rollback()
+        await session.execute(text("BEGIN IMMEDIATE"))
+
     count_result = await session.execute(
         select(func.count())
         .select_from(User)
         .where(User.role == ROLE_ADMIN, User.is_active.is_(True))
     )
     if count_result.scalar_one() > 0:
+        await session.rollback()
         return
 
     username_result = await session.execute(select(User.username))
@@ -44,15 +54,7 @@ async def bootstrap_admin(session: AsyncSession) -> None:
             suffix += 1
             username = f"{RECOVERY_ADMIN_USERNAME_PREFIX}_{suffix}"
 
-    password = settings.admin_password
-    if not password:
-        # 单机场景：随机生成，仅打印到控制台，避免硬编码弱口令。
-        password = secrets.token_urlsafe(16)
-        logger.warning(
-            "未配置 XCZS_ADMIN_PASSWORD，已随机生成 %s 密码：%s",
-            username,
-            password,
-        )
+    password = settings.admin_password or secrets.token_urlsafe(16)
     admin = User(
         username=username,
         hashed_password=hash_password(password),
@@ -60,5 +62,26 @@ async def bootstrap_admin(session: AsyncSession) -> None:
         is_active=True,
     )
     session.add(admin)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # PostgreSQL 在空表上无法通过行锁串行化首次引导。唯一用户名约束
+        # 会选出一个赢家；输家回滚后只在确有 active admin 时安全返回。
+        await session.rollback()
+        winner = await session.execute(
+            select(func.count())
+            .select_from(User)
+            .where(User.role == ROLE_ADMIN, User.is_active.is_(True))
+        )
+        if winner.scalar_one() > 0:
+            await session.rollback()
+            return
+        raise
+    if not settings.admin_password:
+        # 仅公布真正提交成功的随机凭证；并发引导的输家不会打印假密码。
+        logger.warning(
+            "未配置 XCZS_ADMIN_PASSWORD，已随机生成 %s 密码：%s",
+            username,
+            password,
+        )
     logger.warning("系统无启用状态 admin，已创建恢复账号：%s", username)

@@ -17,7 +17,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(JIANG_DIR))
@@ -55,6 +55,7 @@ class _FakeEventSubscription:
     def __init__(self, events: list[Any]) -> None:
         self._events = list(events)
         self.closed = False
+        self._notify = None
 
     def get(self, timeout: Optional[float] = None) -> Dict[str, Any]:
         del timeout
@@ -62,8 +63,20 @@ class _FakeEventSubscription:
             return self._events.pop(0)
         raise queue.Empty()
 
+    def get_nowait(self) -> Dict[str, Any]:
+        return self.get(timeout=0.0)
+
+    def set_notify(self, callback) -> None:
+        self._notify = callback
+        if callback is not None and (self._events or self.closed):
+            callback()
+
     def close(self) -> None:
         self.closed = True
+        callback = self._notify
+        self._notify = None
+        if callback is not None:
+            callback()
 
 
 class _FakeControlServer:
@@ -313,6 +326,7 @@ class FastAPIAppContractTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         data = response.json()
         self.assertEqual(data["status"], "ok")
+        self.assertFalse(data["auth_required"])
         self.assertEqual(data["cabinet_count"], 3)
         self.assertEqual(self.fake.health_calls, 1)
 
@@ -334,6 +348,41 @@ class FastAPIAppContractTest(unittest.TestCase):
         self.assertEqual(
             client.get("/sensors").json()["endpoints"]["health"],
             "/sensors/health",
+        )
+
+    def test_sensor_health_surfaces_ros_runtime_fatal_state(self) -> None:
+        from app.main import create_app
+        from fastapi.testclient import TestClient
+
+        class _FailedRuntime:
+            @staticmethod
+            def health() -> Dict[str, Any]:
+                return {
+                    "status": "error",
+                    "healthy": False,
+                    "thread_alive": False,
+                    "error": {
+                        "component": "sensor_ros_executor",
+                        "type": "RuntimeError",
+                        "message": "executor crashed",
+                    },
+                }
+
+        app = create_app(
+            control_server=self.fake,
+            sensor_state=_FakeSensorState(),
+            sensor_runtime=_FailedRuntime(),
+            enable_db=False,
+            auth_enabled=False,
+        )
+        response = TestClient(app).get("/sensors/health")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["status"], "error")
+        self.assertFalse(response.json()["runtime"]["healthy"])
+        self.assertEqual(
+            response.json()["runtime"]["error"]["component"],
+            "sensor_ros_executor",
         )
 
     def test_lidar_websocket_accepts_lan_same_origin(self) -> None:
@@ -483,6 +532,91 @@ class FastAPIAppContractTest(unittest.TestCase):
         request = self.fake.operate_request
         self.assertEqual(request["cabinet"], "cabinet_a")
         self.assertEqual(request["force"], 5.0)
+
+    def test_task_operate_enforces_command_specific_target_contract(
+        self,
+    ) -> None:
+        base = {"cabinet": "cabinet_a", "control_id": "control_1"}
+        valid_operations = (
+            (
+                {
+                    **base,
+                    "command": "set_position",
+                    "target_position": 1.25,
+                    "force": 6.0,
+                },
+                (None, 1.25),
+            ),
+            (
+                {
+                    **base,
+                    "command": "set_state",
+                    "target_state": "on",
+                    "force": 6.0,
+                },
+                ("on", None),
+            ),
+            (
+                {**base, "command": "toggle", "force": 6.0},
+                (None, None),
+            ),
+        )
+        for payload, expected_targets in valid_operations:
+            with self.subTest(valid=payload):
+                response = self.client.post("/task/operate", json=payload)
+                self.assertEqual(response.status_code, 202, response.text)
+                request = self.fake.operate_request
+                self.assertEqual(
+                    (request["target_state"], request["target_position"]),
+                    expected_targets,
+                )
+                self.assertEqual(request["force"], 6.0)
+
+        invalid_operations = (
+            (
+                {**base, "command": "set_position"},
+                "target_position is required",
+            ),
+            (
+                {
+                    **base,
+                    "command": "set_position",
+                    "target_position": 1.0,
+                    "target_state": "on",
+                },
+                "target_state is only valid for set_state",
+            ),
+            (
+                {**base, "command": "set_state"},
+                "target_state is required",
+            ),
+            (
+                {
+                    **base,
+                    "command": "set_state",
+                    "target_state": "on",
+                    "target_position": 1.0,
+                },
+                "target_position is only valid for set_position",
+            ),
+            (
+                {**base, "command": "press", "target_state": None},
+                "not valid for press",
+            ),
+            (
+                {**base, "command": "toggle", "target_position": None},
+                "not valid for toggle",
+            ),
+            (
+                {**base, "command": "press", "force": None},
+                "force is required",
+            ),
+        )
+        for payload, error_fragment in invalid_operations:
+            with self.subTest(invalid=payload):
+                response = self.client.post("/task/operate", json=payload)
+                self.assertEqual(response.status_code, 400, response.text)
+                self.assertIn(error_fragment, response.json()["error"])
 
     def test_task_reset(self) -> None:
         response = self.client.post("/task/reset", json={"cabinet": "cabinet_a"})
@@ -856,7 +990,9 @@ class FastAPIAuthGateTest(unittest.TestCase):
         self.assertEqual(response.status_code, 401)
 
     def test_health_is_public(self) -> None:
-        self.assertEqual(self.client.get("/health").status_code, 200)
+        response = self.client.get("/health")
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["auth_required"])
 
     def test_admin_creates_operator(self) -> None:
         token = self._login()
@@ -904,6 +1040,96 @@ class FastAPIAuthGateTest(unittest.TestCase):
 
 
 class SecurityConfigUnitTest(unittest.TestCase):
+    def test_lifespan_cleans_constructed_subsystems_when_database_setup_fails(
+        self,
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from app.main import create_app
+
+        events = []
+
+        class _Server:
+            def stop(self) -> None:
+                events.append("server_stop")
+
+        class _Runtime:
+            def stop(self) -> None:
+                events.append("runtime_stop")
+
+        class _Zenoh:
+            def close(self) -> None:
+                events.append("zenoh_close")
+
+        app = create_app(
+            control_server=_Server(),
+            sensor_runtime=_Runtime(),
+            zenoh_source=_Zenoh(),
+            enable_db=True,
+            auth_enabled=False,
+        )
+        with patch(
+            "app.main.init_database",
+            side_effect=RuntimeError("database setup failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "database setup failed"):
+                with TestClient(app):
+                    pass
+        self.assertEqual(
+            events,
+            ["runtime_stop", "server_stop", "zenoh_close"],
+        )
+
+    def test_lifespan_rolls_back_started_subsystems_on_setup_failure(self) -> None:
+        from fastapi.testclient import TestClient
+
+        from app.main import create_app
+
+        events = []
+
+        class _Server:
+            def start(self, *, start_http: bool) -> None:
+                self.start_http = start_http
+                events.append("server_start")
+
+            def stop(self) -> None:
+                events.append("server_stop")
+
+        class _Runtime:
+            def start(self) -> None:
+                events.append("runtime_start")
+                raise RuntimeError("sensor startup failed")
+
+            def stop(self) -> None:
+                events.append("runtime_stop")
+
+        class _Zenoh:
+            def close(self) -> None:
+                events.append("zenoh_close")
+
+        server = _Server()
+        app = create_app(
+            control_server=server,
+            sensor_runtime=_Runtime(),
+            zenoh_source=_Zenoh(),
+            enable_db=False,
+            auth_enabled=False,
+        )
+        with self.assertRaisesRegex(RuntimeError, "sensor startup failed"):
+            with TestClient(app):
+                pass
+        self.assertFalse(server.start_http)
+        self.assertEqual(
+            events,
+            [
+                "server_start",
+                "runtime_start",
+                "runtime_stop",
+                "server_stop",
+                "zenoh_close",
+            ],
+        )
+
     def test_default_jwt_secret_is_random_and_not_the_known_legacy_value(self) -> None:
         from app.config import Settings
 
@@ -1009,6 +1235,75 @@ class SecurityConfigUnitTest(unittest.TestCase):
                 ["https://cli.example"],
             )
 
+    def test_executor_fatal_callback_requests_sigterm_only_once(self) -> None:
+        import signal
+
+        from control_server import _build_process_fatal_callback
+
+        callback = _build_process_fatal_callback()
+        with patch("control_server.os.kill") as kill:
+            callback("control_ros_executor", RuntimeError("first"))
+            callback("sensor_ros_executor", RuntimeError("second"))
+
+        kill.assert_called_once_with(os.getpid(), signal.SIGTERM)
+
+    def test_production_entrypoint_wires_one_fatal_callback_to_ros_runtimes(
+        self,
+    ) -> None:
+        import argparse
+
+        import control_server
+
+        args = argparse.Namespace(
+            host="127.0.0.1",
+            port=18090,
+            max_linear_speed=0.25,
+            max_angular_speed=0.6,
+            command_timeout=0.3,
+            allowed_origins=None,
+            cabinet_instances="instances.yaml",
+            cabinet_scene="scene.yaml",
+            cabinet_robot_adapter="adapter.yaml",
+            cabinet_controls="controls.yaml",
+            cabinet_pose="pose.yaml",
+            robot_control="robot.yaml",
+            recordings_root="recordings",
+            camera_topic="/camera/image_raw",
+            lidar_topic="/scan",
+            zenoh="tcp/localhost:7447",
+            no_sensors=False,
+            no_sse=True,
+        )
+        parser = MagicMock()
+        parser.parse_args.return_value = args
+        fatal_callback = MagicMock()
+        sensor_state = object()
+        sensor_runtime = object()
+        app = object()
+
+        with (
+            patch("control_server._parser", return_value=parser),
+            patch(
+                "control_server._build_process_fatal_callback",
+                return_value=fatal_callback,
+            ),
+            patch(
+                "control_server._build_sensor_subsystem",
+                return_value=(sensor_state, sensor_runtime),
+            ) as build_sensors,
+            patch("control_gateway.ControlServer", create=True) as server_cls,
+            patch("app.main.create_app", return_value=app),
+            patch("control_server.uvicorn.run") as run,
+        ):
+            control_server.main()
+
+        self.assertIs(
+            server_cls.call_args.kwargs["fatal_callback"],
+            fatal_callback,
+        )
+        build_sensors.assert_called_once_with(args, fatal_callback)
+        self.assertIs(run.call_args.args[0], app)
+
     def test_bootstrap_recovers_without_modifying_existing_users(self) -> None:
         import asyncio
 
@@ -1096,6 +1391,127 @@ class SecurityConfigUnitTest(unittest.TestCase):
 
         asyncio.run(exercise())
 
+    def test_concurrent_bootstrap_creates_exactly_one_active_admin(self) -> None:
+        import asyncio
+
+        from sqlalchemy import func, select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.auth.bootstrap import bootstrap_admin
+        from app.auth.models import User
+        from app.database.base import Base
+
+        async def exercise() -> None:
+            with tempfile.TemporaryDirectory(prefix="xczs_bootstrap_race_") as tmp:
+                race_engine = create_async_engine(
+                    f"sqlite+aiosqlite:///{Path(tmp) / 'race.db'}",
+                    connect_args={"timeout": 5},
+                )
+                sessions = async_sessionmaker(
+                    race_engine,
+                    expire_on_commit=False,
+                )
+                async with race_engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+
+                async def run_once() -> None:
+                    async with sessions() as session:
+                        await bootstrap_admin(session)
+
+                await asyncio.gather(run_once(), run_once())
+                async with sessions() as session:
+                    result = await session.execute(
+                        select(func.count())
+                        .select_from(User)
+                        .where(
+                            User.role == "admin",
+                            User.is_active.is_(True),
+                        )
+                    )
+                    self.assertEqual(result.scalar_one(), 1)
+                await race_engine.dispose()
+
+        asyncio.run(exercise())
+
+    def test_concurrent_admin_demotions_keep_one_active_admin(self) -> None:
+        import asyncio
+
+        from fastapi import HTTPException
+        from sqlalchemy import func, select
+        from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+        from app.auth.models import User
+        from app.auth.router import update_user
+        from app.auth.schemas import UserUpdate, UserResponse
+        from app.auth.service import hash_password
+        from app.database.base import Base
+
+        async def exercise() -> None:
+            with tempfile.TemporaryDirectory(prefix="xczs_admin_race_") as tmp:
+                race_engine = create_async_engine(
+                    f"sqlite+aiosqlite:///{Path(tmp) / 'race.db'}",
+                    connect_args={"timeout": 5},
+                )
+                sessions = async_sessionmaker(
+                    race_engine,
+                    expire_on_commit=False,
+                )
+                async with race_engine.begin() as connection:
+                    await connection.run_sync(Base.metadata.create_all)
+                async with sessions() as session:
+                    first = User(
+                        username="race_admin_1",
+                        hashed_password=hash_password("admin-pass-1"),
+                        role="admin",
+                        is_active=True,
+                    )
+                    second = User(
+                        username="race_admin_2",
+                        hashed_password=hash_password("admin-pass-2"),
+                        role="admin",
+                        is_active=True,
+                    )
+                    session.add_all([first, second])
+                    await session.commit()
+                    ids = (first.id, second.id)
+
+                async def demote(user_id: int):
+                    async with sessions() as session:
+                        return await update_user(
+                            user_id,
+                            UserUpdate(role="operator"),
+                            session,
+                            None,
+                        )
+
+                results = await asyncio.gather(
+                    *(demote(user_id) for user_id in ids),
+                    return_exceptions=True,
+                )
+                self.assertEqual(
+                    sum(isinstance(value, UserResponse) for value in results),
+                    1,
+                )
+                conflicts = [
+                    value for value in results
+                    if isinstance(value, HTTPException)
+                ]
+                self.assertEqual(len(conflicts), 1)
+                self.assertEqual(conflicts[0].status_code, 409)
+                async with sessions() as session:
+                    result = await session.execute(
+                        select(func.count())
+                        .select_from(User)
+                        .where(
+                            User.role == "admin",
+                            User.is_active.is_(True),
+                        )
+                    )
+                    self.assertEqual(result.scalar_one(), 1)
+                await race_engine.dispose()
+
+        asyncio.run(exercise())
+
 
 class SSEEEncodingUnitTest(unittest.TestCase):
     """SSE 编码与流式生成器的单元测试（不经过 HTTP 往返）。"""
@@ -1136,7 +1552,11 @@ class SSEEEncodingUnitTest(unittest.TestCase):
 
         event = {"id": 1, "event": "task_completed", "data": {"status": "ok"}}
         subscription = _FakeEventSubscription([event])
-        generator = stream_task_events(subscription, _FakeRequest())
+        generator = stream_task_events(
+            subscription,
+            _FakeRequest(),
+            heartbeat_seconds=0.01,
+        )
 
         async def collect_first() -> bytes:
             return await generator.__anext__()
@@ -1156,7 +1576,11 @@ class SSEEEncodingUnitTest(unittest.TestCase):
                 return False
 
         subscription = _FakeEventSubscription([])
-        generator = stream_task_events(subscription, _FakeRequest())
+        generator = stream_task_events(
+            subscription,
+            _FakeRequest(),
+            heartbeat_seconds=0.01,
+        )
 
         async def run() -> None:
             # 空订阅先产出一个心跳，确保生成器体已启动（finally 才会注册）。

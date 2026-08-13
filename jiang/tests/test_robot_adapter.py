@@ -32,6 +32,7 @@ def _parameters() -> dict[str, object]:
         "navigation_frame": "world_map",
         "navigation_base_frame": "mobile/base",
         "navigation_action": "/robot/navigate_to_pose",
+        "navigation_readiness_service": "/robot/nav_manager/is_active",
         "navigation_mode_service": "/robot/set_navigation_mode",
         "navigation_mode_topic": "/robot/navigation_mode",
         "map_topic": "/robot/map",
@@ -108,6 +109,10 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("world_map", adapter.navigation_frame)
         self.assertEqual("mobile/base", adapter.navigation_base_frame)
         self.assertEqual("/robot/navigate_to_pose", adapter.navigation_action)
+        self.assertEqual(
+            "/robot/nav_manager/is_active",
+            adapter.navigation_readiness_service,
+        )
         self.assertEqual(("joint_a", "joint_b"), adapter.manual_joint_names)
         self.assertEqual(-1.0, adapter.manual_joints[0].min_position)
         self.assertEqual(0.2, adapter.manual_joints[0].default_position)
@@ -401,6 +406,10 @@ class RobotAdapterTest(unittest.TestCase):
 
         self.assertEqual("map", adapter.navigation_frame)
         self.assertEqual("/navigate_to_pose", adapter.navigation_action)
+        self.assertEqual(
+            "/lifecycle_manager_navigation/is_active",
+            adapter.navigation_readiness_service,
+        )
         self.assertEqual("/xczs/manual_cmd_vel", adapter.manual_cmd_vel_topic)
         self.assertEqual(8, len(adapter.manual_joint_names))
         self.assertEqual(6, len(adapter.arm_joint_names))
@@ -477,6 +486,10 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(
             "/robot/navigate_to_pose",
             captured_keywords[0]["navigation_action"],
+        )
+        self.assertEqual(
+            "/robot/nav_manager/is_active",
+            captured_keywords[0]["navigation_readiness_service"],
         )
         self.assertEqual(
             "/robot/set_navigation_mode",

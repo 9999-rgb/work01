@@ -268,43 +268,51 @@ def _attach_lifespan(
 ) -> None:
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
-        if enable_db:
-            await init_database()
-            async with async_session() as session:
-                await bootstrap_admin(session)
-
         server = getattr(_app.state, "control_server", None)
-        # 真实 ControlServer 有 start/stop；测试 fake 通常没有（保持不动）。
-        if server is not None and callable(getattr(server, "start", None)):
-            await asyncio.to_thread(server.start, start_http=False)
-            logger.info("ControlServer 已启动（HTTP 由 uvicorn 接管）")
-
         runtime = getattr(_app.state, "sensor_runtime", None)
-        if runtime is not None and callable(getattr(runtime, "start", None)):
-            runtime.start()
-            logger.info("传感器 ROS 运行时已启动")
+        try:
+            if enable_db:
+                await init_database()
+                async with async_session() as session:
+                    await bootstrap_admin(session)
 
-        yield
+            # 即使 start() 中途抛错，也在 finally 中调用对应 stop()，使已创建
+            # 的线程/ROS 对象得到回滚。
+            if server is not None and callable(getattr(server, "start", None)):
+                await asyncio.to_thread(server.start, start_http=False)
+                logger.info("ControlServer 已启动（HTTP 由 uvicorn 接管）")
 
-        if server is not None and callable(getattr(server, "stop", None)):
-            try:
-                await asyncio.to_thread(server.stop)
-            except Exception:  # noqa: BLE001 - 关闭尽力而为
-                logger.exception("ControlServer 停止时发生异常")
+            if runtime is not None and callable(getattr(runtime, "start", None)):
+                runtime.start()
+                logger.info("传感器 ROS 运行时已启动")
 
-        if runtime is not None and callable(getattr(runtime, "stop", None)):
-            try:
-                runtime.stop()
-            except Exception:  # noqa: BLE001 - 关闭尽力而为
-                logger.exception("传感器运行时停止时发生异常")
+            yield
+        finally:
+            # 与启动顺序相反地关闭；setup 阶段异常也走同一清理路径。
+            # 两个生产对象在构造阶段就已拥有 ROS context/node，ControlServer
+            # 还会启动事件桥线程。因此即使数据库初始化早于 start() 失败，
+            # lifespan 也必须回收已经交给应用托管的对象。
+            if runtime is not None and callable(getattr(runtime, "stop", None)):
+                try:
+                    runtime.stop()
+                except Exception:  # noqa: BLE001 - 关闭尽力而为
+                    logger.exception("传感器运行时停止时发生异常")
 
-        if zenoh_source is not None and callable(getattr(zenoh_source, "close", None)):
-            try:
-                zenoh_source.close()
-            except Exception:  # noqa: BLE001 - 关闭尽力而为
-                logger.exception("Zenoh 源关闭时发生异常")
+            if server is not None and callable(getattr(server, "stop", None)):
+                try:
+                    await asyncio.to_thread(server.stop)
+                except Exception:  # noqa: BLE001 - 关闭尽力而为
+                    logger.exception("ControlServer 停止时发生异常")
 
-        if enable_db:
-            await engine.dispose()
+            if zenoh_source is not None and callable(
+                getattr(zenoh_source, "close", None)
+            ):
+                try:
+                    zenoh_source.close()
+                except Exception:  # noqa: BLE001 - 关闭尽力而为
+                    logger.exception("Zenoh 源关闭时发生异常")
+
+            if enable_db:
+                await engine.dispose()
 
     app.router.lifespan_context = lifespan

@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictFloat, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictFloat,
+    field_validator,
+    model_validator,
+)
 
 from app.api.validators import finite_number, nonempty_string
 
@@ -86,6 +93,37 @@ class OperateRequest(BaseModel):
     @classmethod
     def _force(cls, value: float | None) -> float | None:
         return finite_number(value, "force") if value is not None else None
+
+    @model_validator(mode="after")
+    def _command_targets(self) -> "OperateRequest":
+        """Keep the command-specific target contract of the legacy API."""
+        provided = self.model_fields_set
+        if self.command == "set_state":
+            if self.target_state is None:
+                raise ValueError("target_state is required for set_state.")
+            if "target_position" in provided:
+                raise ValueError(
+                    "target_position is only valid for set_position."
+                )
+        elif self.command == "set_position":
+            if self.target_position is None:
+                raise ValueError(
+                    "target_position is required for set_position."
+                )
+            if "target_state" in provided:
+                raise ValueError("target_state is only valid for set_state.")
+        elif {"target_state", "target_position"} & provided:
+            raise ValueError(
+                "target_state and target_position are not valid for "
+                f"{self.command}."
+            )
+
+        # The old handler treated an omitted force as "use catalog default",
+        # while an explicitly supplied null still failed numeric validation.
+        # Force itself was allowed for every command and remains so here.
+        if "force" in provided and self.force is None:
+            raise ValueError("force is required.")
+        return self
 
 
 class TaskResetRequest(BaseModel):

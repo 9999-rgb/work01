@@ -23,6 +23,9 @@ _LEGACY_DEFAULTS = {
     "manual_linear_axis": "y",
     "navigation_velocity_yaw_offset": 1.57079632679,
     "navigation_action": "/navigate_to_pose",
+    "navigation_readiness_service": (
+        "/lifecycle_manager_navigation/is_active"
+    ),
     "navigation_mode_service": "/xczs/set_navigation_mode",
     "navigation_mode_topic": "/xczs/navigation_mode",
     "map_topic": "/map",
@@ -113,6 +116,7 @@ class RobotAdapterConfig:
     navigation_frame: str
     navigation_base_frame: str
     navigation_action: str
+    navigation_readiness_service: str
     navigation_mode_service: str
     navigation_mode_topic: str
     map_topic: str
@@ -597,6 +601,18 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         if pose_parent_frame_raw
         else planning_frame
     )
+    navigation_action = _absolute_ros_name(
+        _required(parameters, "navigation_action", legacy=legacy),
+        "navigation_action",
+    )
+    readiness_service_raw = parameters.get("navigation_readiness_service")
+    if readiness_service_raw is None:
+        action_namespace, _, _action_name = navigation_action.rpartition("/")
+        readiness_service_raw = (
+            f"{action_namespace}/lifecycle_manager_navigation/is_active"
+            if action_namespace
+            else _LEGACY_DEFAULTS["navigation_readiness_service"]
+        )
     return RobotAdapterConfig(
         planning_frame=planning_frame,
         pose_parent_frame=pose_parent_frame,
@@ -614,9 +630,10 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
             _required(parameters, "navigation_base_frame", legacy=legacy),
             "navigation_base_frame",
         ),
-        navigation_action=_absolute_ros_name(
-            _required(parameters, "navigation_action", legacy=legacy),
-            "navigation_action",
+        navigation_action=navigation_action,
+        navigation_readiness_service=_absolute_ros_name(
+            readiness_service_raw,
+            "navigation_readiness_service",
         ),
         navigation_mode_service=_absolute_ros_name(
             _required(parameters, "navigation_mode_service", legacy=legacy),

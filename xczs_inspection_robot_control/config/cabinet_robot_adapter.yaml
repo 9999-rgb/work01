@@ -16,6 +16,9 @@
     navigation_frame: map
     navigation_base_frame: base_link
     navigation_action: /navigate_to_pose
+    # Web readiness 仅在 Nav2 lifecycle manager 确认所有受管节点均 active
+    # 后成立。外部 Nav2 使用自定义命名空间时应同步修改此服务名。
+    navigation_readiness_service: /lifecycle_manager_navigation/is_active
     navigation_mode_service: /xczs/set_navigation_mode
     navigation_mode_topic: /xczs/navigation_mode
     map_topic: /map

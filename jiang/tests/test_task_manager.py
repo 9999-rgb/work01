@@ -23,6 +23,7 @@ sys.modules.setdefault("control_gateway", CONTROL_GATEWAY_PACKAGE)
 from control_gateway.task_manager import EventHub  # noqa: E402
 from control_gateway.task_manager import EventHubClosed  # noqa: E402
 from control_gateway.task_manager import TaskConflictError  # noqa: E402
+from control_gateway.task_manager import TaskCanceledError  # noqa: E402
 from control_gateway.task_manager import TaskExecutionError  # noqa: E402
 from control_gateway.task_manager import TaskManager  # noqa: E402
 from control_gateway.task_manager import TaskManagerClosedError  # noqa: E402
@@ -217,6 +218,117 @@ class TaskManagerTest(unittest.TestCase):
         self.assertEqual("failed", failed["status"])
         self.assertEqual("target_unreachable", failed["failure_code"])
 
+    def test_backend_success_is_authoritative_over_late_cancel_request(
+        self,
+    ) -> None:
+        manager = self._manager()
+        backend_terminal = threading.Event()
+        return_result = threading.Event()
+
+        def execute(context: Any) -> Any:
+            backend_terminal.set()
+            return_result.wait(timeout=1.0)
+            return context.backend_succeeded({"backend_state": "succeeded"})
+
+        task = manager.submit(
+            "navigate",
+            {"cabinet": "cabinet_a"},
+            execute,
+            cancel_callback=lambda _task_id: {"accepted": True},
+        )
+        self.assertTrue(backend_terminal.wait(timeout=1.0))
+
+        canceling = manager.cancel_task(task["task_id"])
+        self.assertEqual("canceling", canceling["status"])
+        return_result.set()
+        terminal = manager.wait(task["task_id"], timeout=1.0)
+
+        self.assertEqual("success", terminal["status"])
+        self.assertTrue(terminal["cancel_requested"])
+        self.assertEqual("succeeded", terminal["result"]["backend_state"])
+
+    def test_plain_executor_result_remains_cooperatively_canceled(self) -> None:
+        manager = self._manager()
+        executor_started = threading.Event()
+        return_result = threading.Event()
+
+        def execute(_context: Any) -> Dict[str, bool]:
+            executor_started.set()
+            return_result.wait(timeout=1.0)
+            return {"ignored_cancel": True}
+
+        task = manager.submit(
+            "operate",
+            {"cabinet": "cabinet_a"},
+            execute,
+            cancel_callback=lambda _task_id: {"accepted": True},
+        )
+        self.assertTrue(executor_started.wait(timeout=1.0))
+        manager.cancel_task(task["task_id"])
+        return_result.set()
+        terminal = manager.wait(task["task_id"], timeout=1.0)
+
+        self.assertEqual("canceled", terminal["status"])
+        self.assertTrue(terminal["result"]["ignored_cancel"])
+
+    def test_plain_executor_completion_linearizes_with_concurrent_cancel(
+        self,
+    ) -> None:
+        for attempt in range(64):
+            with self.subTest(attempt=attempt):
+                manager = self._manager()
+                finish_barrier = threading.Barrier(2)
+
+                def execute(_context: Any) -> Dict[str, int]:
+                    finish_barrier.wait(timeout=1.0)
+                    return {"attempt": attempt}
+
+                task = manager.submit(
+                    "operate",
+                    {"attempt": attempt},
+                    execute,
+                    cancel_callback=lambda _task_id: {"accepted": True},
+                )
+                cancel_result: Dict[str, Any] = {}
+
+                def cancel() -> None:
+                    finish_barrier.wait(timeout=1.0)
+                    cancel_result.update(manager.cancel_task(task["task_id"]))
+
+                cancel_thread = threading.Thread(target=cancel)
+                cancel_thread.start()
+                terminal = manager.wait(task["task_id"], timeout=1.0)
+                cancel_thread.join(timeout=1.0)
+
+                self.assertFalse(cancel_thread.is_alive())
+                self.assertIn(terminal["status"], {"success", "canceled"})
+                if terminal["status"] == "success":
+                    self.assertFalse(terminal["cancel_requested"])
+                    self.assertEqual("success", cancel_result["status"])
+                else:
+                    self.assertTrue(terminal["cancel_requested"])
+
+    def test_explicit_canceled_error_overrides_backend_success_marker_path(
+        self,
+    ) -> None:
+        manager = self._manager()
+
+        def execute(_context: Any) -> None:
+            raise TaskCanceledError("Backend confirmed cancellation.")
+
+        task = manager.submit(
+            "navigate",
+            {"cabinet": "cabinet_a"},
+            execute,
+        )
+        terminal = manager.wait(task["task_id"], timeout=1.0)
+
+        self.assertEqual("canceled", terminal["status"])
+        self.assertEqual(
+            "Backend confirmed cancellation.",
+            terminal["failure_reason"],
+        )
+
     def test_history_is_bounded_and_snapshots_are_isolated(self) -> None:
         manager = self._manager(history_limit=2)
         first = manager.create_task("navigate", {"cabinet": "cabinet_a"})
@@ -401,6 +513,26 @@ class TaskManagerTest(unittest.TestCase):
 
 
 class EventHubTest(unittest.TestCase):
+    def test_async_notification_covers_replay_live_data_and_close(self) -> None:
+        hub = EventHub()
+        replay = hub.publish("task_progress", {"value": 1})
+        subscription = hub.subscribe(last_event_id=0)
+        notified = threading.Event()
+        subscription.set_notify(notified.set)
+        self.assertTrue(notified.wait(timeout=0.1))
+        self.assertEqual(subscription.get_nowait()["id"], replay["id"])
+
+        notified.clear()
+        live = hub.publish("task_completed", {"value": 2})
+        self.assertTrue(notified.wait(timeout=0.1))
+        self.assertEqual(subscription.get_nowait()["id"], live["id"])
+
+        notified.clear()
+        hub.close()
+        self.assertTrue(notified.wait(timeout=0.1))
+        with self.assertRaises(EventHubClosed):
+            subscription.get_nowait()
+
     def test_replay_is_exclusive_and_live_delivery_has_no_gap(self) -> None:
         hub = EventHub(capacity=4)
         first = hub.publish("task_accepted", {"task_id": "one"})

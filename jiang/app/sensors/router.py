@@ -62,8 +62,16 @@ async def index() -> dict[str, Any]:
     "/sensors/health",
     summary="传感器健康检查",
 )
-async def health(state: SensorStateDep) -> dict[str, Any]:
-    return await asyncio.to_thread(state.health)
+async def health(request: Request, state: SensorStateDep) -> dict[str, Any]:
+    result = await asyncio.to_thread(state.health)
+    runtime = getattr(request.app.state, "sensor_runtime", None)
+    runtime_health = getattr(runtime, "health", None)
+    if callable(runtime_health):
+        executor = await asyncio.to_thread(runtime_health)
+        result = {**result, "runtime": executor}
+        if executor.get("status") != "ok":
+            result["status"] = "error"
+    return result
 
 
 @router.get(

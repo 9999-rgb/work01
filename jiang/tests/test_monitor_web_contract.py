@@ -45,7 +45,13 @@ class MonitorSecurityContractTest(unittest.TestCase):
         self.assertIn("/sensors/health", source)
         self.assertIn("headers: authHeaders()", source)
         self.assertIn("sessionStorage.getItem('xczs_token')", source)
-        self.assertIn("if (authToken) connectSensorStreams()", source)
+        self.assertIn("if (!authRequired || authToken) connectSensorStreams()", source)
+        self.assertIn("authRequired = health.auth_required !== false", source)
+        self.assertIn("if (authRequired && !authToken)", source)
+        self.assertIn(
+            "sensorEnabled && sensorConnectionKey === connectionKey",
+            source,
+        )
 
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is required for Web tests")

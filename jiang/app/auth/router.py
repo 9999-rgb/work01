@@ -17,7 +17,8 @@ from __future__ import annotations
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user, require_admin
@@ -108,7 +109,15 @@ async def create_user(
         role=body.role,
     )
     session.add(user)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        # 预查只能改善常见路径；并发同名创建仍由数据库唯一约束仲裁。
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"用户名 {body.username!r} 已存在。",
+        ) from None
     await session.refresh(user)
     return UserResponse.model_validate(user)
 
@@ -163,7 +172,13 @@ async def update_user(
     session: Annotated[AsyncSession, Depends(get_db)],
     _admin: Annotated[User, Depends(require_admin)],
 ) -> UserResponse:
-    user = await session.get(User, user_id)
+    await _serialize_admin_mutation(session)
+    user_result = await session.execute(
+        select(User)
+        .where(User.id == user_id)
+        .execution_options(populate_existing=True)
+    )
+    user = user_result.scalar_one_or_none()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -206,7 +221,13 @@ async def delete_user(
     session: Annotated[AsyncSession, Depends(get_db)],
     _admin: Annotated[User, Depends(require_admin)],
 ) -> None:
-    user = await session.get(User, user_id)
+    await _serialize_admin_mutation(session)
+    user_result = await session.execute(
+        select(User)
+        .where(User.id == user_id)
+        .execution_options(populate_existing=True)
+    )
+    user = user_result.scalar_one_or_none()
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -238,3 +259,24 @@ async def _last_admin_would_be_locked_out(
         )
     )
     return count_result.scalar_one() == 0
+
+
+async def _serialize_admin_mutation(session: AsyncSession) -> None:
+    """串行化可能改变管理员集合的用户更新/删除事务。
+
+    FastAPI 的鉴权依赖与路由会复用同一个 session，因此进入端点时通常已有
+    一个只读事务。SQLite 先回滚该只读事务再取得 ``BEGIN IMMEDIATE`` 写锁；
+    支持行锁的数据库则锁住当前 admin 集合，防止两个并发请求产生写偏差。
+    """
+    bind = session.get_bind()
+    if bind.dialect.name == "sqlite":
+        if session.in_transaction():
+            await session.rollback()
+        await session.execute(text("BEGIN IMMEDIATE"))
+        return
+    await session.execute(
+        select(User.id)
+        .where(User.role == ROLE_ADMIN)
+        .order_by(User.id)
+        .with_for_update()
+    )

@@ -88,6 +88,20 @@ class TaskCanceledError(TaskManagerError):
     """Signal cooperative cancellation from a submitted task executor."""
 
 
+@dataclass(frozen=True)
+class BackendTaskSuccess:
+    """Explicitly confirm that a backend reached its successful terminal.
+
+    A plain mapping returned by an executor remains a cooperative result: if
+    cancellation was requested before the worker commits that result, the
+    task is canceled.  ROS action/service runners use this wrapper only after
+    the backend itself has reported success, so a late or ineffective cancel
+    request cannot rewrite an authoritative backend outcome to ``canceled``.
+    """
+
+    result: Optional[Mapping[str, Any]] = None
+
+
 class EventHubClosed(RuntimeError):
     """Raised when a closed subscription has no buffered events left."""
 
@@ -100,8 +114,10 @@ class _SubscriptionBuffer:
         self._events: Deque[Dict[str, Any]] = deque()
         self._condition = threading.Condition()
         self._closed = False
+        self._notify: Optional[Callable[[], None]] = None
 
     def put(self, event: Dict[str, Any]) -> None:
+        notify = None
         with self._condition:
             if self._closed:
                 return
@@ -122,6 +138,13 @@ class _SubscriptionBuffer:
                 # completion event to overflow instead of losing a terminal.
             self._events.append(copy.deepcopy(event))
             self._condition.notify()
+            notify = self._notify
+        if notify is not None:
+            try:
+                notify()
+            except Exception:
+                # 订阅消费者的唤醒失败不得中断任务状态发布。
+                pass
 
     def get(self, timeout: Optional[float]) -> Dict[str, Any]:
         if timeout is not None and timeout < 0.0:
@@ -141,9 +164,28 @@ class _SubscriptionBuffer:
             return self._events.popleft()
 
     def close(self) -> None:
+        notify = None
         with self._condition:
             self._closed = True
             self._condition.notify_all()
+            notify = self._notify
+            self._notify = None
+        if notify is not None:
+            try:
+                notify()
+            except Exception:
+                pass
+
+    def set_notify(self, callback: Optional[Callable[[], None]]) -> None:
+        """Register a non-blocking wake callback for async consumers."""
+        notify_now = False
+        with self._condition:
+            self._notify = callback
+            notify_now = callback is not None and (
+                bool(self._events) or self._closed
+            )
+        if notify_now and callback is not None:
+            callback()
 
     @property
     def closed(self) -> bool:
@@ -168,6 +210,14 @@ class EventSubscription:
     def get(self, timeout: Optional[float] = None) -> Dict[str, Any]:
         """Get the next event; raises ``queue.Empty`` on heartbeat timeout."""
         return self._buffer.get(timeout)
+
+    def get_nowait(self) -> Dict[str, Any]:
+        """Return one pending event without occupying a worker thread."""
+        return self._buffer.get(0.0)
+
+    def set_notify(self, callback: Optional[Callable[[], None]]) -> None:
+        """Wake an async bridge when data arrives or the hub closes."""
+        self._buffer.set_notify(callback)
 
     def close(self) -> None:
         with self._close_lock:
@@ -334,6 +384,18 @@ class TaskContext:
         if self.cancellation_requested:
             raise TaskCanceledError("Task was canceled.")
 
+    def backend_succeeded(
+        self,
+        result: Optional[Mapping[str, Any]] = None,
+    ) -> BackendTaskSuccess:
+        """Mark an executor return as an authoritative backend success.
+
+        Cooperative executors should continue returning a mapping directly.
+        This explicit marker is reserved for adapters that have observed the
+        backend's terminal-success state.
+        """
+        return BackendTaskSuccess(result=result)
+
     @property
     def shutdown_requested(self) -> bool:
         return self.manager.shutdown_requested
@@ -374,7 +436,10 @@ class TaskContext:
 
 
 CancelCallback = Callable[[str], Any]
-TaskExecutor = Callable[[TaskContext], Optional[Mapping[str, Any]]]
+TaskExecutor = Callable[
+    [TaskContext],
+    Optional[Mapping[str, Any]] | BackendTaskSuccess,
+]
 
 
 class TaskManager:
@@ -1173,16 +1238,26 @@ class TaskManager:
             if started["status"] == "canceling":
                 self.mark_canceled(task_id)
                 return
-            result = executor(context)
+            executor_result = executor(context)
+            backend_succeeded = isinstance(
+                executor_result,
+                BackendTaskSuccess,
+            )
+            result = (
+                executor_result.result
+                if backend_succeeded
+                else executor_result
+            )
             if result is not None and not isinstance(result, Mapping):
                 raise TaskExecutionError(
                     "Task executor returned a non-mapping result.",
                     code="invalid_executor_result",
                 )
-            if context.cancellation_requested:
-                self.mark_canceled(task_id, result)
-            else:
-                self.succeed_task(task_id, result)
+            self._finish_executor_result(
+                task_id,
+                result,
+                backend_succeeded=backend_succeeded,
+            )
         except TaskCanceledError as error:
             try:
                 self.mark_canceled(
@@ -1220,6 +1295,22 @@ class TaskManager:
             with self._condition:
                 self._workers.pop(task_id, None)
                 self._condition.notify_all()
+
+    def _finish_executor_result(
+        self,
+        task_id: str,
+        result: Optional[Mapping[str, Any]],
+        *,
+        backend_succeeded: bool,
+    ) -> Dict[str, Any]:
+        """Atomically linearize cancellation against executor completion."""
+        with self._condition:
+            cancel_requested = bool(
+                self._task_locked(task_id)["cancel_requested"]
+            )
+            if cancel_requested and not backend_succeeded:
+                return self.mark_canceled(task_id, result)
+            return self.succeed_task(task_id, result)
 
 
 def _snapshot(task: Mapping[str, Any]) -> Dict[str, Any]:

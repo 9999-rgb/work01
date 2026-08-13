@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import io
+import logging
 import math
 import threading
 import time
-import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import rclpy
 from PIL import Image as PillowImage
+from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
+from rclpy.signals import SignalHandlerOptions
 from rclpy.node import Node
 from rclpy.qos import (
     DurabilityPolicy,
@@ -23,6 +25,11 @@ from rclpy.qos import (
 from sensor_msgs.msg import Image, LaserScan
 
 from .state import SensorStreamState
+
+
+logger = logging.getLogger(__name__)
+
+ExecutorFatalCallback = Callable[[str, BaseException], None]
 
 
 def _stamp_to_seconds(stamp: Any) -> float:
@@ -74,8 +81,9 @@ class SensorStreamNode(Node):
         lidar_topic: str,
         jpeg_quality: int,
         camera_fps: float,
+        context: Optional[Context] = None,
     ) -> None:
-        super().__init__("xczs_web_sensor_stream")
+        super().__init__("xczs_web_sensor_stream", context=context)
         self._state = state
         self._jpeg_quality = max(1, min(95, jpeg_quality))
         self._camera_period = 1.0 / max(1.0, camera_fps)
@@ -362,17 +370,39 @@ class SensorRosRuntime:
         lidar_topic: str,
         jpeg_quality: int,
         camera_fps: float,
+        fatal_callback: Optional[ExecutorFatalCallback] = None,
     ) -> None:
-        rclpy.init()
-        self._node = SensorStreamNode(
-            state=state,
-            camera_topic=camera_topic,
-            lidar_topic=lidar_topic,
-            jpeg_quality=jpeg_quality,
-            camera_fps=camera_fps,
+        self._fatal_callback = fatal_callback
+        self._fatal_lock = threading.Lock()
+        self._fatal_error: Optional[Dict[str, str]] = None
+        self._context = Context()
+        # 与控制网关一样使用私有 context，避免一个子系统 shutdown 默认
+        # context 时使同进程内其他 ROS 节点失效。进程信号由 uvicorn 处理。
+        rclpy.init(
+            context=self._context,
+            signal_handler_options=SignalHandlerOptions.NO,
         )
-        self._executor = SingleThreadedExecutor()
-        self._executor.add_node(self._node)
+        self._node: Optional[SensorStreamNode] = None
+        self._executor: Optional[SingleThreadedExecutor] = None
+        try:
+            self._node = SensorStreamNode(
+                state=state,
+                camera_topic=camera_topic,
+                lidar_topic=lidar_topic,
+                jpeg_quality=jpeg_quality,
+                camera_fps=camera_fps,
+                context=self._context,
+            )
+            self._executor = SingleThreadedExecutor(context=self._context)
+            self._executor.add_node(self._node)
+        except Exception:
+            if self._executor is not None:
+                self._executor.shutdown(timeout_sec=0.0)
+            if self._node is not None:
+                self._node.destroy_node()
+            self._context.shutdown()
+            raise
+        self._stop_event = threading.Event()
         self._thread = threading.Thread(
             target=self._spin_safe,
             name="web-sensor-ros-executor",
@@ -382,14 +412,59 @@ class SensorRosRuntime:
         self._stopped = False
 
     def _spin_safe(self) -> None:
-        """Spin the executor, logging any unhandled exception."""
+        """Spin the executor and promote an unexpected exit to fatal state."""
         try:
-            self._executor.spin()
-        except Exception:  # noqa: BLE001
-            traceback.print_exc()
-            # Re-raise so the daemon thread's death is visible in the
-            # process exit code; the parent process watchdog will notice.
-            raise
+            assert self._executor is not None
+            while self._context.ok() and not self._stop_event.is_set():
+                self._executor.spin_once(timeout_sec=0.1)
+            if not self._stop_event.is_set():
+                raise RuntimeError(
+                    "Sensor ROS executor stopped before runtime shutdown."
+                )
+        except BaseException as error:  # noqa: BLE001 - daemon fault boundary
+            self._record_fatal(error)
+
+    def _record_fatal(self, error: BaseException) -> bool:
+        """Record and report the first non-shutdown executor failure."""
+        if self._stop_event.is_set():
+            return False
+        fatal_error = {
+            "component": "sensor_ros_executor",
+            "type": type(error).__name__,
+            "message": str(error) or repr(error),
+        }
+        with self._fatal_lock:
+            if self._fatal_error is not None:
+                return False
+            self._fatal_error = fatal_error
+
+        logger.critical(
+            "Sensor ROS executor terminated unexpectedly: %s",
+            fatal_error["message"],
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        if self._fatal_callback is not None:
+            try:
+                self._fatal_callback("sensor_ros_executor", error)
+            except BaseException:  # noqa: BLE001 - preserve recorded fault
+                logger.exception("Sensor executor fatal callback failed")
+        return True
+
+    def health(self) -> Dict[str, Any]:
+        """Return the runtime thread's independently tracked health state."""
+        with self._fatal_lock:
+            fatal_error = (
+                dict(self._fatal_error)
+                if self._fatal_error is not None
+                else None
+            )
+        healthy = fatal_error is None
+        return {
+            "status": "ok" if healthy else "error",
+            "healthy": healthy,
+            "thread_alive": self._thread.is_alive(),
+            "error": fatal_error,
+        }
 
     def start(self) -> "SensorRosRuntime":
         if not self._started:
@@ -401,8 +476,18 @@ class SensorRosRuntime:
         if self._stopped:
             return
         self._stopped = True
-        self._executor.shutdown(timeout_sec=3.0)
+        self._stop_event.set()
+        if self._executor is not None:
+            self._executor.wake()
         if self._started:
             self._thread.join(timeout=3.0)
-        self._node.destroy_node()
-        rclpy.shutdown()
+            if self._thread.is_alive():
+                # 线程仍可能在 rclpy 中访问 guard condition；保留 ROS 对象，
+                # 避免 teardown use-after-free。稍后再次 stop 仍可继续回收。
+                self._stopped = False
+                raise RuntimeError("传感器 ROS executor 线程未在 3 秒内停止。")
+        if self._executor is not None:
+            self._executor.shutdown(timeout_sec=3.0)
+        if self._node is not None:
+            self._node.destroy_node()
+        self._context.shutdown()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import logging
 import math
 import queue
 import threading
@@ -10,7 +11,17 @@ import time
 from contextlib import contextmanager
 from http.server import ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Tuple,
+)
 from urllib.parse import urlsplit
 
 import rclpy
@@ -98,6 +109,10 @@ NAVIGATION_AXIS_EPSILON_M = 0.05
 RESET_JOINT_STATE_POLL_SEC = 0.05
 MAP_STATION_MARGIN_M = 0.05
 
+logger = logging.getLogger(__name__)
+
+ExecutorFatalCallback = Callable[[str, BaseException], None]
+
 
 class ControlServer:
     """Run manual control and multi-cabinet task clients behind HTTP."""
@@ -119,6 +134,7 @@ class ControlServer:
         cabinet_pose_path: Optional[str] = None,
         robot_control_path: Optional[str] = None,
         recordings_root: Optional[str] = None,
+        fatal_callback: Optional[ExecutorFatalCallback] = None,
     ) -> None:
         if (
             isinstance(port, bool)
@@ -228,6 +244,9 @@ class ControlServer:
         self._port = port
         self._host = host.strip()
         self._allowed_origins = normalized_origins
+        self._executor_fatal_callback = fatal_callback
+        self._executor_fatal_lock = threading.Lock()
+        self._executor_fatal_error: Optional[Dict[str, str]] = None
         self._context = Context()
         # The process entry point owns SIGINT/SIGTERM and requests an ordered
         # shutdown through ``stop()``.  Explicitly keep rclpy from shutting
@@ -246,6 +265,9 @@ class ControlServer:
             navigation_frame=self._robot_adapter.navigation_frame,
             navigation_base_frame=self._robot_adapter.navigation_base_frame,
             navigation_action=self._robot_adapter.navigation_action,
+            navigation_readiness_service=(
+                self._robot_adapter.navigation_readiness_service
+            ),
             navigation_mode_service=(
                 self._robot_adapter.navigation_mode_service
             ),
@@ -372,8 +394,79 @@ class ControlServer:
 
     def _spin_executor(self) -> None:
         """Spin until the server requests a clean executor-thread exit."""
-        while self._context.ok() and not self._executor_stop_event.is_set():
-            self._executor.spin_once(timeout_sec=EXECUTOR_SPIN_PERIOD_SEC)
+        try:
+            while self._context.ok() and not self._executor_stop_event.is_set():
+                self._executor.spin_once(timeout_sec=EXECUTOR_SPIN_PERIOD_SEC)
+            if (
+                not self._executor_stop_event.is_set()
+                and not getattr(self, "_stopping", False)
+            ):
+                raise RuntimeError(
+                    "ROS control executor stopped before gateway shutdown."
+                )
+        except BaseException as error:  # noqa: BLE001 - daemon fault boundary
+            self._record_executor_fatal(error)
+
+    def _record_executor_fatal(self, error: BaseException) -> bool:
+        """Record and propagate one unexpected executor-thread failure.
+
+        Executor wake-up can raise while an intentional ``stop()`` is already
+        in progress.  That path is not a process fault and must not trigger the
+        production shutdown callback.
+        """
+        stop_event = getattr(self, "_executor_stop_event", None)
+        if (
+            (stop_event is not None and stop_event.is_set())
+            or getattr(self, "_stopping", False)
+        ):
+            return False
+
+        fatal_error = {
+            "component": "control_ros_executor",
+            "type": type(error).__name__,
+            "message": str(error) or repr(error),
+        }
+        lock = getattr(self, "_executor_fatal_lock", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._executor_fatal_lock = lock
+        with lock:
+            if getattr(self, "_executor_fatal_error", None) is not None:
+                return False
+            self._executor_fatal_error = fatal_error
+
+        logger.critical(
+            "Control ROS executor terminated unexpectedly: %s",
+            fatal_error["message"],
+            exc_info=(type(error), error, error.__traceback__),
+        )
+        callback = getattr(self, "_executor_fatal_callback", None)
+        if callback is not None:
+            try:
+                callback("control_ros_executor", error)
+            except BaseException:  # noqa: BLE001 - preserve recorded fault
+                logger.exception("Control executor fatal callback failed")
+        return True
+
+    def executor_health(self) -> Dict[str, Any]:
+        """Return a thread-safe snapshot of the ROS executor fault state."""
+        lock = getattr(self, "_executor_fatal_lock", None)
+        if lock is None:
+            fatal_error = getattr(self, "_executor_fatal_error", None)
+        else:
+            with lock:
+                fatal_error = getattr(self, "_executor_fatal_error", None)
+        error_snapshot = dict(fatal_error) if fatal_error is not None else None
+        thread = getattr(self, "_executor_thread", None)
+        is_alive = getattr(thread, "is_alive", None)
+        thread_alive = bool(is_alive()) if callable(is_alive) else False
+        healthy = error_snapshot is None
+        return {
+            "status": "ok" if healthy else "error",
+            "healthy": healthy,
+            "thread_alive": thread_alive,
+            "error": error_snapshot,
+        }
 
     @staticmethod
     def _is_loopback_host(host: str) -> bool:
@@ -802,12 +895,41 @@ class ControlServer:
                     "read_only": False,
                 }
             )
+            executor = self.executor_health()
+            executor_healthy = bool(executor["healthy"])
             return {
-                "status": "ok",
-                "navigation_available": navigation["available"],
+                "status": "ok" if executor_healthy else "error",
+                "navigation_available": (
+                    bool(navigation["available"]) and executor_healthy
+                ),
+                "navigation_action_available": (
+                    bool(
+                        navigation.get(
+                            "action_server_available",
+                            navigation["available"],
+                        )
+                    )
+                    and executor_healthy
+                ),
+                "navigation_lifecycle_active": (
+                    bool(
+                        navigation.get(
+                            "lifecycle_active",
+                            navigation["available"],
+                        )
+                    )
+                    and executor_healthy
+                ),
+                "navigation_lifecycle_state": navigation.get(
+                    "lifecycle_state",
+                    "unknown",
+                ),
+                "navigation_lifecycle_message": navigation.get(
+                    "lifecycle_message",
+                ),
                 "map_available": map_available,
                 "map_error": map_error,
-                "cabinet_available": cabinet_available,
+                "cabinet_available": cabinet_available and executor_healthy,
                 "cabinet_active": cabinet_active,
                 "cabinet_count": len(clients) if clients else 1,
                 "active_task_id": (
@@ -818,6 +940,7 @@ class ControlServer:
                 "cabinets": cabinet_states,
                 "replay_mode": replay["mode"],
                 "replay_read_only": replay["read_only"],
+                "executor": executor,
             }
 
     def cabinets(self) -> Dict[str, Any]:
@@ -1112,11 +1235,13 @@ class ControlServer:
                     return self._task_manager.submit(
                         "navigate",
                         request,
-                        lambda context: self._execute_navigation_task_owned(
-                            context,
-                            station.to_dict(),
-                            replay_owned,
-                            station_refresh=station_refresh,
+                        lambda context: context.backend_succeeded(
+                            self._execute_navigation_task_owned(
+                                context,
+                                station.to_dict(),
+                                replay_owned,
+                                station_refresh=station_refresh,
+                            )
                         ),
                         cancel_callback=lambda _task_id: (
                             self._node.cancel_navigation()
@@ -1170,16 +1295,18 @@ class ControlServer:
                     return self._task_manager.submit(
                         "operate",
                         request,
-                        lambda context: self._execute_operation_task_owned(
-                            context,
-                            cabinet,
-                            client,
-                            control_id,
-                            command,
-                            target_state,
-                            target_position,
-                            force_value,
-                            replay_owned,
+                        lambda context: context.backend_succeeded(
+                            self._execute_operation_task_owned(
+                                context,
+                                cabinet,
+                                client,
+                                control_id,
+                                command,
+                                target_state,
+                                target_position,
+                                force_value,
+                                replay_owned,
+                            )
                         ),
                         cancel_callback=lambda _task_id: client.cancel(),
                         thread_name=f"xczs-operate-{cabinet}",
@@ -1205,11 +1332,13 @@ class ControlServer:
                     return self._task_manager.submit(
                         "reset",
                         request,
-                        lambda context: self._execute_reset_task_owned(
-                            context,
-                            cabinet,
-                            client,
-                            replay_owned,
+                        lambda context: context.backend_succeeded(
+                            self._execute_reset_task_owned(
+                                context,
+                                cabinet,
+                                client,
+                                replay_owned,
+                            )
                         ),
                         # Trigger services cannot be canceled after dispatch.
                         # Reject cancellation so TaskManager retains the global
@@ -2230,6 +2359,24 @@ class ControlServer:
             ),
         }
 
+    @staticmethod
+    def _navigation_submission_failure(
+        error: ControlRequestError,
+    ) -> TaskExecutionError:
+        """Map every Nav2 goal-submission rejection to one task contract."""
+        backend_status = getattr(error, "status", 500)
+        details = dict(getattr(error, "details", {}) or {})
+        details.setdefault("backend_status", backend_status)
+        return TaskExecutionError(
+            str(error),
+            code=(
+                "backend_unavailable"
+                if backend_status == 503
+                else "navigation_rejected"
+            ),
+            details=details,
+        )
+
     def _execute_navigation_leg(
         self,
         context: Any,
@@ -2296,15 +2443,7 @@ class ControlServer:
                 )
                 goal_sent_at = time.monotonic()
         except ControlRequestError as error:
-            raise TaskExecutionError(
-                str(error),
-                code=(
-                    "backend_unavailable"
-                    if getattr(error, "status", 500) == 503
-                    else "navigation_rejected"
-                ),
-                details=getattr(error, "details", {}),
-            ) from error
+            raise self._navigation_submission_failure(error) from error
 
         last_phase: Optional[str] = None
         last_progress = 0.0
@@ -2503,18 +2642,21 @@ class ControlServer:
                     },
                 )
                 time.sleep(NAVIGATION_REJECT_RETRY_DELAY_SEC)
-                with self._task_interlock_scope():
-                    context.raise_if_canceled()
-                    if context.shutdown_requested:
-                        raise TaskCanceledError(
-                            "Navigation task stopped during shutdown."
+                try:
+                    with self._task_interlock_scope():
+                        context.raise_if_canceled()
+                        if context.shutdown_requested:
+                            raise TaskCanceledError(
+                                "Navigation task stopped during shutdown."
+                            )
+                        self._node.send_navigation_goal(
+                            float(station["x"]),
+                            float(station["y"]),
+                            float(station["yaw"]),
                         )
-                    self._node.send_navigation_goal(
-                        float(station["x"]),
-                        float(station["y"]),
-                        float(station["yaw"]),
-                    )
-                    goal_sent_at = time.monotonic()
+                        goal_sent_at = time.monotonic()
+                except ControlRequestError as error:
+                    raise self._navigation_submission_failure(error) from error
                 final_pose_started_active = None
                 last_phase = None
                 continue

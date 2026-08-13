@@ -7,7 +7,7 @@ import threading
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
@@ -147,6 +147,9 @@ def _make_server(node: _BlockingNode) -> ControlServer:
     server._executor = _Executor()
     server._executor_stop_event = threading.Event()
     server._executor_thread = _Thread()
+    server._executor_fatal_lock = threading.Lock()
+    server._executor_fatal_error = None
+    server._executor_fatal_callback = None
     server._context = _Context()
     return server
 
@@ -167,6 +170,7 @@ class ControlServerLifecycleTest(unittest.TestCase):
                 del timeout_sec
                 self.spin_started.set()
                 self.spin_released.wait(timeout=2.0)
+                raise RuntimeError("executor wake during intentional stop")
 
             def wake(self) -> None:
                 super().wake()
@@ -179,6 +183,8 @@ class ControlServerLifecycleTest(unittest.TestCase):
 
         executor = _BlockingExecutor()
         server._executor = executor
+        fatal_callback = MagicMock()
+        server._executor_fatal_callback = fatal_callback
         server._executor_thread = threading.Thread(
             target=server._spin_executor,
         )
@@ -192,6 +198,32 @@ class ControlServerLifecycleTest(unittest.TestCase):
         self.assertTrue(executor.shutdown_called)
         self.assertFalse(executor.cleanup_overlapped_spin)
         self.assertTrue(server._shutdown_report["executor_stopped"])
+        fatal_callback.assert_not_called()
+        self.assertTrue(server.executor_health()["healthy"])
+
+    def test_executor_exception_records_fatal_and_calls_callback_once(self) -> None:
+        node = _BlockingNode()
+        server = _make_server(node)
+        callback = MagicMock()
+        server._executor_fatal_callback = callback
+
+        class _FailingExecutor(_Executor):
+            def spin_once(self, timeout_sec: float) -> None:
+                del timeout_sec
+                raise RuntimeError("DDS wait-set failed")
+
+        server._executor = _FailingExecutor()
+        server._spin_executor()
+        # A second report cannot overwrite the root cause or signal twice.
+        self.assertFalse(server._record_executor_fatal(ValueError("later")))
+
+        health = server.executor_health()
+        self.assertEqual(health["status"], "error")
+        self.assertFalse(health["healthy"])
+        self.assertEqual(health["error"]["type"], "RuntimeError")
+        self.assertIn("DDS wait-set failed", health["error"]["message"])
+        callback.assert_called_once()
+        self.assertEqual(callback.call_args.args[0], "control_ros_executor")
 
     def test_second_stop_finishes_teardown_after_backend_retires(self) -> None:
         node = _RetiringNode()

@@ -1,12 +1,18 @@
 """Start MoveIt 2 move_group and the optional Motion Planning RViz view."""
 
+from functools import partial
 from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
+from launch.actions import EmitEvent
+from launch.actions import LogInfo
 from launch.actions import OpaqueFunction
+from launch.actions import RegisterEventHandler
 from launch.conditions import IfCondition
+from launch.event_handlers import OnProcessExit
+from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
@@ -14,6 +20,37 @@ from moveit_configs_utils import MoveItConfigsBuilder
 
 MOVEIT_CONFIG_PACKAGE = "xczs_inspection_robot_moveit_config"
 DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
+
+
+def _shutdown_on_required_runtime_exit(
+    event,
+    context,
+    *,
+    process_label,
+):
+    """Shut down this included launch if a required runtime exits."""
+    if context.is_shutdown:
+        return []
+    reason = (
+        f"Required runtime process '{process_label}' exited with code "
+        f"{event.returncode}; MoveIt is no longer operational."
+    )
+    return [
+        LogInfo(msg=reason),
+        EmitEvent(event=Shutdown(reason=reason)),
+    ]
+
+
+def _required_runtime_handler(process, process_label):
+    return RegisterEventHandler(
+        OnProcessExit(
+            target_action=process,
+            on_exit=partial(
+                _shutdown_on_required_runtime_exit,
+                process_label=process_label,
+            ),
+        )
+    )
 
 
 def _launch_setup(context):
@@ -102,7 +139,11 @@ def _launch_setup(context):
         condition=IfCondition(LaunchConfiguration("rviz")),
     )
 
-    return [move_group, moveit_rviz]
+    return [
+        _required_runtime_handler(move_group, "MoveIt move_group"),
+        move_group,
+        moveit_rviz,
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
