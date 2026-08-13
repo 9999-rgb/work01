@@ -9,6 +9,7 @@ and the main event loop with graceful Ctrl+C shutdown.
 from __future__ import annotations
 
 import signal
+import threading
 import time
 from typing import List, Optional, TYPE_CHECKING, Type
 
@@ -66,6 +67,11 @@ class ProxyRunner:
         self._session: "Optional[zenoh.Session]" = None
         self._sub_mgr: Optional[SubscriptionManager] = None
         self._running = False
+        self._state_lock = threading.RLock()
+        self._spin_active = False
+        self._connecting = False
+        self._connect_token: object | None = None
+        self._lifecycle_generation = 0
 
     # ------------------------------------------------------------------
     # Connect
@@ -78,12 +84,22 @@ class ProxyRunner:
         """
         import zenoh
 
-        if self._session is not None:
-            raise RuntimeError("Zenoh proxy is already connected.")
-        conf = zenoh.Config()
-        configure_client_session(conf, f"tcp/{self._host}:{self._port}")
-        session = zenoh.open(conf)
+        with self._state_lock:
+            if self._spin_active:
+                raise RuntimeError(
+                    "Cannot connect until the previous spin loop has exited."
+                )
+            if self._session is not None or self._connecting:
+                raise RuntimeError("Zenoh proxy is already connected.")
+            self._connecting = True
+            connect_token = object()
+            self._connect_token = connect_token
+            generation = self._lifecycle_generation
+        session = None
         try:
+            conf = zenoh.Config()
+            configure_client_session(conf, f"tcp/{self._host}:{self._port}")
+            session = zenoh.open(conf)
             subscription_manager = SubscriptionManager(
                 session,
                 registry=self._registry,
@@ -91,13 +107,37 @@ class ProxyRunner:
                 output_suffix=self._output_suffix,
             )
         except BaseException:
-            try:
-                session.close()
-            except Exception:
-                pass
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
+            with self._state_lock:
+                if self._connect_token is connect_token:
+                    self._connecting = False
+                    self._connect_token = None
             raise
-        self._session = session
-        self._sub_mgr = subscription_manager
+        with self._state_lock:
+            if (
+                generation != self._lifecycle_generation
+                or self._connect_token is not connect_token
+            ):
+                if self._connect_token is connect_token:
+                    self._connecting = False
+                    self._connect_token = None
+                accepted = False
+            else:
+                self._connecting = False
+                self._connect_token = None
+                self._session = session
+                self._sub_mgr = subscription_manager
+                accepted = True
+        if not accepted:
+            try:
+                subscription_manager.close()
+            finally:
+                session.close()
+            raise RuntimeError("Zenoh proxy was closed while connecting.")
         print(f"Connected to Zenoh: {self._host}:{self._port}")
 
     # ------------------------------------------------------------------
@@ -109,18 +149,25 @@ class ProxyRunner:
 
         Raises ``RuntimeError`` if ``connect()`` hasn't been called yet.
         """
-        if self._sub_mgr is None:
-            raise RuntimeError("Cannot subscribe before calling connect()")
-        self._sub_mgr.subscribe_multiple(topics)
+        with self._state_lock:
+            subscription_manager = self._sub_mgr
+            if subscription_manager is None:
+                raise RuntimeError("Cannot subscribe before calling connect()")
+            # SubscriptionManager mutates resources owned by this lifecycle.
+            # Keep it serialized with close() so a completed subscribe cannot
+            # write into a manager that close() has already detached.
+            subscription_manager.subscribe_multiple(topics)
 
     def subscribe_all_registered(self) -> None:
         """Auto-subscribe to all patterns registered in the registry.
 
         Raises ``RuntimeError`` if ``connect()`` hasn't been called yet.
         """
-        if self._sub_mgr is None:
-            raise RuntimeError("Cannot subscribe before calling connect()")
-        self._sub_mgr.subscribe_all_registered()
+        with self._state_lock:
+            subscription_manager = self._sub_mgr
+            if subscription_manager is None:
+                raise RuntimeError("Cannot subscribe before calling connect()")
+            subscription_manager.subscribe_all_registered()
 
     # ------------------------------------------------------------------
     # Main loop
@@ -132,25 +179,73 @@ class ProxyRunner:
         Handles ``SIGINT`` for graceful shutdown, restoring the original signal
         handler on exit.
         """
-        print("Running.  Press Ctrl+C to stop.\n")
-        self._running = True
-
-        # Save and override SIGINT for graceful shutdown
-        original_sigint = signal.getsignal(signal.SIGINT)
+        with self._state_lock:
+            if self._spin_active:
+                raise RuntimeError("Zenoh proxy is already spinning.")
+            if self._connecting or self._session is None:
+                raise RuntimeError(
+                    "Cannot spin before connect() has completed."
+                )
+            self._spin_active = True
+            self._running = True
 
         def _shutdown(sig, frame):
-            self._running = False
+            del sig, frame
+            with self._state_lock:
+                self._running = False
 
-        signal.signal(signal.SIGINT, _shutdown)
-
+        # Everything after claiming the spin generation is covered by one
+        # cleanup path.  In particular, logging and signal setup can invoke
+        # user-controlled hooks and therefore must be treated as fallible.
+        manages_sigint = False
+        original_sigint = None
+        original_sigint_captured = False
+        signal_install_attempted = False
+        primary_error: BaseException | None = None
         try:
-            while self._running:
+            print("Running.  Press Ctrl+C to stop.\n")
+            # Python only permits installing signal handlers on the main
+            # thread. A background spin remains useful to embedders and is
+            # stopped through ``close``.
+            manages_sigint = (
+                threading.current_thread() is threading.main_thread()
+            )
+            if manages_sigint:
+                original_sigint = signal.getsignal(signal.SIGINT)
+                original_sigint_captured = True
+                # Mark the attempt first: a wrapper may install the handler
+                # and then raise, in which case restoration is still needed.
+                signal_install_attempted = True
+                signal.signal(signal.SIGINT, _shutdown)
+            while self.is_running:
                 time.sleep(1)
         except KeyboardInterrupt:
             pass
+        except BaseException as error:
+            primary_error = error
         finally:
-            self.close()
-            signal.signal(signal.SIGINT, original_sigint)
+            cleanup_error: BaseException | None = None
+            try:
+                self.close()
+            except BaseException as error:
+                cleanup_error = error
+            try:
+                if (
+                    manages_sigint
+                    and original_sigint_captured
+                    and signal_install_attempted
+                ):
+                    signal.signal(signal.SIGINT, original_sigint)
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+            finally:
+                with self._state_lock:
+                    self._spin_active = False
+            if primary_error is not None:
+                raise primary_error
+            if cleanup_error is not None:
+                raise cleanup_error
 
     # ------------------------------------------------------------------
     # Close
@@ -158,17 +253,31 @@ class ProxyRunner:
 
     def close(self) -> None:
         """Gracefully close all subscriptions and the Zenoh session."""
-        subscription_manager = self._sub_mgr
-        session = self._session
-        self._sub_mgr = None
-        self._session = None
-        try:
-            if subscription_manager is not None:
+        # ``close`` is also the thread-safe stop signal for a concurrently
+        # running ``spin`` loop.  Resource fields are detached before calling
+        # external cleanup methods, which keeps repeated calls idempotent.
+        with self._state_lock:
+            self._running = False
+            self._lifecycle_generation += 1
+            subscription_manager = self._sub_mgr
+            session = self._session
+            self._sub_mgr = None
+            self._session = None
+        cleanup_error: BaseException | None = None
+        if subscription_manager is not None:
+            try:
                 subscription_manager.close()
-        finally:
-            if session is not None:
+            except BaseException as error:
+                cleanup_error = error
+        if session is not None:
+            try:
                 session.close()
                 print("Disconnected from Zenoh")
+            except BaseException as error:
+                if cleanup_error is None:
+                    cleanup_error = error
+        if cleanup_error is not None:
+            raise cleanup_error
 
     # ------------------------------------------------------------------
     # Properties
@@ -182,4 +291,5 @@ class ProxyRunner:
     @property
     def is_running(self) -> bool:
         """Whether the main loop is currently running."""
-        return self._running
+        with self._state_lock:
+            return self._running

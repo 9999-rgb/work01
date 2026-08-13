@@ -37,14 +37,28 @@ def create_access_token(
     payload：``sub`` = user_id，``username``，``role``，``exp``。
     """
     expire_minutes = settings.access_token_expire_minutes
-    delta = expires_delta or timedelta(minutes=expire_minutes)
-    expire_at = datetime.now(timezone.utc) + delta
+    # An explicit zero/negative duration is meaningful to callers testing or
+    # enforcing immediate expiry; only ``None`` selects the configured TTL.
+    delta = (
+        timedelta(minutes=expire_minutes)
+        if expires_delta is None
+        else expires_delta
+    )
+    now = datetime.now(timezone.utc)
+    # python-jose serializes NumericDate values with whole-second precision.
+    # ``exp == iat`` can therefore remain valid for the rest of that second,
+    # so place non-positive TTLs unambiguously in the past.
+    expire_at = (
+        now + delta
+        if delta > timedelta(0)
+        else now - timedelta(seconds=1)
+    )
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "username": username,
         "role": role,
         "exp": expire_at,
-        "iat": datetime.now(timezone.utc),
+        "iat": now,
     }
     token = jwt.encode(payload, settings.secret_key, algorithm=settings.jwt_algorithm)
     return token, int(delta.total_seconds())

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Annotated
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 
 from app.api.deps import ControlServerDep
 from app.api.schemas import RecordingStartRequest
@@ -43,8 +43,15 @@ async def recording_detail(
 async def recording_timeline(
     recording_id: Annotated[str, Path(description="录制 ID")],
     server: ControlServerDep,
+    offset: Annotated[int, Query(ge=0)] = 0,
+    limit: Annotated[int, Query(ge=1, le=5000)] = 500,
 ) -> dict[str, Any]:
-    return await asyncio.to_thread(server.recording_timeline, recording_id)
+    return await asyncio.to_thread(
+        server.recording_timeline,
+        recording_id,
+        offset,
+        limit,
+    )
 
 
 @router.post(

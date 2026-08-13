@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -51,6 +52,36 @@ TEST(RouterUtils, RejectsInvalidJointGroups)
 
   EXPECT_TRUE(groups_are_disjoint({"joint_a"}, {"joint_b"}));
   EXPECT_FALSE(groups_are_disjoint({"joint_a"}, {"joint_a"}));
+}
+
+TEST(RouterUtils, ValidatesRequiredAndOptionalTrajectoryFields)
+{
+  EXPECT_TRUE(trajectory_numeric_field_is_valid({0.1, -0.2}, 2U, true));
+  EXPECT_FALSE(trajectory_numeric_field_is_valid({}, 2U, true));
+  EXPECT_FALSE(trajectory_numeric_field_is_valid({0.1}, 2U, true));
+  EXPECT_FALSE(
+    trajectory_numeric_field_is_valid(
+      {0.1, std::numeric_limits<double>::quiet_NaN()}, 2U, true));
+  EXPECT_FALSE(
+    trajectory_numeric_field_is_valid(
+      {0.1, std::numeric_limits<double>::infinity()}, 2U, true));
+
+  EXPECT_TRUE(trajectory_numeric_field_is_valid({}, 2U, false));
+  EXPECT_TRUE(trajectory_numeric_field_is_valid({0.1, -0.2}, 2U, false));
+  EXPECT_FALSE(trajectory_numeric_field_is_valid({0.1}, 2U, false));
+}
+
+TEST(RouterUtils, ValidatesStrictlyIncreasingTrajectoryDurations)
+{
+  EXPECT_TRUE(trajectory_duration_is_valid(0, 0U));
+  EXPECT_TRUE(trajectory_duration_is_valid(3, 999999999U));
+  EXPECT_FALSE(trajectory_duration_is_valid(-1, 0U));
+  EXPECT_FALSE(trajectory_duration_is_valid(0, 1000000000U));
+
+  EXPECT_TRUE(trajectory_duration_is_strictly_after(0, 1U, 0, 0U));
+  EXPECT_TRUE(trajectory_duration_is_strictly_after(1, 0U, 0, 999999999U));
+  EXPECT_FALSE(trajectory_duration_is_strictly_after(1, 0U, 1, 0U));
+  EXPECT_FALSE(trajectory_duration_is_strictly_after(0, 9U, 1, 0U));
 }
 
 TEST(RouterUtils, GatesOnlyEmbeddedNavigationRequests)

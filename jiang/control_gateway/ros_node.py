@@ -2990,6 +2990,10 @@ class RosControlNode(Node):
         subscriptions: Dict[str, Any] = {"signature": signature}
         try:
             if state_topic:
+                # The aggregate state contains every field consumed below.
+                # Avoid also consuming its high-frequency compatibility
+                # mirrors; with dozens of controls per cabinet those duplicate
+                # subscriptions can monopolize the Python executor.
                 subscriptions["state"] = self.create_subscription(
                     CabinetControlState,
                     state_topic,
@@ -3002,35 +3006,36 @@ class RosControlNode(Node):
                     ),
                     transient_qos,
                 )
-            if joint_name and joint_state_topic:
-                subscriptions["joint"] = self.create_subscription(
-                    JointState,
-                    joint_state_topic,
-                    lambda message, selected_id=control_id, selected_joint=(
-                        joint_name
-                    ), selected_topic=(
-                        joint_state_topic
-                    ): self._cabinet_button_joint_state_callback(
-                        selected_id,
-                        selected_joint,
-                        selected_topic,
-                        message,
-                    ),
-                    qos_profile_sensor_data,
-                )
-            if pressed_topic:
-                subscriptions["pressed"] = self.create_subscription(
-                    Bool,
-                    pressed_topic,
-                    lambda message, selected_id=control_id, selected_topic=(
-                        pressed_topic
-                    ): self._cabinet_button_pressed_callback(
-                        selected_id,
-                        selected_topic,
-                        message,
-                    ),
-                    transient_qos,
-                )
+            else:
+                if joint_name and joint_state_topic:
+                    subscriptions["joint"] = self.create_subscription(
+                        JointState,
+                        joint_state_topic,
+                        lambda message, selected_id=control_id, selected_joint=(
+                            joint_name
+                        ), selected_topic=(
+                            joint_state_topic
+                        ): self._cabinet_button_joint_state_callback(
+                            selected_id,
+                            selected_joint,
+                            selected_topic,
+                            message,
+                        ),
+                        qos_profile_sensor_data,
+                    )
+                if pressed_topic:
+                    subscriptions["pressed"] = self.create_subscription(
+                        Bool,
+                        pressed_topic,
+                        lambda message, selected_id=control_id, selected_topic=(
+                            pressed_topic
+                        ): self._cabinet_button_pressed_callback(
+                            selected_id,
+                            selected_topic,
+                            message,
+                        ),
+                        transient_qos,
+                    )
         except Exception:
             for name in ("state", "joint", "pressed"):
                 subscription = subscriptions.get(name)

@@ -434,8 +434,14 @@ class CabinetStateCallbackTest(unittest.TestCase):
             object(),
         )
 
-        self.assertEqual(6, len(created))
-        self.assertEqual(created[:3], destroyed)
+        # Aggregate CabinetControlState is authoritative; changing only its
+        # legacy mirror topics may replace the generation, but must never add
+        # duplicate high-frequency subscriptions.
+        self.assertEqual(2, len(created))
+        self.assertEqual(created[:1], destroyed)
+        self.assertEqual(["state", "state"], [
+            item.topic.rsplit("/", 1)[-1] for item in created
+        ])
         subscriptions = node._cabinet_control_subscriptions[
             control["control_id"]
         ]

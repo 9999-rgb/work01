@@ -7,7 +7,7 @@ import math
 import queue
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, FrozenSet, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .ros_node import ControlRequestError
 from .task_manager import EventHubClosed
@@ -37,7 +37,8 @@ class ControlHandler(BaseHTTPRequestHandler):
         """Serve health and autonomous-control status."""
         if not self._allow_request_origin():
             return
-        path = urlparse(self.path).path
+        parsed_url = urlparse(self.path)
+        path = parsed_url.path
         try:
             if path == "/health":
                 self._send_json(200, self.control_server.health())
@@ -82,7 +83,10 @@ class ControlHandler(BaseHTTPRequestHandler):
             ) is not None:
                 self._send_json(
                     200,
-                    self.control_server.recording_timeline(recording_id),
+                    self.control_server.recording_timeline(
+                        recording_id,
+                        *self._timeline_pagination(parsed_url.query),
+                    ),
                 )
             elif (
                 recording_id := self._recording_detail_path(path)
@@ -526,6 +530,49 @@ class ControlHandler(BaseHTTPRequestHandler):
         if value is None or value != value.strip():
             return None
         return value
+
+    @staticmethod
+    def _timeline_pagination(query: str) -> tuple[int, int]:
+        try:
+            values = parse_qs(
+                query,
+                keep_blank_values=True,
+                strict_parsing=True,
+            ) if query else {}
+        except ValueError as error:
+            raise ControlRequestError("Invalid timeline query string.") from error
+        unknown = set(values) - {"offset", "limit"}
+        if unknown:
+            raise ControlRequestError(
+                "Unexpected timeline query parameter(s): "
+                + ", ".join(sorted(unknown))
+            )
+
+        def integer(name: str, default: int) -> int:
+            raw = values.get(name)
+            if raw is None:
+                return default
+            if (
+                len(raw) != 1
+                or not raw[0].isascii()
+                or not raw[0].isdigit()
+            ):
+                raise ControlRequestError(f"Timeline {name} must be an integer.")
+            try:
+                return int(raw[0])
+            except ValueError as error:
+                # Python limits decimal-to-int conversion length.  Keep an
+                # oversized but otherwise digit-only query on the normal 400
+                # validation path instead of leaking it as a server error.
+                raise ControlRequestError(
+                    f"Timeline {name} must be an integer."
+                ) from error
+
+        offset = integer("offset", 0)
+        limit = integer("limit", 500)
+        if limit < 1 or limit > 5000:
+            raise ControlRequestError("Timeline limit must be 1..5000.")
+        return offset, limit
 
     @staticmethod
     def _nonempty_string(body: Dict[str, Any], name: str) -> str:

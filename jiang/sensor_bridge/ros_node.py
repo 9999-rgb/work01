@@ -93,31 +93,29 @@ class SensorStreamNode(Node):
         self._camera_error_count = 0
         self._lidar_frame_count = 0
         self._active_camera_topic: Optional[str] = None
+        self._camera_watchdog_frame_count = 0
+        self._camera_topic = camera_topic
+        self._camera_fallback_topic = _alternate_camera_topic(camera_topic)
+        self._camera_subscription: Optional[
+            rclpy.subscription.Subscription
+        ] = None
+        self._camera_fallback_sub: Optional[
+            rclpy.subscription.Subscription
+        ] = None
 
         # Subscribe to the primary camera topic *and* a fallback that
         # drops the camera_name path segment.  The exact topic structure
         # depends on the gazebo_ros_camera plugin version.
-        self._camera_subscription = self.create_subscription(
-            Image,
-            camera_topic,
-            self._make_camera_callback(camera_topic),
-            self.CAMERA_QOS,
-        )
-        self._camera_fallback_sub: Optional[rclpy.subscription.Subscription] = None
-        camera_fallback_topic = _alternate_camera_topic(camera_topic)
-        if camera_fallback_topic != camera_topic:
-            self._camera_fallback_sub = self.create_subscription(
-                Image,
-                camera_fallback_topic,
-                self._make_camera_callback(camera_fallback_topic),
-                self.CAMERA_QOS,
-            )
+        self._create_camera_subscriptions()
+        if self._camera_fallback_topic != self._camera_topic:
             self.get_logger().info(
-                f"Camera primary: {camera_topic}; "
-                f"fallback: {camera_fallback_topic}"
+                f"Camera primary: {self._camera_topic}; "
+                f"fallback: {self._camera_fallback_topic}"
             )
         else:
-            self.get_logger().info(f"Camera stream source: {camera_topic}")
+            self.get_logger().info(
+                f"Camera stream source: {self._camera_topic}"
+            )
 
         self._lidar_subscription = self.create_subscription(
             LaserScan,
@@ -141,6 +139,42 @@ class SensorStreamNode(Node):
             15.0,
             self._topic_watchdog_callback,
         )
+
+    def _create_camera_subscriptions(self) -> None:
+        """Create one DDS reader per supported camera topic layout."""
+        primary = self.create_subscription(
+            Image,
+            self._camera_topic,
+            self._make_camera_callback(self._camera_topic),
+            self.CAMERA_QOS,
+        )
+        fallback = None
+        try:
+            if self._camera_fallback_topic != self._camera_topic:
+                fallback = self.create_subscription(
+                    Image,
+                    self._camera_fallback_topic,
+                    self._make_camera_callback(self._camera_fallback_topic),
+                    self.CAMERA_QOS,
+                )
+        except Exception:
+            self.destroy_subscription(primary)
+            raise
+        self._camera_subscription = primary
+        self._camera_fallback_sub = fallback
+
+    def _reset_camera_subscriptions(self) -> None:
+        """Replace stale DDS readers after a publisher/discovery transition."""
+        old_primary = self._camera_subscription
+        old_fallback = self._camera_fallback_sub
+        self._camera_subscription = None
+        self._camera_fallback_sub = None
+        for subscription in (old_primary, old_fallback):
+            if subscription is not None:
+                self.destroy_subscription(subscription)
+        self._next_camera_encode_time = 0.0
+        self._active_camera_topic = None
+        self._create_camera_subscriptions()
 
     def _make_camera_callback(self, topic: str):
         """Return a callback that only processes frames from the active topic."""
@@ -206,7 +240,6 @@ class SensorStreamNode(Node):
             self._state.update_camera(output.getvalue(), metadata)
 
             self._camera_frame_count += 1
-            self._frame_advanced_since_watchdog = True
             if self._active_camera_topic is None:
                 self._active_camera_topic = topic
                 self.get_logger().info(
@@ -232,13 +265,10 @@ class SensorStreamNode(Node):
         ]
         if image_topics:
             # Report publisher match count for each subscription
-            primary_count = self.count_publishers(
-                self._camera_subscription.topic_name
-            )
+            primary_count = self.count_publishers(self._camera_topic)
             fallback_count = 0
-            fallback_topic = ""
+            fallback_topic = self._camera_fallback_topic
             if self._camera_fallback_sub is not None:
-                fallback_topic = self._camera_fallback_sub.topic_name
                 fallback_count = self.count_publishers(fallback_topic)
             self.get_logger().warning(
                 "No camera frame received after 8 s. "
@@ -254,32 +284,34 @@ class SensorStreamNode(Node):
             )
 
     def _topic_watchdog_callback(self) -> None:
-        """Reset active-camera-topic lock if frames stop arriving."""
-        if self._active_camera_topic is None:
-            return
-        # If we have an active topic but haven't received a frame for
-        # more than 30 seconds, reset the lock so the other subscription
-        # gets a chance.
-        if self._camera_frame_count > 0:
+        """Replace camera DDS readers when no frame advances for one period."""
+        current_frame_count = self._camera_frame_count
+        if current_frame_count > self._camera_watchdog_frame_count:
             self.get_logger().debug(
-                f"Camera watchdog: {self._camera_frame_count} frames "
+                f"Camera watchdog: {current_frame_count} frames "
                 f"on '{self._active_camera_topic}', "
                 f"{self._camera_error_count} errors"
             )
-        # The lock-in is a common cause of silent stalls when the
-        # winning topic's publisher disappears.  Reset periodically
-        # when the frame counter hasn't advanced (detected via a
-        # companion variable set in the callback).
-        if (
-            self._active_camera_topic is not None
-            and not getattr(self, "_frame_advanced_since_watchdog", True)
-        ):
-            self.get_logger().warning(
-                f"Camera topic '{self._active_camera_topic}' may be "
-                f"stale — resetting active-topic lock"
+            self._camera_watchdog_frame_count = current_frame_count
+            return
+
+        # A Zenoh bridge or camera process can briefly advertise and then
+        # retire a writer during startup.  Some DDS/rclpy combinations leave
+        # the old reader continuously ready while take_message() returns no
+        # data, causing a full-core spin that a topic-selection reset cannot
+        # heal.  Recreate the readers themselves; the timer runs on the same
+        # single-threaded executor, so this cannot race a camera callback.
+        self.get_logger().warning(
+            "Camera frames did not advance during the watchdog period; "
+            "recreating camera DDS subscriptions"
+        )
+        try:
+            self._reset_camera_subscriptions()
+        except Exception as error:  # noqa: BLE001 - retry next watchdog
+            self.get_logger().error(
+                f"Failed to recreate camera subscriptions: {error}"
             )
-            self._active_camera_topic = None
-        self._frame_advanced_since_watchdog = False
+        self._camera_watchdog_frame_count = current_frame_count
 
     @staticmethod
     def _decode_image(message: Image) -> PillowImage.Image:
@@ -375,16 +407,22 @@ class SensorRosRuntime:
         self._fatal_callback = fatal_callback
         self._fatal_lock = threading.Lock()
         self._fatal_error: Optional[Dict[str, str]] = None
+        self._stop_lock = threading.Lock()
+        self._started = False
+        self._stopped = False
+        self._context_active = False
         self._context = Context()
-        # 与控制网关一样使用私有 context，避免一个子系统 shutdown 默认
-        # context 时使同进程内其他 ROS 节点失效。进程信号由 uvicorn 处理。
-        rclpy.init(
-            context=self._context,
-            signal_handler_options=SignalHandlerOptions.NO,
-        )
         self._node: Optional[SensorStreamNode] = None
         self._executor: Optional[SingleThreadedExecutor] = None
         try:
+            # 与控制网关一样使用私有 context，避免一个子系统
+            # shutdown 默认 context 时使同进程内其他 ROS 节点失效。
+            # 进程信号由 uvicorn 处理。
+            rclpy.init(
+                context=self._context,
+                signal_handler_options=SignalHandlerOptions.NO,
+            )
+            self._context_active = True
             self._node = SensorStreamNode(
                 state=state,
                 camera_topic=camera_topic,
@@ -395,12 +433,28 @@ class SensorRosRuntime:
             )
             self._executor = SingleThreadedExecutor(context=self._context)
             self._executor.add_node(self._node)
-        except Exception:
+        except BaseException:  # noqa: BLE001 - preserve constructor failure
+            # Constructor rollback must never replace the exception that made
+            # construction fail.  Attempt every independent teardown step so
+            # one broken resource does not leak all the remaining resources.
             if self._executor is not None:
-                self._executor.shutdown(timeout_sec=0.0)
+                try:
+                    self._executor.shutdown(timeout_sec=0.0)
+                except BaseException:  # noqa: BLE001 - best-effort rollback
+                    logger.exception(
+                        "Failed to roll back sensor ROS executor"
+                    )
             if self._node is not None:
-                self._node.destroy_node()
-            self._context.shutdown()
+                try:
+                    self._node.destroy_node()
+                except BaseException:  # noqa: BLE001 - best-effort rollback
+                    logger.exception("Failed to roll back sensor ROS node")
+            try:
+                # Also try after an rclpy.init() failure: initialization may
+                # have partially acquired middleware resources.
+                self._context.shutdown()
+            except BaseException:  # noqa: BLE001 - best-effort rollback
+                logger.exception("Failed to roll back sensor ROS context")
             raise
         self._stop_event = threading.Event()
         self._thread = threading.Thread(
@@ -408,8 +462,6 @@ class SensorRosRuntime:
             name="web-sensor-ros-executor",
             daemon=True,
         )
-        self._started = False
-        self._stopped = False
 
     def _spin_safe(self) -> None:
         """Spin the executor and promote an unexpected exit to fatal state."""
@@ -473,21 +525,71 @@ class SensorRosRuntime:
         return self
 
     def stop(self) -> None:
-        if self._stopped:
-            return
-        self._stopped = True
-        self._stop_event.set()
-        if self._executor is not None:
-            self._executor.wake()
-        if self._started:
-            self._thread.join(timeout=3.0)
-            if self._thread.is_alive():
-                # 线程仍可能在 rclpy 中访问 guard condition；保留 ROS 对象，
-                # 避免 teardown use-after-free。稍后再次 stop 仍可继续回收。
-                self._stopped = False
-                raise RuntimeError("传感器 ROS executor 线程未在 3 秒内停止。")
-        if self._executor is not None:
-            self._executor.shutdown(timeout_sec=3.0)
-        if self._node is not None:
-            self._node.destroy_node()
-        self._context.shutdown()
+        # Serialize stop calls because rclpy executor/context teardown is not
+        # safe to run concurrently.  _stopped is committed only after every
+        # resource has actually been released, allowing a later retry after a
+        # partial cleanup failure.
+        with self._stop_lock:
+            if self._stopped:
+                return
+
+            self._stop_event.set()
+            wake_error: Optional[BaseException] = None
+            if self._executor is not None:
+                try:
+                    self._executor.wake()
+                except BaseException as error:  # noqa: BLE001
+                    wake_error = error
+
+            if self._started:
+                self._thread.join(timeout=3.0)
+                if self._thread.is_alive():
+                    # 线程仍可能在 rclpy 中访问 guard condition；保留 ROS
+                    # 对象，避免 teardown use-after-free。稍后再次 stop
+                    # 仍可继续回收。
+                    raise RuntimeError(
+                        "传感器 ROS executor 线程未在 3 秒内停止。"
+                    )
+
+            cleanup_errors: List[BaseException] = []
+            if wake_error is not None:
+                cleanup_errors.append(wake_error)
+
+            if self._executor is not None:
+                try:
+                    shutdown_completed = self._executor.shutdown(
+                        timeout_sec=3.0
+                    )
+                    if shutdown_completed is False:
+                        raise RuntimeError(
+                            "传感器 ROS executor 未在 3 秒内完成回收。"
+                        )
+                except BaseException as error:  # noqa: BLE001
+                    cleanup_errors.append(error)
+                else:
+                    self._executor = None
+
+            if self._node is not None:
+                try:
+                    self._node.destroy_node()
+                except BaseException as error:  # noqa: BLE001
+                    cleanup_errors.append(error)
+                else:
+                    self._node = None
+
+            if self._context_active:
+                try:
+                    self._context.shutdown()
+                except BaseException as error:  # noqa: BLE001
+                    cleanup_errors.append(error)
+                else:
+                    self._context_active = False
+
+            resources_released = (
+                self._executor is None
+                and self._node is None
+                and not self._context_active
+            )
+            self._stopped = resources_released
+            if cleanup_errors:
+                raise cleanup_errors[0]

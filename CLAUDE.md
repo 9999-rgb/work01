@@ -65,7 +65,7 @@ pip install -r jiang/requirements.txt
 XCZS_PREFLIGHT_ONLY=true ./run_all.sh
 ```
 
-启动后 Web 功能统一使用 `http://localhost:8090`：监控面板 `/monitor.html`、SSE `/sse/<key>`、相机 `/camera.mjpg`，雷达 `/lidar/ws`。Zenoh 默认使用 TCP 7447 和 REST 8000。全部路径与开关均可用环境变量覆盖（见 `jiang/start_xczs_bridge.sh` 顶部）；外部机器人栈模式用 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false`。
+启动后 Web 功能统一使用 `http://localhost:8090`：监控面板 `/monitor.html`、SSE `/sse/<key>`、相机 `/camera.mjpg`，雷达 `/lidar/ws`。Web 模式的 Zenoh 默认使用 TCP 7447 和 REST 8000；纯 `--keyboard` 模式不需要 Zenoh，只有同时指定 `--with-proxy` 时才启动它。全部路径与开关均可用环境变量覆盖（见 `jiang/start_xczs_bridge.sh` 顶部）；外部机器人栈模式用 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false`。启动摘要中的 `X Display` 会说明图形显示是否已经通过 `xdpyinfo` 有界验证；显示不可连接时 Gazebo RGB 相机不会发布图像。
 
 ### 测试
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from typing import Annotated
 
@@ -17,6 +18,7 @@ from app.database.engine import async_session, get_db
 
 logger = logging.getLogger(__name__)
 STREAM_AUTH_RECHECK_SECONDS = 5.0
+MIN_STREAM_AUTH_RECHECK_SECONDS = 0.05
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -90,10 +92,25 @@ class ActiveTokenChecker:
         initially_validated: bool = True,
         recheck_seconds: float = STREAM_AUTH_RECHECK_SECONDS,
     ) -> None:
+        if (
+            isinstance(recheck_seconds, bool)
+            or not isinstance(recheck_seconds, (int, float))
+            or not math.isfinite(float(recheck_seconds))
+            or float(recheck_seconds) < 0.0
+        ):
+            raise ValueError(
+                "recheck_seconds must be a finite nonnegative number."
+            )
         self._token = token
         self._user_id = user_id
         self._enabled = enabled
-        self.recheck_seconds = max(0.0, recheck_seconds)
+        # A zero request still performs the first validation immediately, but
+        # subsequent checks are rate-limited so an empty SSE/WS stream cannot
+        # turn into a busy loop and database denial-of-service.
+        self.recheck_seconds = max(
+            MIN_STREAM_AUTH_RECHECK_SECONDS,
+            float(recheck_seconds),
+        )
         self._next_check = (
             time.monotonic() + self.recheck_seconds
             if initially_validated and enabled

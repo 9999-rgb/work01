@@ -117,7 +117,11 @@ class LoginRequest(BaseModel):
         description="用户名",
         examples=["admin"],
     )
-    password: str = Field(description="密码", examples=["changeme123"])
+    password: str = Field(
+        max_length=128,
+        description="密码，最多 128 字符",
+        examples=["changeme123"],
+    )
 
     @field_validator("username", mode="before")
     @classmethod

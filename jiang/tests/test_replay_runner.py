@@ -23,6 +23,7 @@ from control_gateway.recording_manager import RecordingValidationError  # noqa: 
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway.runner import ControlServer  # noqa: E402
 from control_gateway.task_manager import EventHubClosed  # noqa: E402
+from control_gateway.task_manager import EventHub  # noqa: E402
 from control_gateway.task_manager import TaskManager  # noqa: E402
 
 
@@ -62,7 +63,14 @@ class _RecordingManager:
         self._raise("get_recording")
         return {"recording_id": recording_id, "status": "completed"}
 
-    def timeline(self, recording_id: str) -> Dict[str, Any]:
+    def timeline(
+        self,
+        recording_id: str,
+        *,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        del offset, limit
         self._raise("timeline")
         return {"recording_id": recording_id, "events": []}
 
@@ -740,6 +748,86 @@ class ReplayRunnerTest(unittest.TestCase):
 
         self.assertEqual([event], server._recording_manager.task_events)
         self.assertEqual([event], server._node.task_events)
+
+    def test_task_event_bridge_reconnects_after_bounded_overflow(self) -> None:
+        server = _server()
+        server._event_bridge_subscription = (
+            server._task_manager.events.subscribe(
+                last_event_id=0,
+                max_pending=1,
+            )
+        )
+        accepted = server._task_manager.events.publish(
+            "task_accepted",
+            {"task_id": "operate_1"},
+        )
+        completed = server._task_manager.events.publish(
+            "task_completed",
+            {"task_id": "operate_1", "outcome": "success"},
+        )
+        worker = threading.Thread(target=server._bridge_task_events)
+        worker.start()
+        deadline = __import__("time").monotonic() + 1.0
+        while (
+            len(server._node.task_events) < 2
+            and __import__("time").monotonic() < deadline
+        ):
+            __import__("time").sleep(0.005)
+        server._task_manager.events.close()
+        worker.join(timeout=1.0)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            [accepted["id"], completed["id"]],
+            [event["id"] for event in server._node.task_events],
+        )
+        self.assertNotIn(
+            "stream_overflow",
+            [event["event"] for event in server._recording_manager.task_events],
+        )
+
+    def test_task_event_bridge_recovers_retained_events_after_history_gap(
+        self,
+    ) -> None:
+        server = _server()
+        # A capacity-two ring drops sequence 1 before the bridge starts from 0.
+        server._task_manager.events = EventHub(capacity=2)
+        server._task_manager.events.publish(
+            "task_accepted",
+            {"task_id": "one"},
+        )
+        retained = [
+            server._task_manager.events.publish(
+                "task_progress",
+                {"task_id": "one", "value": 1},
+            ),
+            server._task_manager.events.publish(
+                "task_completed",
+                {"task_id": "one"},
+            ),
+        ]
+        server._event_bridge_subscription = (
+            server._task_manager.events.subscribe(last_event_id=0)
+        )
+        worker = threading.Thread(target=server._bridge_task_events)
+        worker.start()
+        deadline = __import__("time").monotonic() + 1.0
+        while (
+            len(server._node.task_events) < 2
+            and __import__("time").monotonic() < deadline
+        ):
+            __import__("time").sleep(0.005)
+        server._task_manager.events.close()
+        worker.join(timeout=1.0)
+
+        self.assertEqual(
+            [event["id"] for event in retained],
+            [event["id"] for event in server._node.task_events],
+        )
+        self.assertNotIn(
+            "stream_overflow",
+            [event["event"] for event in server._recording_manager.task_events],
+        )
 
     def test_shutdown_stops_replays_before_ros_teardown(self) -> None:
         server = _server()

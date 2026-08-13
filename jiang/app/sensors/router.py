@@ -79,7 +79,10 @@ async def health(request: Request, state: SensorStateDep) -> dict[str, Any]:
     summary="最新相机帧（单帧 JPEG）",
 )
 async def camera_jpeg(state: SensorStateDep) -> Response:
-    _sequence, jpeg, metadata = await asyncio.to_thread(state.camera_snapshot)
+    _sequence, jpeg, metadata = await asyncio.to_thread(
+        _fresh_camera_snapshot,
+        state,
+    )
     if jpeg is None:
         return JSONResponse(
             status_code=503,
@@ -98,7 +101,10 @@ async def camera_jpeg(state: SensorStateDep) -> Response:
 )
 async def camera_mjpeg(state: SensorStateDep, request: Request) -> Response:
     authorization = ActiveTokenChecker.from_request(request)
-    _sequence, jpeg, _metadata = await asyncio.to_thread(state.camera_snapshot)
+    _sequence, jpeg, _metadata = await asyncio.to_thread(
+        _fresh_camera_snapshot,
+        state,
+    )
     if jpeg is None:
         return JSONResponse(
             status_code=503,
@@ -113,8 +119,13 @@ async def camera_mjpeg(state: SensorStateDep, request: Request) -> Response:
                 or not await authorization.is_valid()
             ):
                 return
-            sequence, jpeg, _ = await asyncio.to_thread(state.camera_snapshot)
-            if jpeg is not None and sequence != last_sequence:
+            sequence, jpeg, _ = await asyncio.to_thread(
+                _fresh_camera_snapshot,
+                state,
+            )
+            if jpeg is None:
+                return
+            if sequence != last_sequence:
                 part = (
                     f"--{MJPEG_BOUNDARY}\r\n"
                     "Content-Type: image/jpeg\r\n"
@@ -137,7 +148,10 @@ async def camera_mjpeg(state: SensorStateDep, request: Request) -> Response:
     summary="最新 LiDAR 扫描（JSON）",
 )
 async def lidar_json(state: SensorStateDep) -> Response:
-    _sequence, _payload, json_payload = await asyncio.to_thread(state.lidar_snapshot)
+    _sequence, _payload, json_payload = await asyncio.to_thread(
+        _fresh_lidar_snapshot,
+        state,
+    )
     if json_payload is None:
         return JSONResponse(
             status_code=503,
@@ -161,33 +175,89 @@ async def lidar_websocket(websocket: WebSocket) -> None:
         None,
     )
     if state is None:
-        await websocket.close(code=1013, reason="传感器流未初始化。")
+        await _close_websocket_noexcept(
+            websocket,
+            code=1013,
+            reason="传感器流未初始化。",
+        )
         return
     await websocket.accept()
     last_sequence = -1
+    close_sent = False
     try:
         while True:
             if not await authorization.is_valid():
-                await websocket.close(code=4401, reason="认证已失效。")
+                close_sent = True
+                await _close_websocket_noexcept(
+                    websocket,
+                    code=4401,
+                    reason="认证已失效。",
+                )
                 return
             sequence, _payload, json_payload = await asyncio.to_thread(
-                state.lidar_snapshot
+                _fresh_lidar_snapshot,
+                state,
             )
+            if json_payload is None and await asyncio.to_thread(
+                _lidar_is_stale,
+                state,
+            ):
+                close_sent = True
+                await _close_websocket_noexcept(
+                    websocket,
+                    code=1013,
+                    reason="LiDAR 扫描已过期。",
+                )
+                return
             if json_payload is not None and sequence != last_sequence:
                 await websocket.send_text(json_payload)
                 last_sequence = sequence
             try:
-                await asyncio.wait_for(websocket.receive_text(), timeout=0.1)
+                message = await asyncio.wait_for(
+                    websocket.receive(),
+                    timeout=0.1,
+                )
+                if message.get("type") == "websocket.disconnect":
+                    return
             except asyncio.TimeoutError:
                 pass
     except WebSocketDisconnect:
         return
     finally:
-        try:
-            await websocket.close()
-        except (RuntimeError, WebSocketDisconnect):
-            # 对端可能已经断开 TCP，或已经完成 close handshake。
-            pass
+        if not close_sent:
+            await _close_websocket_noexcept(websocket)
+
+
+async def _close_websocket_noexcept(
+    websocket: WebSocket,
+    **kwargs: Any,
+) -> None:
+    """Best-effort close for peers that may disappear between checks."""
+    try:
+        await websocket.close(**kwargs)
+    except (RuntimeError, WebSocketDisconnect):
+        # 对端可能已经断开 TCP，或已经完成 close handshake。
+        pass
+
+
+def _fresh_camera_snapshot(state: SensorStreamState):
+    snapshot = getattr(state, "fresh_camera_snapshot", None)
+    # Keep injectable test/adapter states compatible; the production state
+    # provides the freshness-aware method.
+    return snapshot() if callable(snapshot) else state.camera_snapshot()
+
+
+def _fresh_lidar_snapshot(state: SensorStreamState):
+    snapshot = getattr(state, "fresh_lidar_snapshot", None)
+    return snapshot() if callable(snapshot) else state.lidar_snapshot()
+
+
+def _lidar_is_stale(state: SensorStreamState) -> bool:
+    health = getattr(state, "health", None)
+    if not callable(health):
+        return False
+    result = health()
+    return bool(result.get("lidar", {}).get("stale", False))
 
 
 async def _authorize_websocket(
@@ -201,7 +271,11 @@ async def _authorize_websocket(
         websocket.headers.get("host"),
         allowed_origins,
     ):
-        await websocket.close(code=4403, reason="Origin 不允许。")
+        await _close_websocket_noexcept(
+            websocket,
+            code=4403,
+            reason="Origin 不允许。",
+        )
         return None
     if not getattr(websocket.app.state, "auth_enabled", True):
         return ActiveTokenChecker(token=None, user_id=None, enabled=False)
@@ -212,13 +286,21 @@ async def _authorize_websocket(
         if scheme.lower() == "bearer" and credentials.strip():
             token = credentials.strip()
     if not token:
-        await websocket.close(code=4401, reason="缺少认证凭证。")
+        await _close_websocket_noexcept(
+            websocket,
+            code=4401,
+            reason="缺少认证凭证。",
+        )
         return None
     try:
         async with async_session() as session:
             user = await resolve_active_user(token, session)
     except HTTPException:
-        await websocket.close(code=4401, reason="token 无效或已过期。")
+        await _close_websocket_noexcept(
+            websocket,
+            code=4401,
+            reason="token 无效或已过期。",
+        )
         return None
     return ActiveTokenChecker(
         token=token,

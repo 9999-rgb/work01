@@ -41,6 +41,21 @@ XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_XACRO_FILENAME = "control_cabinet.urdf.xacro"
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
+_BOOLEAN_LAUNCH_ARGUMENTS = (
+    "gui",
+    "gazebo",
+    "robot_bringup",
+    "use_sim_time",
+    "paused",
+    "teleop",
+    "control_gui",
+    "moveit",
+    "moveit_rviz",
+    "nav2",
+    "nav2_rviz",
+    "cabinet_bringup",
+    "spawn_cabinet",
+)
 _INCLUDED_REQUIRED_RUNTIME_NODES = {
     ("nav2_map_server", "map_server"): "Nav2 map server",
     ("nav2_amcl", "amcl"): "Nav2 AMCL",
@@ -143,10 +158,36 @@ def _shutdown_on_included_required_runtime_exit(event, context):
 
 
 def _launch_boolean(context, name):
-    value = LaunchConfiguration(name).perform(context).lower()
+    value = LaunchConfiguration(name).perform(context).strip().lower()
     if value not in {"true", "false"}:
-        raise RuntimeError(f"{name} must be true or false.")
+        raise RuntimeError(f"{name} must be true or false, got {value!r}.")
     return value == "true"
+
+
+def _launch_finite_number(context, name):
+    raw_value = LaunchConfiguration(name).perform(context).strip()
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise RuntimeError(
+            f"{name} must be a finite number, got {raw_value!r}."
+        ) from error
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"{name} must be a finite number, got {raw_value!r}."
+        )
+    return value
+
+
+def _validate_launch_arguments(context):
+    actions = []
+    for name in _BOOLEAN_LAUNCH_ARGUMENTS:
+        value = _launch_boolean(context, name)
+        actions.append(
+            SetLaunchConfiguration(name, "true" if value else "false")
+        )
+    _launch_finite_number(context, "spawn_z")
+    return actions
 
 
 def _finite_number(instance, field, default=None):
@@ -882,7 +923,21 @@ def generate_launch_description() -> LaunchDescription:
             "use_sim_time": LaunchConfiguration("use_sim_time"),
             "rviz_config": LaunchConfiguration("moveit_rviz_config"),
         }.items(),
-        condition=IfCondition(LaunchConfiguration("moveit")),
+        # ``moveit`` also tells cabinet clients that the external planning
+        # stack is available.  Only include our local move_group when this
+        # launch owns the robot bringup; external-stack mode must not create a
+        # duplicate move_group with the same services and planning scene.
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("robot_bringup"),
+                    "' == 'true' and '",
+                    LaunchConfiguration("moveit"),
+                    "' == 'true'",
+                ]
+            )
+        ),
     )
     nav2 = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -894,7 +949,17 @@ def generate_launch_description() -> LaunchDescription:
             "rviz": LaunchConfiguration("nav2_rviz"),
             "use_sim_time": LaunchConfiguration("use_sim_time"),
         }.items(),
-        condition=IfCondition(LaunchConfiguration("nav2")),
+        condition=IfCondition(
+            PythonExpression(
+                [
+                    "'",
+                    LaunchConfiguration("robot_bringup"),
+                    "' == 'true' and '",
+                    LaunchConfiguration("nav2"),
+                    "' == 'true'",
+                ]
+            )
+        ),
     )
     robot_state_publisher = Node(
         package="robot_state_publisher",
@@ -1072,6 +1137,9 @@ def generate_launch_description() -> LaunchDescription:
     adapter_configuration = OpaqueFunction(
         function=_configure_robot_adapter,
     )
+    argument_validation = OpaqueFunction(
+        function=_validate_launch_arguments,
+    )
     cleanup = RegisterEventHandler(
         OnShutdown(on_shutdown=[OpaqueFunction(function=_cleanup_generated_files)])
     )
@@ -1079,6 +1147,7 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         arguments
         + [
+            argument_validation,
             adapter_configuration,
             # Register the required-process handlers before either short-lived
             # process can start.  In particular, a spawn failure may exit

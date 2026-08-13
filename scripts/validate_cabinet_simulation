@@ -1473,8 +1473,8 @@ def parse_arguments() -> argparse.Namespace:
         )
     if args.cycles < 1:
         parser.error("--cycles must be at least 1")
-    if args.timeout <= 0.0:
-        parser.error("--timeout must be positive")
+    if not math.isfinite(args.timeout) or not 0.0 < args.timeout <= 3600.0:
+        parser.error("--timeout must be finite and in the range (0, 3600]")
     if len(args.control) > 1:
         parser.error(
             "low-level validation accepts at most one --control because it "

@@ -8,4 +8,12 @@ install(
   DESTINATION share/${PROJECT_NAME}
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_pytest REQUIRED)
+  ament_add_pytest_test(
+    navigation_launch_policy_test
+    test/test_navigation_launch_policy.py
+  )
+endif()
+
 ament_package()

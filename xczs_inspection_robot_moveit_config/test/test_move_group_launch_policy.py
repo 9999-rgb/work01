@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from launch import LaunchContext
 from launch.actions import EmitEvent, LogInfo, RegisterEventHandler
 from launch.event_handlers import OnProcessExit
@@ -138,3 +139,21 @@ def test_move_group_exit_during_shutdown_does_not_emit_again():
     )
 
     assert result == []
+
+
+def test_move_group_rejects_an_invalid_use_sim_time_value():
+    module = _load_launch_module()
+    context = _launch_context()
+    context.launch_configurations["use_sim_time"] = "truthy"
+
+    with pytest.raises(RuntimeError, match="use_sim_time must be true or false"):
+        module._launch_setup(context)
+
+
+def test_move_group_rejects_an_invalid_rviz_value():
+    module = _load_launch_module()
+    context = _launch_context()
+    context.launch_configurations["rviz"] = "truthy"
+
+    with pytest.raises(RuntimeError, match="rviz must be true or false"):
+        module._launch_setup(context)

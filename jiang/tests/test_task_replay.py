@@ -491,6 +491,37 @@ class TaskReplayTest(unittest.TestCase):
                     },
                 }
             ),
+            _scenario(
+                {
+                    "type": "operate",
+                    "request": {
+                        "cabinet": "cabinet_a",
+                        "control_id": "button",
+                        "command": 1,
+                    },
+                }
+            ),
+            _scenario(
+                {
+                    "type": "operate",
+                    "request": {
+                        "cabinet": "cabinet_a",
+                        "control_id": "button",
+                        "command": "set_state",
+                    },
+                }
+            ),
+            _scenario(
+                {
+                    "type": "operate",
+                    "request": {
+                        "cabinet": "cabinet_a",
+                        "control_id": "button",
+                        "command": "press",
+                        "target_position": 0.5,
+                    },
+                }
+            ),
         ]
         for scenario in invalid:
             with self.subTest(scenario=scenario):

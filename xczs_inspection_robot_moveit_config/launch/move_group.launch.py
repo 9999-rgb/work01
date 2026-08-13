@@ -53,6 +53,13 @@ def _required_runtime_handler(process, process_label):
     )
 
 
+def _launch_boolean(context, name):
+    value = LaunchConfiguration(name).perform(context).strip().lower()
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"{name} must be true or false, got {value!r}")
+    return value == "true"
+
+
 def _launch_setup(context):
     robot_name = LaunchConfiguration("robot_name").perform(context)
     moveit_config_package = LaunchConfiguration(
@@ -72,10 +79,8 @@ def _launch_setup(context):
     joint_state_topic = LaunchConfiguration("joint_state_topic").perform(
         context
     )
-    use_sim_time = (
-        LaunchConfiguration("use_sim_time").perform(context).lower()
-        == "true"
-    )
+    use_sim_time = _launch_boolean(context, "use_sim_time")
+    rviz_enabled = _launch_boolean(context, "rviz")
     moveit_share = Path(
         get_package_share_directory(moveit_config_package)
     )
@@ -136,7 +141,7 @@ def _launch_setup(context):
             moveit_config.joint_limits,
             {"use_sim_time": use_sim_time},
         ],
-        condition=IfCondition(LaunchConfiguration("rviz")),
+        condition=IfCondition("true" if rviz_enabled else "false"),
     )
 
     return [

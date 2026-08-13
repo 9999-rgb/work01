@@ -12,10 +12,9 @@ import json
 import threading
 import time
 from collections.abc import AsyncIterator
-from typing import Any
-
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.auth.deps import ActiveTokenChecker
 from sse_bridge import ZenohSource
@@ -103,6 +102,11 @@ async def zenoh_sse(request: Request, key: str) -> StreamingResponse:
                 pending_item = None
             return
 
+    # Zenoh subscription declaration is synchronous and bounded by the local
+    # client API.  Do it before returning HTTP 200 so a closed/unavailable
+    # source remains a structured route failure.  BackgroundTask covers peers
+    # that disappear before body iteration; the generator finally is a second
+    # idempotent cleanup path.
     source.add_listener(key, on_data)
 
     async def stream() -> AsyncIterator[bytes]:
@@ -156,4 +160,5 @@ async def zenoh_sse(request: Request, key: str) -> StreamingResponse:
         stream(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        background=BackgroundTask(source.remove_listener, key, on_data),
     )

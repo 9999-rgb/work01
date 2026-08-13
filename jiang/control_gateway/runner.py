@@ -999,12 +999,19 @@ class ControlServer:
                 recording_id,
             )
 
-    def recording_timeline(self, recording_id: str) -> Dict[str, Any]:
+    def recording_timeline(
+        self,
+        recording_id: str,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
         """Return the bounded task-event timeline for one recording."""
         with self._request_scope():
             return self._call_recording_manager(
                 self._recording_manager.timeline,
                 recording_id,
+                offset=offset,
+                limit=limit,
             )
 
     def start_recording(
@@ -3654,6 +3661,7 @@ class ControlServer:
                 return self._cancel_managed_task(task_id)
 
     def _bridge_task_events(self) -> None:
+        last_event_id: Optional[str] = None
         while True:
             try:
                 event = self._event_bridge_subscription.get(timeout=0.5)
@@ -3661,6 +3669,44 @@ class ControlServer:
                 continue
             except EventHubClosed:
                 return
+            if event.get("event") == "stream_overflow":
+                data = event.get("data")
+                reason = (
+                    data.get("reason")
+                    if isinstance(data, Mapping)
+                    else "unknown"
+                )
+                if reason == "replay_history_gap":
+                    try:
+                        self._node.get_logger().warning(
+                            "Task event bridge replay history was truncated; "
+                            "past events cannot be mirrored and the bridge "
+                            "will continue with new events."
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+                    oldest = data.get("oldest_available_sequence")
+                    resume_after = (
+                        str(int(oldest) - 1)
+                        if isinstance(oldest, int) and oldest > 0
+                        else None
+                    )
+                else:
+                    resume_after = last_event_id
+                try:
+                    self._event_bridge_subscription = (
+                        self._task_manager.events.subscribe(
+                            last_event_id=resume_after,
+                        )
+                    )
+                except EventHubClosed:
+                    return
+                # Synthetic transport notices are never persisted as task
+                # domain events or republished onto ROS 2.
+                continue
+            event_id = event.get("id")
+            if isinstance(event_id, str) and event_id.isdigit():
+                last_event_id = event_id
             recording_manager = getattr(self, "_recording_manager", None)
             if recording_manager is not None:
                 try:

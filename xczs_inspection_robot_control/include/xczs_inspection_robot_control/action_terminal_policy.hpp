@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <utility>
+
 namespace xczs_inspection_robot_control
 {
 
@@ -52,6 +54,34 @@ constexpr GoalTerminalDisposition goal_terminal_disposition(
   }
   return cancel_requested ?
          GoalTerminalDisposition::CANCEL : GoalTerminalDisposition::ABORT;
+}
+
+/**
+ * Apply exactly one terminal transition selected by the outcome policy.
+ *
+ * Keeping this dispatch in one place is important for retry paths: all three
+ * action terminal states must remain reachable if the first transition throws
+ * while the goal is still active.  The return value mirrors action success.
+ */
+template<typename SucceedCallable, typename CancelCallable, typename AbortCallable>
+bool apply_goal_terminal_disposition(
+  GoalTerminalDisposition disposition,
+  SucceedCallable && succeed,
+  CancelCallable && cancel,
+  AbortCallable && abort)
+{
+  switch (disposition) {
+    case GoalTerminalDisposition::SUCCEED:
+      std::forward<SucceedCallable>(succeed)();
+      return true;
+    case GoalTerminalDisposition::CANCEL:
+      std::forward<CancelCallable>(cancel)();
+      return false;
+    case GoalTerminalDisposition::ABORT:
+      std::forward<AbortCallable>(abort)();
+      return false;
+  }
+  return false;
 }
 
 }  // namespace xczs_inspection_robot_control

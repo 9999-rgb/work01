@@ -30,6 +30,37 @@ TEST(ActionTerminalPolicy, CancelWinsOnlyBeforeSuccessIsCommitted)
     goal_terminal_disposition(false, false));
 }
 
+TEST(ActionTerminalPolicy, AppliesEveryTerminalDispositionExactlyOnce)
+{
+  int succeed_count = 0;
+  int cancel_count = 0;
+  int abort_count = 0;
+  const auto succeed = [&]() {++succeed_count;};
+  const auto cancel = [&]() {++cancel_count;};
+  const auto abort = [&]() {++abort_count;};
+
+  EXPECT_TRUE(
+    apply_goal_terminal_disposition(
+      GoalTerminalDisposition::SUCCEED, succeed, cancel, abort));
+  EXPECT_EQ(succeed_count, 1);
+  EXPECT_EQ(cancel_count, 0);
+  EXPECT_EQ(abort_count, 0);
+
+  EXPECT_FALSE(
+    apply_goal_terminal_disposition(
+      GoalTerminalDisposition::CANCEL, succeed, cancel, abort));
+  EXPECT_EQ(succeed_count, 1);
+  EXPECT_EQ(cancel_count, 1);
+  EXPECT_EQ(abort_count, 0);
+
+  EXPECT_FALSE(
+    apply_goal_terminal_disposition(
+      GoalTerminalDisposition::ABORT, succeed, cancel, abort));
+  EXPECT_EQ(succeed_count, 1);
+  EXPECT_EQ(cancel_count, 1);
+  EXPECT_EQ(abort_count, 1);
+}
+
 TEST(ActionTerminalPolicy, CancelIsAcceptedBeforePhysicalCommit)
 {
   EXPECT_EQ(

@@ -1884,7 +1884,7 @@ private:
               [this, &goal_handle](double preset) {
                 return std::abs(
                   preset - goal_handle->get_goal()->target_position) <=
-                  target_tolerance_;
+                target_tolerance_;
               });
             if (!command_valid) {
               command_reason = "target_position is out of range or does " \
@@ -3264,28 +3264,26 @@ private:
     const std::shared_ptr<OperateCabinetControl::Result> & result,
     bool request_success) noexcept
   {
+    const auto finalize = [&]() {
+        return apply_goal_terminal_disposition(
+          goal_terminal_disposition(
+            request_success, is_operate_goal_canceling(goal_handle)),
+          [&]() {goal_handle->succeed(result);},
+          [&]() {
+            result->success = false;
+            result->error_code = OperateCabinetControl::Result::CANCELED;
+            result->message = "Cabinet operation was canceled.";
+            goal_handle->canceled(result);
+          },
+          [&]() {goal_handle->abort(result);});
+      };
     try {
       if (!goal_handle || !goal_handle->is_active()) {
         RCLCPP_WARN(
           get_logger(), "Cabinet operation goal was already terminal.");
         return false;
       }
-      switch (goal_terminal_disposition(
-          request_success, is_operate_goal_canceling(goal_handle)))
-      {
-        case GoalTerminalDisposition::SUCCEED:
-          goal_handle->succeed(result);
-          return true;
-        case GoalTerminalDisposition::CANCEL:
-          result->success = false;
-          result->error_code = OperateCabinetControl::Result::CANCELED;
-          result->message = "Cabinet operation was canceled.";
-          goal_handle->canceled(result);
-          return false;
-        case GoalTerminalDisposition::ABORT:
-          goal_handle->abort(result);
-          return false;
-      }
+      return finalize();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
         get_logger(), "Failed to finalize cabinet operation: %s",
@@ -3298,26 +3296,15 @@ private:
     // A cancel request can race the first terminal-state transition.
     try {
       if (goal_handle && goal_handle->is_active()) {
-        const auto disposition = goal_terminal_disposition(
-          request_success, is_operate_goal_canceling(goal_handle));
-        if (disposition == GoalTerminalDisposition::SUCCEED) {
-          goal_handle->succeed(result);
-          return true;
-        }
-        if (disposition == GoalTerminalDisposition::CANCEL) {
-          result->success = false;
-          result->error_code = OperateCabinetControl::Result::CANCELED;
-          result->message = "Cabinet operation was canceled.";
-          goal_handle->canceled(result);
-        }
+        return finalize();
       }
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
-        get_logger(), "Failed to finalize the canceled cabinet operation: %s",
+        get_logger(), "Failed to retry the cabinet operation terminal state: %s",
         error.what());
     } catch (...) {
       RCLCPP_ERROR(
-        get_logger(), "Failed to finalize the canceled cabinet operation.");
+        get_logger(), "Failed to retry the cabinet operation terminal state.");
     }
     return false;
   }
@@ -5482,28 +5469,26 @@ private:
     const std::shared_ptr<PressCabinetButton::Result> & result,
     bool request_success) noexcept
   {
+    const auto finalize = [&]() {
+        return apply_goal_terminal_disposition(
+          goal_terminal_disposition(
+            request_success, is_goal_canceling_noexcept(goal_handle)),
+          [&]() {goal_handle->succeed(result);},
+          [&]() {
+            result->success = false;
+            result->error_code = PressCabinetButton::Result::CANCELED;
+            result->message = "Cabinet button operation was canceled.";
+            goal_handle->canceled(result);
+          },
+          [&]() {goal_handle->abort(result);});
+      };
     try {
       if (!goal_handle || !goal_handle->is_active()) {
         RCLCPP_WARN(
           get_logger(), "Action goal was already in a terminal state.");
         return false;
       }
-      switch (goal_terminal_disposition(
-          request_success, is_goal_canceling_noexcept(goal_handle)))
-      {
-        case GoalTerminalDisposition::SUCCEED:
-          goal_handle->succeed(result);
-          return true;
-        case GoalTerminalDisposition::CANCEL:
-          result->success = false;
-          result->error_code = PressCabinetButton::Result::CANCELED;
-          result->message = "Cabinet button operation was canceled.";
-          goal_handle->canceled(result);
-          return false;
-        case GoalTerminalDisposition::ABORT:
-          goal_handle->abort(result);
-          return false;
-      }
+      return finalize();
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
         get_logger(), "Failed to set the action terminal state: %s",
@@ -5516,26 +5501,15 @@ private:
     // A cancel request may race the first terminal-state transition.
     try {
       if (goal_handle && goal_handle->is_active()) {
-        const auto disposition = goal_terminal_disposition(
-          request_success, is_goal_canceling_noexcept(goal_handle));
-        if (disposition == GoalTerminalDisposition::SUCCEED) {
-          goal_handle->succeed(result);
-          return true;
-        }
-        if (disposition == GoalTerminalDisposition::CANCEL) {
-          result->success = false;
-          result->error_code = PressCabinetButton::Result::CANCELED;
-          result->message = "Cabinet button operation was canceled.";
-          goal_handle->canceled(result);
-        }
+        return finalize();
       }
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
-        get_logger(), "Failed to finalize the canceled action: %s",
+        get_logger(), "Failed to retry the action terminal state: %s",
         error.what());
     } catch (...) {
       RCLCPP_ERROR(
-        get_logger(), "Failed to finalize the canceled action.");
+        get_logger(), "Failed to retry the action terminal state.");
     }
     return false;
   }

@@ -6,6 +6,8 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import IncludeLaunchDescription
+from launch.actions import OpaqueFunction
+from launch.actions import SetLaunchConfiguration
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
@@ -13,6 +15,24 @@ from launch_ros.actions import Node
 
 
 NAV2_CONFIG_PACKAGE = "xczs_inspection_robot_nav2"
+_BOOLEAN_LAUNCH_ARGUMENTS = ("autostart", "rviz", "use_sim_time")
+
+
+def _launch_boolean(context, name):
+    value = LaunchConfiguration(name).perform(context).strip().lower()
+    if value not in {"true", "false"}:
+        raise RuntimeError(f"{name} must be true or false, got {value!r}")
+    return value == "true"
+
+
+def _validate_launch_arguments(context):
+    return [
+        SetLaunchConfiguration(
+            name,
+            "true" if _launch_boolean(context, name) else "false",
+        )
+        for name in _BOOLEAN_LAUNCH_ARGUMENTS
+    ]
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -91,6 +111,7 @@ def generate_launch_description() -> LaunchDescription:
             autostart_argument,
             rviz_argument,
             use_sim_time_argument,
+            OpaqueFunction(function=_validate_launch_arguments),
             nav2_bringup,
             nav2_rviz,
         ]

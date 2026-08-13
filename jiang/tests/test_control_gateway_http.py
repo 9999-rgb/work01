@@ -76,6 +76,7 @@ class _FakeControlServer:
         self.data_playback_rate: Optional[float] = None
         self.task_replay_start_request: Optional[str] = None
         self.replay_cancel_count = 0
+        self.timeline_request: Optional[Tuple[str, int, int]] = None
         self.recording_items = {
             "recording_20260809_120000": {
                 "recording_id": "recording_20260809_120000",
@@ -94,7 +95,13 @@ class _FakeControlServer:
         except KeyError as error:
             raise ControlRequestError("Unknown recording.", 404) from error
 
-    def recording_timeline(self, recording_id: str) -> Dict[str, Any]:
+    def recording_timeline(
+        self,
+        recording_id: str,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        self.timeline_request = (recording_id, offset, limit)
         self.recording_detail(recording_id)
         return {
             "recording_id": recording_id,
@@ -710,11 +717,30 @@ class ControlGatewayHttpTest(unittest.TestCase):
         self.assertEqual("five-newton-press", detail["name"])
 
         status, timeline, _ = self.request(
-            f"/recordings/{recording_id}/timeline"
+            f"/recordings/{recording_id}/timeline?offset=7&limit=23"
         )
         self.assertEqual(200, status)
         self.assertEqual(recording_id, timeline["recording_id"])
         self.assertEqual("task_result", timeline["events"][0]["event"])
+        self.assertEqual(
+            self.control_server.timeline_request,
+            (recording_id, 7, 23),
+        )
+
+        for query in (
+            "offset=-1",
+            "limit=0",
+            "limit=5001",
+            "offset=1&offset=2",
+            "unknown=1",
+            "offset=%C2%B2",
+            "offset=" + ("9" * 5000),
+        ):
+            with self.subTest(query=query):
+                invalid_status, _, _ = self.request(
+                    f"/recordings/{recording_id}/timeline?{query}"
+                )
+                self.assertEqual(invalid_status, 400)
 
         status, replay, _ = self.request("/replay/status")
         self.assertEqual(200, status)

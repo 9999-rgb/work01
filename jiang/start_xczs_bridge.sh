@@ -46,7 +46,7 @@ BRIDGE_TCP_PORT="${BRIDGE_TCP_PORT:-7447}"
 ZENOH_LAN_ENABLED="${XCZS_ZENOH_LAN_ENABLED:-false}"
 CONTROL_PORT="${CONTROL_PORT:-8090}"
 CONTROL_HOST="${CONTROL_HOST:-0.0.0.0}"
-CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-http://localhost:$CONTROL_PORT,http://127.0.0.1:$CONTROL_PORT}"
+CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-}"
 ROS2_SETUP="/opt/ros/humble/setup.bash"
 WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 PYTHON_BIN="/usr/bin/python3"
@@ -81,21 +81,16 @@ SPAWN_Z="${SPAWN_Z:-0.515}"
 CABINET_POSE_SOURCE="${CABINET_POSE_SOURCE:-static}"
 PREFLIGHT_ONLY="${XCZS_PREFLIGHT_ONLY:-false}"
 
-IFS=',' read -r -a CONTROL_ORIGINS <<< "$CONTROL_ALLOWED_ORIGINS"
+CONTROL_ORIGINS=()
+NORMALIZED_CONTROL_ORIGINS=()
 CONTROL_ORIGIN_ARGS=()
-for origin in "${CONTROL_ORIGINS[@]}"; do
-    origin="${origin#"${origin%%[![:space:]]*}"}"
-    origin="${origin%"${origin##*[![:space:]]}"}"
-    if [ -n "$origin" ]; then
-        CONTROL_ORIGIN_ARGS+=(--allowed-origin "$origin")
-    fi
-done
 
 # ── 选项 ──────────────────────────────────────────────────────────
 GAZEBO_GUI="true"
 WITH_PROXY="false"
 CONTROL_MODE="web"
 NAV2_ENABLED="false"
+ZENOH_REQUIRED="false"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -110,21 +105,39 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ "$CONTROL_MODE" = "web" ] && [ "${#CONTROL_ORIGIN_ARGS[@]}" -eq 0 ]; then
-    echo "ERROR: XCZS_CONTROL_ORIGINS 至少需要一个 Web Origin。"
-    exit 1
+if [ "$CONTROL_MODE" = "web" ] || [ "$WITH_PROXY" = "true" ]; then
+    ZENOH_REQUIRED="true"
 fi
 
 # ── 解析最终运行模式 ──────────────────────────────────────────────
 if [ "$GAZEBO_ENABLED" = "false" ]; then
     GAZEBO_GUI="false"
 fi
+DISPLAY_AVAILABLE="true"
+DISPLAY_ERROR=""
+DISPLAY_STATUS="未验证（系统缺少 xdpyinfo 或 timeout）"
 if [ -z "${DISPLAY:-}" ]; then
-    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，已禁用 Gazebo 图形界面；基于渲染的 RGB 相机也不会发布图像"
+    DISPLAY_AVAILABLE="false"
+    DISPLAY_ERROR="DISPLAY 未设置"
+    DISPLAY_STATUS="不可用（$DISPLAY_ERROR）"
+elif command -v xdpyinfo >/dev/null 2>&1 &&
+    command -v timeout >/dev/null 2>&1; then
+    if timeout --kill-after=1 3 xdpyinfo -display "$DISPLAY" \
+        >/dev/null 2>&1; then
+        DISPLAY_STATUS="已验证可连接（DISPLAY=$DISPLAY）"
+    else
+        DISPLAY_AVAILABLE="false"
+        DISPLAY_ERROR="无法连接 DISPLAY=$DISPLAY"
+        DISPLAY_STATUS="不可用（$DISPLAY_ERROR）"
+    fi
+fi
+if [ "$DISPLAY_AVAILABLE" = "false" ]; then
+    echo "⚠ 未检测到可用显示器 ($DISPLAY_ERROR)，已禁用 Gazebo 图形界面；基于渲染的 RGB 相机也不会发布图像"
     GAZEBO_GUI="false"
 fi
-if [ "$CONTROL_MODE" = "keyboard" ] && [ -z "${DISPLAY:-}" ]; then
-    echo "ERROR: 键盘调试控制需要 DISPLAY 和终端界面。"
+if [ "$CONTROL_MODE" = "keyboard" ] &&
+    [ "$DISPLAY_AVAILABLE" = "false" ]; then
+    echo "ERROR: 键盘调试控制需要可连接的 DISPLAY 和终端界面。"
     exit 1
 fi
 # Web 是统一操作界面，任务导航需要 Nav2；外接完整机器人栈模式由外部
@@ -205,6 +218,15 @@ supervisor_pid="$1"
 supervisor_identity="$2"
 guard_timeout="$3"
 shift 3
+
+# Never start the target unless setsid actually gave this guardian a private
+# process group.  Otherwise a later group signal could touch the parent
+# terminal session, while killing only the guardian would orphan the target.
+own_group="$(ps -o pgid= -p "$$" 2>/dev/null | tr -d "[:space:]")"
+if [ "$own_group" != "$$" ]; then
+    echo "xczs guardian did not enter an independent process group" >&2
+    exit 125
+fi
 
 "$@" &
 target_pid=$!
@@ -446,7 +468,7 @@ if [ ! -x "$PYTHON_BIN" ]; then
     echo "ERROR: System Python not found at $PYTHON_BIN"
     exit 1
 fi
-if [ ! -x "$ZENOH_BRIDGE" ]; then
+if [ "$ZENOH_REQUIRED" = "true" ] && [ ! -x "$ZENOH_BRIDGE" ]; then
     echo "ERROR: zenoh-bridge-ros2dds 不存在或不可执行: $ZENOH_BRIDGE"
     exit 1
 fi
@@ -538,8 +560,10 @@ PY
     fi
 }
 
-_require_integer_range "$BRIDGE_TCP_PORT" 1 65535 BRIDGE_TCP_PORT
-_require_integer_range "$BRIDGE_REST_PORT" 1 65535 BRIDGE_REST_PORT
+if [ "$ZENOH_REQUIRED" = "true" ]; then
+    _require_integer_range "$BRIDGE_TCP_PORT" 1 65535 BRIDGE_TCP_PORT
+    _require_integer_range "$BRIDGE_REST_PORT" 1 65535 BRIDGE_REST_PORT
+fi
 _require_integer_range \
     "$STARTUP_TIMEOUT_SEC" 1 60 STARTUP_TIMEOUT_SEC XCZS_STARTUP_TIMEOUT_SEC
 _require_integer_range \
@@ -551,14 +575,34 @@ _require_integer_range \
 _require_integer_range \
     "$MANAGED_GUARD_TIMEOUT_SEC" 1 30 \
     MANAGED_GUARD_TIMEOUT_SEC XCZS_MANAGED_GUARD_TIMEOUT_SEC
-if [ "$BRIDGE_TCP_PORT" = "$BRIDGE_REST_PORT" ]; then
+if [ "$ZENOH_REQUIRED" = "true" ] &&
+    [ "$BRIDGE_TCP_PORT" = "$BRIDGE_REST_PORT" ]; then
     echo "ERROR: BRIDGE_TCP_PORT 与 BRIDGE_REST_PORT 不能相同。"
     exit 1
 fi
 if [ "$CONTROL_MODE" = "web" ]; then
     _require_integer_range "$CONTROL_PORT" 1 65535 CONTROL_PORT
-    if [ "$CONTROL_PORT" = "$BRIDGE_TCP_PORT" ] ||
-        [ "$CONTROL_PORT" = "$BRIDGE_REST_PORT" ]; then
+    if [ -z "$CONTROL_ALLOWED_ORIGINS" ]; then
+        CONTROL_ALLOWED_ORIGINS="http://localhost:$CONTROL_PORT,http://127.0.0.1:$CONTROL_PORT"
+    fi
+    IFS=',' read -r -a CONTROL_ORIGINS <<< "$CONTROL_ALLOWED_ORIGINS"
+    for origin in "${CONTROL_ORIGINS[@]}"; do
+        origin="${origin#"${origin%%[![:space:]]*}"}"
+        origin="${origin%"${origin##*[![:space:]]}"}"
+        if [ -n "$origin" ]; then
+            NORMALIZED_CONTROL_ORIGINS+=("$origin")
+            CONTROL_ORIGIN_ARGS+=(--allowed-origin "$origin")
+        fi
+    done
+    if [ "${#CONTROL_ORIGIN_ARGS[@]}" -eq 0 ]; then
+        echo "ERROR: XCZS_CONTROL_ORIGINS 至少需要一个 Web Origin。"
+        exit 1
+    fi
+    CONTROL_ORIGINS=("${NORMALIZED_CONTROL_ORIGINS[@]}")
+    CONTROL_ALLOWED_ORIGINS="$(IFS=,; echo "${CONTROL_ORIGINS[*]}")"
+    if [ "$ZENOH_REQUIRED" = "true" ] &&
+        { [ "$CONTROL_PORT" = "$BRIDGE_TCP_PORT" ] ||
+          [ "$CONTROL_PORT" = "$BRIDGE_REST_PORT" ]; }; then
         echo "ERROR: CONTROL_PORT 不能与 Zenoh 端口相同。"
         exit 1
     fi
@@ -578,13 +622,18 @@ for boolean_value in \
     "$MOVEIT_ENABLED" \
     "$CABINET_BRINGUP" \
     "$SPAWN_CABINET" \
-    "$ZENOH_LAN_ENABLED" \
     "$PREFLIGHT_ONLY"; do
     if [ "$boolean_value" != "true" ] && [ "$boolean_value" != "false" ]; then
-        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET、XCZS_ZENOH_LAN_ENABLED 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
+        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
         exit 1
     fi
 done
+if [ "$ZENOH_REQUIRED" = "true" ] &&
+    [ "$ZENOH_LAN_ENABLED" != "true" ] &&
+    [ "$ZENOH_LAN_ENABLED" != "false" ]; then
+    echo "ERROR: XCZS_ZENOH_LAN_ENABLED 必须为 true 或 false。"
+    exit 1
+fi
 if [ "$ZENOH_LAN_ENABLED" = "true" ]; then
     ZENOH_BIND_HOST="0.0.0.0"
     ZENOH_SCOUTING_ARGS=()
@@ -593,6 +642,9 @@ else
     ZENOH_BIND_HOST="127.0.0.1"
     ZENOH_SCOUTING_ARGS=(--no-multicast-scouting)
     ZENOH_NETWORK_LABEL="本机隔离（multicast scouting 已禁用）"
+fi
+if [ "$ZENOH_REQUIRED" = "false" ]; then
+    ZENOH_NETWORK_LABEL="未启用（键盘模式无需 Zenoh）"
 fi
 CABINET_ACTION_REQUIRED="false"
 if [ "$CABINET_BRINGUP" = "true" ] && [ "$MOVEIT_ENABLED" = "true" ]; then
@@ -608,9 +660,17 @@ if [ "$SPAWN_CABINET" = "true" ] && [ "$CABINET_BRINGUP" = "false" ]; then
     echo "ERROR: SPAWN_CABINET=true 需要 CABINET_BRINGUP=true。"
     exit 1
 fi
-if ! "$PYTHON_BIN" -c \
-    "import math,sys; value=float(sys.argv[1]); assert math.isfinite(value)" \
-    "$SPAWN_Z" 2>/dev/null; then
+if ! "$PYTHON_BIN" -c '
+import math
+import sys
+
+try:
+    value = float(sys.argv[1])
+except ValueError:
+    raise SystemExit(1)
+if not math.isfinite(value):
+    raise SystemExit(1)
+' "$SPAWN_Z" 2>/dev/null; then
     echo "ERROR: SPAWN_Z 必须是有限数字。"
     exit 1
 fi
@@ -645,6 +705,7 @@ if [ "$CABINET_BRINGUP" = "true" ]; then
         _require_file "$ROBOT_XACRO_PATH"
         _require_file "$MOVEIT_SRDF_PATH"
         _require_file "$MOVEIT_KINEMATICS_PATH"
+        _require_file "$MOVEIT_JOINT_LIMITS_PATH"
     fi
 fi
 if [ "$SPAWN_CABINET" = "true" ]; then
@@ -753,8 +814,9 @@ if [ "$GAZEBO_ENABLED" = "false" ]; then
 fi
 if [ "$GAZEBO_ENABLED" = "true" ] &&
     [ "$GAZEBO_MASTER_IS_LOCAL" = "true" ]; then
-    if [ "$GAZEBO_MASTER_PORT" = "$BRIDGE_TCP_PORT" ] ||
-        [ "$GAZEBO_MASTER_PORT" = "$BRIDGE_REST_PORT" ] ||
+    if { [ "$ZENOH_REQUIRED" = "true" ] &&
+         { [ "$GAZEBO_MASTER_PORT" = "$BRIDGE_TCP_PORT" ] ||
+           [ "$GAZEBO_MASTER_PORT" = "$BRIDGE_REST_PORT" ]; }; } ||
         { [ "$CONTROL_MODE" = "web" ] &&
           [ "$GAZEBO_MASTER_PORT" = "$CONTROL_PORT" ]; }; then
         echo "ERROR: GAZEBO_MASTER_URI 端口不能与 Zenoh 或 Web 端口相同。" >&2
@@ -886,8 +948,10 @@ fi
 
 # 预检与正式启动采用同一端口检查。端口被外部服务占用时只报错，
 # 不复用、不终止不属于本次启动的进程。
-_require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_TCP_PORT" "Zenoh TCP"
-_require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_REST_PORT" "Zenoh REST"
+if [ "$ZENOH_REQUIRED" = "true" ]; then
+    _require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_TCP_PORT" "Zenoh TCP"
+    _require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_REST_PORT" "Zenoh REST"
+fi
 if [ "$CONTROL_MODE" = "web" ]; then
     _require_port_available "$CONTROL_HOST" "$CONTROL_PORT" "Web 控制服务"
 fi
@@ -909,10 +973,21 @@ case "$CONTROL_MODE" in
 esac
 echo "  模式:       $MODE_LABEL"
 echo "  Gazebo GUI: $GAZEBO_GUI"
-echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
+echo "  X Display:  $DISPLAY_STATUS"
+if [ "$WITH_PROXY" = "true" ]; then
+    ZENOH_PROXY_LABEL="启用"
+elif [ "$ZENOH_REQUIRED" = "true" ]; then
+    ZENOH_PROXY_LABEL="禁用（桥自带 JSON）"
+else
+    ZENOH_PROXY_LABEL="完全跳过（键盘模式无需 Zenoh）"
+fi
+echo "  Zenoh 代理: $ZENOH_PROXY_LABEL"
 echo "  ROS 2 域:   $ROS_DOMAIN_ID"
 echo "  DDS 本机:   ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY；$CYCLONEDDS_WORKAROUND"
 echo "  Zenoh 网络: $ZENOH_NETWORK_LABEL"
+if [ "$CONTROL_MODE" = "web" ]; then
+    echo "  Web Origins: $CONTROL_ALLOWED_ORIGINS"
+fi
 echo "  Gazebo URI: $GAZEBO_MASTER_URI"
 echo "  Gazebo 检查: $GAZEBO_PREFLIGHT_LABEL"
 if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "false" ]; then
@@ -1148,7 +1223,11 @@ _start_bridge() {
 echo "[1/6] Zenoh Bridge..."
 
 # 端口冲突已在预检阶段 fail-fast，不复用或终止全机上的其他 Zenoh 桥。
-_start_bridge
+if [ "$ZENOH_REQUIRED" = "true" ]; then
+    _start_bridge
+else
+    echo "       跳过（键盘模式未启用 CDR→JSON 代理）"
+fi
 
 # ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
 if [ "$WITH_PROXY" = "true" ]; then
@@ -1161,7 +1240,11 @@ if [ "$WITH_PROXY" = "true" ]; then
     _wait_for_stable_processes 5
     echo "       代理已启动 (PID $PROXY_PID)"
 else
-    echo "[2/6] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
+    if [ "$ZENOH_REQUIRED" = "true" ]; then
+        echo "[2/6] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
+    else
+        echo "[2/6] 跳过 Zenoh 代理（键盘模式无需 Zenoh）"
+    fi
     PROXY_PID=""
 fi
 
@@ -1185,7 +1268,8 @@ if [ "$CONTROL_MODE" = "web" ]; then
         --zenoh "tcp/127.0.0.1:$BRIDGE_TCP_PORT" \
         "${CONTROL_ORIGIN_ARGS[@]}"
     case "$CONTROL_HOST" in
-        0.0.0.0|::|'[::]') _READY_HOST="127.0.0.1" ;;
+        0.0.0.0) _READY_HOST="127.0.0.1" ;;
+        ::) _READY_HOST="::1" ;;
         *) _READY_HOST="$CONTROL_HOST" ;;
     esac
     case "$_READY_HOST" in
@@ -1195,9 +1279,19 @@ if [ "$CONTROL_MODE" = "web" ]; then
     _wait_for_http "http://${_READY_URL_HOST}:$CONTROL_PORT/health" "Web 控制服务"
     # 只有监听 wildcard 时才展示局域网 IP；绑定具体地址时原样展示。
     case "$CONTROL_HOST" in
-        0.0.0.0|::|'[::]')
-            _LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+        0.0.0.0)
+            _LAN_IP="$(hostname -I 2>/dev/null | awk '
+                { for (index = 1; index <= NF; index++)
+                    if ($index !~ /:/) { print $index; exit } }
+            ')"
             _SHOW_HOST="${_LAN_IP:-127.0.0.1}"
+            ;;
+        ::)
+            _LAN_IP="$(hostname -I 2>/dev/null | awk '
+                { for (index = 1; index <= NF; index++)
+                    if ($index ~ /:/) { print $index; exit } }
+            ')"
+            _SHOW_HOST="${_LAN_IP:-::1}"
             ;;
         *) _SHOW_HOST="$CONTROL_HOST" ;;
     esac

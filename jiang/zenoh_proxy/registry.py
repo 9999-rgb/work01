@@ -71,16 +71,34 @@ class TopicRegistration:
           ``/robot/*/pose``  matches ``/robot/arm_1/pose`` but NOT ``/robot/a/b/pose``
           ``/robot/**/pose`` matches both.
         """
-        parts = pattern.split("/")
-        regex_parts: List[str] = []
-        for part in parts:
+        parts: List[str] = []
+        for part in pattern.split("/"):
+            # Adjacent globstars have the same semantics as one globstar and
+            # are collapsed to keep separator handling deterministic.
+            if part == "**" and parts and parts[-1] == "**":
+                continue
+            parts.append(part)
+
+        expression = ""
+        for index, part in enumerate(parts):
             if part == "**":
-                regex_parts.append(r"(?:.*?)")   # non-greedy multi-segment
-            elif part == "*":
-                regex_parts.append(r"[^/]+")      # single segment
-            else:
-                regex_parts.append(re.escape(part))
-        return re.compile("^" + "/".join(regex_parts) + "$")
+                if len(parts) == 1:
+                    expression += r"(?:[^/]+(?:/[^/]+)*)?"
+                elif index == 0:
+                    # Consume complete leading segments, including their
+                    # separator, so the following segment also works when
+                    # the globstar matches zero segments.
+                    expression += r"(?:[^/]+/)*"
+                else:
+                    expression += r"(?:/[^/]+)*"
+                continue
+
+            if index > 0 and not (
+                parts[index - 1] == "**" and index - 1 == 0
+            ):
+                expression += "/"
+            expression += r"[^/]+" if part == "*" else re.escape(part)
+        return re.compile("^" + expression + "$")
 
     # ------------------------------------------------------------------
     # Specificity score — higher = more specific (used for sorting)

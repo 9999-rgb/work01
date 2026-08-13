@@ -514,6 +514,12 @@ class CabinetClient(Node):
         pressed_topic = str(control.get("resolved_pressed_topic", ""))
         try:
             if state_topic:
+                # CabinetControlState is the authoritative aggregate and
+                # already carries position, velocity, effort and activation.
+                # Subscribing to the legacy joint/pressed mirrors as well
+                # triples both DDS entities and Python callbacks for every
+                # control (hundreds of subscriptions for a multi-cabinet
+                # scene), which can starve unrelated sensor callbacks.
                 subscriptions["state"] = self.create_subscription(
                     CabinetControlState,
                     state_topic,
@@ -525,32 +531,35 @@ class CabinetClient(Node):
                     ),
                     self._transient_qos,
                 )
-            if joint_topic and control.get("joint_name"):
-                joint_name = str(control["joint_name"])
-                subscriptions["joint"] = self.create_subscription(
-                    JointState,
-                    joint_topic,
-                    lambda message: self._joint_callback(
-                        control_id,
-                        joint_name,
+            else:
+                # Legacy catalogs may expose only the split topics.  Keep
+                # those fallbacks when no aggregate state topic is available.
+                if joint_topic and control.get("joint_name"):
+                    joint_name = str(control["joint_name"])
+                    subscriptions["joint"] = self.create_subscription(
+                        JointState,
                         joint_topic,
-                        generation,
-                        message,
-                    ),
-                    qos_profile_sensor_data,
-                )
-            if pressed_topic:
-                subscriptions["pressed"] = self.create_subscription(
-                    Bool,
-                    pressed_topic,
-                    lambda message: self._pressed_callback(
-                        control_id,
+                        lambda message: self._joint_callback(
+                            control_id,
+                            joint_name,
+                            joint_topic,
+                            generation,
+                            message,
+                        ),
+                        qos_profile_sensor_data,
+                    )
+                if pressed_topic:
+                    subscriptions["pressed"] = self.create_subscription(
+                        Bool,
                         pressed_topic,
-                        generation,
-                        message,
-                    ),
-                    self._transient_qos,
-                )
+                        lambda message: self._pressed_callback(
+                            control_id,
+                            pressed_topic,
+                            generation,
+                            message,
+                        ),
+                        self._transient_qos,
+                    )
         except Exception:  # noqa: BLE001
             self._destroy_subscription_map({"partial": subscriptions})
             raise

@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <unordered_set>
 #include <vector>
@@ -64,6 +66,36 @@ inline bool groups_are_disjoint(
     [&first_names](const std::string & name) {
       return first_names.count(name) != 0U;
     });
+}
+
+inline bool trajectory_numeric_field_is_valid(
+  const std::vector<double> & values,
+  std::size_t joint_count,
+  bool required)
+{
+  if (values.empty()) {
+    return !required;
+  }
+  return values.size() == joint_count &&
+         std::all_of(
+    values.begin(), values.end(),
+    [](double value) {return std::isfinite(value);});
+}
+
+inline bool trajectory_duration_is_valid(
+  std::int32_t seconds, std::uint32_t nanoseconds) noexcept
+{
+  return seconds >= 0 && nanoseconds < 1000000000U;
+}
+
+inline bool trajectory_duration_is_strictly_after(
+  std::int32_t seconds,
+  std::uint32_t nanoseconds,
+  std::int32_t previous_seconds,
+  std::uint32_t previous_nanoseconds) noexcept
+{
+  return seconds > previous_seconds ||
+         (seconds == previous_seconds && nanoseconds > previous_nanoseconds);
 }
 
 inline bool embedded_navigation_request_is_supported(

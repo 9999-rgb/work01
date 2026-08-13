@@ -424,6 +424,39 @@ class CabinetClientTest(unittest.TestCase):
             client.snapshot_controls()["controls"][0]["current_position"]
         )
 
+    def test_aggregate_state_avoids_duplicate_legacy_subscriptions(self) -> None:
+        client, _ = self._client("cabinet_a", [])
+        client._catalog_callback(SimpleNamespace(controls=[_control()]))
+
+        dynamic_topics = {
+            item.topic
+            for item in client.subscriptions
+            if item.topic != client.catalog_topic
+        }
+        self.assertEqual(
+            dynamic_topics,
+            {"/xczs/cabinet/cabinet_a/button/state"},
+        )
+
+    def test_split_state_topics_remain_a_legacy_fallback(self) -> None:
+        client, _ = self._client("cabinet_a", [])
+        client._catalog_callback(
+            SimpleNamespace(controls=[_control(state_topic="")])
+        )
+
+        dynamic_topics = {
+            item.topic
+            for item in client.subscriptions
+            if item.topic != client.catalog_topic
+        }
+        self.assertEqual(
+            dynamic_topics,
+            {
+                "/xczs/cabinet/cabinet_a/button/joint_states",
+                "/xczs/cabinet/cabinet_a/button/pressed",
+            },
+        )
+
     def test_force_goal_feedback_and_insufficient_force_result(self) -> None:
         events: List[Dict[str, Any]] = []
         client, action = self._client("cabinet_a", events)

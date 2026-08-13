@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 from launch import LaunchContext, LaunchDescription, LaunchService
 from launch.actions import EmitEvent, ExecuteProcess, LogInfo
 from launch.actions import IncludeLaunchDescription
@@ -143,6 +144,15 @@ def _node_executables(actions):
     ]
 
 
+def _launch_argument_context(module):
+    context = LaunchContext()
+    context.launch_configurations.update(
+        {name: "false" for name in module._BOOLEAN_LAUNCH_ARGUMENTS}
+    )
+    context.launch_configurations["spawn_z"] = "0.515"
+    return context
+
+
 def _assert_nodes_have_earlier_watchdogs(actions, expected_executables):
     guarded_executables = []
     for index, action in enumerate(actions):
@@ -171,6 +181,50 @@ def test_required_process_success_starts_only_configured_downstream_actions():
     )
 
     assert result is downstream
+
+
+def test_every_boolean_launch_argument_is_validated():
+    module = _load_launch_module()
+    for name in module._BOOLEAN_LAUNCH_ARGUMENTS:
+        context = _launch_argument_context(module)
+        context.launch_configurations[name] = "truthy"
+        with pytest.raises(RuntimeError, match=name):
+            module._validate_launch_arguments(context)
+
+
+def test_boolean_launch_arguments_are_normalized_before_use():
+    module = _load_launch_module()
+    context = _launch_argument_context(module)
+    for name in module._BOOLEAN_LAUNCH_ARGUMENTS:
+        context.launch_configurations[name] = " TRUE "
+
+    actions = module._validate_launch_arguments(context)
+    for action in actions:
+        action.execute(context)
+
+    assert all(
+        context.launch_configurations[name] == "true"
+        for name in module._BOOLEAN_LAUNCH_ARGUMENTS
+    )
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "not-a-number"])
+def test_spawn_z_rejects_nonfinite_or_non_numeric_values(value):
+    module = _load_launch_module()
+    context = _launch_argument_context(module)
+    context.launch_configurations["spawn_z"] = value
+
+    with pytest.raises(RuntimeError, match="spawn_z must be a finite number"):
+        module._validate_launch_arguments(context)
+
+
+@pytest.mark.parametrize("value", ["0", "-0.125", "+5.15e-1"])
+def test_spawn_z_accepts_finite_decimal_and_scientific_values(value):
+    module = _load_launch_module()
+    context = _launch_argument_context(module)
+    context.launch_configurations["spawn_z"] = value
+
+    assert module._validate_launch_arguments(context)
 
 
 def test_required_process_failure_logs_and_requests_shutdown():
@@ -246,6 +300,51 @@ def test_required_process_handlers_are_registered_before_nodes(tmp_path):
         and "server_required" in dict(entity.launch_arguments)
     )
     assert dict(gazebo_server.launch_arguments)["server_required"] == "true"
+
+
+def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
+    module = _load_launch_module()
+    with patch.object(
+        module,
+        "get_package_share_directory",
+        return_value=str(tmp_path),
+    ):
+        entities = list(module.generate_launch_description().entities)
+
+    controller_handler = next(
+        entity
+        for entity in entities
+        if isinstance(entity, RegisterEventHandler)
+        and isinstance(entity.event_handler, OnProcessExit)
+        and isinstance(_on_process_exit_target(entity), Node)
+        and _on_process_exit_target(entity).node_executable == "spawner"
+    )
+    downstream = _on_process_exit_callback(controller_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+    includes = [
+        action
+        for action in downstream
+        if isinstance(action, IncludeLaunchDescription)
+    ]
+    assert len(includes) == 2
+
+    external = LaunchContext()
+    external.launch_configurations.update(
+        robot_bringup="false",
+        moveit="true",
+        nav2="true",
+    )
+    assert all(not action.condition.evaluate(external) for action in includes)
+
+    local = LaunchContext()
+    local.launch_configurations.update(
+        robot_bringup="true",
+        moveit="true",
+        nav2="true",
+    )
+    assert all(action.condition.evaluate(local) for action in includes)
 
 
 def test_runtime_exit_requests_shutdown_even_for_clean_exit():

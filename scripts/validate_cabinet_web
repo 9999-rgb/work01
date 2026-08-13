@@ -55,8 +55,13 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "缺少命令: $1"
 }
 
-is_positive_integer() {
-  [[ "$1" =~ ^[1-9][0-9]*$ ]]
+normalize_task_timeout() {
+  local value="$1"
+  local decimal=""
+  [[ "$value" =~ ^[0-9]+$ && "${#value}" -le 10 ]] || return 1
+  decimal=$((10#$value))
+  (( decimal >= 1 && decimal <= 86400 )) || return 1
+  TASK_TIMEOUT="$decimal"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -115,7 +120,8 @@ done
 
 [[ "$CABINET" =~ ^[a-z][a-z0-9_]{0,62}$ ]] ||
   fail "--cabinet 必须以小写字母开头，只能包含小写字母、数字和下划线，且总长度不超过 63"
-is_positive_integer "$TASK_TIMEOUT" || fail "--timeout 必须是正整数"
+normalize_task_timeout "$TASK_TIMEOUT" ||
+  fail "--timeout 必须是 1..86400 的整数"
 require_command curl
 require_command jq
 require_command mktemp
@@ -303,10 +309,12 @@ wait_for_system_ready() {
   local controls_code=""
   while (( SECONDS < deadline )); do
     health_body="$(
-      curl -fsS "${AUTH_CURL_ARGS[@]}" "$API_URL/health" 2>/dev/null || true
+      curl -fsS --connect-timeout 2 --max-time 5 \
+        "${AUTH_CURL_ARGS[@]}" "$API_URL/health" 2>/dev/null || true
     )"
     controls_raw="$(
-      curl -sS "${AUTH_CURL_ARGS[@]}" \
+      curl -sS --connect-timeout 2 --max-time 5 \
+        "${AUTH_CURL_ARGS[@]}" \
         -w $'\n%{http_code}' \
         "$API_URL/cabinets/$CABINET/controls" 2>/dev/null || true
     )"

@@ -53,6 +53,18 @@ class MonitorSecurityContractTest(unittest.TestCase):
             source,
         )
 
+    def test_task_stream_overflow_resets_last_event_id_connection(self) -> None:
+        source = _inline_script()
+        self.assertIn(
+            "addEventListener('stream_overflow'",
+            source,
+        )
+        self.assertIn("staleSource.close()", source)
+        self.assertIn(
+            "refreshAutonomyStatus(autonomyStatusPollGeneration)",
+            source,
+        )
+
 
 @unittest.skipUnless(shutil.which("node"), "Node.js is required for Web tests")
 class MonitorWebContractTest(unittest.TestCase):
@@ -81,6 +93,168 @@ class MonitorWebContractTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(0, result.returncode, msg=result.stderr)
+
+    def test_task_stream_overflow_closes_refreshes_and_reconnects_fresh(self) -> None:
+        connect_events = _source_block(
+            "function connectTaskEvents()",
+            "\n// ─── Control Connection",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            const sources = [];
+            class EventSource {{
+              constructor(url) {{
+                this.url = url;
+                this.listeners = new Map();
+                this.closed = false;
+                sources.push(this);
+              }}
+              addEventListener(name, callback) {{
+                this.listeners.set(name, callback);
+              }}
+              close() {{ this.closed = true; }}
+            }}
+            let taskEventSource = null;
+            let authRequired = false;
+            let authToken = '';
+            let ctrlConnected = true;
+            let autonomyStatusPollGeneration = 7;
+            let refreshes = 0;
+            const ctrlBaseUrl = 'http://localhost:8090';
+            function authenticatedUrl(base, path) {{ return base + path; }}
+            function refreshAutonomyStatus(generation) {{
+              assert.equal(generation, 7);
+              refreshes += 1;
+            }}
+            function applyTaskSnapshot() {{}}
+            function log() {{}}
+            const timers = [];
+            function setTimeout(callback) {{ timers.push(callback); return 1; }}
+            {connect_events}
+
+            connectTaskEvents();
+            assert.equal(sources.length, 1);
+            const stale = sources[0];
+            connectTaskEvents();
+            assert.equal(sources.length, 2);
+            assert.equal(stale.closed, true);
+            // A queued callback from the retired source must not close the
+            // current connection or trigger another refresh.
+            stale.listeners.get('stream_overflow')({{
+              data: JSON.stringify({{reason: 'replay_history_gap'}})
+            }});
+            assert.equal(sources[1].closed, false);
+            assert.equal(refreshes, 0);
+            const current = sources[1];
+            current.listeners.get('stream_overflow')({{
+              data: JSON.stringify({{reason: 'replay_history_gap'}})
+            }});
+            assert.equal(current.closed, true);
+            assert.equal(refreshes, 1);
+            assert.equal(taskEventSource, null);
+            timers.shift()();
+            assert.equal(sources.length, 3);
+            assert.equal(taskEventSource, sources[2]);
+            assert.equal(sources[2].url, 'http://localhost:8090/task/events');
+        """))
+
+    def test_topic_stream_callbacks_and_timers_are_generation_scoped(self) -> None:
+        topic_streams = _source_block(
+            "function isCurrentTopicSource",
+            "\nfunction ensureCard",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            const sources = [];
+            class EventSource {{
+              constructor(url) {{
+                this.url = url;
+                this.listeners = new Map();
+                this.closed = false;
+                sources.push(this);
+              }}
+              addEventListener(name, callback) {{
+                this.listeners.set(name, callback);
+              }}
+              close() {{ this.closed = true; }}
+            }}
+            const timers = [];
+            function setTimeout(callback) {{
+              const timer = {{callback, cleared: false}};
+              timers.push(timer);
+              return timer;
+            }}
+            function clearTimeout(timer) {{ timer.cleared = true; }}
+            let connected = true;
+            let authRequired = false;
+            let authToken = '';
+            const subs = new Map();
+            const data = [];
+            const logs = [];
+            const dataGrid = {{
+              children: [],
+              style: {{}},
+              replaceChildren() {{ this.children = []; }}
+            }};
+            const emptyState = {{style: {{}}}};
+            const btnConnect = {{disabled: true}};
+            const btnDisconnect = {{disabled: false}};
+            const sessionInfo = {{textContent: 'connected'}};
+            const document = {{getElementById() {{ return null; }}}};
+            const $ = id => id === 'restUrl'
+              ? {{value: 'http://localhost:8090'}} : null;
+            function authenticatedUrl(base, path) {{ return base + path; }}
+            function onData(topic, payload) {{ data.push([topic, payload]); }}
+            function log(level, message) {{ logs.push([level, message]); }}
+            function toast() {{}}
+            function renderSubList() {{}}
+            function ensureCard() {{}}
+            function disconnectSensorStreams() {{}}
+            function connectSensorStreams() {{}}
+            function setStatus() {{}}
+            {topic_streams}
+
+            subscribe('xczs/odom');
+            const first = sources[0];
+            first.onerror();
+            const firstTimer = timers[0];
+            unsubscribe('xczs/odom');
+            assert.equal(firstTimer.cleared, true);
+
+            subscribe('xczs/odom');
+            const second = sources[1];
+            const logCount = logs.length;
+            first.onopen();
+            first.listeners.get('PUT')({{data: 'old'}});
+            first.onerror();
+            assert.equal(logs.length, logCount);
+            assert.deepEqual(data, []);
+            assert.equal(timers.length, 1);
+
+            second.onerror();
+            const secondTimer = timers[1];
+            reconnectAuthenticatedStreams();
+            const third = sources[2];
+            assert.equal(second.closed, true);
+            assert.equal(secondTimer.cleared, true);
+            second.listeners.get('PUT')({{data: 'retired'}});
+            assert.deepEqual(data, []);
+
+            third.listeners.get('PUT')({{data: 'current'}});
+            assert.deepEqual(data, [['xczs/odom', 'current']]);
+            third.onerror();
+            const thirdTimer = timers[2];
+            doDisconnect();
+            assert.equal(third.closed, true);
+            assert.equal(thirdTimer.cleared, true);
+
+            // Queued timeout callbacks remain harmless even if the host runs
+            // them after clearTimeout due to an event-loop race.
+            firstTimer.callback();
+            secondTimer.callback();
+            thirdTimer.callback();
+            assert.equal(logs.filter(([level]) => level === 'err').length, 0);
+        """))
 
     def test_all_33_controls_remain_selectable(self) -> None:
         apply_controls = _source_block(

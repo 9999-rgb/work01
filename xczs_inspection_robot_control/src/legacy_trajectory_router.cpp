@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -26,6 +27,56 @@ using JointTrajectory = trajectory_msgs::msg::JointTrajectory;
 using JointTrajectoryPoint = trajectory_msgs::msg::JointTrajectoryPoint;
 using GoalStatus = action_msgs::msg::GoalStatus;
 using GoalStatusArray = action_msgs::msg::GoalStatusArray;
+
+void validate_trajectory_contract(const JointTrajectory & trajectory)
+{
+  if (!has_unique_nonempty_names(trajectory.joint_names)) {
+    throw std::invalid_argument(
+            "joint_names must contain unique, nonempty names");
+  }
+
+  bool has_previous_time = false;
+  std::int32_t previous_seconds = 0;
+  std::uint32_t previous_nanoseconds = 0U;
+  for (const auto & point : trajectory.points) {
+    const auto joint_count = trajectory.joint_names.size();
+    if (!trajectory_numeric_field_is_valid(
+        point.positions, joint_count, true))
+    {
+      throw std::invalid_argument(
+              "every trajectory point must contain one finite position "
+              "per joint");
+    }
+    if (!trajectory_numeric_field_is_valid(
+        point.velocities, joint_count, false) ||
+      !trajectory_numeric_field_is_valid(
+        point.accelerations, joint_count, false) ||
+      !trajectory_numeric_field_is_valid(
+        point.effort, joint_count, false))
+    {
+      throw std::invalid_argument(
+              "optional trajectory fields must be empty or contain one "
+              "finite value per joint");
+    }
+
+    const auto seconds = point.time_from_start.sec;
+    const auto nanoseconds = point.time_from_start.nanosec;
+    if (!trajectory_duration_is_valid(seconds, nanoseconds)) {
+      throw std::invalid_argument(
+              "time_from_start must be a valid nonnegative duration");
+    }
+    if (has_previous_time &&
+      !trajectory_duration_is_strictly_after(
+        seconds, nanoseconds, previous_seconds, previous_nanoseconds))
+    {
+      throw std::invalid_argument(
+              "time_from_start must increase strictly between points");
+    }
+    has_previous_time = true;
+    previous_seconds = seconds;
+    previous_nanoseconds = nanoseconds;
+  }
+}
 
 template<typename ContainerT>
 std::optional<std::vector<std::size_t>> find_joint_indices(
@@ -218,6 +269,7 @@ private:
     }
 
     try {
+      validate_trajectory_contract(input);
       const auto arm_trajectory = extract_trajectory(
         input, arm_joint_names_);
       std::optional<JointTrajectory> gripper_trajectory;

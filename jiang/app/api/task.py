@@ -16,6 +16,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
+from starlette.background import BackgroundTask
 
 from app.api.deps import ControlServerDep
 from app.api.schemas import (
@@ -126,7 +127,15 @@ async def task_events(
     ] = None,
 ) -> Response:
     _validate_last_event_id(last_event_id)
-    subscription = await asyncio.to_thread(server.subscribe_task_events, last_event_id)
+    # Subscribe before emitting HTTP 200 so shutdown/validation failures retain
+    # their ordinary structured 4xx/5xx response contract.  StreamingResponse
+    # invokes the background close even if the peer disconnects before the
+    # body iterator starts; stream_task_events also closes in its own finally.
+    # This factory only takes in-process locks and copies at most the bounded
+    # event ring.  Keeping it synchronous avoids the cancellation gap where a
+    # to_thread call could finish after the route task was gone and leak the
+    # newly returned subscription.
+    subscription = server.subscribe_task_events(last_event_id)
     return StreamingResponse(
         stream_task_events(
             subscription,
@@ -139,6 +148,7 @@ async def task_events(
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
         },
+        background=BackgroundTask(subscription.close),
     )
 
 

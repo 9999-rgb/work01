@@ -92,6 +92,8 @@ class _FakeControlServer:
         self.reset_request: Optional[str] = None
         self.sse_subscriptions: list[Any] = []
         self.sse_last_event_id: Optional[str] = None
+        self.timeline_request: Optional[tuple[str, int, int]] = None
+        self.sse_error: Optional[BaseException] = None
 
     def health(self) -> Dict[str, Any]:
         self.health_calls += 1
@@ -193,6 +195,8 @@ class _FakeControlServer:
         return {"task_id": task_id, "status": "canceling"}
 
     def subscribe_task_events(self, last_event_id: Optional[str] = None):
+        if self.sse_error is not None:
+            raise self.sse_error
         self.sse_last_event_id = last_event_id
         subscription = _FakeEventSubscription(
             [
@@ -212,7 +216,21 @@ class _FakeControlServer:
     def recording_detail(self, recording_id: str) -> Dict[str, Any]:
         raise _make_control_request_error("Unknown recording.", 404)
 
-    def recording_timeline(self, recording_id: str) -> Dict[str, Any]:
+    def recording_timeline(
+        self,
+        recording_id: str,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        self.timeline_request = (recording_id, offset, limit)
+        if recording_id == "known_recording":
+            return {
+                "recording_id": recording_id,
+                "events": [],
+                "offset": offset,
+                "next_offset": offset,
+                "has_more": False,
+            }
         raise _make_control_request_error("Unknown recording.", 404)
 
     def start_recording(self, name: Optional[str], include_sensors: bool) -> Dict[str, Any]:
@@ -785,6 +803,45 @@ class FastAPIAppContractTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_recording_timeline_forwards_validated_pagination(self) -> None:
+        response = self.client.get(
+            "/recordings/known_recording/timeline?offset=7&limit=23"
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(
+            self.fake.timeline_request,
+            ("known_recording", 7, 23),
+        )
+        for query in ("offset=-1", "limit=0", "limit=5001"):
+            with self.subTest(query=query):
+                invalid = self.client.get(
+                    f"/recordings/known_recording/timeline?{query}"
+                )
+                # The gateway deliberately normalizes FastAPI/Pydantic 422
+                # validation responses to its legacy HTTP 400 contract.
+                self.assertEqual(invalid.status_code, 400, invalid.text)
+
+    def test_empty_body_endpoints_only_accept_an_empty_json_object(self) -> None:
+        for raw_body in (b"null", b"[]", b"false", b"0", b'""'):
+            with self.subTest(raw_body=raw_body):
+                response = self.client.post(
+                    "/recording/stop",
+                    content=raw_body,
+                    headers={"Content-Type": "application/json"},
+                )
+                self.assertEqual(response.status_code, 400, response.text)
+
+        accepted = self.client.post("/recording/stop", json={})
+        self.assertEqual(accepted.status_code, 202)
+
+    def test_empty_body_endpoint_rejects_misleading_content_type(self) -> None:
+        response = self.client.post(
+            "/recording/stop",
+            content=b"{}",
+            headers={"Content-Type": "text/application/json-evil"},
+        )
+        self.assertEqual(response.status_code, 415, response.text)
+
     # ── SSE 契约 ──────────────────────────────────────────────────
 
     def test_task_events_rejects_invalid_last_event_id(self) -> None:
@@ -798,6 +855,14 @@ class FastAPIAppContractTest(unittest.TestCase):
         # 通过直接调用订阅工厂验证 Last-Event-ID 传递；流式响应本身无法在
         # TestClient 中干净关闭（无限事件流），故不进行 HTTP 往返。
         self.assertEqual(self.fake.sse_last_event_id, None)
+
+    def test_task_events_returns_shutdown_error_before_streaming_200(self) -> None:
+        self.fake.sse_error = _make_control_request_error(
+            "Web control server is stopping.",
+            503,
+        )
+        response = self.client.get("/task/events")
+        self.assertEqual(response.status_code, 503, response.text)
 
     # ── 文档 ──────────────────────────────────────────────────────
 
@@ -841,6 +906,15 @@ class FastAPIAuthGateTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("access_token", response.json())
         self.assertEqual(response.json()["user"]["role"], "admin")
+
+    def test_login_rejects_password_longer_than_hashing_limit(self) -> None:
+        response = self.client.post(
+            "/auth/login",
+            json={"username": "admin", "password": "x" * 129},
+        )
+        # The gateway maps FastAPI/Pydantic validation errors to its legacy
+        # HTTP 400 response contract.
+        self.assertEqual(response.status_code, 400, response.text)
 
     def test_token_grants_access(self) -> None:
         token = self._login()
@@ -988,6 +1062,42 @@ class FastAPIAuthGateTest(unittest.TestCase):
             ).status_code,
             401,
         )
+
+    def test_zero_token_recheck_interval_is_clamped_without_db_busy_loop(
+        self,
+    ) -> None:
+        import asyncio
+        from unittest.mock import AsyncMock
+
+        from app.auth import deps as auth_deps
+
+        session = MagicMock()
+        session_context = MagicMock()
+        session_context.__aenter__ = AsyncMock(return_value=session)
+        session_context.__aexit__ = AsyncMock(return_value=False)
+        session_factory = MagicMock(return_value=session_context)
+        resolve_user = AsyncMock(return_value=types.SimpleNamespace(id=7))
+
+        async def check_twice() -> tuple[bool, bool]:
+            checker = auth_deps.ActiveTokenChecker(
+                token="valid-token",
+                user_id=7,
+                enabled=True,
+                initially_validated=False,
+                recheck_seconds=0.0,
+            )
+            self.assertEqual(checker.recheck_seconds, 0.05)
+            return await checker.is_valid(), await checker.is_valid()
+
+        with (
+            patch.object(auth_deps.time, "monotonic", return_value=100.0),
+            patch.object(auth_deps, "async_session", session_factory),
+            patch.object(auth_deps, "resolve_active_user", resolve_user),
+        ):
+            self.assertEqual(asyncio.run(check_twice()), (True, True))
+
+        session_factory.assert_called_once_with()
+        resolve_user.assert_awaited_once_with("valid-token", session)
 
     def test_last_admin_cannot_be_demoted_or_disabled(self) -> None:
         login = self.client.post(
@@ -1693,6 +1803,140 @@ class SSEEEncodingUnitTest(unittest.TestCase):
 
         asyncio.run(run())
         self.assertTrue(subscription.closed)
+
+    def test_zenoh_listener_has_background_cleanup_before_iteration(self) -> None:
+        import asyncio
+
+        from app.sse.router import zenoh_sse
+
+        class _Source:
+            def __init__(self) -> None:
+                self.added: list[tuple[str, Any]] = []
+                self.removed: list[tuple[str, Any]] = []
+
+            def add_listener(self, key: str, callback: Any) -> None:
+                self.added.append((key, callback))
+
+            def remove_listener(self, key: str, callback: Any) -> None:
+                self.removed.append((key, callback))
+
+        class _Request:
+            def __init__(self, source: _Source) -> None:
+                self.app = types.SimpleNamespace(
+                    state=types.SimpleNamespace(
+                        zenoh_source=source,
+                        auth_enabled=False,
+                    )
+                )
+                self.state = types.SimpleNamespace()
+
+            async def is_disconnected(self) -> bool:
+                return True
+
+        async def exercise() -> None:
+            source = _Source()
+            response = await zenoh_sse(_Request(source), "xczs/odom")
+            self.assertEqual(len(source.added), 1)
+            self.assertIsNotNone(response.background)
+            await response.background()
+            self.assertEqual(source.removed, source.added)
+
+        asyncio.run(exercise())
+
+    def test_zenoh_subscription_failure_occurs_before_stream_response(self) -> None:
+        import asyncio
+
+        from app.sse.router import zenoh_sse
+
+        source = MagicMock()
+        source.add_listener.side_effect = RuntimeError("source closed")
+        request = types.SimpleNamespace(
+            app=types.SimpleNamespace(
+                state=types.SimpleNamespace(
+                    zenoh_source=source,
+                    auth_enabled=False,
+                )
+            ),
+            state=types.SimpleNamespace(),
+        )
+        with self.assertRaisesRegex(RuntimeError, "source closed"):
+            asyncio.run(zenoh_sse(request, "xczs/odom"))
+
+    def test_explicit_zero_token_ttl_is_not_replaced_by_default(self) -> None:
+        from datetime import timedelta
+
+        from app.auth.service import (
+            InvalidTokenError,
+            create_access_token,
+            decode_access_token,
+        )
+
+        token, expires_in = create_access_token(
+            1,
+            "operator",
+            "operator",
+            expires_delta=timedelta(0),
+        )
+        self.assertEqual(expires_in, 0)
+        with self.assertRaises(InvalidTokenError):
+            decode_access_token(token)
+
+    def test_explicit_negative_token_ttl_is_immediately_expired(self) -> None:
+        from datetime import timedelta
+
+        from app.auth.service import (
+            InvalidTokenError,
+            create_access_token,
+            decode_access_token,
+        )
+
+        token, expires_in = create_access_token(
+            1,
+            "operator",
+            "operator",
+            expires_delta=timedelta(seconds=-3),
+        )
+        self.assertEqual(expires_in, -3)
+        with self.assertRaises(InvalidTokenError):
+            decode_access_token(token)
+
+    def test_task_subscription_has_background_close_before_stream_iteration(
+        self,
+    ) -> None:
+        import asyncio
+
+        from app.api.task import task_events
+
+        class _Server:
+            def __init__(self) -> None:
+                self.calls = 0
+                self.subscription = _FakeEventSubscription([])
+
+            def subscribe_task_events(self, last_event_id=None):
+                del last_event_id
+                self.calls += 1
+                return self.subscription
+
+        class _Request:
+            def __init__(self) -> None:
+                self.app = types.SimpleNamespace(
+                    state=types.SimpleNamespace(auth_enabled=False)
+                )
+                self.state = types.SimpleNamespace()
+
+            async def is_disconnected(self) -> bool:
+                return True
+
+        async def exercise() -> None:
+            server = _Server()
+            response = await task_events(_Request(), server, None)
+            self.assertEqual(server.calls, 1)
+            self.assertFalse(server.subscription.closed)
+            self.assertIsNotNone(response.background)
+            await response.background()
+            self.assertTrue(server.subscription.closed)
+
+        asyncio.run(exercise())
 
 
 if __name__ == "__main__":

@@ -6,16 +6,14 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from fastapi.testclient import TestClient
 
 # 环境变量由 conftest.py 统一设置（settings 单例）。
 # 默认 admin 密码: pytest-admin-pass
 _ADMIN = "admin"
 _ADMIN_PASS = "pytest-admin-pass"
-
-from fastapi.testclient import TestClient
 
 
 class FakeServer:
@@ -105,7 +103,13 @@ class FakeServer:
 
         raise ControlRequestError("Unknown recording.", 404)
 
-    def recording_timeline(self, recording_id: str) -> Dict[str, Any]:
+    def recording_timeline(
+        self,
+        recording_id: str,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> Dict[str, Any]:
+        del offset, limit
         from control_gateway.ros_node import ControlRequestError
 
         raise ControlRequestError("Unknown recording.", 404)

@@ -15,6 +15,9 @@ _TERMINAL_TASK_STATUSES = frozenset({"success", "failed", "canceled"})
 _ACTIVE_REPLAY_STATUSES = frozenset({"running", "canceling"})
 _MAX_SCENARIO_STEPS = 1000
 _MAX_CANCEL_ATTEMPTS = 3
+_OPERATION_COMMANDS = frozenset(
+    {"press", "set_state", "set_position", "toggle"}
+)
 
 
 class TaskReplayError(RuntimeError):
@@ -687,19 +690,49 @@ def _operation_request(
         "force": _optional_positive(request.get("force"), "force"),
     }
     command = normalized["command"]
-    if not isinstance(command, (str, int)) or isinstance(command, bool):
+    if not isinstance(command, str):
         raise TaskReplayValidationError(
-            "command must be a string or integer action command."
+            "command must be one of: press, set_state, set_position, toggle."
         )
-    if isinstance(command, str) and not command.strip():
-        raise TaskReplayValidationError("command must not be empty.")
-    if isinstance(command, str):
-        normalized["command"] = command.strip()
+    normalized_command = command.strip()
+    if normalized_command not in _OPERATION_COMMANDS:
+        raise TaskReplayValidationError(
+            "command must be one of: press, set_state, set_position, toggle."
+        )
+    normalized["command"] = normalized_command
     target_state = normalized["target_state"]
     if target_state is not None:
         normalized["target_state"] = _nonempty_string(
             target_state,
             "target_state",
+        )
+    target_position = normalized["target_position"]
+    # Recording happens after the live Pydantic request has been normalized:
+    # TaskManager stores both optional target keys and therefore loses
+    # ``model_fields_set``.  A non-applicable recorded null is compatible;
+    # only a non-null target for the wrong command is unsafe.
+    if normalized_command == "set_state":
+        if normalized["target_state"] is None:
+            raise TaskReplayValidationError(
+                "target_state is required for set_state."
+            )
+        if target_position is not None:
+            raise TaskReplayValidationError(
+                "target_position is only valid for set_position."
+            )
+    elif normalized_command == "set_position":
+        if target_position is None:
+            raise TaskReplayValidationError(
+                "target_position is required for set_position."
+            )
+        if normalized["target_state"] is not None:
+            raise TaskReplayValidationError(
+                "target_state is only valid for set_state."
+            )
+    elif normalized["target_state"] is not None or target_position is not None:
+        raise TaskReplayValidationError(
+            "target_state and target_position are not valid for "
+            f"{normalized_command}."
         )
     return normalized
 

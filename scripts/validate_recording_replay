@@ -59,12 +59,16 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || fail "缺少命令: $1"
 }
 
-is_integer_in_range() {
+normalize_integer_in_range() {
   local value="$1"
   local minimum="$2"
   local maximum="$3"
-  [[ "$value" =~ ^[0-9]+$ ]] &&
-    (( value >= minimum && value <= maximum ))
+  local target_name="$4"
+  local decimal=""
+  [[ "$value" =~ ^[0-9]+$ && "${#value}" -le 10 ]] || return 1
+  decimal=$((10#$value))
+  (( decimal >= minimum && decimal <= maximum )) || return 1
+  printf -v "$target_name" '%d' "$decimal"
 }
 
 while [[ $# -gt 0 ]]; do
@@ -131,9 +135,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$API_URL" ]] || fail "--api 不能为空"
-is_integer_in_range "$RECORD_SECONDS" 5 30 ||
+normalize_integer_in_range "$RECORD_SECONDS" 5 30 RECORD_SECONDS ||
   fail "--record-seconds 必须是 5..30 的整数"
-is_integer_in_range "$TIMEOUT_SECONDS" 10 1800 ||
+normalize_integer_in_range "$TIMEOUT_SECONDS" 10 1800 TIMEOUT_SECONDS ||
   fail "--timeout 必须是 10..1800 的整数"
 
 if [[ "$RUN_RUNTIME" != "true" ]]; then
@@ -212,6 +216,9 @@ TEMP_DIR="$(mktemp -d /tmp/xczs-recording-replay.XXXXXX)"
 
 cleanup() {
   local exit_code=$?
+  local active_recording_id=""
+  local recording_status=""
+  local status_body=""
   trap - EXIT INT TERM
   if [[ "$OWN_REPLAY" == "true" ]]; then
     curl -sS --connect-timeout 2 --max-time 10 \
@@ -220,10 +227,36 @@ cleanup() {
       "$API_URL/replay/cancel" >/dev/null 2>&1 || true
   fi
   if [[ "$OWN_RECORDING" == "true" ]]; then
-    curl -sS --connect-timeout 2 --max-time 15 \
-      "${AUTH_CURL_ARGS[@]}" \
-      -H 'Content-Type: application/json' -X POST --data '{}' \
-      "$API_URL/recording/stop" >/dev/null 2>&1 || true
+    if [[ -z "$OWN_RECORDING_ID" ]]; then
+      printf '%s\n' \
+        'WARNING: 录制启动响应缺少 recording_id；为避免误停其他客户端录制，跳过全局 stop。' \
+        >&2
+    else
+      status_body="$(
+        curl -fsS --connect-timeout 2 --max-time 5 \
+          "${AUTH_CURL_ARGS[@]}" "$API_URL/replay/status" \
+          2>/dev/null || true
+      )"
+      recording_status="$(
+        jq -r '.recording.status // .recording.state // ""' \
+          <<<"$status_body" 2>/dev/null || true
+      )"
+      active_recording_id="$(
+        jq -r '.recording.recording_id // ""' \
+          <<<"$status_body" 2>/dev/null || true
+      )"
+      if [[ "$recording_status" == "recording" &&
+            "$active_recording_id" == "$OWN_RECORDING_ID" ]]; then
+        curl -sS --connect-timeout 2 --max-time 15 \
+          "${AUTH_CURL_ARGS[@]}" \
+          -H 'Content-Type: application/json' -X POST --data '{}' \
+          "$API_URL/recording/stop" >/dev/null 2>&1 || true
+      elif [[ -n "$active_recording_id" &&
+              "$active_recording_id" != "$OWN_RECORDING_ID" ]]; then
+        printf 'WARNING: 当前活动录制 %s 不属于本脚本；跳过全局 stop。\n' \
+          "$active_recording_id" >&2
+      fi
+    fi
   fi
   if [[ -n "$TEMP_DIR" && "$TEMP_DIR" == /tmp/xczs-recording-replay.* ]]; then
     rm -f -- "$TEMP_DIR/response.json"
@@ -269,6 +302,12 @@ request_json() {
       jq -r '.recording_id // .recording.recording_id // ""' \
         <<<"$RESPONSE_BODY" 2>/dev/null || true
     )"
+  fi
+  if [[ "$method" == "POST" &&
+        ( "$path" == "/replay/data/start" ||
+          "$path" == "/replay/task/start" ) &&
+        "$RESPONSE_CODE" =~ ^2[0-9][0-9]$ ]]; then
+    OWN_REPLAY="true"
   fi
   jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
     fail "$method $path 返回的不是有效 JSON"
@@ -401,7 +440,9 @@ verify_replay_topics() {
   (( ${#recorded_topics[@]} > 0 )) || fail "清单没有 recorded_topics"
 
   while (( SECONDS < deadline )); do
-    topic_output="$(timeout 10 ros2 topic list 2>/dev/null || true)"
+    topic_output="$(
+      timeout --kill-after=2 10 ros2 topic list 2>/dev/null || true
+    )"
     discovered=()
     while IFS= read -r topic; do
       [[ -z "$topic" ]] || discovered["$topic"]=1
@@ -513,6 +554,8 @@ run_data_runtime() {
     ((.playback.status // .playback.state // "") == "playing")
   ' '数据回放恢复'
   post_json /replay/cancel '{}' 202
+  # 取消请求已由后端接受后，本脚本不再拥有“当前任意回放”的取消权。
+  # 若另一个客户端紧接着启动新回放，EXIT 清理不得误取消它。
   OWN_REPLAY="false"
   wait_for_status '.mode == "idle" and .read_only == false' '数据回放取消并解除只读'
   printf '数据运行时验收通过，recording_id=%s\n' "$recording_id"
@@ -532,31 +575,42 @@ run_task_runtime() {
   post_json /replay/task/start \
     "$(jq -nc --arg id "$recording_id" '{recording_id:$id}')" 202
   OWN_REPLAY="true"
-  wait_for_status '
-    .mode == "task_replay" and .read_only == true and
-    ((.task_replay.status // "") == "running" or
-     (.task_replay.status // "") == "canceling")
-  ' '任务重演进入只读运行状态'
-  post_json /cmd_vel '{"linear_y":0.0,"angular_z":0.0}' 409
-
   local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local interlock_checked="false"
+  local task_recording_id=""
   local task_status=""
   while (( SECONDS < deadline )); do
     get_json /replay/status
+    task_recording_id="$(
+      jq -r '.task_replay.recording_id // ""' <<<"$RESPONSE_BODY"
+    )"
     task_status="$(jq -r '.task_replay.status // ""' <<<"$RESPONSE_BODY")"
-    case "$task_status" in
-      success|failed|canceled) break ;;
-    esac
+    if [[ "$task_recording_id" == "$recording_id" ]]; then
+      case "$task_status" in
+        running|canceling)
+          if [[ "$interlock_checked" == "false" ]]; then
+            # 仅在确实观察到本次重演活动时检查只读互锁；一个极短任务
+            # 可能在首次轮询前就已经安全到达终态。
+            post_json /cmd_vel '{"linear_y":0.0,"angular_z":0.0}' 409
+            interlock_checked="true"
+          fi
+          ;;
+        success|failed|canceled)
+          # 观察到本次重演终态就是所有权线性化点。后续即便结果不符合
+          # 预期而退出，也不能让 EXIT 清理取消另一个客户端的新回放。
+          OWN_REPLAY="false"
+          break
+          ;;
+      esac
+    fi
     sleep 0.5
   done
   case "$task_status" in
     success)
-      OWN_REPLAY="false"
       [[ "$EXPECT_TASK_FAILURE" == "false" ]] ||
         fail "任务重演成功，但 --expect-task-failure 要求失败"
       ;;
     failed)
-      OWN_REPLAY="false"
       if [[ "$EXPECT_TASK_FAILURE" != "true" ]]; then
         jq . <<<"$RESPONSE_BODY" >&2
         fail "任务重演失败"
@@ -567,7 +621,6 @@ run_task_runtime() {
         fail "失败的任务重演没有返回明确原因"
       ;;
     canceled)
-      OWN_REPLAY="false"
       fail "任务重演被意外取消"
       ;;
     *)

@@ -60,7 +60,7 @@ class SensorWebHandlers:
 
     async def camera_jpeg(self, request: web.Request) -> web.Response:
         del request
-        _, jpeg, metadata = self._state.camera_snapshot()
+        _, jpeg, metadata = self._state.fresh_camera_snapshot()
         if jpeg is None:
             return web.json_response(
                 {"error": "camera frame is not available"},
@@ -79,7 +79,7 @@ class SensorWebHandlers:
         self,
         request: web.Request,
     ) -> web.StreamResponse:
-        _, jpeg, _ = self._state.camera_snapshot()
+        _, jpeg, _ = self._state.fresh_camera_snapshot()
         if jpeg is None:
             return web.json_response(
                 {"error": "camera frame is not available"},
@@ -101,8 +101,10 @@ class SensorWebHandlers:
         last_sequence = -1
         try:
             while True:
-                sequence, jpeg, _ = self._state.camera_snapshot()
-                if jpeg is not None and sequence != last_sequence:
+                sequence, jpeg, _ = self._state.fresh_camera_snapshot()
+                if jpeg is None:
+                    break
+                if sequence != last_sequence:
                     part = (
                         f"--{MJPEG_BOUNDARY}\r\n"
                         "Content-Type: image/jpeg\r\n"
@@ -122,7 +124,7 @@ class SensorWebHandlers:
 
     async def lidar_json(self, request: web.Request) -> web.Response:
         del request
-        _, _, json_payload = self._state.lidar_snapshot()
+        _, _, json_payload = self._state.fresh_lidar_snapshot()
         if json_payload is None:
             return web.json_response(
                 {"error": "lidar scan is not available"},
@@ -146,7 +148,17 @@ class SensorWebHandlers:
         last_sequence = -1
         try:
             while not websocket.closed:
-                sequence, _, json_payload = self._state.lidar_snapshot()
+                sequence, _, json_payload = self._state.fresh_lidar_snapshot()
+                health = self._state.health()
+                if (
+                    json_payload is None
+                    and health.get("lidar", {}).get("stale", False)
+                ):
+                    await websocket.close(
+                        code=1013,
+                        message=b"LiDAR scan is stale.",
+                    )
+                    break
                 if (
                     json_payload is not None
                     and sequence != last_sequence
@@ -172,7 +184,13 @@ class SensorWebHandlers:
         ):
             pass
         finally:
-            await websocket.close()
+            if not websocket.closed:
+                try:
+                    await websocket.close()
+                except (ConnectionResetError, RuntimeError):
+                    # The peer may already have vanished without completing
+                    # the WebSocket close handshake.
+                    pass
         return websocket
 
 

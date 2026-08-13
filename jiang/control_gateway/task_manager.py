@@ -114,38 +114,116 @@ class EventHubClosed(RuntimeError):
 
 
 class _SubscriptionBuffer:
-    """Bound progress traffic while retaining every terminal task event."""
+    """Bound lossy progress traffic without silently losing lifecycle events.
+
+    Progress samples are coalesced because task snapshots remain
+    authoritative.  If the buffer contains only lifecycle events and cannot
+    accept another one, it is detached and emits one local ``stream_overflow``
+    notice after its already-buffered events.  The client can then reconnect
+    with its last event ID and replay from the hub ring without observing a
+    silent lifecycle gap.
+    """
 
     def __init__(self, max_pending: int) -> None:
         self._max_pending = max_pending
         self._events: Deque[Dict[str, Any]] = deque()
         self._condition = threading.Condition()
         self._closed = False
+        self._overflow_notice_pending = False
+        self._dropped_progress = 0
         self._notify: Optional[Callable[[], None]] = None
 
-    def put(self, event: Dict[str, Any]) -> None:
+    def close_with_overflow(
+        self,
+        *,
+        reason: str,
+        data: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        """Detach a stream with one explicit, bounded replay instruction."""
         notify = None
         with self._condition:
             if self._closed:
                 return
-            if len(self._events) >= self._max_pending:
+            self._closed = True
+            self._overflow_notice_pending = True
+            self._overflow_reason = reason
+            self._overflow_data = dict(data or {})
+            self._condition.notify_all()
+            notify = self._notify
+        if notify is not None:
+            try:
+                notify()
+            except Exception:
+                pass
+
+    def put(self, event: Dict[str, Any]) -> tuple[bool, Optional[Callable[[], None]]]:
+        """Queue an event and return live state plus a deferred wake callback."""
+        notify: Optional[Callable[[], None]] = None
+        with self._condition:
+            if self._closed:
+                return False, None
+            is_progress = event.get("event") == "task_progress"
+            if is_progress:
+                # Replace a pending progress sample for the same task.  This
+                # preserves acceptance/completion ordering and the newest
+                # observable progress while keeping publication non-blocking.
+                task_id = event.get("data", {}).get("task_id")
+                replacement = next(
+                    (
+                        index
+                        for index in range(len(self._events) - 1, -1, -1)
+                        if self._events[index].get("event") == "task_progress"
+                        and self._events[index].get("data", {}).get("task_id")
+                        == task_id
+                    ),
+                    None,
+                )
+                if replacement is not None:
+                    # Remove the stale sample and append the replacement at
+                    # the tail.  Replacing it in place could expose sequence
+                    # 3 before an intervening lifecycle event sequence 2.
+                    del self._events[replacement]
+                    self._events.append(copy.deepcopy(event))
+                    self._dropped_progress += 1
+                    self._condition.notify()
+                    notify = self._notify
+                elif len(self._events) >= self._max_pending:
+                    self._dropped_progress += 1
+                    return True, None
+            elif len(self._events) >= self._max_pending:
                 removable = next(
                     (
                         index
                         for index, pending in enumerate(self._events)
-                        if pending.get("event") != "task_completed"
+                        if pending.get("event") == "task_progress"
                     ),
                     None,
                 )
                 if removable is not None:
                     del self._events[removable]
-                elif event.get("event") != "task_completed":
-                    return
-                # If the buffer consists only of completion events, allow a
-                # completion event to overflow instead of losing a terminal.
-            self._events.append(copy.deepcopy(event))
-            self._condition.notify()
-            notify = self._notify
+                    self._dropped_progress += 1
+                else:
+                    self._closed = True
+                    self._overflow_notice_pending = True
+                    self._overflow_reason = "subscriber_buffer_overflow"
+                    self._overflow_data = {}
+                    self._condition.notify_all()
+                    notify = self._notify
+                    # External wake callbacks are invoked below, outside the
+                    # internal condition lock.
+                    keep_live = False
+                    event = None
+            if event is not None and not (
+                is_progress and replacement is not None
+            ):
+                self._events.append(copy.deepcopy(event))
+                self._condition.notify()
+                notify = self._notify
+            keep_live = not self._closed
+        return keep_live, notify
+
+    @staticmethod
+    def run_notify(notify: Optional[Callable[[], None]]) -> None:
         if notify is not None:
             try:
                 notify()
@@ -158,7 +236,7 @@ class _SubscriptionBuffer:
             raise ValueError("timeout must not be negative")
         deadline = None if timeout is None else time.monotonic() + timeout
         with self._condition:
-            while not self._events:
+            while not self._events and not self._overflow_notice_pending:
                 if self._closed:
                     raise EventHubClosed("Event subscription is closed.")
                 if deadline is None:
@@ -168,7 +246,24 @@ class _SubscriptionBuffer:
                 if remaining <= 0.0:
                     raise queue.Empty
                 self._condition.wait(remaining)
-            return self._events.popleft()
+            if self._events:
+                return self._events.popleft()
+            self._overflow_notice_pending = False
+            return {
+                "id": "",
+                "event": "stream_overflow",
+                "timestamp": time.time(),
+                "data": {
+                    "reason": getattr(
+                        self,
+                        "_overflow_reason",
+                        "subscriber_buffer_overflow",
+                    ),
+                    "reconnect_required": True,
+                    "dropped_progress": self._dropped_progress,
+                    **getattr(self, "_overflow_data", {}),
+                },
+            }
 
     def close(self) -> None:
         notify = None
@@ -213,6 +308,7 @@ class EventSubscription:
         self._subscription_id = subscription_id
         self._buffer = buffer
         self._close_lock = threading.Lock()
+        self._detached = False
 
     def get(self, timeout: Optional[float] = None) -> Dict[str, Any]:
         """Get the next event; raises ``queue.Empty`` on heartbeat timeout."""
@@ -228,8 +324,9 @@ class EventSubscription:
 
     def close(self) -> None:
         with self._close_lock:
-            if self._buffer.closed:
+            if self._detached:
                 return
+            self._detached = True
             self._hub._unsubscribe(self._subscription_id)  # noqa: SLF001
 
     @property
@@ -255,6 +352,9 @@ class EventHub:
         self._next_subscription_id = 1
         self._next_sequence = 1
         self._lock = threading.RLock()
+        # Preserve fan-out order across concurrent publishers without holding
+        # the state lock while subscription callbacks are notified.
+        self._publish_lock = threading.Lock()
         self._closed = False
 
     def publish(
@@ -282,22 +382,33 @@ class EventHub:
             or not math.isfinite(float(event_timestamp))
         ):
             raise ValueError("event timestamp must be finite.")
-        with self._lock:
-            if self._closed:
-                raise EventHubClosed("Event hub is closed.")
-            sequence = self._next_sequence
-            self._next_sequence += 1
-            event = {
-                "id": str(sequence),
-                "sequence": sequence,
-                "event": event_type,
-                "timestamp": float(event_timestamp),
-                "data": safe_data,
-            }
-            self._events.append(event)
-            subscriptions = tuple(self._subscriptions.values())
-        for subscription in subscriptions:
-            subscription.put(event)
+        pending_notifies: list[Optional[Callable[[], None]]] = []
+        with self._publish_lock:
+            with self._lock:
+                if self._closed:
+                    raise EventHubClosed("Event hub is closed.")
+                sequence = self._next_sequence
+                self._next_sequence += 1
+                event = {
+                    "id": str(sequence),
+                    "sequence": sequence,
+                    "event": event_type,
+                    "timestamp": float(event_timestamp),
+                    "data": safe_data,
+                }
+                self._events.append(event)
+                subscriptions = tuple(self._subscriptions.items())
+            for subscription_id, subscription in subscriptions:
+                keep_live, notify = subscription.put(event)
+                pending_notifies.append(notify)
+                if not keep_live:
+                    # Detach without invoking close(): put already closed and
+                    # woke its condition, and user callbacks must stay outside
+                    # the publish serialization critical section.
+                    with self._lock:
+                        self._subscriptions.pop(subscription_id, None)
+        for notify in pending_notifies:
+            _SubscriptionBuffer.run_notify(notify)
         return copy.deepcopy(event)
 
     emit = publish
@@ -326,11 +437,33 @@ class EventHub:
             subscription_id = self._next_subscription_id
             self._next_subscription_id += 1
             buffer = _SubscriptionBuffer(max_pending)
+            replay_overflowed = False
             if after_sequence is not None:
+                if (
+                    self._events
+                    and after_sequence < self._events[0]["sequence"] - 1
+                ):
+                    replay_overflowed = True
+                    buffer.close_with_overflow(
+                        reason="replay_history_gap",
+                        data={
+                            "requested_after_sequence": after_sequence,
+                            "oldest_available_sequence": self._events[0][
+                                "sequence"
+                            ],
+                        },
+                    )
                 for event in self._events:
+                    if replay_overflowed:
+                        break
                     if event["sequence"] > after_sequence:
-                        buffer.put(event)
-            self._subscriptions[subscription_id] = buffer
+                        keep_live, notify = buffer.put(event)
+                        _SubscriptionBuffer.run_notify(notify)
+                        if not keep_live:
+                            replay_overflowed = True
+                            break
+            if not replay_overflowed:
+                self._subscriptions[subscription_id] = buffer
         return EventSubscription(self, subscription_id, buffer)
 
     def events_after(
@@ -350,14 +483,25 @@ class EventHub:
 
     def close(self) -> None:
         """Wake streaming clients and reject future publications."""
-        with self._lock:
-            if self._closed:
-                return
-            self._closed = True
-            subscriptions = tuple(self._subscriptions.values())
-            self._subscriptions.clear()
+        # Linearize shutdown with publication.  Otherwise close() can clear and
+        # close a subscription after publish() has appended to the replay ring
+        # but before it fans the same event out, silently losing a terminal
+        # event for every live consumer.  Keep external wake callbacks outside
+        # both locks, just like publish().
+        with self._publish_lock:
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                subscriptions = tuple(self._subscriptions.values())
+                self._subscriptions.clear()
         for subscription in subscriptions:
             subscription.close()
+
+    @property
+    def closed(self) -> bool:
+        with self._lock:
+            return self._closed
 
     def _unsubscribe(self, subscription_id: int) -> None:
         with self._lock:

@@ -1193,12 +1193,22 @@ function doConnect() {
   toast('连接成功');
 }
 
+function isCurrentTopicSource(topic, entry, source) {
+  return connected && subs.get(topic) === entry && entry.es === source;
+}
+
+function closeTopicEntry(entry) {
+  if (entry._errTimer) {
+    clearTimeout(entry._errTimer);
+    entry._errTimer = null;
+  }
+  try { entry.es.close(); } catch (_) {}
+}
+
 function doDisconnect() {
   if (!connected) return;
   // 关闭所有 EventSource
-  for (const [topic, entry] of subs) {
-    try { entry.es.close(); } catch (_) {}
-  }
+  for (const entry of subs.values()) closeTopicEntry(entry);
   disconnectSensorStreams();
   subs.clear();
   dataGrid.replaceChildren();
@@ -1229,37 +1239,49 @@ function subscribe(topic) {
   log('info', `Subscribing SSE ${baseUrl}/sse/${encodedTopic} …`);
 
   try {
-    const es = new EventSource(url);
+    const source = new EventSource(url);
+    // Entry identity is the generation token for this topic.  Browser event
+    // callbacks may already be queued when a source is closed, so checking
+    // only the topic name is insufficient after a reconnect.
+    const entry = {
+      es: source,
+      cardId: null,
+      history: [],
+      _errTimer: null
+    };
 
-    es.onopen = () => {
+    source.onopen = () => {
+      if (!isCurrentTopicSource(topic, entry, source)) return;
       log('ok', `SSE 已连接: ${topic}`);
       toast(`✓ ${topic}`);
     };
 
-    es.onmessage = (event) => {
+    source.onmessage = (event) => {
+      if (!isCurrentTopicSource(topic, entry, source)) return;
       // SSE 默认 message 事件（非 PUT/DELETE 等命名事件）
     };
 
     // 监听 SSE 数据桥使用的 PUT 事件。
-    es.addEventListener('PUT', (event) => {
+    source.addEventListener('PUT', (event) => {
+      if (!isCurrentTopicSource(topic, entry, source)) return;
       onData(topic, event.data);
     });
 
-    es.onerror = () => {
+    source.onerror = () => {
+      if (!isCurrentTopicSource(topic, entry, source)) return;
       // EventSource 在连接建立但流为空时也可能触发 error；
       // 不要立即报错 — 等几秒看是否有数据到达
-      const entry = subs.get(topic);
-      if (entry) {
-        if (entry._errTimer) clearTimeout(entry._errTimer);
-        entry._errTimer = setTimeout(() => {
-          if (entry.history.length === 0) {
-            log('err', `SSE 无数据: ${topic}（${baseUrl} 上的 Zenoh 桥是否在运行？ROS2 话题是否有发布者？）`);
-          }
-        }, 5000);
-      }
+      if (entry._errTimer) clearTimeout(entry._errTimer);
+      entry._errTimer = setTimeout(() => {
+        entry._errTimer = null;
+        if (!isCurrentTopicSource(topic, entry, source)) return;
+        if (entry.history.length === 0) {
+          log('err', `SSE 无数据: ${topic}（${baseUrl} 上的 Zenoh 桥是否在运行？ROS2 话题是否有发布者？）`);
+        }
+      }, 5000);
     };
 
-    subs.set(topic, { es, cardId: null, history: [] });
+    subs.set(topic, entry);
     renderSubList();
     ensureCard(topic);
   } catch (err) {
@@ -1271,7 +1293,7 @@ function subscribe(topic) {
 function unsubscribe(topic) {
   const entry = subs.get(topic);
   if (!entry) return;
-  try { entry.es.close(); } catch (_) {}
+  closeTopicEntry(entry);
   subs.delete(topic);
   const card = document.getElementById(`card-${entry.cardId}`);
   if (card) card.remove();
@@ -1287,8 +1309,7 @@ function reconnectAuthenticatedStreams() {
   if (!connected || (authRequired && !authToken)) return;
   const topics = Array.from(subs.keys());
   for (const entry of subs.values()) {
-    if (entry._errTimer) clearTimeout(entry._errTimer);
-    try { entry.es.close(); } catch (_) {}
+    closeTopicEntry(entry);
   }
   subs.clear();
   dataGrid.replaceChildren();
@@ -2064,16 +2085,18 @@ function connectTaskEvents() {
   taskEventSource = null;
   if (authRequired && !authToken) return; // 需鉴权时等待登录后再连接
   // EventSource 无法携带 Header，鉴权 token 通过查询参数传递。
-  taskEventSource = new EventSource(
+  const source = new EventSource(
     authenticatedUrl(ctrlBaseUrl, '/task/events')
   );
+  taskEventSource = source;
   [
     'task_accepted',
     'task_progress',
     'task_completed',
     'task_reservation_released'
   ].forEach(eventName => {
-    taskEventSource.addEventListener(eventName, event => {
+    source.addEventListener(eventName, event => {
+      if (source !== taskEventSource) return;
       try {
         const payload = JSON.parse(event.data);
         applyTaskSnapshot(payload.task);
@@ -2082,7 +2105,29 @@ function connectTaskEvents() {
       }
     });
   });
-  taskEventSource.onerror = () => {
+  source.addEventListener('stream_overflow', event => {
+    if (source !== taskEventSource) return;
+    let reason = 'subscriber_buffer_overflow';
+    try {
+      const payload = JSON.parse(event.data);
+      reason = String(payload.reason || reason);
+    } catch (_) {}
+    log('warn', `任务事件流需重新同步: ${reason}`);
+    // EventSource would otherwise retain the obsolete Last-Event-ID and hit
+    // the same replay_history_gap forever. A new instance starts without it;
+    // the authoritative status poll repairs the currently active task UI.
+    const staleSource = source;
+    taskEventSource = null;
+    try { staleSource.close(); } catch (_) {}
+    if (ctrlConnected) {
+      void refreshAutonomyStatus(autonomyStatusPollGeneration);
+      setTimeout(() => {
+        if (ctrlConnected && taskEventSource === null) connectTaskEvents();
+      }, 0);
+    }
+  });
+  source.onerror = () => {
+    if (source !== taskEventSource) return;
     // EventSource 会自动携带 Last-Event-ID 重连；轮询继续作为 fallback。
     log('info', '任务事件流暂时中断，正在自动重连');
   };
@@ -2900,18 +2945,36 @@ async function refreshReplayTimeline(
   replayTimelineRequestInFlightId = normalizedId;
   if (!quiet) replayTimeline.textContent = '正在加载时间线…';
   try {
-    const payload = await controlRequestWithTimeout(
-      `/recordings/${encodeURIComponent(normalizedId)}/timeline`,
-      4000
-    );
+    const events = [];
+    let offset = 0;
+    let hasMore = true;
+    while (hasMore) {
+      const payload = await controlRequestWithTimeout(
+        `/recordings/${encodeURIComponent(normalizedId)}/timeline` +
+          `?offset=${offset}&limit=500`,
+        4000
+      );
+      if (
+        generation !== replayTimelineRequestGeneration ||
+        replayTimelineRecordingId !== normalizedId ||
+        selectedRecordingId() !== normalizedId
+      ) return;
+      const pageEvents = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload && payload.events) ? payload.events : [];
+      events.push(...pageEvents);
+      hasMore = !Array.isArray(payload) && payload && payload.has_more === true;
+      const nextOffset = Number(payload && payload.next_offset);
+      if (hasMore && (!Number.isInteger(nextOffset) || nextOffset <= offset)) {
+        throw new Error('时间线分页游标无效');
+      }
+      offset = nextOffset;
+    }
     if (
       generation !== replayTimelineRequestGeneration ||
       replayTimelineRecordingId !== normalizedId ||
       selectedRecordingId() !== normalizedId
     ) return;
-    const events = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload && payload.events) ? payload.events : [];
     replayTimelineLastRefreshAt = Date.now();
     renderReplayTimeline(events, normalizedId);
   } catch (error) {

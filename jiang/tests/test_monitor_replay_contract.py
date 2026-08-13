@@ -455,6 +455,49 @@ class MonitorReplayContractTest(unittest.TestCase):
             assert.match(row.children[2].textContent, /力度不足/);
         """))
 
+    def test_timeline_fetches_every_bounded_page(self) -> None:
+        refresh = _source_block(
+            "async function refreshReplayTimeline(",
+            "\nfunction validReplayRate()",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            let ctrlConnected = true;
+            let replayTimelineRequestGeneration = 0;
+            let replayTimelineRecordingId = null;
+            let replayTimelineRequestInFlightId = null;
+            let replayTimelineLastRefreshAt = 0;
+            const replayTimeline = {{textContent: ''}};
+            const paths = [];
+            let rendered = null;
+            function selectedRecordingId() {{ return 'rec_001'; }}
+            function renderReplayTimeline(events) {{ rendered = events; }}
+            function toast() {{}}
+            async function controlRequestWithTimeout(path) {{
+              paths.push(path);
+              if (paths.length === 1) return {{
+                events: [{{event: 'one'}}], has_more: true, next_offset: 1
+              }};
+              return {{
+                events: [{{event: 'two'}}], has_more: false, next_offset: 2
+              }};
+            }}
+            {refresh}
+
+            (async () => {{
+              await refreshReplayTimeline('rec_001');
+              assert.deepEqual(paths, [
+                '/recordings/rec_001/timeline?offset=0&limit=500',
+                '/recordings/rec_001/timeline?offset=1&limit=500'
+              ]);
+              assert.deepEqual(rendered.map(event => event.event), ['one', 'two']);
+              assert.equal(replayTimelineRequestInFlightId, null);
+            }})().catch(error => {{
+              console.error(error);
+              process.exitCode = 1;
+            }});
+        """))
+
 
 if __name__ == "__main__":
     unittest.main()

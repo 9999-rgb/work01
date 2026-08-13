@@ -113,11 +113,15 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 ## Web API
 
 Gazebo Classic 的 RGB 相机即使关闭图形客户端也仍依赖渲染上下文。未设置
-`DISPLAY` 时统一启动入口会禁用 Gazebo GUI，同时明确提示相机不会发布图像；
+`DISPLAY`，或系统提供 `xdpyinfo` 但无法在 3 秒内连接指定 Display 时，统一
+启动入口会禁用 Gazebo GUI，同时明确提示相机不会发布图像；
 LiDAR 等不依赖渲染的传感器仍可工作。需要相机流时应提供可用的 X Display，
-或由部署环境自行提供虚拟显示服务（项目当前不引入 Xvfb 依赖）。在收到首帧前，
-`/sensors/health` 返回 `degraded`，`/camera.jpg` 和 `/camera.mjpg` 返回 HTTP 503，
-避免用成功状态或空的 HTTP 200 流掩盖相机不可用。
+并确认启动摘要中的 `X Display` 为“已验证可连接”，或由部署环境自行提供虚拟
+显示服务（项目当前不引入 Xvfb 依赖）。在收到首帧前，或最后一个相机/LiDAR
+样本超过 5 秒未更新时，`/sensors/health` 返回 `degraded` 并将对应流标记为
+`stale`；`/camera.jpg`、`/camera.mjpg` 和 `/lidar.json` 返回 HTTP 503，已经建立
+的过期 MJPEG 流结束，LiDAR WebSocket 以 1013 关闭并由前端重连。这样不会用
+成功状态、冻结帧或空的 HTTP 200 流掩盖传感器不可用。
 
 迁移到 FastAPI 后，**API 参考由 OpenAPI 自动生成**，始终与代码同步：
 
@@ -360,7 +364,9 @@ Zenoh Bridge 默认只监听 `127.0.0.1`，并关闭 multicast scouting，不会
 客户端直接连接本桥时，才显式设置 `XCZS_ZENOH_LAN_ENABLED=true`；该开关会
 同时改为监听 `0.0.0.0` 并恢复 multicast scouting，不能再视为网络隔离模式。
 Web 页面是否对局域网开放仍由独立的 `CONTROL_HOST` 控制，不需要为浏览器访问
-而开放 Zenoh。
+而开放 Zenoh。纯 `--keyboard` 模式不使用 Web 或 CDR→JSON 代理，因此会完全
+跳过 Zenoh 二进制、端口、依赖预检与进程启动；只有再显式加入 `--with-proxy`
+时才恢复这些要求。
 
 Gazebo Classic 不识别 `ROS_DOMAIN_ID`。因此未显式设置
 `GAZEBO_MASTER_URI` 时，统一入口使用

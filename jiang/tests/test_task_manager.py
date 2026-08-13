@@ -737,6 +737,173 @@ class EventHubTest(unittest.TestCase):
         ]
         self.assertIn(terminal["id"], {event["id"] for event in pending})
 
+    def test_slow_subscriber_coalesces_progress_before_task_acceptance(self) -> None:
+        hub = EventHub(capacity=8)
+        subscription = hub.subscribe(max_pending=2)
+        accepted = hub.publish("task_accepted", {"task_id": "one"})
+        hub.publish("task_progress", {"task_id": "one", "value": 1})
+        hub.publish("task_progress", {"task_id": "one", "value": 2})
+
+        pending = [
+            subscription.get(timeout=0.1),
+            subscription.get(timeout=0.1),
+        ]
+        self.assertIn(accepted["id"], {event["id"] for event in pending})
+
+    def test_lifecycle_overflow_is_bounded_and_explicit(self) -> None:
+        hub = EventHub(capacity=8)
+        subscription = hub.subscribe(max_pending=1)
+        accepted = hub.publish("task_accepted", {"task_id": "one"})
+        hub.publish("task_completed", {"task_id": "one"})
+
+        self.assertEqual(
+            subscription.get(timeout=0.1)["id"],
+            accepted["id"],
+        )
+        overflow = subscription.get(timeout=0.1)
+        self.assertEqual(overflow["event"], "stream_overflow")
+        self.assertTrue(overflow["data"]["reconnect_required"])
+        with self.assertRaises(EventHubClosed):
+            subscription.get(timeout=0.1)
+
+    def test_progress_coalescing_preserves_global_sequence_order(self) -> None:
+        hub = EventHub(capacity=8)
+        subscription = hub.subscribe(max_pending=2)
+        hub.publish("task_progress", {"task_id": "one", "value": 1})
+        canceling = hub.publish(
+            "task_cancel_requested",
+            {"task_id": "one"},
+        )
+        latest = hub.publish(
+            "task_progress",
+            {"task_id": "one", "value": 2},
+        )
+
+        pending = [
+            subscription.get(timeout=0.1),
+            subscription.get(timeout=0.1),
+        ]
+        self.assertEqual(
+            [event["id"] for event in pending],
+            [canceling["id"], latest["id"]],
+        )
+
+    def test_replay_overflow_does_not_leave_a_dead_hub_subscription(self) -> None:
+        hub = EventHub(capacity=8)
+        accepted = hub.publish("task_accepted", {"task_id": "one"})
+        hub.publish("task_completed", {"task_id": "one"})
+        subscription = hub.subscribe(last_event_id=0, max_pending=1)
+
+        self.assertEqual(len(hub._subscriptions), 0)
+        self.assertEqual(
+            subscription.get(timeout=0.1)["id"],
+            accepted["id"],
+        )
+        self.assertEqual(
+            subscription.get(timeout=0.1)["event"],
+            "stream_overflow",
+        )
+        with self.assertRaises(EventHubClosed):
+            subscription.get(timeout=0.1)
+
+    def test_replay_history_gap_is_explicit_instead_of_silent(self) -> None:
+        hub = EventHub(capacity=2)
+        hub.publish("task_accepted", {"task_id": "one"})
+        hub.publish("task_progress", {"task_id": "one"})
+        hub.publish("task_completed", {"task_id": "one"})
+
+        subscription = hub.subscribe(last_event_id=0)
+        notice = subscription.get(timeout=0.1)
+        self.assertEqual(notice["event"], "stream_overflow")
+        self.assertEqual(notice["data"]["reason"], "replay_history_gap")
+        self.assertEqual(notice["data"]["oldest_available_sequence"], 2)
+        self.assertEqual(len(hub._subscriptions), 0)
+        with self.assertRaises(EventHubClosed):
+            subscription.get(timeout=0.1)
+
+    def test_concurrent_publishers_preserve_subscription_sequence_order(self) -> None:
+        hub = EventHub(capacity=8)
+        subscription = hub.subscribe(max_pending=8)
+        buffer = next(iter(hub._subscriptions.values()))
+        original_put = buffer.put
+        first_in_fanout = threading.Event()
+        release_first = threading.Event()
+
+        def controlled_put(event):
+            if event["id"] == "1":
+                first_in_fanout.set()
+                self.assertTrue(release_first.wait(timeout=1.0))
+            return original_put(event)
+
+        buffer.put = controlled_put
+        workers = [
+            threading.Thread(
+                target=lambda value=value: hub.publish(
+                    "task_progress",
+                    {"task_id": str(value)},
+                )
+            )
+            for value in (1, 2)
+        ]
+        workers[0].start()
+        self.assertTrue(first_in_fanout.wait(timeout=1.0))
+        workers[1].start()
+        # Publisher two must not fan out around publisher one's blocked put.
+        workers[1].join(timeout=0.02)
+        self.assertTrue(workers[1].is_alive())
+        release_first.set()
+        for worker in workers:
+            worker.join(timeout=1.0)
+            self.assertFalse(worker.is_alive())
+
+        delivered = [
+            subscription.get(timeout=0.1),
+            subscription.get(timeout=0.1),
+        ]
+        self.assertEqual(
+            [event["id"] for event in delivered],
+            [event["id"] for event in hub.events_after()],
+        )
+        self.assertEqual([event["id"] for event in delivered], ["1", "2"])
+
+    def test_notify_reentrant_publish_reaches_all_subscribers_in_order(self) -> None:
+        hub = EventHub(capacity=8)
+        first = hub.subscribe(max_pending=8)
+        second = hub.subscribe(max_pending=8)
+        republished = False
+
+        def notify() -> None:
+            nonlocal republished
+            if republished:
+                return
+            republished = True
+            hub.publish("task_progress", {"task_id": "nested"})
+
+        first.set_notify(notify)
+        worker = threading.Thread(
+            target=lambda: hub.publish(
+                "task_accepted",
+                {"task_id": "outer"},
+            )
+        )
+        worker.start()
+        worker.join(timeout=1.0)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(
+            [
+                first.get(timeout=0.1)["id"],
+                first.get(timeout=0.1)["id"],
+            ],
+            ["1", "2"],
+        )
+        self.assertEqual(
+            [
+                second.get(timeout=0.1)["id"],
+                second.get(timeout=0.1)["id"],
+            ],
+            ["1", "2"],
+        )
+
     def test_hub_close_wakes_subscription(self) -> None:
         hub = EventHub()
         subscription = hub.subscribe()
@@ -745,6 +912,49 @@ class EventHubTest(unittest.TestCase):
             subscription.get(timeout=0.1)
         with self.assertRaises(EventHubClosed):
             hub.publish("task_progress", {})
+
+    def test_close_waits_for_in_flight_publication_fanout(self) -> None:
+        hub = EventHub()
+        subscription = hub.subscribe()
+        buffer = next(iter(hub._subscriptions.values()))
+        original_put = buffer.put
+        fanout_started = threading.Event()
+        release_fanout = threading.Event()
+
+        def controlled_put(event):
+            fanout_started.set()
+            self.assertTrue(release_fanout.wait(timeout=1.0))
+            return original_put(event)
+
+        buffer.put = controlled_put
+        published = []
+        publisher = threading.Thread(
+            target=lambda: published.append(
+                hub.publish("task_completed", {"task_id": "one"})
+            )
+        )
+        publisher.start()
+        self.assertTrue(fanout_started.wait(timeout=1.0))
+
+        closed = threading.Event()
+
+        def close_hub() -> None:
+            hub.close()
+            closed.set()
+
+        closer = threading.Thread(target=close_hub)
+        closer.start()
+        self.assertFalse(closed.wait(timeout=0.02))
+        release_fanout.set()
+        publisher.join(timeout=1.0)
+        closer.join(timeout=1.0)
+        self.assertFalse(publisher.is_alive())
+        self.assertFalse(closer.is_alive())
+
+        delivered = subscription.get(timeout=0.1)
+        self.assertEqual(delivered["id"], published[0]["id"])
+        with self.assertRaises(EventHubClosed):
+            subscription.get(timeout=0.1)
 
 
 if __name__ == "__main__":

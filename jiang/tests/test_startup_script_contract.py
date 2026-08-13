@@ -36,7 +36,11 @@ class StartupScriptContractTests(unittest.TestCase):
 
         self.assertLess(contract_check, preflight_exit)
         self.assertLess(port_check, preflight_exit)
-        self.assertIn('if [ ! -x "$ZENOH_BRIDGE" ]', self.startup_source)
+        self.assertIn(
+            'if [ "$ZENOH_REQUIRED" = "true" ] && '
+            '[ ! -x "$ZENOH_BRIDGE" ]',
+            self.startup_source,
+        )
         self.assertIn("create_app", self.startup_source)
         self.assertIn("from control_gateway import ControlServer", self.startup_source)
         for package in (
@@ -110,9 +114,24 @@ class StartupScriptContractTests(unittest.TestCase):
     def test_headless_warning_discloses_camera_rendering_limit(self) -> None:
         self.assertIn("DISPLAY 未设置", self.startup_source)
         self.assertIn(
+            'timeout --kill-after=1 3 xdpyinfo -display "$DISPLAY"',
+            self.startup_source,
+        )
+        self.assertIn(
             "基于渲染的 RGB 相机也不会发布图像",
             self.startup_source,
         )
+
+    def test_http_readiness_calls_are_bounded(self) -> None:
+        for function_name, next_name in (
+            ("_wait_for_http()", "_task_stack_is_ready()"),
+            ("_wait_for_task_stack()", "_wait_for_stable_processes()"),
+            ("_monitor_managed_processes()", "_start_bridge()"),
+        ):
+            start = self.startup_source.index(function_name)
+            end = self.startup_source.index(next_name, start)
+            function = self.startup_source[start:end]
+            self.assertIn("curl -fsS --connect-timeout 1 --max-time 2", function)
 
     def test_gazebo_master_is_derived_from_domain_and_preflighted(self) -> None:
         self.assertIn(
@@ -212,13 +231,9 @@ class StartupScriptContractTests(unittest.TestCase):
             ROS_DOMAIN_ID="08",
             BRIDGE_TCP_PORT=str(ports[0]),
             BRIDGE_REST_PORT=str(ports[1]),
-            CONTROL_PORT=str(ports[2]),
+            CONTROL_PORT=f"0{ports[2]}",
             XCZS_STARTUP_TIMEOUT_SEC="08",
             CONTROL_HOST="127.0.0.1",
-            XCZS_CONTROL_ORIGINS=(
-                f"http://localhost:{ports[2]},"
-                f"http://127.0.0.1:{ports[2]}"
-            ),
             XCZS_PREFLIGHT_ONLY="true",
         )
         result = subprocess.run(
@@ -236,6 +251,150 @@ class StartupScriptContractTests(unittest.TestCase):
         )
         self.assertIn("ROS 2 域:   8", result.stdout)
         self.assertIn("Gazebo URI: http://127.0.0.1:11353", result.stdout)
+        self.assertIn(
+            "Web Origins: "
+            f"http://localhost:{ports[2]},"
+            f"http://127.0.0.1:{ports[2]}",
+            result.stdout,
+        )
+
+    def test_plain_keyboard_mode_does_not_require_zenoh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
+            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
+            fake_xdpyinfo.write_text(
+                "#!/usr/bin/env bash\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_xdpyinfo.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                DISPLAY=":xczs-test",
+                ZENOH_BRIDGE="/definitely/missing/zenoh-bridge",
+                BRIDGE_TCP_PORT="not-a-port",
+                BRIDGE_REST_PORT="also-not-a-port",
+                XCZS_ZENOH_LAN_ENABLED="not-a-boolean",
+                GAZEBO_ENABLED="false",
+                SPAWN_CABINET="false",
+                XCZS_PREFLIGHT_ONLY="true",
+            )
+            result = subprocess.run(
+                [str(STARTUP), "--keyboard"],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=30,
+                check=False,
+            )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("完全跳过（键盘模式无需 Zenoh）", result.stdout)
+        self.assertIn("Zenoh 网络: 未启用", result.stdout)
+
+    def test_ipv6_wildcard_uses_ipv6_loopback_for_readiness(self) -> None:
+        self.assertIn('::) _READY_HOST="::1"', self.startup_source)
+        self.assertNotIn(
+            '0.0.0.0|::|\'[::]\') _READY_HOST="127.0.0.1"',
+            self.startup_source,
+        )
+
+    def test_keyboard_proxy_still_requires_zenoh(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
+            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
+            fake_xdpyinfo.write_text(
+                "#!/usr/bin/env bash\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_xdpyinfo.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                DISPLAY=":xczs-test",
+                ZENOH_BRIDGE="/definitely/missing/zenoh-bridge",
+                XCZS_PREFLIGHT_ONLY="true",
+            )
+            result = subprocess.run(
+                [str(STARTUP), "--keyboard", "--with-proxy"],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "zenoh-bridge-ros2dds 不存在",
+            result.stdout + result.stderr,
+        )
+
+    def test_unreachable_display_is_rejected_for_keyboard_mode(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
+            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
+            fake_xdpyinfo.write_text(
+                "#!/usr/bin/env bash\nexit 1\n",
+                encoding="utf-8",
+            )
+            fake_xdpyinfo.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                DISPLAY=":broken-display",
+                XCZS_PREFLIGHT_ONLY="true",
+            )
+            result = subprocess.run(
+                [str(STARTUP), "--keyboard"],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        output = result.stdout + result.stderr
+        self.assertIn("无法连接 DISPLAY=:broken-display", output)
+        self.assertIn("RGB 相机也不会发布图像", output)
+        self.assertIn("需要可连接的 DISPLAY", output)
+
+    def test_display_probe_force_kills_a_term_ignoring_process(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
+            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
+            fake_xdpyinfo.write_text(
+                "#!/usr/bin/env bash\n"
+                "trap '' TERM\n"
+                "while :; do sleep 10; done\n",
+                encoding="utf-8",
+            )
+            fake_xdpyinfo.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                DISPLAY=":term-ignoring-display",
+                GAZEBO_ENABLED="false",
+                SPAWN_CABINET="false",
+                CABINET_BRINGUP="false",
+                MOVEIT_ENABLED="false",
+                XCZS_PREFLIGHT_ONLY="true",
+            )
+            started = time.monotonic()
+            result = subprocess.run(
+                [str(STARTUP), "--keyboard"],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=8,
+                check=False,
+            )
+            elapsed = time.monotonic() - started
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertLess(elapsed, 7.0)
+        self.assertIn(
+            "无法连接 DISPLAY=:term-ignoring-display",
+            result.stdout + result.stderr,
+        )
 
     def test_launcher_only_stops_its_registered_process_groups(self) -> None:
         self.assertNotIn("pkill", self.startup_source)
@@ -548,6 +707,75 @@ fi
         self.assertIn(
             '"${AUTH_CURL_ARGS[@]}"', self.recording_validator_source
         )
+        self.assertIn(
+            "timeout --kill-after=2 10 ros2 topic list",
+            self.recording_validator_source,
+        )
+        readiness_start = self.validator_source.index("wait_for_system_ready()")
+        readiness_end = self.validator_source.index(
+            "start_sse_capture()",
+            readiness_start,
+        )
+        readiness = self.validator_source[readiness_start:readiness_end]
+        self.assertIn("--connect-timeout 2 --max-time 5", readiness)
+
+    def test_validator_timeout_arguments_are_bounded_decimal(self) -> None:
+        web_result = subprocess.run(
+            [str(WEB_VALIDATOR), "--timeout", "999999"],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        self.assertNotEqual(web_result.returncode, 0)
+        self.assertIn("1..86400", web_result.stderr)
+
+        recording_result = subprocess.run(
+            [
+                str(RECORDING_VALIDATOR),
+                "--record-seconds",
+                "08",
+                "--include-sensors",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        self.assertNotEqual(recording_result.returncode, 0)
+        self.assertIn("必须与 --runtime 一起使用", recording_result.stderr)
+        self.assertNotIn("底数", recording_result.stderr)
+
+    def test_spawn_z_validation_survives_python_optimize(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
+            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
+            fake_xdpyinfo.write_text(
+                "#!/usr/bin/env bash\nexit 0\n",
+                encoding="utf-8",
+            )
+            fake_xdpyinfo.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                DISPLAY=":xczs-test",
+                PYTHONOPTIMIZE="1",
+                GAZEBO_ENABLED="false",
+                SPAWN_CABINET="false",
+                CABINET_BRINGUP="false",
+                MOVEIT_ENABLED="false",
+                XCZS_PREFLIGHT_ONLY="true",
+                SPAWN_Z="nan",
+            )
+            result = subprocess.run(
+                [str(STARTUP), "--keyboard"],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=30,
+                check=False,
+            )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SPAWN_Z", result.stdout + result.stderr)
 
     def test_recording_validator_claims_unexpected_start_before_asserting(self) -> None:
         request_start = self.recording_validator_source.index("request_json() {")
@@ -562,6 +790,10 @@ fi
         self.assertIn('"$path" == "/recording/start"', request_json)
         self.assertIn('"$RESPONSE_CODE" =~ ^2[0-9][0-9]$', request_json)
         self.assertIn("OWN_RECORDING_ID", request_json)
+        replay_claim = request_json.index('OWN_REPLAY="true"')
+        self.assertLess(replay_claim, json_assertion)
+        self.assertIn('"$path" == "/replay/data/start"', request_json)
+        self.assertIn('"$path" == "/replay/task/start"', request_json)
 
         post_start = self.recording_validator_source.index("post_json() {")
         post_end = self.recording_validator_source.index("wait_for_status() {")
@@ -575,9 +807,129 @@ fi
             self.recording_validator_source,
         )
         self.assertIn(
+            '"$active_recording_id" == "$OWN_RECORDING_ID"',
+            self.recording_validator_source,
+        )
+        self.assertIn(
             '"$API_URL/recording/stop"',
             self.recording_validator_source,
         )
+        data_runtime_start = self.recording_validator_source.index(
+            "run_data_runtime() {"
+        )
+        task_runtime_start = self.recording_validator_source.index(
+            "run_task_runtime() {"
+        )
+        data_runtime = self.recording_validator_source[
+            data_runtime_start:task_runtime_start
+        ]
+        cancel_request = data_runtime.rindex("post_json /replay/cancel")
+        ownership_release = data_runtime.rindex('OWN_REPLAY="false"')
+        idle_wait = data_runtime.rindex("wait_for_status")
+        self.assertLess(cancel_request, ownership_release)
+        self.assertLess(ownership_release, idle_wait)
+        task_runtime = self.recording_validator_source[task_runtime_start:]
+        recording_match = task_runtime.index(
+            '"$task_recording_id" == "$recording_id"'
+        )
+        active_branch = task_runtime.index("running|canceling)", recording_match)
+        interlock_probe = task_runtime.index("post_json /cmd_vel", active_branch)
+        terminal_branch = task_runtime.index(
+            "success|failed|canceled)", interlock_probe
+        )
+        terminal_release = task_runtime.index(
+            'OWN_REPLAY="false"', terminal_branch
+        )
+        result_dispatch = task_runtime.index(
+            'case "$task_status" in', terminal_release
+        )
+        self.assertLess(recording_match, active_branch)
+        self.assertLess(active_branch, interlock_probe)
+        self.assertLess(interlock_probe, terminal_branch)
+        self.assertLess(
+            terminal_release,
+            result_dispatch,
+        )
+
+    def test_task_replay_accepts_a_terminal_first_status_without_interlock(self) -> None:
+        task_start = self.recording_validator_source.index(
+            "run_task_runtime() {"
+        )
+        task_end = self.recording_validator_source.index(
+            "\n}\n\ncheck_read_only_contract",
+            task_start,
+        ) + 2
+        task_function = self.recording_validator_source[task_start:task_end]
+
+        with tempfile.TemporaryDirectory(prefix="xczs-validator-test-") as tmp:
+            harness = Path(tmp) / "task_replay_harness.sh"
+            harness.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+TASK_RECORDING=quick_failure
+EXPECT_TASK_FAILURE=true
+TIMEOUT_SECONDS=2
+OWN_REPLAY=false
+RESPONSE_BODY=''
+STATUS_CALLS=0
+CMD_VEL_CALLS=0
+fail() { printf 'ERROR: %s\\n' "$*" >&2; exit 1; }
+get_json() {
+  case "$1" in
+    /recordings/quick_failure)
+      RESPONSE_BODY='{"artifacts":{"scenario":true}}'
+      ;;
+    /replay/status)
+      STATUS_CALLS=$((STATUS_CALLS + 1))
+      if (( STATUS_CALLS == 1 )); then
+        RESPONSE_BODY='{"mode":"idle","read_only":false,"task_replay":{"status":"idle","recording_id":null}}'
+      else
+        RESPONSE_BODY='{"mode":"idle","read_only":false,'
+        RESPONSE_BODY+='"task_replay":{"status":"failed",'
+        RESPONSE_BODY+='"recording_id":"quick_failure",'
+        RESPONSE_BODY+='"error":"expected fast failure"}}'
+      fi
+      ;;
+    *) fail "unexpected GET $1" ;;
+  esac
+}
+post_json() {
+  case "$1" in
+    /replay/task/start)
+      [[ "$3" == 202 ]] || fail "wrong task start expectation"
+      RESPONSE_BODY='{"mode":"task_replay","read_only":true,"task_replay":{"status":"running","recording_id":"quick_failure"}}'
+      ;;
+    /cmd_vel)
+      CMD_VEL_CALLS=$((CMD_VEL_CALLS + 1))
+      ;;
+    *) fail "unexpected POST $1" ;;
+  esac
+}
+wait_for_status() { :; }
+"""
+                + task_function
+                + """
+run_task_runtime
+printf 'owner=%s cmd_vel=%s status_calls=%s\\n' \
+  "$OWN_REPLAY" "$CMD_VEL_CALLS" "$STATUS_CALLS"
+""",
+                encoding="utf-8",
+            )
+            harness.chmod(0o755)
+            result = subprocess.run(
+                [str(harness)],
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+            )
+
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+        self.assertIn("owner=false cmd_vel=0 status_calls=2", result.stdout)
 
     def test_recording_validator_stops_an_unexpectedly_accepted_probe(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xczs-validator-test-") as tmp:
@@ -604,7 +956,10 @@ case "$url" in
   */recordings)
     body='{"recordings":[],"count":0}'; code=200 ;;
   */replay/status)
-    body='{"mode":"idle","read_only":false,"recording":null,"playback":null,"task_replay":null}'; code=200 ;;
+    body='{"mode":"idle","read_only":false,'
+    body+='"recording":{"status":"recording",'
+    body+='"recording_id":"leak_probe"},'
+    body+='"playback":null,"task_replay":null}'; code=200 ;;
   */recording/start)
     body='{"recording_id":"leak_probe"}'; code=202 ;;
   */recording/stop)
@@ -649,6 +1004,224 @@ fi
             self.assertEqual(
                 curl_log.read_text(encoding="utf-8").strip(),
                 "http://127.0.0.1:9/recording/stop",
+            )
+
+    def test_recording_validator_does_not_stop_a_foreign_recording(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-validator-test-") as tmp:
+            tmp_path = Path(tmp)
+            curl_log = tmp_path / "curl.log"
+            fake_curl = tmp_path / "curl"
+            fake_curl.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+output_file=""
+write_format=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) output_file="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
+    -H|-X|--data|--data-binary|--connect-timeout|--max-time) shift 2 ;;
+    -sS|-fsS) shift ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  */recordings)
+    body='{"recordings":[],"count":0}'; code=200 ;;
+  */replay/status)
+    body='{"mode":"idle","read_only":false,'
+    body+='"recording":{"status":"recording",'
+    body+='"recording_id":"foreign_recording"},'
+    body+='"playback":null,"task_replay":null}'; code=200 ;;
+  */recording/start)
+    body='{"recording_id":"our_probe"}'; code=202 ;;
+  */recording/stop)
+    printf '%s\\n' "$url" >>"$CURL_LOG"
+    body='{"status":"stopped"}'; code=202 ;;
+  *)
+    body='{"error":"unexpected test URL"}'; code=500 ;;
+esac
+if [[ -n "$output_file" ]]; then
+  printf '%s' "$body" >"$output_file"
+else
+  printf '%s' "$body"
+fi
+if [[ -n "$write_format" ]]; then
+  printf '%s' "$code"
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                CURL_LOG=str(curl_log),
+                XCZS_CONTROL_API_URL="http://127.0.0.1:9",
+                XCZS_CONTROL_TOKEN="",
+                XCZS_CONTROL_USERNAME="",
+                XCZS_CONTROL_PASSWORD="",
+                XCZS_ADMIN_PASSWORD="",
+            )
+            result = subprocess.run(
+                [str(RECORDING_VALIDATOR)],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("当前活动录制 foreign_recording 不属于本脚本", result.stderr)
+            self.assertFalse(curl_log.exists())
+
+    def test_recording_validator_does_not_stop_without_an_owned_id(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-validator-test-") as tmp:
+            tmp_path = Path(tmp)
+            curl_log = tmp_path / "curl.log"
+            fake_curl = tmp_path / "curl"
+            fake_curl.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+output_file=""
+write_format=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) output_file="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
+    -H|-X|--data|--data-binary|--connect-timeout|--max-time) shift 2 ;;
+    -sS|-fsS) shift ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  */recordings)
+    body='{"recordings":[],"count":0}'; code=200 ;;
+  */replay/status)
+    body='{"mode":"idle","read_only":false,"recording":null,'
+    body+='"playback":null,"task_replay":null}'; code=200 ;;
+  */recording/start)
+    body='not-json'; code=202 ;;
+  */recording/stop)
+    printf '%s\\n' "$url" >>"$CURL_LOG"
+    body='{"status":"stopped"}'; code=202 ;;
+  *)
+    body='{"error":"unexpected test URL"}'; code=500 ;;
+esac
+if [[ -n "$output_file" ]]; then
+  printf '%s' "$body" >"$output_file"
+else
+  printf '%s' "$body"
+fi
+if [[ -n "$write_format" ]]; then
+  printf '%s' "$code"
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                CURL_LOG=str(curl_log),
+                XCZS_CONTROL_API_URL="http://127.0.0.1:9",
+                XCZS_CONTROL_TOKEN="",
+                XCZS_CONTROL_USERNAME="",
+                XCZS_CONTROL_PASSWORD="",
+                XCZS_ADMIN_PASSWORD="",
+            )
+            result = subprocess.run(
+                [str(RECORDING_VALIDATOR)],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("响应缺少 recording_id", result.stderr)
+            self.assertFalse(curl_log.exists())
+
+    def test_recording_validator_cancels_malformed_accepted_replay(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="xczs-validator-test-") as tmp:
+            tmp_path = Path(tmp)
+            curl_log = tmp_path / "curl.log"
+            fake_curl = tmp_path / "curl"
+            fake_curl.write_text(
+                """#!/usr/bin/env bash
+set -euo pipefail
+output_file=""
+write_format=""
+url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) output_file="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
+    -H|-X|--data|--data-binary|--connect-timeout|--max-time) shift 2 ;;
+    -sS) shift ;;
+    http://*) url="$1"; shift ;;
+    *) shift ;;
+  esac
+done
+case "$url" in
+  */recordings)
+    body='{"recordings":[],"count":0}'; code=200 ;;
+  */replay/status)
+    body='{"mode":"idle","read_only":false,"recording":null,'
+    body+='"playback":null,"task_replay":null}'; code=200 ;;
+  */recording/start|*/recording/stop|*/replay/data/pause|\
+  */replay/data/resume|*/replay/data/rate|*/replay/task/start)
+    body='{"detail":"invalid"}'; code=400 ;;
+  */replay/data/start)
+    body='not-json'; code=202 ;;
+  */replay/cancel)
+    printf '%s\n' "$url" >>"$CURL_LOG"
+    body='{"status":"canceled"}'; code=202 ;;
+  *)
+    body='{"error":"unexpected test URL"}'; code=500 ;;
+esac
+if [[ -n "$output_file" ]]; then
+  printf '%s' "$body" >"$output_file"
+else
+  printf '%s' "$body"
+fi
+if [[ -n "$write_format" ]]; then
+  printf '%s' "$code"
+fi
+""",
+                encoding="utf-8",
+            )
+            fake_curl.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update(
+                PATH=f"{tmp}:{environment['PATH']}",
+                CURL_LOG=str(curl_log),
+                XCZS_CONTROL_API_URL="http://127.0.0.1:9",
+                XCZS_CONTROL_TOKEN="",
+                XCZS_CONTROL_USERNAME="",
+                XCZS_CONTROL_PASSWORD="",
+                XCZS_ADMIN_PASSWORD="",
+            )
+            result = subprocess.run(
+                [str(RECORDING_VALIDATOR)],
+                text=True,
+                capture_output=True,
+                env=environment,
+                timeout=10,
+                check=False,
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("返回的不是有效 JSON", result.stderr)
+            self.assertEqual(
+                curl_log.read_text(encoding="utf-8").strip(),
+                "http://127.0.0.1:9/replay/cancel",
             )
 
 

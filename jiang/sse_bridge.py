@@ -134,11 +134,14 @@ class ZenohSource:
         self._session = zenoh.open(conf)
         self._subs: dict[str, zenoh.Subscriber] = {}
         self._listeners: dict[str, list] = {}  # key -> list of callback functions
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._closed = False
 
     def add_listener(self, key: str, callback) -> None:
         """Register a callback for a Zenoh key expression. Auto-subscribes."""
         with self._lock:
+            if self._closed:
+                raise RuntimeError("Zenoh source is closed.")
             if key not in self._subs:
                 self._subs[key] = self._session.declare_subscriber(
                     key, self._make_callback(key)
@@ -149,19 +152,21 @@ class ZenohSource:
 
     def remove_listener(self, key: str, callback) -> None:
         """Remove a callback. Unsubscribes when last listener is removed."""
+        subscriber = None
         with self._lock:
             if key in self._listeners:
                 self._listeners[key] = [
                     c for c in self._listeners[key] if c is not callback
                 ]
                 if not self._listeners[key]:
-                    try:
-                        self._subs[key].undeclare()
-                    except Exception:
-                        pass
-                    del self._subs[key]
+                    subscriber = self._subs.pop(key, None)
                     del self._listeners[key]
-                    print(f"[zenoh] unsubscribed: {key}", file=sys.stderr)
+        if subscriber is not None:
+            try:
+                subscriber.undeclare()
+            except Exception:
+                pass
+            print(f"[zenoh] unsubscribed: {key}", file=sys.stderr)
 
     def _make_callback(self, key: str):
         def _callback(sample: zenoh.Sample):
@@ -198,14 +203,19 @@ class ZenohSource:
         return _callback
 
     def close(self) -> None:
+        subscribers = ()
         with self._lock:
-            for sub in self._subs.values():
-                try:
-                    sub.undeclare()
-                except Exception:
-                    pass
+            if self._closed:
+                return
+            self._closed = True
+            subscribers = tuple(self._subs.values())
             self._subs.clear()
             self._listeners.clear()
+        for sub in subscribers:
+            try:
+                sub.undeclare()
+            except Exception:
+                pass
         self._session.close()
 
     @property
@@ -241,14 +251,6 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_error(400, str(error))
             return
 
-        # Respond with SSE stream
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-
         # Connect to Zenoh and fan out
         # Web 监控只保留每个订阅话题的最新数据，避免高频 ROS 2
         # 话题在浏览器端堆积。该限流不影响 ROS 2 或控制接口频率。
@@ -263,10 +265,28 @@ class SSEHandler(BaseHTTPRequestHandler):
                     pass
                 events.put_nowait((topic, json_str))
 
-        _zenoh_source.add_listener(key, on_data)
+        # Capture the source used for registration.  Global shutdown can swap
+        # or clear _zenoh_source while this request is active; cleanup must
+        # always target the same source.  Do not commit HTTP 200 until the
+        # upstream subscription is known to be usable.
+        source = _zenoh_source
+        if source is None:
+            self.send_error(503, "Zenoh source is unavailable")
+            return
+        try:
+            source.add_listener(key, on_data)
+        except Exception:
+            self.send_error(503, "Zenoh subscription is unavailable")
+            return
 
         next_send_time = 0.0
         try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
             while True:
                 try:
                     latest_item = events.get(timeout=15)
@@ -305,7 +325,7 @@ class SSEHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            _zenoh_source.remove_listener(key, on_data)
+            source.remove_listener(key, on_data)
 
     def do_OPTIONS(self):
         self.send_response(204)

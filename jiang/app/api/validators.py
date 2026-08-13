@@ -41,11 +41,15 @@ async def reject_json_body(request: Request) -> None:
     if not body:
         return
     content_type = request.headers.get("Content-Type", "")
-    if "application/json" not in content_type.lower():
+    # Parameters such as ``charset=utf-8`` are valid, but the media type
+    # itself must be exactly JSON.  A substring check would incorrectly
+    # accept values such as ``text/application/json-evil``.
+    media_type = content_type.partition(";")[0].strip().lower()
+    if media_type != "application/json":
         raise HTTPException(status_code=415, detail="Content-Type 必须是 application/json。")
     try:
         data = json.loads(body)
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(status_code=400, detail="JSON 请求体无效。") from None
-    if data:
+    if not isinstance(data, dict) or data:
         raise HTTPException(status_code=400, detail="此端点不接受请求体参数。")
