@@ -26,6 +26,9 @@ from urllib.parse import urlparse, unquote
 
 import zenoh
 
+from zenoh_key import normalize_ros_key
+from zenoh_session import configure_client_session
+
 # Lazy imports for CDR decoding (require rclpy)
 _cdr_decoder = None
 
@@ -127,7 +130,7 @@ class ZenohSource:
 
     def __init__(self, connect_endpoint: str = "tcp/localhost:7447"):
         conf = zenoh.Config()
-        conf.insert_json5("connect/endpoints", f'["{connect_endpoint}"]')
+        configure_client_session(conf, connect_endpoint)
         self._session = zenoh.open(conf)
         self._subs: dict[str, zenoh.Subscriber] = {}
         self._listeners: dict[str, list] = {}  # key -> list of callback functions
@@ -229,15 +232,14 @@ class SSEHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         global _zenoh_source
         parsed = urlparse(self.path)
-        key = unquote(parsed.path.lstrip("/"))  # //xczs/odom/json → xczs/odom/json
-
-        if not key:
-            self.send_error(400, "Missing key expression")
+        raw_key = unquote(
+            parsed.path[1:] if parsed.path.startswith("/") else parsed.path
+        )
+        try:
+            key = normalize_ros_key(raw_key)
+        except ValueError as error:
+            self.send_error(400, str(error))
             return
-
-        # Strip /json suffix — we decode CDR ourselves
-        if key.endswith("/json"):
-            key = key[:-5]  # xczs/odom/json → xczs/odom
 
         # Respond with SSE stream
         self.send_response(200)
@@ -318,29 +320,53 @@ class SSEHandler(BaseHTTPRequestHandler):
 # ============================================================================
 
 
-def main():
+def _build_argument_parser():
     import argparse
 
     parser = argparse.ArgumentParser(description="Zenoh → SSE bridge")
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="HTTP bind host (default: 127.0.0.1)",
+    )
     parser.add_argument("--port", type=int, default=8001, help="HTTP port (default: 8001)")
     parser.add_argument("--zenoh", default="tcp/localhost:7447", help="Zenoh endpoint")
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = _build_argument_parser().parse_args()
 
     global _zenoh_source
     print(f"[init] Connecting to Zenoh at {args.zenoh}...", file=sys.stderr)
     _zenoh_source = ZenohSource(connect_endpoint=args.zenoh)
-
-    server = ThreadingHTTPServer(("0.0.0.0", args.port), SSEHandler)
-    server.daemon_threads = True
-    print(f"[init] SSE bridge: http://0.0.0.0:{args.port}/<key>", file=sys.stderr)
-
+    server = None
+    serve_started = False
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        server = ThreadingHTTPServer((args.host, args.port), SSEHandler)
+        server.daemon_threads = True
+        print(
+            f"[init] SSE bridge: http://{args.host}:{args.port}/<key>",
+            file=sys.stderr,
+        )
+        try:
+            serve_started = True
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
     finally:
-        _zenoh_source.close()
-        server.shutdown()
+        try:
+            if server is not None:
+                try:
+                    if serve_started:
+                        server.shutdown()
+                finally:
+                    server.server_close()
+        finally:
+            try:
+                _zenoh_source.close()
+            finally:
+                _zenoh_source = None
 
 
 if __name__ == "__main__":

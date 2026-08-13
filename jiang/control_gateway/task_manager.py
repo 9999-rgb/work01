@@ -9,6 +9,7 @@ same events can therefore be consumed by both the HTTP SSE endpoint and a ROS
 from __future__ import annotations
 
 import copy
+import json
 import math
 import queue
 import re
@@ -21,6 +22,7 @@ from typing import Any, Callable, Deque, Dict, Iterable, Mapping, Optional
 
 
 _TASK_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+_EVENT_TYPE_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 _RANDOM_SUFFIX_PATTERN = re.compile(r"^[a-z0-9]{6}$")
 TERMINAL_STATUSES = frozenset({"success", "failed", "canceled"})
 
@@ -75,13 +77,18 @@ class TaskExecutionError(TaskManagerError):
         details: Optional[Mapping[str, Any]] = None,
         result: Optional[Mapping[str, Any]] = None,
     ) -> None:
-        if not isinstance(reason, str) or not reason.strip():
-            raise ValueError("Task failure reason must be a non-empty string.")
-        super().__init__(reason.strip())
-        self.reason = reason.strip()
-        self.code = code
-        self.details = dict(details or {})
-        self.result = dict(result or {})
+        normalized_reason = _nonempty_string(reason, "Task failure reason")
+        super().__init__(normalized_reason)
+        self.reason = normalized_reason
+        self.code = _nonempty_string(code, "Task failure code")
+        self.details = _json_safe_mapping(
+            {} if details is None else details,
+            "Task failure details",
+        )
+        self.result = _json_safe_mapping(
+            {} if result is None else result,
+            "Task failure result",
+        )
 
 
 class TaskCanceledError(TaskManagerError):
@@ -258,10 +265,16 @@ class EventHub:
         timestamp: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Store and fan out an event, returning its JSON-safe envelope."""
-        if not isinstance(event_type, str) or not event_type.strip():
-            raise ValueError("event_type must be a non-empty string.")
+        if (
+            not isinstance(event_type, str)
+            or _EVENT_TYPE_PATTERN.fullmatch(event_type) is None
+        ):
+            raise ValueError(
+                f"event_type must match {_EVENT_TYPE_PATTERN.pattern}."
+            )
         if not isinstance(data, Mapping):
             raise ValueError("event data must be a mapping.")
+        safe_data = _json_safe_mapping(data, "Event data")
         event_timestamp = time.time() if timestamp is None else timestamp
         if (
             isinstance(event_timestamp, bool)
@@ -277,9 +290,9 @@ class EventHub:
             event = {
                 "id": str(sequence),
                 "sequence": sequence,
-                "event": event_type.strip(),
+                "event": event_type,
                 "timestamp": float(event_timestamp),
-                "data": copy.deepcopy(dict(data)),
+                "data": safe_data,
             }
             self._events.append(event)
             subscriptions = tuple(self._subscriptions.values())
@@ -505,6 +518,7 @@ class TaskManager:
         task_type = _validate_task_type(task_type)
         if not isinstance(request, Mapping):
             raise ValueError("Task request must be a mapping.")
+        safe_request = _json_safe_mapping(request, "Task request")
         if cancel_callback is not None and not callable(cancel_callback):
             raise ValueError("cancel_callback must be callable.")
         with self._condition:
@@ -522,7 +536,7 @@ class TaskManager:
                 "task_id": task_id,
                 "type": task_type,
                 "status": "accepted",
-                "request": copy.deepcopy(dict(request)),
+                "request": safe_request,
                 "phase": "accepted",
                 "progress": 0.0,
                 "message": "Task accepted.",
@@ -703,7 +717,7 @@ class TaskManager:
         except Exception as error:  # noqa: BLE001
             # Shutdown remains best effort. The adapter retains ownership and
             # reports an unconfirmed backend termination when appropriate.
-            return str(error) or type(error).__name__
+            return _exception_message(error)
         return None
 
     def _start_shutdown_cancel_worker(self, task_id: str) -> None:
@@ -783,6 +797,11 @@ class TaskManager:
             message = _nonempty_string(message, "message")
         if data is not None and not isinstance(data, Mapping):
             raise ValueError("progress data must be a mapping.")
+        safe_data = (
+            _json_safe_mapping(data, "Task progress data")
+            if data is not None
+            else None
+        )
         with self._condition:
             task = self._task_locked(task_id)
             if task["status"] in TERMINAL_STATUSES:
@@ -800,8 +819,8 @@ class TaskManager:
             task["updated_at"] = now
             if message is not None:
                 task["message"] = message
-            if data is not None:
-                task["business_data"] = copy.deepcopy(dict(data))
+            if safe_data is not None:
+                task["business_data"] = safe_data
             snapshot = _snapshot(task)
             self._publish_progress_locked(snapshot, now)
             self._condition.notify_all()
@@ -835,6 +854,11 @@ class TaskManager:
         code = _nonempty_string(code, "failure code")
         if details is not None and not isinstance(details, Mapping):
             raise ValueError("failure details must be a mapping.")
+        safe_details = (
+            _json_safe_mapping(details, "Task failure details")
+            if details is not None
+            else None
+        )
         if not isinstance(retain_reservation, bool):
             raise ValueError("retain_reservation must be a boolean.")
         return self._finish_task(
@@ -844,7 +868,7 @@ class TaskManager:
             message=reason,
             failure_code=code,
             failure_reason=reason,
-            failure_details=details,
+            failure_details=safe_details,
             retain_reservation=retain_reservation,
         )
 
@@ -877,6 +901,11 @@ class TaskManager:
             raise ValueError("backend_termination_confirmed must be a boolean.")
         if details is not None and not isinstance(details, Mapping):
             raise ValueError("reservation details must be a mapping.")
+        safe_details = (
+            _json_safe_mapping(details, "Task reservation details")
+            if details is not None
+            else None
+        )
         with self._condition:
             task = self._task_locked(task_id)
             if task["status"] not in TERMINAL_STATUSES:
@@ -895,9 +924,9 @@ class TaskManager:
                 ),
                 updated_at=now,
             )
-            if details:
+            if safe_details:
                 existing = dict(task.get("failure_details") or {})
-                existing.update(copy.deepcopy(dict(details)))
+                existing.update(safe_details)
                 task["failure_details"] = existing
             self._cancel_callbacks.pop(task_id, None)
             task["cancel_callback_in_progress"] = False
@@ -960,6 +989,19 @@ class TaskManager:
             )
             if rejected:
                 raise TaskCancellationError("Task executor rejected cancellation.")
+            try:
+                safe_acknowledgement = _json_safe_value(
+                    acknowledgement,
+                    "Task cancellation acknowledgement",
+                )
+            except ValueError:
+                # Cancellation callbacks historically accepted arbitrary
+                # truthy acknowledgements.  Preserve that acceptance contract
+                # without allowing a custom object or NaN to poison snapshots.
+                safe_acknowledgement = {
+                    "accepted": True,
+                    "acknowledgement_discarded": "not_json_safe",
+                }
         except Exception as error:
             release_after_error = False
             with self._condition:
@@ -969,7 +1011,7 @@ class TaskManager:
                     task.update(
                         status=previous_status,
                         phase="cancel_failed",
-                        message=str(error),
+                        message=_exception_message(error),
                         cancel_requested=False,
                         updated_at=_finite_timestamp(self._clock(), "task clock"),
                     )
@@ -984,18 +1026,16 @@ class TaskManager:
                 self.release_reservation(
                     task_id,
                     backend_termination_confirmed=True,
-                    details={"cancel_callback_error": str(error)},
+                    details={"cancel_callback_error": _exception_message(error)},
                 )
             if isinstance(error, TaskCancellationError):
                 raise
-            raise TaskCancellationError(str(error)) from error
+            raise TaskCancellationError(_exception_message(error)) from error
         if retained_terminal:
             with self._condition:
                 task = self._task_locked(task_id)
                 task["cancel_callback_in_progress"] = False
-                task["cancel_acknowledgement"] = copy.deepcopy(
-                    acknowledgement
-                )
+                task["cancel_acknowledgement"] = safe_acknowledgement
                 task["updated_at"] = _finite_timestamp(
                     self._clock(),
                     "task clock",
@@ -1007,7 +1047,7 @@ class TaskManager:
             task = self._task_locked(task_id)
             task["cancel_callback_in_progress"] = False
             if task["status"] == "canceling":
-                task["cancel_acknowledgement"] = copy.deepcopy(acknowledgement)
+                task["cancel_acknowledgement"] = safe_acknowledgement
                 task["updated_at"] = _finite_timestamp(
                     self._clock(),
                     "task clock",
@@ -1099,6 +1139,16 @@ class TaskManager:
     ) -> Dict[str, Any]:
         if result is not None and not isinstance(result, Mapping):
             raise ValueError("Task result must be a mapping.")
+        safe_result = (
+            _json_safe_mapping(result, "Task result")
+            if result is not None
+            else {}
+        )
+        safe_failure_details = (
+            _json_safe_mapping(failure_details, "Task failure details")
+            if failure_details is not None
+            else None
+        )
         message = _nonempty_string(message, "message")
         with self._condition:
             task = self._task_locked(task_id)
@@ -1123,13 +1173,11 @@ class TaskManager:
                 phase="completed",
                 progress=1.0,
                 message=message,
-                result=copy.deepcopy(dict(result or {})),
+                result=safe_result,
                 failure_code=failure_code,
                 failure_reason=failure_reason,
                 failure_details=(
-                    copy.deepcopy(dict(failure_details))
-                    if failure_details is not None
-                    else None
+                    safe_failure_details
                 ),
                 updated_at=now,
                 completed_at=now,
@@ -1253,6 +1301,18 @@ class TaskManager:
                     "Task executor returned a non-mapping result.",
                     code="invalid_executor_result",
                 )
+            if result is not None:
+                try:
+                    result = _json_safe_mapping(
+                        result,
+                        "Task executor result",
+                    )
+                except ValueError as error:
+                    raise TaskExecutionError(
+                        "Task executor returned a result that is not JSON-safe.",
+                        code="invalid_executor_result",
+                        details={"validation_error": _exception_message(error)},
+                    ) from error
             self._finish_executor_result(
                 task_id,
                 result,
@@ -1262,7 +1322,7 @@ class TaskManager:
             try:
                 self.mark_canceled(
                     task_id,
-                    reason=str(error) or "Task was canceled.",
+                    reason=_exception_message(error, "Task was canceled."),
                 )
             except InvalidTaskTransitionError:
                 return
@@ -1284,9 +1344,9 @@ class TaskManager:
             try:
                 self.fail_task(
                     task_id,
-                    str(error) or type(error).__name__,
+                    _exception_message(error),
                     code="internal_error",
-                    details={"exception_type": type(error).__name__},
+                    details={"exception_type": _exception_type_name(error)},
                 )
             except InvalidTaskTransitionError:
                 # Cancellation can become terminal while an executor unwinds.
@@ -1317,6 +1377,48 @@ def _snapshot(task: Mapping[str, Any]) -> Dict[str, Any]:
     return copy.deepcopy(dict(task))
 
 
+def _json_safe_value(value: Any, label: str) -> Any:
+    """Return a detached JSON-normalized value with only finite numbers."""
+    try:
+        encoded = json.dumps(
+            value,
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        # Also reject lone surrogate code points that json.dumps can retain
+        # with ensure_ascii=False but UTF-8 SSE/ROS transports cannot encode.
+        encoded_bytes = encoded.encode("utf-8")
+        return json.loads(encoded_bytes)
+    except (
+        TypeError,
+        ValueError,
+        OverflowError,
+        UnicodeError,
+        RecursionError,
+    ) as error:
+        raise ValueError(
+            f"{label} must contain only JSON-safe values and finite numbers: "
+            f"{error}"
+        ) from error
+
+
+def _json_safe_mapping(value: Mapping[str, Any], label: str) -> Dict[str, Any]:
+    """Return a detached JSON-normalized mapping with only finite numbers.
+
+    Task snapshots are sent through FastAPI, SSE, ROS ``String`` messages and
+    recording files.  Validating at the lifecycle boundary prevents one NaN,
+    cyclic object or custom Python value from completing a task successfully
+    and then breaking every downstream event encoder.
+    """
+    if not isinstance(value, Mapping):
+        raise ValueError(f"{label} must be a mapping.")
+    normalized = _json_safe_value(dict(value), label)
+    if not isinstance(normalized, dict):
+        raise ValueError(f"{label} must encode as a JSON object.")
+    return normalized
+
+
 def _validate_task_type(task_type: Any) -> str:
     if not isinstance(task_type, str) or not _TASK_TYPE_PATTERN.fullmatch(task_type):
         raise ValueError(f"Task type must match {_TASK_TYPE_PATTERN.pattern}.")
@@ -1326,7 +1428,42 @@ def _validate_task_type(task_type: Any) -> str:
 def _nonempty_string(value: Any, label: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} must be a non-empty string.")
-    return value.strip()
+    normalized = value.strip()
+    try:
+        normalized.encode("utf-8")
+    except UnicodeError as error:
+        raise ValueError(f"{label} must be valid UTF-8 text.") from error
+    return normalized
+
+
+def _exception_message(
+    error: BaseException,
+    fallback: Optional[str] = None,
+) -> str:
+    """Return a non-empty UTF-8 error string safe for task snapshots."""
+    type_name = _exception_type_name(error)
+    try:
+        message = str(error)
+    except Exception:
+        message = ""
+    message = message or fallback or type_name
+    try:
+        return _nonempty_string(message, "exception message")
+    except ValueError:
+        if fallback is not None:
+            try:
+                return _nonempty_string(fallback, "exception fallback")
+            except ValueError:
+                pass
+        return type_name
+
+
+def _exception_type_name(error: BaseException) -> str:
+    """Return an encodable exception type label for structured details."""
+    try:
+        return _nonempty_string(type(error).__name__, "exception type")
+    except ValueError:
+        return "Exception"
 
 
 def _progress_value(value: Any) -> float:

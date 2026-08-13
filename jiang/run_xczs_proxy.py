@@ -18,22 +18,12 @@ on ``{topic}/json`` for the browser monitoring dashboard.
 from __future__ import annotations
 
 import argparse
-
-from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
-from sensor_msgs.msg import JointState
-from trajectory_msgs.msg import JointTrajectory
+import sys
 
 from zenoh_proxy import (
     get_registry,
     register_standard_types,
 )
-from zenoh_proxy.handler import (
-    add_timestamp,
-    flatten_joint_state,
-    flatten_twist,
-)
-from zenoh_proxy.runner import ProxyRunner
 
 
 def register_xczs_topics() -> None:
@@ -44,6 +34,16 @@ def register_xczs_topics() -> None:
     ``register_standard_types()``, so they win the specificity contest and
     get applied to xczs robot topics.
     """
+    from geometry_msgs.msg import Twist
+    from nav_msgs.msg import Odometry
+    from sensor_msgs.msg import JointState
+    from trajectory_msgs.msg import JointTrajectory
+    from zenoh_proxy.handler import (
+        add_timestamp,
+        flatten_joint_state,
+        flatten_twist,
+    )
+
     registry = get_registry()
 
     # -- XCZS cmd_vel: flatten + timestamp -------------------------------
@@ -92,7 +92,7 @@ def register_xczs_topics() -> None:
         return data
 
 
-def main() -> None:
+def _build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="XCZS inspection robot Zenoh proxy",
     )
@@ -105,14 +105,42 @@ def main() -> None:
         help="Zenoh bridge TCP port (default: 7447)",
     )
     parser.add_argument(
-        "--control-port", type=int, default=8090,
-        help="HTTP control server port (0=disabled, default: 8090)",
+        "--control-port", type=int, default=0,
+        help="Legacy unauthenticated HTTP control port (default: disabled)",
     )
     parser.add_argument(
         "--list", action="store_true",
         help="List registered topics and exit",
     )
-    args = parser.parse_args()
+    return parser
+
+
+def _start_legacy_control_server(port: int):
+    """Start the loopback-only compatibility server when explicitly asked."""
+    from control_gateway import ControlServer
+
+    print(
+        "WARNING: --control-port enables the legacy unauthenticated control "
+        "API on loopback only. Prefer control_server.py for JWT-protected "
+        "Web control.",
+        file=sys.stderr,
+    )
+    server = ControlServer(host="127.0.0.1", port=port)
+    try:
+        server.start()
+    except BaseException:
+        try:
+            server.stop()
+        except Exception:
+            pass
+        raise
+    return server
+
+
+def main() -> None:
+    from zenoh_proxy.runner import ProxyRunner
+
+    args = _build_argument_parser().parse_args()
 
     # -- Register all types ----------------------------------------------
     register_standard_types()
@@ -127,28 +155,31 @@ def main() -> None:
 
     # -- Start HTTP control server ---------------------------------------
     ctrl = None
+    runner = None
     ctrl_port = int(args.control_port) if args.control_port > 0 else 0
-    if ctrl_port > 0:
-        from control_server import ControlServer
-        ctrl = ControlServer(port=ctrl_port)
-        ctrl.start()
-        print(f"Control server: http://127.0.0.1:{ctrl_port}")
-        print("  POST /cmd_vel")
-        print("  POST /joint_trajectory")
-        print("  POST /cabinet/press")
-        print("  GET  /cabinet/controls")
-        print("  GET  /cabinet/status")
-        print("  GET  /health")
-
-    # -- Connect and run -------------------------------------------------
-    runner = ProxyRunner(host=args.host, port=args.port)
-    runner.connect()
-    runner.subscribe_all_registered()
     try:
+        if ctrl_port > 0:
+            ctrl = _start_legacy_control_server(ctrl_port)
+            print(f"Control server: http://127.0.0.1:{ctrl_port}")
+            print("  POST /cmd_vel")
+            print("  POST /joint_trajectory")
+            print("  POST /cabinet/press")
+            print("  GET  /cabinet/controls")
+            print("  GET  /cabinet/status")
+            print("  GET  /health")
+
+        # -- Connect and run ---------------------------------------------
+        runner = ProxyRunner(host=args.host, port=args.port)
+        runner.connect()
+        runner.subscribe_all_registered()
         runner.spin()
     finally:
-        if ctrl is not None:
-            ctrl.stop()
+        try:
+            if runner is not None:
+                runner.close()
+        finally:
+            if ctrl is not None:
+                ctrl.stop()
 
 
 if __name__ == "__main__":

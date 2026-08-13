@@ -3,10 +3,31 @@
 from __future__ import annotations
 
 from datetime import datetime
+import unicodedata
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from app.auth.models import ROLE_ADMIN, ROLE_OPERATOR
+
+
+def _normalize_username(value: str) -> str:
+    """Return the canonical account name used by create and login APIs.
+
+    Leading/trailing whitespace is harmlessly normalized.  Whitespace inside
+    an account name and Unicode control/format characters are rejected: they
+    are visually ambiguous in the administration UI and cannot be entered
+    consistently by the browser client, which trims its login field.
+    """
+    if not isinstance(value, str):
+        raise ValueError("username 必须是字符串")
+    normalized = value.strip()
+    if any(
+        character.isspace()
+        or unicodedata.category(character).startswith("C")
+        for character in normalized
+    ):
+        raise ValueError("username 不能包含空白或控制字符")
+    return normalized
 
 
 class UserCreate(BaseModel):
@@ -32,6 +53,11 @@ class UserCreate(BaseModel):
         examples=[ROLE_OPERATOR],
     )
 
+    @field_validator("username", mode="before")
+    @classmethod
+    def _username(cls, value: str) -> str:
+        return _normalize_username(value)
+
     @field_validator("role")
     @classmethod
     def _validate_role(cls, value: str) -> str:
@@ -55,7 +81,7 @@ class UserUpdate(BaseModel):
         default=None,
         description=f"新角色（可选）：{ROLE_ADMIN} 或 {ROLE_OPERATOR}",
     )
-    is_active: bool | None = Field(
+    is_active: StrictBool | None = Field(
         default=None,
         description="是否启用；禁用后该用户无法登录",
     )
@@ -85,8 +111,18 @@ class LoginRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(description="用户名", examples=["admin"])
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+        description="用户名",
+        examples=["admin"],
+    )
     password: str = Field(description="密码", examples=["changeme123"])
+
+    @field_validator("username", mode="before")
+    @classmethod
+    def _username(cls, value: str) -> str:
+        return _normalize_username(value)
 
 
 class TokenResponse(BaseModel):

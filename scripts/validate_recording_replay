@@ -17,6 +17,7 @@ TIMEOUT_SECONDS=120
 RESPONSE_BODY=""
 RESPONSE_CODE=""
 OWN_RECORDING="false"
+OWN_RECORDING_ID=""
 OWN_REPLAY="false"
 TEMP_DIR=""
 AUTH_CURL_ARGS=()
@@ -258,6 +259,17 @@ request_json() {
   fi
   RESPONSE_BODY="$(<"$output_file")"
   RESPONSE_CODE="$code"
+  # Claim any successful start response before validating its JSON shape or
+  # the caller's expected status.  A regressed server must not leave a
+  # recorder running merely because this validation script exits early.
+  if [[ "$method" == "POST" && "$path" == "/recording/start" &&
+        "$RESPONSE_CODE" =~ ^2[0-9][0-9]$ ]]; then
+    OWN_RECORDING="true"
+    OWN_RECORDING_ID="$(
+      jq -r '.recording_id // .recording.recording_id // ""' \
+        <<<"$RESPONSE_BODY" 2>/dev/null || true
+    )"
+  fi
   jq -e . <<<"$RESPONSE_BODY" >/dev/null ||
     fail "$method $path 返回的不是有效 JSON"
 }
@@ -284,6 +296,11 @@ post_json() {
   local body="$2"
   local expected="$3"
   request_json POST "$path" "$body"
+  if [[ "$path" == "/recording/start" && "$expected" != "$RESPONSE_CODE" &&
+        "$OWN_RECORDING" == "true" ]]; then
+    printf 'WARNING: unexpected recording start claimed for cleanup%s.\n' \
+      "${OWN_RECORDING_ID:+: $OWN_RECORDING_ID}" >&2
+  fi
   expect_code "$expected" "POST $path"
 }
 
@@ -439,11 +456,13 @@ run_data_runtime() {
   OWN_RECORDING="true"
   local recording_id
   recording_id="$(jq -r '.recording_id // ""' <<<"$RESPONSE_BODY")"
+  OWN_RECORDING_ID="$recording_id"
   if [[ -z "$recording_id" ]]; then
     wait_for_status \
       '(.recording.status // .recording.state // "") == "recording"' \
       '录制进入 recording 状态'
     recording_id="$(jq -r '.recording.recording_id // ""' <<<"$RESPONSE_BODY")"
+    OWN_RECORDING_ID="$recording_id"
   fi
   [[ "$recording_id" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] ||
     fail "录制服务未返回安全 recording_id"
@@ -454,6 +473,7 @@ run_data_runtime() {
 
   post_json /recording/stop '{}' 202
   OWN_RECORDING="false"
+  OWN_RECORDING_ID=""
   verify_manifest "$recording_id"
   local detail_json="$RESPONSE_BODY"
   get_json "/recordings/$recording_id/timeline"

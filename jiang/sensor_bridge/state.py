@@ -74,6 +74,8 @@ class SensorStreamState:
         """Return readiness and data-age information."""
         now = time.monotonic()
         with self._lock:
+            camera_ready = self._camera_jpeg is not None
+            lidar_ready = self._lidar_payload is not None
             camera_age = (
                 now - self._camera_received_at
                 if self._camera_received_at > 0.0
@@ -85,14 +87,16 @@ class SensorStreamState:
                 else None
             )
             return {
-                "status": "ok",
+                "status": (
+                    "ok" if camera_ready and lidar_ready else "degraded"
+                ),
                 "camera": {
-                    "ready": self._camera_jpeg is not None,
+                    "ready": camera_ready,
                     "sequence": self._camera_sequence,
                     "age_seconds": camera_age,
                 },
                 "lidar": {
-                    "ready": self._lidar_payload is not None,
+                    "ready": lidar_ready,
                     "sequence": self._lidar_sequence,
                     "age_seconds": lidar_age,
                 },

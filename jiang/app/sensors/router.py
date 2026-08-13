@@ -96,8 +96,14 @@ async def camera_jpeg(state: SensorStateDep) -> Response:
     "/camera.mjpg",
     summary="MJPEG 相机流",
 )
-async def camera_mjpeg(state: SensorStateDep, request: Request) -> StreamingResponse:
+async def camera_mjpeg(state: SensorStateDep, request: Request) -> Response:
     authorization = ActiveTokenChecker.from_request(request)
+    _sequence, jpeg, _metadata = await asyncio.to_thread(state.camera_snapshot)
+    if jpeg is None:
+        return JSONResponse(
+            status_code=503,
+            content={"error": "相机帧不可用。"},
+        )
 
     async def frame_generator():
         last_sequence = -1
@@ -179,8 +185,8 @@ async def lidar_websocket(websocket: WebSocket) -> None:
     finally:
         try:
             await websocket.close()
-        except RuntimeError:
-            # 对端已完成 close handshake。
+        except (RuntimeError, WebSocketDisconnect):
+            # 对端可能已经断开 TCP，或已经完成 close handshake。
             pass
 
 

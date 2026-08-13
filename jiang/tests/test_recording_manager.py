@@ -567,6 +567,33 @@ class RecordingManagerTest(unittest.TestCase):
         self.assertEqual("failed", failed["state"])
         self.assertIn("code 7", failed["error"])
 
+        manager.start_playback("run_001")
+        self.factory.processes[-1].returncode = -signal.SIGINT
+        signaled = manager.playback_status()
+        self.assertEqual("failed", signaled["state"])
+        self.assertIn("code -2", signaled["error"])
+
+    def test_requested_sigint_exit_is_a_clean_playback_stop(self) -> None:
+        signals = _SignalController()
+        manager = self._manager(signal_sender=signals)
+        self._completed_recording(manager)
+        manager.start_playback("run_001")
+        process_count = len(self.factory.processes)
+        signals.exit_code = -signal.SIGINT
+
+        restarted = manager.set_playback_rate(2.0)
+
+        self.assertEqual("playing", restarted["state"])
+        self.assertEqual(2.0, restarted["rate"])
+        self.assertIsNone(restarted["error"])
+        self.assertEqual(process_count + 1, len(self.factory.processes))
+
+        canceled = manager.cancel_playback()
+
+        self.assertEqual("canceled", canceled["state"])
+        self.assertIsNone(canceled["error"])
+        self.assertEqual("idle", manager.active_mode)
+
     def test_unexpected_recorder_exit_is_finalized_and_releases_owner(self) -> None:
         manager = self._manager()
         manager.start_recording("recorder_crash")

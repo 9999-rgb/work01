@@ -12,6 +12,8 @@ import signal
 import time
 from typing import List, Optional, TYPE_CHECKING, Type
 
+from zenoh_session import configure_client_session
+
 if TYPE_CHECKING:
     import zenoh
 
@@ -76,18 +78,26 @@ class ProxyRunner:
         """
         import zenoh
 
+        if self._session is not None:
+            raise RuntimeError("Zenoh proxy is already connected.")
         conf = zenoh.Config()
-        conf.insert_json5(
-            "connect/endpoints",
-            f'["tcp/{self._host}:{self._port}"]',
-        )
-        self._session = zenoh.open(conf)
-        self._sub_mgr = SubscriptionManager(
-            self._session,
-            registry=self._registry,
-            default_msg_type=self._default_msg_type,
-            output_suffix=self._output_suffix,
-        )
+        configure_client_session(conf, f"tcp/{self._host}:{self._port}")
+        session = zenoh.open(conf)
+        try:
+            subscription_manager = SubscriptionManager(
+                session,
+                registry=self._registry,
+                default_msg_type=self._default_msg_type,
+                output_suffix=self._output_suffix,
+            )
+        except BaseException:
+            try:
+                session.close()
+            except Exception:
+                pass
+            raise
+        self._session = session
+        self._sub_mgr = subscription_manager
         print(f"Connected to Zenoh: {self._host}:{self._port}")
 
     # ------------------------------------------------------------------
@@ -148,13 +158,17 @@ class ProxyRunner:
 
     def close(self) -> None:
         """Gracefully close all subscriptions and the Zenoh session."""
-        if self._sub_mgr is not None:
-            self._sub_mgr.close()
-            self._sub_mgr = None
-        if self._session is not None:
-            self._session.close()
-            self._session = None
-            print("Disconnected from Zenoh")
+        subscription_manager = self._sub_mgr
+        session = self._session
+        self._sub_mgr = None
+        self._session = None
+        try:
+            if subscription_manager is not None:
+                subscription_manager.close()
+        finally:
+            if session is not None:
+                session.close()
+                print("Disconnected from Zenoh")
 
     # ------------------------------------------------------------------
     # Properties

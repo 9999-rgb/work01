@@ -312,6 +312,30 @@ if(BUILD_TESTING)
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
       "$<INSTALL_INTERFACE:include>"
   )
+  ament_add_gtest(
+    action_and_control_state_policy_test
+    test/action_and_control_state_policy_test.cpp
+  )
+  target_compile_features(
+    action_and_control_state_policy_test PUBLIC cxx_std_17
+  )
+  target_include_directories(
+    action_and_control_state_policy_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+  ament_add_gtest(
+    cabinet_pose_frame_contract_test
+    test/cabinet_pose_frame_contract_test.cpp
+  )
+  target_compile_features(
+    cabinet_pose_frame_contract_test PUBLIC cxx_std_17
+  )
+  target_compile_definitions(
+    cabinet_pose_frame_contract_test
+    PRIVATE XCZS_CONTROL_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
+  )
   ament_add_pytest_test(
     launch_startup_policy_test
     test/test_launch_startup_policy.py

@@ -726,6 +726,35 @@ class FastAPIAppContractTest(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
 
+    def test_external_boolean_and_command_fields_are_strict(self) -> None:
+        requests = (
+            ("/navigation/mode", {"enabled": "false"}),
+            (
+                "/cabinet/press",
+                {
+                    "button_id": "box_8_button_1",
+                    "navigate_to_staging_pose": "false",
+                },
+            ),
+            (
+                "/cabinet/operate",
+                {
+                    "control_id": "box_8_button_1",
+                    "command": "press",
+                    "navigate_to_staging_pose": "false",
+                },
+            ),
+            (
+                "/cabinet/operate",
+                {"control_id": "box_8_button_1", "command": True},
+            ),
+            ("/recording/start", {"include_sensors": "false"}),
+        )
+        for path, body in requests:
+            with self.subTest(path=path, body=body):
+                response = self.client.post(path, json=body)
+                self.assertEqual(response.status_code, 400, response.text)
+
     def test_non_positive_force_rejected(self) -> None:
         response = self.client.post(
             "/task/operate",
@@ -1008,6 +1037,84 @@ class FastAPIAuthGateTest(unittest.TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(response.json()["role"], "operator")
 
+    def test_username_is_normalized_consistently_and_ambiguous_names_fail(
+        self,
+    ) -> None:
+        token = self._login()
+        headers = {"Authorization": f"Bearer {token}"}
+        created = self.client.post(
+            "/users",
+            json={
+                "username": "  normalized_user  ",
+                "password": "operator-pass",
+                "role": "operator",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        self.assertEqual(created.json()["username"], "normalized_user")
+        login = self.client.post(
+            "/auth/login",
+            json={
+                "username": "  normalized_user  ",
+                "password": "operator-pass",
+            },
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+
+        for username in ("bad user", "bad\nuser", "bad\u200buser", "   "):
+            with self.subTest(username=repr(username)):
+                rejected = self.client.post(
+                    "/users",
+                    json={
+                        "username": username,
+                        "password": "operator-pass",
+                        "role": "operator",
+                    },
+                    headers=headers,
+                )
+                self.assertEqual(rejected.status_code, 400, rejected.text)
+                login_rejected = self.client.post(
+                    "/auth/login",
+                    json={
+                        "username": username,
+                        "password": "operator-pass",
+                    },
+                )
+                self.assertEqual(
+                    login_rejected.status_code,
+                    400,
+                    login_rejected.text,
+                )
+
+    def test_user_active_flag_rejects_string_coercion(self) -> None:
+        token = self._login()
+        headers = {"Authorization": f"Bearer {token}"}
+        created = self.client.post(
+            "/users",
+            json={
+                "username": "strict_active_user",
+                "password": "operator-pass",
+                "role": "operator",
+            },
+            headers=headers,
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        rejected = self.client.patch(
+            f"/users/{created.json()['id']}",
+            json={"is_active": "false"},
+            headers=headers,
+        )
+        self.assertEqual(rejected.status_code, 400, rejected.text)
+        login = self.client.post(
+            "/auth/login",
+            json={
+                "username": "strict_active_user",
+                "password": "operator-pass",
+            },
+        )
+        self.assertEqual(login.status_code, 200, login.text)
+
     def test_operator_cannot_manage_users(self) -> None:
         admin_token = self._login()
         create_response = self.client.post(
@@ -1197,11 +1304,6 @@ class SecurityConfigUnitTest(unittest.TestCase):
             _websocket_origin_allowed(None, "192.168.1.20:8090", configured)
         )
 
-    def test_production_uvicorn_disables_access_log_for_query_tokens(self) -> None:
-        source = (JIANG_DIR / "control_server.py").read_text(encoding="utf-8")
-        self.assertIn("uvicorn.run(", source)
-        self.assertIn("access_log=False", source)
-
     def test_control_server_origin_defaults_follow_selected_port(self) -> None:
         import argparse
         from control_server import _effective_allowed_origins
@@ -1303,6 +1405,8 @@ class SecurityConfigUnitTest(unittest.TestCase):
         )
         build_sensors.assert_called_once_with(args, fatal_callback)
         self.assertIs(run.call_args.args[0], app)
+        self.assertFalse(run.call_args.kwargs["access_log"])
+        self.assertEqual(run.call_args.kwargs["log_level"], "warning")
 
     def test_bootstrap_recovers_without_modifying_existing_users(self) -> None:
         import asyncio

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -20,11 +19,10 @@ from fastapi.responses import StreamingResponse
 
 from app.auth.deps import ActiveTokenChecker
 from sse_bridge import ZenohSource
+from zenoh_key import normalize_ros_key
 
 MONITOR_UPDATE_INTERVAL_SECONDS = 1.0
 HEARTBEAT_SECONDS = 15.0
-_ROS_KEY_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_]+$")
-
 router = APIRouter(tags=["SSE 事件"])
 
 
@@ -37,23 +35,13 @@ def _get_zenoh_source(request: Request) -> ZenohSource:
 
 def _normalize_ros_key(key: str) -> str:
     """只允许单个确定的 ROS 话题 key，禁止 Zenoh 通配订阅。"""
-    value = key[:-5] if key.endswith("/json") else key
-    segments = value.split("/")
-    if (
-        not value
-        or len(value) > 255
-        or any(
-            not segment
-            or len(segment) > 64
-            or _ROS_KEY_SEGMENT_RE.fullmatch(segment) is None
-            for segment in segments
-        )
-    ):
+    try:
+        return normalize_ros_key(key)
+    except ValueError as error:
         raise HTTPException(
             status_code=400,
-            detail="key 必须是不含通配符的规范 ROS 话题。",
-        )
-    return value
+            detail=str(error),
+        ) from error
 
 
 @router.get(

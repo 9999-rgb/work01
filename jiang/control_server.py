@@ -245,7 +245,12 @@ def main() -> None:
         app,
         host=args.host,
         port=args.port,
-        log_level="info",
+        # Uvicorn 0.52 logs WebSocket accept lines (including the complete
+        # query string) through ``uvicorn.error`` at INFO, independently of
+        # ``access_log``.  Browser WebSocket authentication uses ``?token=``;
+        # keep warnings/errors while suppressing that credential-bearing
+        # lifecycle line.
+        log_level="warning",
         # EventSource/MJPEG/WebSocket 需要在查询参数传递 token。
         # 禁用请求行日志，防止凭证落入终端或日志文件。
         access_log=False,

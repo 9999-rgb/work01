@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import queue
 import re
 import sys
@@ -217,6 +218,161 @@ class TaskManagerTest(unittest.TestCase):
         failed = manager.wait(failure["task_id"], timeout=2.0)
         self.assertEqual("failed", failed["status"])
         self.assertEqual("target_unreachable", failed["failure_code"])
+
+    def test_json_boundaries_reject_non_finite_state_transactionally(self) -> None:
+        manager = self._manager()
+        with self.assertRaisesRegex(ValueError, "finite"):
+            manager.create_task("operate", {"force": float("nan")})
+        self.assertIsNone(manager.active_task_id)
+        self.assertEqual([], manager.events.events_after())
+
+        task = manager.create_task("operate", {"force": 5.0})
+        manager.start_task(task["task_id"])
+        with self.assertRaisesRegex(ValueError, "finite"):
+            manager.report_progress(
+                task["task_id"],
+                "contact",
+                0.5,
+                data={"measured_force": float("inf")},
+            )
+        unchanged = manager.get_task(task["task_id"])
+        self.assertEqual({}, unchanged["business_data"])
+        self.assertEqual("running", unchanged["status"])
+
+        with self.assertRaisesRegex(ValueError, "finite"):
+            manager.succeed_task(
+                task["task_id"],
+                {"measured_force": float("nan")},
+            )
+        self.assertEqual("running", manager.get_task(task["task_id"])["status"])
+        with self.assertRaisesRegex(ValueError, "finite"):
+            manager.fail_task(
+                task["task_id"],
+                "backend failed",
+                details={"measured_force": float("-inf")},
+            )
+        self.assertEqual("running", manager.get_task(task["task_id"])["status"])
+        manager.fail_task(task["task_id"], "safe failure")
+
+    def test_progress_text_rejects_non_utf8_before_mutation(self) -> None:
+        manager = self._manager()
+        task = manager.create_task("operate", {"force": 5.0})
+        manager.start_task(task["task_id"])
+        before = manager.get_task(task["task_id"])
+
+        with self.assertRaisesRegex(ValueError, "UTF-8"):
+            manager.report_progress(
+                task["task_id"],
+                "invalid\ud800phase",
+                0.5,
+            )
+        self.assertEqual(before, manager.get_task(task["task_id"]))
+        manager.fail_task(task["task_id"], "safe failure")
+
+    def test_reservation_details_are_validated_before_release(self) -> None:
+        manager = self._manager()
+        task = manager.create_task("navigate", {"cabinet": "cabinet_a"})
+        manager.fail_task(
+            task["task_id"],
+            "backend cleanup pending",
+            retain_reservation=True,
+        )
+        with self.assertRaisesRegex(ValueError, "finite"):
+            manager.release_reservation(
+                task["task_id"],
+                backend_termination_confirmed=True,
+                details={"elapsed": float("nan")},
+            )
+        retained = manager.get_task(task["task_id"])
+        self.assertTrue(retained["reservation_active"])
+        self.assertEqual(task["task_id"], manager.active_task_id)
+        manager.release_reservation(
+            task["task_id"],
+            backend_termination_confirmed=True,
+            details={"elapsed": 0.5},
+        )
+
+    def test_invalid_executor_results_fail_with_encodable_events(self) -> None:
+        for invalid_result in (
+            {"measurement": float("nan")},
+            {"value": object()},
+            ["not", "a", "mapping"],
+        ):
+            with self.subTest(result=type(invalid_result).__name__):
+                manager = self._manager()
+                task = manager.submit(
+                    "operate",
+                    {"cabinet": "cabinet_a"},
+                    lambda _context, value=invalid_result: value,
+                )
+                failed = manager.wait(task["task_id"], timeout=1.0)
+                self.assertEqual("failed", failed["status"])
+                self.assertEqual(
+                    "invalid_executor_result",
+                    failed["failure_code"],
+                )
+                for event in manager.events.events_after():
+                    json.dumps(event, allow_nan=False).encode("utf-8")
+
+    def test_invalid_executor_exception_text_still_finishes_safely(self) -> None:
+        manager = self._manager()
+
+        def fail_with_invalid_text(_context: Any) -> None:
+            raise RuntimeError("invalid\ud800text")
+
+        task = manager.submit(
+            "operate",
+            {"cabinet": "cabinet_a"},
+            fail_with_invalid_text,
+        )
+        failed = manager.wait(task["task_id"], timeout=1.0)
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("internal_error", failed["failure_code"])
+        self.assertEqual("RuntimeError", failed["failure_reason"])
+        for event in manager.events.events_after():
+            json.dumps(event, allow_nan=False).encode("utf-8")
+
+    def test_invalid_structured_failure_text_still_finishes_safely(self) -> None:
+        manager = self._manager()
+
+        def fail_with_invalid_text(_context: Any) -> None:
+            raise TaskExecutionError("invalid\ud800text")
+
+        task = manager.submit(
+            "operate",
+            {"cabinet": "cabinet_a"},
+            fail_with_invalid_text,
+        )
+        failed = manager.wait(task["task_id"], timeout=1.0)
+        self.assertEqual("failed", failed["status"])
+        self.assertEqual("internal_error", failed["failure_code"])
+        for event in manager.events.events_after():
+            json.dumps(event, allow_nan=False).encode("utf-8")
+
+    def test_non_json_cancellation_acknowledgement_cannot_poison_task(self) -> None:
+        manager = self._manager()
+        task = manager.create_task(
+            "navigate",
+            {"cabinet": "cabinet_a"},
+            cancel_callback=lambda _task_id: {
+                "accepted": True,
+                "latency": float("nan"),
+            },
+        )
+        manager.start_task(task["task_id"])
+        canceling = manager.cancel_task(task["task_id"])
+        self.assertEqual("canceling", canceling["status"])
+        self.assertEqual(
+            {
+                "accepted": True,
+                "acknowledgement_discarded": "not_json_safe",
+            },
+            canceling["cancel_acknowledgement"],
+        )
+        terminal = manager.mark_canceled(task["task_id"])
+        json.dumps(terminal, allow_nan=False).encode("utf-8")
+        for event in manager.events.events_after():
+            json.dumps(event, allow_nan=False).encode("utf-8")
 
     def test_backend_success_is_authoritative_over_late_cancel_request(
         self,
@@ -513,6 +669,25 @@ class TaskManagerTest(unittest.TestCase):
 
 
 class EventHubTest(unittest.TestCase):
+    def test_publish_rejects_non_json_safe_data_without_consuming_sequence(
+        self,
+    ) -> None:
+        hub = EventHub()
+        with self.assertRaisesRegex(ValueError, "finite"):
+            hub.publish("task_progress", {"value": float("nan")})
+        event = hub.publish("task_progress", {"value": 1.0})
+        self.assertEqual("1", event["id"])
+
+    def test_publish_rejects_non_utf8_or_multiline_event_type_without_sequence_gap(
+        self,
+    ) -> None:
+        hub = EventHub()
+        for event_type in ("bad\ud800event", "task_progress\nevent"):
+            with self.assertRaisesRegex(ValueError, "event_type must match"):
+                hub.publish(event_type, {"value": 1.0})
+        event = hub.publish("task_progress", {"value": 2.0})
+        self.assertEqual("1", event["id"])
+
     def test_async_notification_covers_replay_live_data_and_close(self) -> None:
         hub = EventHub()
         replay = hub.publish("task_progress", {"value": 1})

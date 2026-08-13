@@ -79,6 +79,12 @@ class SensorWebHandlers:
         self,
         request: web.Request,
     ) -> web.StreamResponse:
+        _, jpeg, _ = self._state.camera_snapshot()
+        if jpeg is None:
+            return web.json_response(
+                {"error": "camera frame is not available"},
+                status=503,
+            )
         response = web.StreamResponse(
             status=200,
             headers={

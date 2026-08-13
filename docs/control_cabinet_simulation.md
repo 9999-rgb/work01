@@ -112,6 +112,13 @@ Web 不展示占用地图或全局路径，也不提供任意坐标导航入口�
 
 ## Web API
 
+Gazebo Classic 的 RGB 相机即使关闭图形客户端也仍依赖渲染上下文。未设置
+`DISPLAY` 时统一启动入口会禁用 Gazebo GUI，同时明确提示相机不会发布图像；
+LiDAR 等不依赖渲染的传感器仍可工作。需要相机流时应提供可用的 X Display，
+或由部署环境自行提供虚拟显示服务（项目当前不引入 Xvfb 依赖）。在收到首帧前，
+`/sensors/health` 返回 `degraded`，`/camera.jpg` 和 `/camera.mjpg` 返回 HTTP 503，
+避免用成功状态或空的 HTTP 200 流掩盖相机不可用。
+
 迁移到 FastAPI 后，**API 参考由 OpenAPI 自动生成**，始终与代码同步：
 
 - Swagger UI（可交互调用）：`http://localhost:8090/docs`
@@ -330,6 +337,38 @@ scripts/validate_recording_replay --runtime --allow-motion \
 ./run_all.sh
 ```
 
+同机或局域网内有其他 ROS 2 / Gazebo 仿真时，建议为本次测试选择独立域：
+
+```bash
+ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 \
+BRIDGE_TCP_PORT=17447 BRIDGE_REST_PORT=18000 CONTROL_PORT=18090 \
+XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
+./run_all.sh --web
+```
+
+统一入口在未设置时使用 `ROS_DOMAIN_ID=42` 和
+`ROS_LOCALHOST_ONLY=0`，以兼容局域网中的外部完整机器人栈；需要严格隔离测试时
+应像上例一样显式设置 `ROS_LOCALHOST_ONLY=1`。启动摘要会显示最终 DDS 域、
+本机限制、Zenoh 发现策略和 `GAZEBO_MASTER_URI`，便于确认所有调试终端是否
+位于同一隔离环境。`ROS_LOCALHOST_ONLY=1` 且用户没有提供 `CYCLONEDDS_URI` 时，脚本会
+注入 `MaxAutoParticipantIndex=60`，避免完整仿真节点较多时耗尽 CycloneDDS
+默认 participant index；已有非空 `CYCLONEDDS_URI` 始终原样保留。
+
+Zenoh Bridge 默认只监听 `127.0.0.1`，并关闭 multicast scouting，不会因
+局域网发现而主动连接其他仿真的 Zenoh router。只有确实需要让局域网 Zenoh
+客户端直接连接本桥时，才显式设置 `XCZS_ZENOH_LAN_ENABLED=true`；该开关会
+同时改为监听 `0.0.0.0` 并恢复 multicast scouting，不能再视为网络隔离模式。
+Web 页面是否对局域网开放仍由独立的 `CONTROL_HOST` 控制，不需要为浏览器访问
+而开放 Zenoh。
+
+Gazebo Classic 不识别 `ROS_DOMAIN_ID`。因此未显式设置
+`GAZEBO_MASTER_URI` 时，统一入口使用
+`http://127.0.0.1:$((11345 + ROS_DOMAIN_ID))`，例如域 142 对应端口
+11487；`gzserver`、spawn 节点和 Gazebo ROS 插件继承同一 URI。启动本地
+Gazebo 前还会按其实际 IPv4 wildcard 监听范围预检该端口。连接外部 Gazebo
+时可显式提供 `GAZEBO_MASTER_URI=http://host:port`，脚本不会覆盖，也不会用
+本机同号端口的占用情况拒绝远端 master；启动摘要会明确标记已跳过本机预检。
+
 统一入口可以用环境变量替换全部三层适配参数包：
 
 ```bash
@@ -360,6 +399,14 @@ NAV2_PARAMS_FILE=/path/to/nav2_params.yaml \
 如果新机器人已有自己的 Gazebo、controller、MoveIt 和 Nav2 bringup，先启动它，再以 `ROBOT_BRINGUP=false GAZEBO_ENABLED=false` 运行本入口。此时本项目仍可加载设备实例、位姿权威、碰撞场景、操作节点和 Web 任务层；新机器人必须提供适配文件中声明的 ROS 2 接口。内置键盘控制在该模式下会明确拒绝启动，不会静默失效；请使用动态 Web 控制或外部机器人自己的手动界面。
 
 若外部 world 已经包含满足物理接口合同的设备实体，使用 `CABINET_BRINGUP=true SPAWN_CABINET=false`：本项目保留目录、位姿、碰撞场景和 operator，但不会重复生成 Gazebo entity。若连设备节点也由外部系统提供，则同时设置 `CABINET_BRINGUP=false SPAWN_CABINET=false`，Web 会按 inventory 中的 namespace 连接外部 Action/Topic/Service。
+
+单独调试 Python 辅助进程时，`sse_bridge.py` 和
+`python3 -m sensor_bridge.runner` 默认都只监听 `127.0.0.1`；确需远程访问时再显式传
+`--host`。这两个独立调试服务不接入统一 Web 的 JWT 门禁，开放到非回环地址前应另行
+设置网络访问控制。`run_xczs_proxy.py` 的 `--control-port` 默认关闭，因为该兼容控制接口没有
+JWT；显式传入非零端口会打印安全警告，并且仍只绑定回环地址。正式 Web 控制应使用
+`control_server.py`。这些 Zenoh 客户端都固定使用 client mode、关闭 multicast
+scouting，并只连接命令行指定的本地 endpoint，避免发现局域网内其他仿真的 router。
 
 迁移到新机器人/新设备时按以下顺序验收：
 

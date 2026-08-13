@@ -12,7 +12,10 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictFloat,
+    StrictInt,
+    StrictStr,
     field_validator,
     model_validator,
 )
@@ -180,7 +183,7 @@ class NavigationModeRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = Field(description="是否启用 Nav2 导航模式")
+    enabled: StrictBool = Field(description="是否启用 Nav2 导航模式")
 
 
 class CabinetPressRequest(BaseModel):
@@ -189,7 +192,7 @@ class CabinetPressRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     button_id: str = Field(description="按钮 ID")
-    navigate_to_staging_pose: bool = Field(
+    navigate_to_staging_pose: StrictBool = Field(
         default=True,
         description="操作前是否先导航到工位",
     )
@@ -206,10 +209,10 @@ class CabinetOperateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     control_id: str = Field(description="控件 ID")
-    command: str | int = Field(description="命令码（字符串或整数）")
+    command: StrictStr | StrictInt = Field(description="命令码（字符串或整数）")
     target_state: str | None = Field(default=None)
     target_position: StrictFloat | None = Field(default=None)
-    navigate_to_staging_pose: bool = Field(default=True)
+    navigate_to_staging_pose: StrictBool = Field(default=True)
 
     @field_validator("control_id")
     @classmethod
@@ -236,7 +239,7 @@ class RecordingStartRequest(BaseModel):
         default=None,
         description="录制名称（安全 ID：小写字母数字、连字符、下划线，≤64 字符）",
     )
-    include_sensors: bool = Field(
+    include_sensors: StrictBool = Field(
         default=False,
         description="是否包含传感器话题",
     )

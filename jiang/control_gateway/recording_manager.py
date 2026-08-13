@@ -1555,6 +1555,15 @@ class RecordingManager:
         if process is None:
             return None, "Process handle is unavailable."
         errors: list[str] = []
+        requested_signal_exit_codes: set[int] = set()
+
+        def requested_stop_code(code: int) -> int:
+            # ``subprocess`` reports a process killed by signal N as ``-N``.
+            # That is a successful outcome when this method delivered the
+            # matching termination signal, but remains an error when observed
+            # before we requested a stop.
+            return 0 if code in requested_signal_exit_codes else code
+
         try:
             existing = self._process_poll(process)
         except Exception as error:
@@ -1574,6 +1583,7 @@ class RecordingManager:
         for signal_number, timeout, label in stages:
             try:
                 self._send_signal(process, signal_number)
+                requested_signal_exit_codes.add(-signal_number)
             except Exception as error:
                 errors.append(
                     f"Could not send {label}: "
@@ -1600,7 +1610,7 @@ class RecordingManager:
                     continue
                 return self._confirm_process_group_stopped(
                     process,
-                    code,
+                    requested_stop_code(code),
                     errors,
                 )
             except subprocess.TimeoutExpired:
@@ -1618,7 +1628,7 @@ class RecordingManager:
                 if code is not None:
                     return self._confirm_process_group_stopped(
                         process,
-                        code,
+                        requested_stop_code(code),
                         errors,
                     )
         try:
@@ -1629,7 +1639,7 @@ class RecordingManager:
         if final_code is not None:
             return self._confirm_process_group_stopped(
                 process,
-                final_code,
+                requested_stop_code(final_code),
                 errors,
             )
         message = "Process did not terminate after SIGKILL."

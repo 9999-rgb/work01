@@ -7,13 +7,18 @@
 #   ./run_all.sh --web            # 兼容写法，与无参数启动相同
 #   ./run_all.sh --with-proxy     # 同时启动 CDR→JSON 代理
 #   ./run_all.sh --keyboard       # 键盘调试控制（不启动 Web 控制服务）
+#   同机隔离启动（端口应避开其他实例）:
+#     ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 BRIDGE_TCP_PORT=17447 \
+#       BRIDGE_REST_PORT=18000 CONTROL_PORT=18090 \
+#       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
+#       ./run_all.sh --web
 #
 # 启动后（FastAPI 三合一，默认监听所有网卡 :8090）:
 #   - 监控面板: http://<服务器IP>:8090/monitor.html
 #   - API 文档:  http://<服务器IP>:8090/docs
 #   - SSE 数据:  http://<服务器IP>:8090/sse/<key>
 #   - 传感器流:  http://<服务器IP>:8090/camera.mjpg
-#   - Zenoh TCP: tcp/localhost:7447
+#   - Zenoh TCP: tcp/127.0.0.1:7447（默认本机隔离）
 # ============================================================================
 set -Eeo pipefail
 
@@ -37,6 +42,7 @@ JIANG_DIR="$WORK_DIR/jiang"
 ZENOH_BRIDGE="${ZENOH_BRIDGE:-/opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds}"
 BRIDGE_REST_PORT="${BRIDGE_REST_PORT:-8000}"
 BRIDGE_TCP_PORT="${BRIDGE_TCP_PORT:-7447}"
+ZENOH_LAN_ENABLED="${XCZS_ZENOH_LAN_ENABLED:-false}"
 CONTROL_PORT="${CONTROL_PORT:-8090}"
 CONTROL_HOST="${CONTROL_HOST:-0.0.0.0}"
 CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-http://localhost:$CONTROL_PORT,http://127.0.0.1:$CONTROL_PORT}"
@@ -113,7 +119,7 @@ if [ "$GAZEBO_ENABLED" = "false" ]; then
     GAZEBO_GUI="false"
 fi
 if [ -z "${DISPLAY:-}" ]; then
-    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，已禁用 Gazebo 图形界面"
+    echo "⚠ 未检测到显示器 (DISPLAY 未设置)，已禁用 Gazebo 图形界面；基于渲染的 RGB 相机也不会发布图像"
     GAZEBO_GUI="false"
 fi
 if [ "$CONTROL_MODE" = "keyboard" ] && [ -z "${DISPLAY:-}" ]; then
@@ -242,7 +248,7 @@ _wait_for_managed_groups() {
 }
 
 cleanup() {
-    local exit_code=$?
+    local exit_code="${1:-$?}"
     local all_closed="true"
     local forced="false"
     local index=0
@@ -298,7 +304,21 @@ cleanup() {
     fi
     return "$exit_code"
 }
-trap cleanup EXIT
+
+_cleanup_on_exit() {
+    local exit_code=$?
+    # Bash preserves the status that triggered EXIT and ignores the trap
+    # function's return value.  Remove the trap before the final explicit
+    # exit so a cleanup failure (for example, a surviving managed PGID) is
+    # observable by callers without recursively invoking cleanup.
+    trap - EXIT
+    set +e
+    cleanup "$exit_code"
+    exit_code=$?
+    exit "$exit_code"
+}
+
+trap _cleanup_on_exit EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -335,11 +355,20 @@ _require_integer_range() {
     local minimum="$2"
     local maximum="$3"
     local name="$4"
-    if ! [[ "$value" =~ ^[0-9]+$ ]] ||
-        (( value < minimum || value > maximum )); then
+    local decimal=""
+    # Bash arithmetic treats a leading zero as octal.  Normalize validated
+    # decimal text before it participates in ranges or derived ports, so
+    # values such as ROS_DOMAIN_ID=08 behave like ordinary decimal input.
+    if ! [[ "$value" =~ ^[0-9]+$ ]] || [ "${#value}" -gt 10 ]; then
         echo "ERROR: $name 必须是 ${minimum}..${maximum} 的整数。"
         exit 1
     fi
+    decimal=$((10#$value))
+    if (( decimal < minimum || decimal > maximum )); then
+        echo "ERROR: $name 必须是 ${minimum}..${maximum} 的整数。"
+        exit 1
+    fi
+    printf -v "$name" '%d' "$decimal"
 }
 
 _describe_port_owner() {
@@ -429,12 +458,22 @@ for boolean_value in \
     "$MOVEIT_ENABLED" \
     "$CABINET_BRINGUP" \
     "$SPAWN_CABINET" \
+    "$ZENOH_LAN_ENABLED" \
     "$PREFLIGHT_ONLY"; do
     if [ "$boolean_value" != "true" ] && [ "$boolean_value" != "false" ]; then
-        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
+        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET、XCZS_ZENOH_LAN_ENABLED 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
         exit 1
     fi
 done
+if [ "$ZENOH_LAN_ENABLED" = "true" ]; then
+    ZENOH_BIND_HOST="0.0.0.0"
+    ZENOH_SCOUTING_ARGS=()
+    ZENOH_NETWORK_LABEL="局域网开放（已启用 multicast scouting）"
+else
+    ZENOH_BIND_HOST="127.0.0.1"
+    ZENOH_SCOUTING_ARGS=(--no-multicast-scouting)
+    ZENOH_NETWORK_LABEL="本机隔离（multicast scouting 已禁用）"
+fi
 CABINET_ACTION_REQUIRED="false"
 if [ "$CABINET_BRINGUP" = "true" ] && [ "$MOVEIT_ENABLED" = "true" ]; then
     # cabinet_button_operator 只在这两个子系统同时启用时启动；其他组合
@@ -517,6 +556,91 @@ fi
 # DDS 流量互相干扰。可通过环境变量覆盖。
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 _require_integer_range "$ROS_DOMAIN_ID" 0 232 ROS_DOMAIN_ID
+export ROS_LOCALHOST_ONLY="${ROS_LOCALHOST_ONLY:-0}"
+if [ "$ROS_LOCALHOST_ONLY" != "0" ] && [ "$ROS_LOCALHOST_ONLY" != "1" ]; then
+    echo "ERROR: ROS_LOCALHOST_ONLY 必须为 0 或 1。"
+    exit 1
+fi
+
+# CycloneDDS 的 localhost-only 自动 participant index 默认只尝试 0..9；
+# 节点较多的完整仿真可能因此随机启动失败。只在用户完全没有设置
+# CYCLONEDDS_URI 时扩大范围，绝不覆盖非空的自定义 DDS 网络配置。
+CYCLONEDDS_WORKAROUND="未注入（ROS_LOCALHOST_ONLY=0）"
+if [ "$ROS_LOCALHOST_ONLY" = "1" ]; then
+    if [ -z "${CYCLONEDDS_URI:-}" ]; then
+        export CYCLONEDDS_URI='<CycloneDDS><Domain><Discovery><MaxAutoParticipantIndex>60</MaxAutoParticipantIndex></Discovery></Domain></CycloneDDS>'
+        CYCLONEDDS_WORKAROUND="已注入 MaxAutoParticipantIndex=60"
+    else
+        CYCLONEDDS_WORKAROUND="保留用户 CYCLONEDDS_URI"
+    fi
+fi
+
+# Gazebo Classic 不识别 ROS_DOMAIN_ID；所有 gzserver、spawn_entity 和 ROS
+# 插件通过同一个 GAZEBO_MASTER_URI 协同，因此可安全按 DDS 域派生端口。
+# 用户显式提供 URI 时原样保留，方便连接外部 Gazebo master。
+export GAZEBO_MASTER_URI="${GAZEBO_MASTER_URI:-http://127.0.0.1:$((11345 + ROS_DOMAIN_ID))}"
+GAZEBO_MASTER_ENDPOINT="$($PYTHON_BIN - "$GAZEBO_MASTER_URI" <<'PY'
+import ipaddress
+import sys
+import unicodedata
+from urllib.parse import urlsplit
+
+uri = sys.argv[1]
+if any(
+    character.isspace()
+    or unicodedata.category(character).startswith("C")
+    for character in uri
+):
+    raise SystemExit(1)
+try:
+    parsed = urlsplit(uri)
+    port = parsed.port
+except ValueError as error:
+    print(error, file=sys.stderr)
+    raise SystemExit(1)
+if (
+    parsed.scheme != "http"
+    or not parsed.hostname
+    or port is None
+    or parsed.username is not None
+    or parsed.password is not None
+    or parsed.query
+    or parsed.fragment
+    or parsed.path not in ("", "/")
+):
+    raise SystemExit(1)
+if not 1 <= port <= 65535:
+    raise SystemExit(1)
+try:
+    is_loopback = ipaddress.ip_address(parsed.hostname).is_loopback
+except ValueError:
+    is_loopback = parsed.hostname.rstrip(".").lower() == "localhost"
+print(parsed.hostname, port, "true" if is_loopback else "false")
+PY
+)" || {
+    echo "ERROR: GAZEBO_MASTER_URI 必须为 http://host:port（不能包含认证、查询或额外路径）。" >&2
+    exit 1
+}
+read -r GAZEBO_MASTER_HOST GAZEBO_MASTER_PORT GAZEBO_MASTER_IS_LOCAL \
+    <<< "$GAZEBO_MASTER_ENDPOINT"
+if [ "$GAZEBO_MASTER_IS_LOCAL" = "true" ]; then
+    GAZEBO_PREFLIGHT_LABEL="本机端口将执行绑定预检"
+else
+    GAZEBO_PREFLIGHT_LABEL="远端 master，跳过本机端口预检"
+fi
+if [ "$GAZEBO_ENABLED" = "false" ]; then
+    GAZEBO_PREFLIGHT_LABEL="本地 Gazebo 未启用，跳过端口预检"
+fi
+if [ "$GAZEBO_ENABLED" = "true" ] &&
+    [ "$GAZEBO_MASTER_IS_LOCAL" = "true" ]; then
+    if [ "$GAZEBO_MASTER_PORT" = "$BRIDGE_TCP_PORT" ] ||
+        [ "$GAZEBO_MASTER_PORT" = "$BRIDGE_REST_PORT" ] ||
+        { [ "$CONTROL_MODE" = "web" ] &&
+          [ "$GAZEBO_MASTER_PORT" = "$CONTROL_PORT" ]; }; then
+        echo "ERROR: GAZEBO_MASTER_URI 端口不能与 Zenoh 或 Web 端口相同。" >&2
+        exit 1
+    fi
+fi
 
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
@@ -642,10 +766,17 @@ fi
 
 # 预检与正式启动采用同一端口检查。端口被外部服务占用时只报错，
 # 不复用、不终止不属于本次启动的进程。
-_require_port_available 0.0.0.0 "$BRIDGE_TCP_PORT" "Zenoh TCP"
-_require_port_available 0.0.0.0 "$BRIDGE_REST_PORT" "Zenoh REST"
+_require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_TCP_PORT" "Zenoh TCP"
+_require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_REST_PORT" "Zenoh REST"
 if [ "$CONTROL_MODE" = "web" ]; then
     _require_port_available "$CONTROL_HOST" "$CONTROL_PORT" "Web 控制服务"
+fi
+if [ "$GAZEBO_ENABLED" = "true" ] &&
+    [ "$GAZEBO_MASTER_IS_LOCAL" = "true" ]; then
+    # Gazebo Classic master 即使 URI 使用 127.0.0.1 也实际监听 IPv4
+    # wildcard；按真实绑定范围预检，避免遗漏其他本机网卡上的占用者。
+    _require_port_available \
+        0.0.0.0 "$GAZEBO_MASTER_PORT" "Gazebo Master"
 fi
 
 echo "═══════════════════════════════════════════"
@@ -659,6 +790,11 @@ esac
 echo "  模式:       $MODE_LABEL"
 echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  Zenoh 代理: $(if [ "$WITH_PROXY" = "true" ]; then echo '启用'; else echo '禁用（桥自带 JSON）'; fi)"
+echo "  ROS 2 域:   $ROS_DOMAIN_ID"
+echo "  DDS 本机:   ROS_LOCALHOST_ONLY=$ROS_LOCALHOST_ONLY；$CYCLONEDDS_WORKAROUND"
+echo "  Zenoh 网络: $ZENOH_NETWORK_LABEL"
+echo "  Gazebo URI: $GAZEBO_MASTER_URI"
+echo "  Gazebo 检查: $GAZEBO_PREFLIGHT_LABEL"
 if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "false" ]; then
     NAV2_LABEL="由外部机器人栈提供"
 elif [ "$NAV2_ENABLED" = "true" ]; then
@@ -878,15 +1014,16 @@ _monitor_managed_processes() {
 
 _start_bridge() {
     setsid "$ZENOH_BRIDGE" \
-        --listen "tcp/0.0.0.0:$BRIDGE_TCP_PORT" \
-        --rest-http-port "$BRIDGE_REST_PORT" &
+        --listen "tcp/$ZENOH_BIND_HOST:$BRIDGE_TCP_PORT" \
+        --rest-http-port "$ZENOH_BIND_HOST:$BRIDGE_REST_PORT" \
+        "${ZENOH_SCOUTING_ARGS[@]}" &
     BRIDGE_PID=$!
     _register_process "$BRIDGE_PID" "Zenoh Bridge"
     _wait_for_tcp 127.0.0.1 "$BRIDGE_TCP_PORT" "Zenoh TCP"
     _wait_for_tcp 127.0.0.1 "$BRIDGE_REST_PORT" "Zenoh REST"
     echo "       Zenoh Bridge 已就绪 (PID $BRIDGE_PID)"
-    echo "       TCP: tcp/localhost:$BRIDGE_TCP_PORT"
-    echo "       REST: http://localhost:$BRIDGE_REST_PORT"
+    echo "       TCP: tcp/$ZENOH_BIND_HOST:$BRIDGE_TCP_PORT"
+    echo "       REST: http://$ZENOH_BIND_HOST:$BRIDGE_REST_PORT"
 }
 
 # ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
@@ -927,7 +1064,7 @@ if [ "$CONTROL_MODE" = "web" ]; then
         --cabinet-robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
         --robot-control "$ROBOT_CONTROL_PATH" \
         --recordings-root "$RECORDINGS_ROOT" \
-        --zenoh "tcp/localhost:$BRIDGE_TCP_PORT" \
+        --zenoh "tcp/127.0.0.1:$BRIDGE_TCP_PORT" \
         "${CONTROL_ORIGIN_ARGS[@]}" &
     CONTROL_PID=$!
     _register_process "$CONTROL_PID" "Web 控制服务"
