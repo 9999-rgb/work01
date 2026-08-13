@@ -9,8 +9,8 @@
 #   ./run_all.sh --keyboard       # 键盘调试控制（不启动 Web 控制服务）
 #   同机隔离启动（端口应避开其他实例）:
 #     ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 BRIDGE_TCP_PORT=17447 \
-#       BRIDGE_REST_PORT=18000 CONTROL_PORT=18090 \
-#       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
+#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=8090 \
+#       XCZS_CONTROL_ORIGINS=http://localhost:8090,http://127.0.0.1:8090 \
 #       ./run_all.sh --web
 #
 # 启动后（FastAPI 三合一，默认监听所有网卡 :8090）:
@@ -31,6 +31,7 @@ CLEANUP_DONE="false"
 STARTUP_TIMEOUT_SEC="${XCZS_STARTUP_TIMEOUT_SEC:-30}"
 ROBOT_READY_TIMEOUT_SEC="${XCZS_ROBOT_READY_TIMEOUT_SEC:-120}"
 SHUTDOWN_TIMEOUT_SEC="${XCZS_SHUTDOWN_TIMEOUT_SEC:-60}"
+MANAGED_GUARD_TIMEOUT_SEC="${XCZS_MANAGED_GUARD_TIMEOUT_SEC:-5}"
 MANAGED_PIDS=()
 MANAGED_PGIDS=()
 MANAGED_LABELS=()
@@ -172,6 +173,116 @@ _register_process() {
     echo "ERROR: $label 未进入独立进程组（PID=$pid, PGID=${process_group:-unknown}）。" >&2
     kill -TERM "$pid" 2>/dev/null || true
     exit 1
+}
+
+_start_managed_process() {
+    local pid_variable="$1"
+    local label="$2"
+    local supervisor_pid="$BASHPID"
+    local supervisor_identity=""
+    local managed_pid=""
+    shift 2
+    if [ "$#" -eq 0 ]; then
+        echo "ERROR: $label 缺少启动命令。" >&2
+        exit 1
+    fi
+    supervisor_identity="$(
+        ps -o lstart=,sid= -p "$supervisor_pid" 2>/dev/null || true
+    )"
+    if [ -z "$supervisor_identity" ]; then
+        echo "ERROR: 无法读取启动监督进程 PID=$supervisor_pid 的身份。" >&2
+        exit 1
+    fi
+
+    # guardian 与目标命令共同位于 setsid 创建的独立会话/进程组内。
+    # 正常退出由 cleanup 精确终止这个 PGID；若外层监督 shell 遭到
+    # SIGKILL、终端强制回收等无法运行 EXIT trap 的情况，guardian 会
+    # 发现监督进程身份消失，并只清理自己的 PGID。目标命令启动后才
+    # 忽略终止信号，避免把忽略属性继承给 ros2 launch/gzserver。
+    setsid bash -c '
+set +e
+supervisor_pid="$1"
+supervisor_identity="$2"
+guard_timeout="$3"
+shift 3
+
+"$@" &
+target_pid=$!
+trap "" HUP INT TERM
+
+supervisor_is_running() {
+    local current_identity=""
+    current_identity="$(
+        ps -o lstart=,sid= -p "$supervisor_pid" 2>/dev/null || true
+    )"
+    [ -n "$current_identity" ] &&
+        [ "$current_identity" = "$supervisor_identity" ]
+}
+
+target_is_running() {
+    local process_details=""
+    local state=""
+    process_details="$(ps -o stat= -p "$target_pid" 2>/dev/null)" || return 1
+    read -r state <<< "$process_details"
+    [ -n "$state" ] && [[ "$state" != Z* ]]
+}
+
+group_has_other_processes() {
+    local process_group=""
+    local process_pid=""
+    local state=""
+    local process_snapshot=""
+    # 先等 ps 快照进程退出再解析，否则检查动作自身也属于当前 PGID，
+    # 会被误判成目标命令留下的子孙。
+    process_snapshot="$(ps -eo pgid=,pid=,stat= 2>/dev/null || true)"
+    while read -r process_group process_pid state; do
+        if [ "$process_group" = "$$" ] && [ "$process_pid" != "$$" ] &&
+            [ -n "$state" ] && [[ "$state" != Z* ]] &&
+            kill -0 "$process_pid" 2>/dev/null; then
+            return 0
+        fi
+    done <<< "$process_snapshot"
+    return 1
+}
+
+abandoned="false"
+while target_is_running; do
+    if ! supervisor_is_running; then
+        abandoned="true"
+        break
+    fi
+    # 一秒级监督足以处理宿主 shell 消失，同时避免长期仿真中频繁启动
+    # ps 给 CPU 和进程调度带来额外抖动。
+    sleep 1
+done
+
+target_status=0
+if [ "$abandoned" = "false" ]; then
+    wait "$target_pid"
+    target_status=$?
+else
+    target_status=143
+fi
+
+# 主命令退出并不代表同组的 Gazebo/launch 子孙已退出。无论是主命令
+# 先结束还是监督进程消失，都给全组一次 TERM 宽限，再强制收尾。
+if group_has_other_processes; then
+    kill -TERM -- "-$$" 2>/dev/null || true
+    deadline=$((SECONDS + guard_timeout))
+    while group_has_other_processes && (( SECONDS < deadline )); do
+        sleep 0.2
+    done
+fi
+if group_has_other_processes; then
+    kill -KILL -- "-$$" 2>/dev/null || true
+fi
+exit "$target_status"
+' xczs-managed-guardian \
+        "$supervisor_pid" "$supervisor_identity" \
+        "$MANAGED_GUARD_TIMEOUT_SEC" "$@" &
+    managed_pid=$!
+    printf -v "$pid_variable" '%d' "$managed_pid"
+    _register_process "$managed_pid" "$label"
 }
 
 _unregister_last_process() {
@@ -437,6 +548,9 @@ _require_integer_range \
 _require_integer_range \
     "$SHUTDOWN_TIMEOUT_SEC" 1 60 \
     SHUTDOWN_TIMEOUT_SEC XCZS_SHUTDOWN_TIMEOUT_SEC
+_require_integer_range \
+    "$MANAGED_GUARD_TIMEOUT_SEC" 1 30 \
+    MANAGED_GUARD_TIMEOUT_SEC XCZS_MANAGED_GUARD_TIMEOUT_SEC
 if [ "$BRIDGE_TCP_PORT" = "$BRIDGE_REST_PORT" ]; then
     echo "ERROR: BRIDGE_TCP_PORT 与 BRIDGE_REST_PORT 不能相同。"
     exit 1
@@ -1019,12 +1133,10 @@ _monitor_managed_processes() {
 }
 
 _start_bridge() {
-    setsid "$ZENOH_BRIDGE" \
+    _start_managed_process BRIDGE_PID "Zenoh Bridge" "$ZENOH_BRIDGE" \
         --listen "tcp/$ZENOH_BIND_HOST:$BRIDGE_TCP_PORT" \
         --rest-http-port "$ZENOH_BIND_HOST:$BRIDGE_REST_PORT" \
-        "${ZENOH_SCOUTING_ARGS[@]}" &
-    BRIDGE_PID=$!
-    _register_process "$BRIDGE_PID" "Zenoh Bridge"
+        "${ZENOH_SCOUTING_ARGS[@]}"
     _wait_for_tcp 127.0.0.1 "$BRIDGE_TCP_PORT" "Zenoh TCP"
     _wait_for_tcp 127.0.0.1 "$BRIDGE_REST_PORT" "Zenoh REST"
     echo "       Zenoh Bridge 已就绪 (PID $BRIDGE_PID)"
@@ -1042,11 +1154,10 @@ _start_bridge
 if [ "$WITH_PROXY" = "true" ]; then
     echo "[2/6] 启动 XCZS Zenoh 代理..."
     cd "$JIANG_DIR"
-    setsid "$PYTHON_BIN" run_xczs_proxy.py \
+    _start_managed_process PROXY_PID "XCZS Zenoh 代理" \
+        "$PYTHON_BIN" run_xczs_proxy.py \
         --port "$BRIDGE_TCP_PORT" \
-        --control-port 0 &
-    PROXY_PID=$!
-    _register_process "$PROXY_PID" "XCZS Zenoh 代理"
+        --control-port 0
     _wait_for_stable_processes 5
     echo "       代理已启动 (PID $PROXY_PID)"
 else
@@ -1060,7 +1171,8 @@ fi
 if [ "$CONTROL_MODE" = "web" ]; then
     echo "[3/6] 启动统一 Web 控制服务 (port $CONTROL_PORT)..."
     cd "$JIANG_DIR"
-    setsid "$PYTHON_BIN" control_server.py \
+    _start_managed_process CONTROL_PID "Web 控制服务" \
+        "$PYTHON_BIN" control_server.py \
         --host "$CONTROL_HOST" \
         --port "$CONTROL_PORT" \
         --cabinet-instances "$CABINET_INSTANCES_PATH" \
@@ -1071,9 +1183,7 @@ if [ "$CONTROL_MODE" = "web" ]; then
         --robot-control "$ROBOT_CONTROL_PATH" \
         --recordings-root "$RECORDINGS_ROOT" \
         --zenoh "tcp/127.0.0.1:$BRIDGE_TCP_PORT" \
-        "${CONTROL_ORIGIN_ARGS[@]}" &
-    CONTROL_PID=$!
-    _register_process "$CONTROL_PID" "Web 控制服务"
+        "${CONTROL_ORIGIN_ARGS[@]}"
     case "$CONTROL_HOST" in
         0.0.0.0|::|'[::]') _READY_HOST="127.0.0.1" ;;
         *) _READY_HOST="$CONTROL_HOST" ;;
@@ -1159,10 +1269,9 @@ LAUNCH_ARGS=(
     "spawn_z:=$SPAWN_Z"
     "cabinet_pose_source:=$CABINET_POSE_SOURCE"
 )
-setsid ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
-    "${LAUNCH_ARGS[@]}" &
-LAUNCH_PID=$!
-_register_process "$LAUNCH_PID" "ROS 2 launch"
+_start_managed_process LAUNCH_PID "ROS 2 launch" \
+    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+    "${LAUNCH_ARGS[@]}"
 if [ "$LOCAL_LAUNCH_PERSISTENT" = "true" ]; then
     _wait_for_stable_processes 10
 else

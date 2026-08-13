@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -244,17 +246,23 @@ class StartupScriptContractTests(unittest.TestCase):
         )
         self.assertNotIn('kill "-$signal" "$pid"', self.startup_source)
         self.assertIn(
-            "setsid ros2 launch xczs_inspection_robot_control",
+            '_start_managed_process LAUNCH_PID "ROS 2 launch"',
             self.startup_source,
         )
-        self.assertIn('_register_process "$LAUNCH_PID"', self.startup_source)
+        self.assertIn(
+            "ros2 launch xczs_inspection_robot_control",
+            self.startup_source,
+        )
+        self.assertIn("xczs-managed-guardian", self.startup_source)
         self.assertIn("_monitor_managed_processes", self.startup_source)
         self.assertNotIn("ROS 2 launch 已正常结束", self.startup_source)
         self.assertIn(
             'echo "ERROR: ${MANAGED_LABELS[$index]} 意外退出（status=$status）。"',
             self.startup_source,
         )
-        launch_start = self.startup_source.index("setsid ros2 launch")
+        launch_start = self.startup_source.index(
+            '_start_managed_process LAUNCH_PID "ROS 2 launch"'
+        )
         task_readiness = self.startup_source.rindex("_wait_for_task_stack")
         self.assertLess(launch_start, task_readiness)
         self.assertIn(
@@ -376,6 +384,154 @@ exit 0
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("受管进程组 PGID=424242 仍未退出", result.stderr)
+
+    def test_guardian_reaps_group_if_supervisor_is_killed(self) -> None:
+        helpers_start = self.startup_source.index("_register_process() {")
+        helpers_end = self.startup_source.index("trap _cleanup_on_exit EXIT")
+        helpers = self.startup_source[helpers_start:helpers_end]
+        with tempfile.TemporaryDirectory(
+            prefix="xczs-managed-guardian-test-"
+        ) as tmp:
+            tmp_path = Path(tmp)
+            unmanaged_file = tmp_path / "unmanaged.pid"
+            managed_file = tmp_path / "managed.pgid"
+            harness = f"""
+set -Eeo pipefail
+CLEANUP_DONE=false
+SHUTDOWN_TIMEOUT_SEC=1
+MANAGED_GUARD_TIMEOUT_SEC=1
+MANAGED_PIDS=()
+MANAGED_PGIDS=()
+MANAGED_LABELS=()
+{helpers}
+
+sleep 30 &
+printf '%s' "$!" >"$UNMANAGED_FILE"
+_start_managed_process managed_process_id "orphan regression" \\
+    bash -c 'trap "" TERM; sleep 30 & wait'
+printf '%s' "$managed_process_id" >"$MANAGED_FILE"
+while true; do sleep 1; done
+"""
+            environment = os.environ.copy()
+            environment.update(
+                UNMANAGED_FILE=str(unmanaged_file),
+                MANAGED_FILE=str(managed_file),
+            )
+            supervisor = subprocess.Popen(
+                ["bash"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=environment,
+            )
+            unmanaged_pid = 0
+            managed_group = 0
+            managed_running = True
+            try:
+                assert supervisor.stdin is not None
+                supervisor.stdin.write(harness)
+                supervisor.stdin.close()
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if unmanaged_file.exists() and managed_file.exists():
+                        unmanaged_text = unmanaged_file.read_text().strip()
+                        managed_text = managed_file.read_text().strip()
+                        if unmanaged_text and managed_text:
+                            unmanaged_pid = int(unmanaged_text)
+                            managed_group = int(managed_text)
+                            break
+                    if supervisor.poll() is not None:
+                        break
+                    time.sleep(0.05)
+                self.assertGreater(unmanaged_pid, 0)
+                self.assertGreater(managed_group, 0)
+
+                os.kill(supervisor.pid, signal.SIGKILL)
+                supervisor.wait(timeout=3)
+
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    group_probe = subprocess.run(
+                        [
+                            "ps",
+                            "-eo",
+                            "pgid=,stat=",
+                        ],
+                        text=True,
+                        capture_output=True,
+                        check=True,
+                    )
+                    managed_running = any(
+                        fields[0] == str(managed_group)
+                        and not fields[1].startswith("Z")
+                        for line in group_probe.stdout.splitlines()
+                        if len(fields := line.split()) >= 2
+                    )
+                    if not managed_running:
+                        break
+                    time.sleep(0.1)
+                self.assertFalse(
+                    managed_running,
+                    "guardian left a non-zombie process in its managed PGID",
+                )
+                os.kill(unmanaged_pid, 0)
+            finally:
+                if supervisor.poll() is None:
+                    supervisor.kill()
+                    supervisor.wait(timeout=3)
+                if managed_group > 0:
+                    try:
+                        os.killpg(managed_group, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                if unmanaged_pid > 0:
+                    try:
+                        os.kill(unmanaged_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                if supervisor.stdout is not None:
+                    supervisor.stdout.close()
+                if supervisor.stderr is not None:
+                    supervisor.stderr.close()
+
+    def test_guardian_preserves_a_clean_target_exit_status(self) -> None:
+        helpers_start = self.startup_source.index("_register_process() {")
+        helpers_end = self.startup_source.index("trap _cleanup_on_exit EXIT")
+        helpers = self.startup_source[helpers_start:helpers_end]
+        harness = f"""
+set -Eeo pipefail
+CLEANUP_DONE=false
+SHUTDOWN_TIMEOUT_SEC=1
+MANAGED_GUARD_TIMEOUT_SEC=1
+MANAGED_PIDS=()
+MANAGED_PGIDS=()
+MANAGED_LABELS=()
+{helpers}
+_start_managed_process target_pid "clean-exit regression" bash -c 'exit 23'
+set +e
+wait "$target_pid"
+status=$?
+set -e
+[ "$status" -eq 23 ]
+if _process_group_is_running "$target_pid"; then
+    echo "clean target left its managed process group" >&2
+    exit 41
+fi
+"""
+        result = subprocess.run(
+            ["bash"],
+            input=harness,
+            text=True,
+            capture_output=True,
+            timeout=5,
+            check=False,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
 
     def test_web_validator_supports_bearer_and_login_authentication(self) -> None:
         self.assertIn("XCZS_CONTROL_TOKEN", self.validator_source)

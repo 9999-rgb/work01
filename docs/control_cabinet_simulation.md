@@ -341,8 +341,9 @@ scripts/validate_recording_replay --runtime --allow-motion \
 
 ```bash
 ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 \
-BRIDGE_TCP_PORT=17447 BRIDGE_REST_PORT=18000 CONTROL_PORT=18090 \
-XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
+BRIDGE_TCP_PORT=17447 BRIDGE_REST_PORT=18000 \
+CONTROL_HOST=127.0.0.1 CONTROL_PORT=8090 \
+XCZS_CONTROL_ORIGINS=http://localhost:8090,http://127.0.0.1:8090 \
 ./run_all.sh --web
 ```
 
