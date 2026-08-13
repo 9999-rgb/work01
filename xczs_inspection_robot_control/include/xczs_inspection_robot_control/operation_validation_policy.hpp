@@ -7,6 +7,39 @@ namespace xczs_inspection_robot_control
 {
 
 /**
+ * Describe the base-motion preparation allowed before a cabinet operation.
+ *
+ * Planning-only validation must remain observational with respect to the
+ * robot base.  In particular, it must not change the command router mode,
+ * submit an embedded Nav2 goal, run precision docking, or wait for a physical
+ * docking transition.  Keeping this decision in a pure policy makes that
+ * safety boundary independently testable from the ROS action implementation.
+ */
+struct OperationPreparationPolicy
+{
+  bool execute_embedded_navigation{false};
+  bool enter_manual_base_mode{false};
+  bool execute_precision_docking{false};
+  bool wait_for_scene_settle{false};
+};
+
+constexpr OperationPreparationPolicy operation_preparation_policy(
+  bool planning_only,
+  bool embedded_navigation_requested,
+  bool has_navigation_station) noexcept
+{
+  if (planning_only) {
+    return {};
+  }
+  return {
+    embedded_navigation_requested,
+    true,
+    has_navigation_station,
+    true,
+  };
+}
+
+/**
  * Decide whether an operation must be limited to collision-checked planning.
  *
  * ``operable`` means that the current robot adapter has passed the complete

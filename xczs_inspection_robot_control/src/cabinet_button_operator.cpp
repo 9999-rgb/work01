@@ -1690,6 +1690,10 @@ private:
     bool is_button = false;
     const bool validation_only = control &&
       requires_planning_only_validation(control->operable);
+    const auto preparation_policy = operation_preparation_policy(
+      validation_only,
+      goal_handle->get_goal()->navigate_to_staging_pose,
+      control && control->navigation_station.has_value());
     std::string target_state;
     std::unordered_map<std::string, std::string> expected_parent_states;
 
@@ -1847,8 +1851,6 @@ private:
       }
       latch_cabinet_transform();
 
-      const bool navigate =
-        goal_handle->get_goal()->navigate_to_staging_pose;
       if (is_button) {
         button_poses = calculate_operation_poses(
           *control, button_press_depth);
@@ -1856,10 +1858,13 @@ private:
         rotary_poses = calculate_rotary_operation_poses(
           *control, initial_state.position);
       }
-      if (control->navigation_station) {
+      if (control->navigation_station &&
+        (preparation_policy.execute_embedded_navigation ||
+        preparation_policy.execute_precision_docking))
+      {
         staging_poses = calculate_control_staging_poses(*control);
       }
-      if (navigate && !staging_poses) {
+      if (preparation_policy.execute_embedded_navigation && !staging_poses) {
         throw GenericOperationError(
                 OperateCabinetControl::Result::NAVIGATION_FAILED,
                 "Embedded navigation requires an explicit robot-adapter "
@@ -1885,53 +1890,13 @@ private:
                 "MoveIt did not receive the current robot state.");
       }
 
-      if (navigate) {
-        result->diagnostic_stage = "navigation";
-        if (!validation_only) {
-          publish_operate_feedback(
-            goal_handle,
-            OperateCabinetControl::Feedback::NAVIGATING,
-            0.05F, target_position,
-            "Returning the arm to its safe transport target.");
-          plan_and_execute_named_target(
-            *move_group, goal_handle, transport_named_target_,
-            &result->operation_executed);
-        }
-        publish_operate_feedback(
-          goal_handle,
-          OperateCabinetControl::Feedback::NAVIGATING,
-          0.07F, target_position,
-          "Driving the base to the cabinet staging pose.");
-        navigate_to_staging_pose(
-          goal_handle, staging_poses->navigation_pose);
-      }
-      result->diagnostic_stage = "docking";
-      set_navigation_mode(goal_handle, false);
-      if (staging_poses) {
-        publish_operate_feedback(
-          goal_handle,
-          OperateCabinetControl::Feedback::DOCKING,
-          0.18F, target_position,
-          "Refining the configured control station from odometry.");
-        dock_to_staging_pose(goal_handle, staging_poses->planning_pose);
-      }
-      interruptible_hold(goal_handle, planning_scene_settle_seconds_);
-
       if (validation_only) {
         result->operation_executed = false;
-        const auto docked_robot_state =
-          move_group->getCurrentState(system_wait_timeout_);
-        if (!docked_robot_state) {
-          throw GenericOperationError(
-                  OperateCabinetControl::Result::NOT_READY,
-                  "MoveIt did not refresh the robot state after precision "
-                  "docking.");
-        }
         result->validation_performed = true;
         validate_inoperable_control_path(
           *move_group, goal_handle, *control, initial_state,
           target_position, button_poses, rotary_poses,
-          *docked_robot_state, result);
+          *current_robot_state, result);
         result->diagnostic_stage = "complete";
         result->path_fraction = 1.0;
         result->required_fraction = 1.0;
@@ -1940,9 +1905,9 @@ private:
         throw GenericOperationError(
                 OperateCabinetControl::Result::UNREACHABLE,
                 "实时 MoveIt 运动学与碰撞规划验证全部通过，但没有发送任何"
-                "机械臂轨迹、抓取或柜体写入命令；按钮触发、档位到达、串扰"
-                "和安全恢复仍未经过物理闭环验证，因此继续受机器人适配层"
-                "安全策略限制：" + result->policy_reason);
+                "机械臂轨迹、导航、精确对接、抓取或柜体写入命令；按钮触发、"
+                "档位到达、串扰和安全恢复仍未经过物理闭环验证，因此继续受"
+                "机器人适配层安全策略限制：" + result->policy_reason);
       }
 
       if (!physical_motion_is_permitted(
@@ -1951,6 +1916,40 @@ private:
         throw GenericOperationError(
                 OperateCabinetControl::Result::INTERNAL_ERROR,
                 "Robot-adapter policy blocked physical cabinet motion.");
+      }
+
+      if (preparation_policy.execute_embedded_navigation) {
+        result->diagnostic_stage = "navigation";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::NAVIGATING,
+          0.05F, target_position,
+          "Returning the arm to its safe transport target.");
+        plan_and_execute_named_target(
+          *move_group, goal_handle, transport_named_target_,
+          &result->operation_executed);
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::NAVIGATING,
+          0.07F, target_position,
+          "Driving the base to the cabinet staging pose.");
+        navigate_to_staging_pose(
+          goal_handle, staging_poses->navigation_pose);
+      }
+      if (preparation_policy.enter_manual_base_mode) {
+        result->diagnostic_stage = "docking";
+        set_navigation_mode(goal_handle, false);
+      }
+      if (preparation_policy.execute_precision_docking) {
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::DOCKING,
+          0.18F, target_position,
+          "Refining the configured control station from odometry.");
+        dock_to_staging_pose(goal_handle, staging_poses->planning_pose);
+      }
+      if (preparation_policy.wait_for_scene_settle) {
+        interruptible_hold(goal_handle, planning_scene_settle_seconds_);
       }
 
       if (is_button) {
@@ -2356,7 +2355,9 @@ private:
     clear_latched_cabinet_transform();
     stop_active_motion();
     cancel_active_navigation();
-    request_navigation_mode_without_wait(false);
+    if (preparation_policy.enter_manual_base_mode) {
+      request_navigation_mode_without_wait(false);
+    }
     {
       std::lock_guard<std::mutex> lock(motion_mutex_);
       active_move_group_.reset();

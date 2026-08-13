@@ -15,31 +15,28 @@
 #   - 传感器流:  http://<服务器IP>:8090/camera.mjpg
 #   - Zenoh TCP: tcp/localhost:7447
 # ============================================================================
-set -eo pipefail
+set -Eeo pipefail
 
 # ── 初始化 PID 变量（避免 cleanup 时未绑定） ─────────────────────
 BRIDGE_PID=""
 PROXY_PID=""
-SSE_PID=""
-SENSOR_PID=""
-HTTP_PID=""
 CONTROL_PID=""
+LAUNCH_PID=""
 CLEANUP_DONE="false"
+SHUTDOWN_TIMEOUT_SEC="${XCZS_SHUTDOWN_TIMEOUT_SEC:-60}"
+MANAGED_PIDS=()
+MANAGED_LABELS=()
 
 # ── 路径配置 ──────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"          # work01 根目录
 JIANG_DIR="$WORK_DIR/jiang"
 ZENOH_BRIDGE="/opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds"
-MONITOR_PORT="${MONITOR_PORT:-8080}"
 BRIDGE_REST_PORT="${BRIDGE_REST_PORT:-8000}"
 BRIDGE_TCP_PORT="${BRIDGE_TCP_PORT:-7447}"
-SSE_PORT="${SSE_PORT:-8001}"
-SENSOR_PORT="${SENSOR_PORT:-8003}"
-SENSOR_HOST="${SENSOR_HOST:-0.0.0.0}"
 CONTROL_PORT="${CONTROL_PORT:-8090}"
 CONTROL_HOST="${CONTROL_HOST:-0.0.0.0}"
-CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-http://localhost:$MONITOR_PORT,http://127.0.0.1:$MONITOR_PORT}"
+CONTROL_ALLOWED_ORIGINS="${XCZS_CONTROL_ORIGINS:-http://localhost:$CONTROL_PORT,http://127.0.0.1:$CONTROL_PORT}"
 ROS2_SETUP="/opt/ros/humble/setup.bash"
 WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 PYTHON_BIN="/usr/bin/python3"
