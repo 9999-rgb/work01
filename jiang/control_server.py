@@ -122,6 +122,31 @@ def _parser() -> argparse.ArgumentParser:
         default=str(WORKSPACE / "recordings"),
         help="rosbag2、清单、时间线和任务场景的本地数据目录。",
     )
+    parser.add_argument(
+        "--scenes-config",
+        default=str(CONTROL_CONFIG / "scenes.yaml"),
+        help="场景目录 YAML（切换场景的几何/地图/初始位姿契约）。",
+    )
+    parser.add_argument(
+        "--cabinet-xacro",
+        default=str(
+            WORKSPACE
+            / "xczs_inspection_robot_description"
+            / "urdf"
+            / "control_cabinet.urdf.xacro"
+        ),
+        help="柜体 Xacro；切回柜体场景时用于重新生成柜体 URDF。",
+    )
+    parser.add_argument(
+        "--robot-entity",
+        default="xczs_inspection_robot",
+        help="Gazebo 机器人实体名；场景切换时用于 teleport 机器人。",
+    )
+    parser.add_argument(
+        "--initial-scene",
+        default=None,
+        help="启动时的活动场景（默认取 scenes.yaml 首个场景）。",
+    )
     # ── 子系统（三合一） ───────────────────────────────────────────
     parser.add_argument(
         "--camera-topic",
@@ -208,6 +233,10 @@ def main() -> None:
         cabinet_robot_adapter_path=args.cabinet_robot_adapter,
         robot_control_path=args.robot_control,
         recordings_root=args.recordings_root,
+        scenes_config_path=args.scenes_config,
+        cabinet_xacro_path=args.cabinet_xacro,
+        robot_entity_name=args.robot_entity,
+        initial_scene=args.initial_scene,
         allowed_origins=allowed_origins,
         fatal_callback=fatal_callback,
     )

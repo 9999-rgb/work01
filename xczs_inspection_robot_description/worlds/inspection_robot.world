@@ -29,6 +29,13 @@
       </ode>
     </physics>
 
+    <!-- Scene switching teleports the robot through the /set_entity_state
+         service provided by the gazebo_ros_state plugin (also /get_entity_state,
+         /set_model_state, /set_link_state).  Load it alongside the init/factory/
+         force_system plugins injected by gzserver.launch.py. -->
+    <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
+    </plugin>
+
     <include>
       <uri>model://sun</uri>
     </include>

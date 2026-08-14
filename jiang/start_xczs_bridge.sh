@@ -72,6 +72,8 @@ MOVEIT_LAUNCH_PATH="${MOVEIT_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_moveit
 NAV2_LAUNCH_PATH="${NAV2_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/launch/navigation.launch.py}"
 NAV2_MAP_PATH="${NAV2_MAP_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/maps/inspection_map.yaml}"
 NAV2_PARAMS_FILE="${NAV2_PARAMS_FILE:-$WORK_DIR/xczs_inspection_robot_nav2/config/nav2_params.yaml}"
+SCENE="${SCENE:-cabinet_operation}"
+SCENES_CONFIG="${SCENES_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/scenes.yaml}"
 ROBOT_BRINGUP="${ROBOT_BRINGUP:-true}"
 GAZEBO_ENABLED="${GAZEBO_ENABLED:-true}"
 USE_SIM_TIME="${USE_SIM_TIME:-true}"
@@ -690,6 +692,7 @@ _require_file() {
 }
 
 _require_file "$CABINET_ROBOT_ADAPTER_PATH"
+_require_file "$SCENES_CONFIG"
 if [ "$ZENOH_REQUIRED" = "true" ]; then
     _require_file "$ZENOH_BRIDGE_CONFIG"
 fi
@@ -1248,6 +1251,10 @@ _start_web_control() {
         --cabinet-robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
         --robot-control "$ROBOT_CONTROL_PATH" \
         --recordings-root "$RECORDINGS_ROOT" \
+        --scenes-config "$SCENES_CONFIG" \
+        --cabinet-xacro "$CABINET_XACRO_PATH" \
+        --robot-entity "$ROBOT_NAME" \
+        --initial-scene "$SCENE" \
         --zenoh "tcp/127.0.0.1:$BRIDGE_TCP_PORT" \
         "${CONTROL_ORIGIN_ARGS[@]}"
     case "$CONTROL_HOST" in
@@ -1264,15 +1271,15 @@ _start_web_control() {
     case "$CONTROL_HOST" in
         0.0.0.0)
             _LAN_IP="$(hostname -I 2>/dev/null | awk '
-                { for (index = 1; index <= NF; index++)
-                    if ($index !~ /:/) { print $index; exit } }
+                { for (i = 1; i <= NF; i++)
+                    if ($i !~ /:/) { print $i; exit } }
             ')"
             _SHOW_HOST="${_LAN_IP:-127.0.0.1}"
             ;;
         ::)
             _LAN_IP="$(hostname -I 2>/dev/null | awk '
-                { for (index = 1; index <= NF; index++)
-                    if ($index ~ /:/) { print $index; exit } }
+                { for (i = 1; i <= NF; i++)
+                    if ($i ~ /:/) { print $i; exit } }
             ')"
             _SHOW_HOST="${_LAN_IP:-::1}"
             ;;
@@ -1335,6 +1342,8 @@ LAUNCH_ARGS=(
     "cabinet_xacro:=$CABINET_XACRO_PATH"
     "cabinet_bringup:=$CABINET_BRINGUP"
     "spawn_cabinet:=$SPAWN_CABINET"
+    "scene:=$SCENE"
+    "scenes_config:=$SCENES_CONFIG"
     "spawn_z:=$SPAWN_Z"
     "cabinet_pose_source:=$CABINET_POSE_SOURCE"
 )

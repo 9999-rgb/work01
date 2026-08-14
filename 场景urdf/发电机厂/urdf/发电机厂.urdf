@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="发电机厂">
+  <link
+    name="ground">
+    <inertial>
+      <origin
+        xyz="95.992 14.328 2.2142"
+        rpy="0 0 0" />
+      <mass
+        value="18489000" />
+      <inertia
+        ixx="1091300000"
+        ixy="29918000"
+        ixz="-4412200"
+        iyy="52639000000"
+        iyz="3882100"
+        izz="53668000000" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://发电机厂/meshes/ground.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.69804 0.69804 0.69804 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://发电机厂/meshes/ground.STL" />
+      </geometry>
+    </collision>
+  </link>
+</robot>

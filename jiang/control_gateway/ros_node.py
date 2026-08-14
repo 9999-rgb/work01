@@ -11,8 +11,10 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import Quaternion
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import NavigateToPose
+from nav2_msgs.srv import LoadMap
 from nav_msgs.msg import OccupancyGrid
 from rclpy.action import ActionClient
 from rclpy.context import Context
@@ -127,6 +129,8 @@ class RosControlNode(Node):
         navigation_mode_topic: str = "/xczs/navigation_mode",
         map_topic: str = "/map",
         localization_pose_topic: str = "/amcl_pose",
+        map_load_service: str = "/map_server/load_map",
+        initial_pose_topic: str = "/initialpose",
         manual_linear_axis: str = "y",
         manual_joints: Sequence[ManualJointConfig] = (),
         joint_state_topic: str = "/xczs/joint_states",
@@ -224,6 +228,15 @@ class RosControlNode(Node):
         self._navigation_mode_client = self.create_client(
             SetBool,
             navigation_mode_service,
+        )
+        self._map_load_client = self.create_client(
+            LoadMap,
+            map_load_service,
+        )
+        self._initial_pose_publisher = self.create_publisher(
+            PoseWithCovarianceStamped,
+            initial_pose_topic,
+            10,
         )
         self._cabinet_button_client = ActionClient(
             self,
@@ -579,6 +592,86 @@ class RosControlNode(Node):
                 }
             )
         return snapshot
+
+    def load_map(self, map_url: str, *, timeout_sec: float = 20.0) -> None:
+        """Request the Nav2 ``map_server`` to serve a different occupancy map.
+
+        Scene switching swaps the map while the robot and map_server stay
+        alive, so the change is runtime-only (mirrors the synchronous
+        service-call pattern used by :meth:`reset_cabinet_controls`).
+        """
+        if not isinstance(map_url, str) or not map_url.strip():
+            raise ControlRequestError(
+                "map_url must be a non-empty string.",
+                400,
+            )
+        map_client = getattr(self, "_map_load_client", None)
+        if not self._service_ready(map_client):
+            raise ControlRequestError(
+                "Nav2 map_server LoadMap service is unavailable.",
+                503,
+            )
+        request = LoadMap.Request()
+        request.map_url = map_url.strip()
+        try:
+            future = map_client.call_async(request)
+        except Exception as error:  # noqa: BLE001
+            raise ControlRequestError(
+                f"Failed to request map load: {error}",
+                503,
+            ) from error
+        completed = threading.Event()
+        future.add_done_callback(lambda _: completed.set())
+        if not completed.wait(timeout=max(0.1, float(timeout_sec))):
+            raise ControlRequestError("Nav2 map load request timed out.", 503)
+        try:
+            response = future.result()
+        except Exception as error:  # noqa: BLE001
+            raise ControlRequestError(
+                f"Nav2 map load failed: {error}",
+                503,
+            ) from error
+        if response.result != LoadMap.Response.RESULT_SUCCESS:
+            raise ControlRequestError(
+                f"Nav2 map load was rejected (result {response.result}).",
+                409,
+            )
+
+    def publish_initial_pose(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        *,
+        frame_id: str = "map",
+    ) -> None:
+        """Publish an AMCL initial-pose hypothesis on ``/initialpose``.
+
+        The covariance encodes a modest uncertainty so AMCL relocalises
+        around the teleported pose rather than trusting it exactly.
+        """
+        x_value = self._validated_station_number(x, "x", status=400)
+        y_value = self._validated_station_number(y, "y", status=400)
+        yaw_value = self._validated_station_number(yaw, "yaw", status=400)
+        if not isinstance(frame_id, str) or not frame_id.strip():
+            raise ControlRequestError(
+                "frame_id must be a non-empty string.",
+                400,
+            )
+        message = PoseWithCovarianceStamped()
+        message.header.frame_id = frame_id.strip()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.pose.pose.position.x = x_value
+        message.pose.pose.position.y = y_value
+        message.pose.pose.position.z = 0.0
+        message.pose.pose.orientation.z = math.sin(yaw_value / 2.0)
+        message.pose.pose.orientation.w = math.cos(yaw_value / 2.0)
+        covariance = [0.0] * 36
+        covariance[0] = 0.25  # x variance (0.5 m std)
+        covariance[7] = 0.25  # y variance (0.5 m std)
+        covariance[35] = 0.06853891945200942  # yaw variance (~0.26 rad std)
+        message.pose.covariance = covariance
+        self._initial_pose_publisher.publish(message)
 
     def navigation_station_from_tf(
         self,

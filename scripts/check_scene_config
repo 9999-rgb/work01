@@ -1,0 +1,139 @@
+#!/usr/bin/python3
+"""Validate the scene catalog contract without starting ROS.
+
+Checks that ``scenes.yaml`` parses under the strict :class:`SceneCatalog`
+dataclass contract, that every referenced static-floor URDF and Nav2 map YAML
+resolves to a real file, and that each map YAML points at an existing PGM
+image.  ``package://`` references are resolved against the workspace layout
+first (the description/nav2 packages live at the repo root) and fall back to
+``ament_index_python`` when the package is not in this checkout.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+import yaml
+
+
+WORKSPACE = Path(__file__).resolve().parents[1]
+JIANG = WORKSPACE / "jiang"
+sys.path.insert(0, str(JIANG))
+
+# ``control_gateway.__init__`` exposes the ROS-backed server lazily; scene_catalog
+# is pure, so injecting a bare package path keeps this script ROS-free.
+import types  # noqa: E402
+
+CONTROL_GATEWAY_PACKAGE = types.ModuleType("control_gateway")
+CONTROL_GATEWAY_PACKAGE.__path__ = [str(JIANG / "control_gateway")]
+sys.modules.setdefault("control_gateway", CONTROL_GATEWAY_PACKAGE)
+
+from control_gateway.scene_catalog import SceneCatalog  # noqa: E402
+from control_gateway.scene_catalog import SceneError  # noqa: E402
+
+
+CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Check the scene catalog / URDF / Nav2 map contract."
+    )
+    parser.add_argument(
+        "--scenes",
+        default=str(CONTROL_CONFIG / "scenes.yaml"),
+        help="scene catalog YAML",
+    )
+    return parser
+
+
+def _resolve(uri: str) -> Path:
+    """Resolve a package:// (or plain) reference to a filesystem path."""
+    value = uri.strip()
+    if not value.startswith("package://"):
+        return Path(value).expanduser()
+    package, _sep, relative = value[len("package://") :].partition("/")
+    candidate = WORKSPACE / package / relative
+    if candidate.exists():
+        return candidate
+    # The package may live outside this checkout (e.g. a sourced workspace).
+    try:
+        from ament_index_python.packages import get_package_share_directory
+    except ImportError:
+        return candidate
+    try:
+        return Path(get_package_share_directory(package)) / relative
+    except Exception:
+        return candidate
+
+
+def _check_map_yaml(path: Path, scene_name: str) -> list[str]:
+    errors: list[str] = []
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        return [f"{scene_name}: cannot read map YAML {path}: {error}"]
+    except yaml.YAMLError as error:
+        return [f"{scene_name}: invalid map YAML {path}: {error}"]
+    if not isinstance(document, dict):
+        return [f"{scene_name}: map YAML {path} is not a mapping."]
+    image = document.get("image")
+    if not isinstance(image, str) or not image.strip():
+        return [f"{scene_name}: map YAML {path} has no image field."]
+    image_path = path.parent / image
+    if not image_path.exists():
+        errors.append(
+            f"{scene_name}: map image {image_path} referenced by {path} is missing."
+        )
+    for field in ("resolution", "origin", "negate", "occupied_thresh", "free_thresh"):
+        if field not in document:
+            errors.append(f"{scene_name}: map YAML {path} is missing '{field}'.")
+    return errors
+
+
+def main() -> int:
+    arguments = _parser().parse_args()
+    try:
+        catalog = SceneCatalog.load(arguments.scenes)
+    except SceneError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+
+    errors: list[str] = []
+    for scene in catalog:
+        if scene.model is not None:
+            urdf_path = _resolve(scene.model.urdf)
+            if not urdf_path.exists():
+                errors.append(
+                    f"{scene.name}: model URDF {scene.model.urdf} "
+                    f"({urdf_path}) is missing."
+                )
+        if scene.spawn_cabinet and scene.model is not None:
+            errors.append(
+                f"{scene.name}: a cabinet scene must not carry a floor model."
+            )
+        map_path = _resolve(scene.nav2_map)
+        if not map_path.exists():
+            errors.append(
+                f"{scene.name}: nav2_map {scene.nav2_map} ({map_path}) is missing."
+            )
+        else:
+            errors.extend(_check_map_yaml(map_path, scene.name))
+
+    if errors:
+        for error in errors:
+            print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+
+    print(
+        "PASS: scene catalog; "
+        f"scenes={', '.join(catalog.names)} "
+        f"(cabinets={', '.join(s.name for s in catalog if s.spawn_cabinet) or 'none'})"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

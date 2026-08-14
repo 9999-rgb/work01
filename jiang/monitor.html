@@ -793,6 +793,29 @@
     </div>
   </section>
 
+  <section class="autonomy-card scene-card">
+    <div class="autonomy-header">
+      <h3>🌍 场景切换</h3>
+      <span class="autonomy-state" id="sceneState">等待服务</span>
+    </div>
+    <div class="autonomy-body">
+      <div class="field-grid navigation-target-grid">
+        <div class="form-field">
+          <label for="sceneSelect">活动场景</label>
+          <select id="sceneSelect" disabled>
+            <option value="">等待场景目录</option>
+          </select>
+        </div>
+      </div>
+      <div class="command-row">
+        <button class="btn btn-primary" id="btnSceneSwitch" disabled>切换场景</button>
+      </div>
+      <div class="status-detail" id="sceneDetail">
+        连接控制服务器后可切换仿真场景。
+      </div>
+    </div>
+  </section>
+
   <section class="autonomy-card cabinet-card">
     <div class="autonomy-header">
       <h3>🗄️ 控制柜自动操作</h3>
@@ -1081,6 +1104,9 @@ let cabinetCatalogRequestGeneration = 0;
 const cabinetStatusByName = new Map();
 const taskSnapshotVersions = new Map();
 let cabinetOperationWorkflow = null;
+let sceneCatalog = [];
+let activeSceneName = '';
+let sceneSwitchInFlight = false;
 let replayStatusSnapshot = null;
 let replayControlReadOnly = false;
 let replayStatusTimer = null;
@@ -1133,6 +1159,10 @@ const replayState = $('replayState');
 const recordingList = $('recordingList');
 const replayDetail = $('replayDetail');
 const replayTimeline = $('replayTimeline');
+const sceneSelect = $('sceneSelect');
+const sceneState = $('sceneState');
+const sceneDetail = $('sceneDetail');
+const btnSceneSwitch = $('btnSceneSwitch');
 
 function defaultServiceUrl(port) {
   // 自动使用当前页面的 host，不再硬编码 localhost。
@@ -2175,6 +2205,11 @@ async function testControlConnection() {
         '/robot/capabilities'
       );
       applyRobotCapabilities(capabilities);
+      try {
+        applyScenes(await controlRequestWithTimeout('/scenes'));
+      } catch (_) {
+        applyScenes({scenes: [], active: ''});
+      }
       try {
         applyReplayStatus(await controlRequestWithTimeout('/replay/status'));
       } catch (replayError) {
@@ -3305,6 +3340,102 @@ function cabinetControlSupports(control, command) {
 
 function selectedCabinetName() {
   return cabinetInstance.value || navCabinetInstance.value || '';
+}
+
+function applySceneCabinetVisibility(visible) {
+  const cabinetCard = document.querySelector('.cabinet-card');
+  if (cabinetCard) cabinetCard.style.display = visible ? '' : 'none';
+}
+
+function applyScenes(payload) {
+  const values = Array.isArray(payload && payload.scenes)
+    ? payload.scenes
+    : [];
+  sceneCatalog = values.filter(entry => (
+    entry && typeof entry.name === 'string' && entry.name
+  ));
+  activeSceneName = (payload && typeof payload.active === 'string')
+    ? payload.active
+    : '';
+  const previous = sceneSelect.value;
+  const options = sceneCatalog.map(entry => {
+    const option = document.createElement('option');
+    option.value = entry.name;
+    option.textContent = entry.name;
+    return option;
+  });
+  if (!options.length) {
+    const empty = document.createElement('option');
+    empty.value = '';
+    empty.textContent = '未配置场景';
+    options.push(empty);
+  }
+  sceneSelect.replaceChildren(...options);
+  const preferred = sceneCatalog.some(entry => entry.name === previous)
+    ? previous
+    : (sceneCatalog.some(entry => entry.name === activeSceneName)
+      ? activeSceneName
+      : (sceneCatalog[0] || {}).name || '');
+  sceneSelect.value = preferred;
+  sceneSelect.disabled = !sceneCatalog.length || sceneSwitchInFlight;
+
+  const activeEntry = sceneCatalog.find(entry => entry.name === activeSceneName) || null;
+  const spawnCabinet = !activeEntry || activeEntry.spawn_cabinet !== false;
+  applySceneCabinetVisibility(spawnCabinet);
+
+  btnSceneSwitch.disabled = !sceneCatalog.length || sceneSwitchInFlight ||
+    !activeSceneName || sceneSelect.value === activeSceneName;
+  setAutonomyState(
+    sceneState,
+    activeSceneName ? `活动：${activeSceneName}` : '无活动场景',
+    activeSceneName ? 'ok' : ''
+  );
+  sceneDetail.textContent = activeEntry
+    ? (spawnCabinet
+      ? '当前场景包含控制柜；切换后柜体控件与地图将随之更新。'
+      : '当前场景仅含机器人与场地（无柜体），Nav2 地图已对应更新。')
+    : '连接控制服务器后可切换仿真场景。';
+}
+
+async function switchScene() {
+  if (sceneSwitchInFlight) return;
+  const target = sceneSelect.value;
+  if (!target || target === activeSceneName) return;
+  sceneSwitchInFlight = true;
+  btnSceneSwitch.disabled = true;
+  sceneSelect.disabled = true;
+  setAutonomyState(sceneState, `切换到 ${target} ...`, '');
+  sceneDetail.textContent = '正在协调 Gazebo 几何、Nav2 地图与机器人位姿，请稍候。';
+  try {
+    await controlRequest('/scene/switch', 'POST', {name: target});
+    setAutonomyState(sceneState, `活动：${target}`, 'ok');
+    toast(`已切换到场景 ${target}`, 'ok');
+    log('ok', `场景已切换：${target}`);
+    try {
+      applyScenes(await controlRequestWithTimeout('/scenes', 4000));
+    } catch (_) {}
+    try {
+      applyCabinetInstances(await controlRequestWithTimeout('/cabinets'));
+      await loadSelectedCabinetControls();
+    } catch (_) {}
+    try {
+      const health = await controlRequestWithTimeout('/health', 4000);
+      applyCabinetHealth(health);
+    } catch (_) {}
+  } catch (error) {
+    setAutonomyState(
+      sceneState,
+      activeSceneName ? `活动：${activeSceneName}` : '切换失败',
+      activeSceneName ? 'ok' : 'err'
+    );
+    toast(`场景切换失败：${error.message}`, 'err');
+    log('err', `场景切换失败: ${error.message}`);
+  } finally {
+    sceneSwitchInFlight = false;
+    sceneSelect.disabled = !sceneCatalog.length;
+    btnSceneSwitch.disabled = !sceneCatalog.length || !activeSceneName ||
+      sceneSelect.value === activeSceneName;
+  }
 }
 
 function applyCabinetHealth(health) {
@@ -5497,6 +5628,7 @@ $('btnNavCancel').addEventListener('click', cancelNavigation);
 $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
 $('btnCabinetReset').addEventListener('click', resetCabinetControls);
+$('btnSceneSwitch').addEventListener('click', switchScene);
 $('btnRecordingStart').addEventListener('click', startRecording);
 $('btnRecordingStop').addEventListener('click', stopRecording);
 $('btnRecordingsRefresh').addEventListener('click', refreshRecordings);

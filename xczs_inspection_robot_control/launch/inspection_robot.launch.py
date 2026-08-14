@@ -39,6 +39,7 @@ NAV2_CONFIG_PACKAGE = "xczs_inspection_robot_nav2"
 ROBOT_NAME = "xczs_inspection_robot"
 XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_XACRO_FILENAME = "control_cabinet.urdf.xacro"
+SCENE_FLOOR_ENTITY = "xczs_scene_floor"
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
 _BOOLEAN_LAUNCH_ARGUMENTS = (
@@ -204,6 +205,106 @@ def _finite_number(instance, field, default=None):
             "must be finite."
         )
     return value
+
+
+def _resolve_package_path(value):
+    """Resolve a ``package://`` reference to an absolute filesystem path."""
+    value = str(value).strip()
+    if not value.startswith("package://"):
+        return str(Path(value).expanduser())
+    rest = value[len("package://"):]
+    package, separator, relative = rest.partition("/")
+    if not package or not separator or not relative:
+        raise RuntimeError(f"Invalid package:// reference: {value!r}.")
+    return str(Path(get_package_share_directory(package)) / relative)
+
+
+def _read_scenes(path):
+    """Read ``scenes.yaml`` into a name-keyed mapping of scene specs.
+
+    This duplicates the shared ``control_gateway.scene_catalog`` contract in
+    the launch process, which cannot import the Web gateway package.
+    """
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise RuntimeError(f"Could not read scene catalog '{path}': {error}") from error
+    if not isinstance(document, dict) or not isinstance(
+        document.get("scenes"), list
+    ):
+        raise RuntimeError("Scene catalog must contain a scenes list.")
+    if not document["scenes"]:
+        raise RuntimeError("Scene catalog must contain at least one scene.")
+
+    scenes = {}
+    for raw in document["scenes"]:
+        if not isinstance(raw, dict):
+            raise RuntimeError("Every scene must be a mapping.")
+        name = raw.get("name")
+        if not isinstance(name, str) or not _CABINET_NAME_PATTERN.fullmatch(name):
+            raise RuntimeError("Scene name must match [a-z][a-z0-9_]{0,62}.")
+        if name in scenes:
+            raise RuntimeError(f"Duplicate scene name '{name}'.")
+        spawn_cabinet = raw.get("spawn_cabinet")
+        if not isinstance(spawn_cabinet, bool):
+            raise RuntimeError(f"Scene '{name}' spawn_cabinet must be a boolean.")
+        nav2_map = raw.get("nav2_map")
+        if not isinstance(nav2_map, str) or not nav2_map.strip():
+            raise RuntimeError(f"Scene '{name}' nav2_map must be a non-empty string.")
+
+        model = raw.get("model")
+        model_spec = None
+        if model is not None:
+            if not isinstance(model, dict):
+                raise RuntimeError(f"Scene '{name}' model must be a mapping or null.")
+            urdf = model.get("urdf")
+            if not isinstance(urdf, str) or not urdf.strip():
+                raise RuntimeError(f"Scene '{name}' model.urdf must be a non-empty string.")
+            pose = model.get("pose")
+            if not isinstance(pose, dict):
+                raise RuntimeError(f"Scene '{name}' model.pose must be a mapping.")
+            model_spec = {
+                "urdf": urdf.strip(),
+                "x": _scene_pose_number(pose, "x", name),
+                "y": _scene_pose_number(pose, "y", name),
+                "z": _scene_pose_number(pose, "z", name),
+                "roll": _scene_pose_number(pose, "roll", name),
+                "pitch": _scene_pose_number(pose, "pitch", name),
+                "yaw": _scene_pose_number(pose, "yaw", name),
+            }
+        scenes[name] = {
+            "name": name,
+            "spawn_cabinet": spawn_cabinet,
+            "model": model_spec,
+            "nav2_map": nav2_map.strip(),
+        }
+    return scenes
+
+
+def _scene_pose_number(pose, field, scene_name):
+    value = pose.get(field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(
+            f"Scene '{scene_name}' model.pose.{field} must be a finite number."
+        )
+    value = float(value)
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"Scene '{scene_name}' model.pose.{field} must be finite."
+        )
+    return value
+
+
+def _scene_spec(context):
+    """Return the active scene spec resolved from launch arguments."""
+    scenes_path = Path(
+        LaunchConfiguration("scenes_config").perform(context)
+    ).expanduser()
+    scene_name = LaunchConfiguration("scene").perform(context).strip()
+    scenes = _read_scenes(scenes_path)
+    if scene_name not in scenes:
+        raise RuntimeError(f"Unknown scene '{scene_name}' in {scenes_path}.")
+    return scenes[scene_name]
 
 
 def _read_instances(path):
@@ -473,7 +574,12 @@ def _apply_button_profiles(document, profiles):
 
 def _cabinet_nodes(context, *, cabinet_xacro):
     cabinet_bringup = _launch_boolean(context, "cabinet_bringup")
-    spawn_cabinet = _launch_boolean(context, "spawn_cabinet")
+    # 场景目录决定该场景是否布柜体；`spawn_cabinet` 参数作为全局开关
+    # （外部机器人栈等场景可整体关闭柜体 spawn）。
+    spawn_cabinet = (
+        _scene_spec(context)["spawn_cabinet"]
+        and _launch_boolean(context, "spawn_cabinet")
+    )
     if spawn_cabinet and not cabinet_bringup:
         raise RuntimeError(
             "spawn_cabinet=true requires cabinet_bringup=true."
@@ -742,6 +848,63 @@ def _cabinet_nodes(context, *, cabinet_xacro):
     return nodes
 
 
+def _scene_floor_nodes(context):
+    """Spawn the initial scene's static floor model (if any)."""
+    if not _launch_boolean(context, "gazebo"):
+        return []
+    model = _scene_spec(context).get("model")
+    if model is None:
+        return []
+    urdf_path = _resolve_package_path(model["urdf"])
+    if not Path(urdf_path).is_file():
+        raise RuntimeError(f"Scene floor URDF does not exist: {urdf_path}")
+    return [
+        Node(
+            package="gazebo_ros",
+            executable="spawn_entity.py",
+            name="spawn_scene_floor",
+            output="screen",
+            prefix="/usr/bin/python3",
+            arguments=[
+                "-entity", SCENE_FLOOR_ENTITY,
+                "-file", urdf_path,
+                "-x", str(model["x"]),
+                "-y", str(model["y"]),
+                "-z", str(model["z"]),
+                "-R", str(model["roll"]),
+                "-P", str(model["pitch"]),
+                "-Y", str(model["yaw"]),
+            ],
+        )
+    ]
+
+
+def _nav2_nodes(context):
+    """Include Nav2 with the map resolved from the active scene."""
+    robot_bringup = _launch_boolean(context, "robot_bringup")
+    nav2_enabled = _launch_boolean(context, "nav2")
+    if not (robot_bringup and nav2_enabled):
+        return []
+    nav2_map = _resolve_package_path(_scene_spec(context)["nav2_map"])
+    return [
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                LaunchConfiguration("nav2_launch").perform(context)
+            ),
+            launch_arguments={
+                "map": nav2_map,
+                "nav2_params_file": LaunchConfiguration(
+                    "nav2_params_file"
+                ).perform(context),
+                "rviz": LaunchConfiguration("nav2_rviz").perform(context),
+                "use_sim_time": LaunchConfiguration(
+                    "use_sim_time"
+                ).perform(context),
+            }.items(),
+        )
+    ]
+
+
 def _cleanup_generated_files(_context):
     while _GENERATED_DIRECTORIES:
         shutil.rmtree(_GENERATED_DIRECTORIES.pop(), ignore_errors=True)
@@ -844,6 +1007,11 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("spawn_z", default_value="0.515"),
         DeclareLaunchArgument("cabinet_bringup", default_value="true"),
         DeclareLaunchArgument("spawn_cabinet", default_value="true"),
+        DeclareLaunchArgument("scene", default_value="cabinet_operation"),
+        DeclareLaunchArgument(
+            "scenes_config",
+            default_value=str(control_share / "config" / "scenes.yaml"),
+        ),
         DeclareLaunchArgument("cabinet_pose_source", default_value="static"),
         DeclareLaunchArgument(
             "cabinet_instances",
@@ -939,28 +1107,9 @@ def generate_launch_description() -> LaunchDescription:
             )
         ),
     )
-    nav2 = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            LaunchConfiguration("nav2_launch")
-        ),
-        launch_arguments={
-            "map": LaunchConfiguration("nav2_map"),
-            "nav2_params_file": LaunchConfiguration("nav2_params_file"),
-            "rviz": LaunchConfiguration("nav2_rviz"),
-            "use_sim_time": LaunchConfiguration("use_sim_time"),
-        }.items(),
-        condition=IfCondition(
-            PythonExpression(
-                [
-                    "'",
-                    LaunchConfiguration("robot_bringup"),
-                    "' == 'true' and '",
-                    LaunchConfiguration("nav2"),
-                    "' == 'true'",
-                ]
-            )
-        ),
-    )
+    # Nav2 的地图由场景目录决定；作为 OpaqueFunction 包装以便在运行时读取
+    # `scene`/`scenes_config` 并解析对应地图（默认场景等价于旧 inspection_map）。
+    nav2 = OpaqueFunction(function=_nav2_nodes)
     robot_state_publisher = Node(
         package="robot_state_publisher",
         executable="robot_state_publisher",
@@ -1134,6 +1283,7 @@ def generate_launch_description() -> LaunchDescription:
             "cabinet_xacro": LaunchConfiguration("cabinet_xacro"),
         },
     )
+    scene_floor = OpaqueFunction(function=_scene_floor_nodes)
     adapter_configuration = OpaqueFunction(
         function=_configure_robot_adapter,
     )
@@ -1160,6 +1310,7 @@ def generate_launch_description() -> LaunchDescription:
             gazebo_client,
             robot_state_publisher,
             spawn_robot,
+            scene_floor,
             operation_lease_coordinator,
             cabinet_loader,
             cleanup,

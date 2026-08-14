@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<!-- 发电机厂静态场景（由 SolidWorks 导出，SW2URDF v1.5.1）。
+     单 link 静态网格；去掉了导出的大质量 <inertial>（静态模型无需惯性）。
+     网格沿用原 link 名 ground。 -->
+<robot name="generator_plant">
+  <link name="ground">
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/scenes/generator_plant/ground.STL"/>
+      </geometry>
+      <material name="scene_grey">
+        <color rgba="0.69804 0.69804 0.69804 1"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh
+          filename="package://xczs_inspection_robot_description/meshes/scenes/generator_plant/ground.STL"/>
+      </geometry>
+    </collision>
+  </link>
+  <gazebo>
+    <static>true</static>
+  </gazebo>
+</robot>

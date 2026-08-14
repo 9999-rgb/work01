@@ -288,3 +288,16 @@ class TaskReplayStartRequest(BaseModel):
     @classmethod
     def _recording_id(cls, value: str) -> str:
         return nonempty_string(value, "recording_id")
+
+
+class SceneSwitchRequest(BaseModel):
+    """POST /scene/switch 请求体。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="目标场景标识，见 scenes.yaml")
+
+    @field_validator("name")
+    @classmethod
+    def _name(cls, value: str) -> str:
+        return nonempty_string(value, "name")

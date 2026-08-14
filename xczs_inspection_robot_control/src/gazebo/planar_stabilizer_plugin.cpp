@@ -280,6 +280,28 @@ private:
       planar_pose_is_locked_ = false;
     }
 
+    // A teleport (scene switch through SetEntityState) relocates the chassis
+    // far beyond the drift the velocity-zeroing lock can produce.  Accept the
+    // new pose as the lock target instead of snapping back through the world:
+    // the lock's job is to hold the chassis where it last came to rest, and a
+    // teleport is a legitimate new rest point.  Height is deliberately left
+    // alone so the chassis still settles onto the ground under gravity.
+    constexpr double teleport_planar_tolerance = 0.1;
+    if (planar_pose_is_locked_ &&
+      (std::abs(world_pose.Pos().X() - locked_planar_x_) >
+         teleport_planar_tolerance ||
+       std::abs(world_pose.Pos().Y() - locked_planar_y_) >
+         teleport_planar_tolerance ||
+       std::abs(
+         std::remainder(
+           world_pose.Rot().Yaw() - locked_planar_yaw_,
+           two_pi)) > teleport_planar_tolerance))
+    {
+      locked_planar_x_ = world_pose.Pos().X();
+      locked_planar_y_ = world_pose.Pos().Y();
+      locked_planar_yaw_ = world_pose.Rot().Yaw();
+    }
+
     const bool has_tilt =
       std::abs(roll) > tilt_tolerance ||
       std::abs(pitch) > tilt_tolerance;

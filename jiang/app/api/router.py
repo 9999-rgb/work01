@@ -13,6 +13,7 @@ from app.api import (
     recording,
     replay,
     robot,
+    scene,
     task,
 )
 
@@ -28,4 +29,5 @@ api_router.include_router(navigation.router)
 api_router.include_router(recording.router)
 api_router.include_router(replay.router)
 api_router.include_router(robot.router)
+api_router.include_router(scene.router)
 api_router.include_router(task.router)

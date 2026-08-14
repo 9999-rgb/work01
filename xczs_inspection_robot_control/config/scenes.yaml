@@ -1,0 +1,39 @@
+# 场景目录：统一 Web 切换、Gazebo 几何 spawn 与 Nav2 地图切换的单一契约。
+#
+# 每个场景字段：
+#   name          场景标识（[a-z][a-z0-9_]*，进 API/topic/实体名）
+#   spawn_cabinet 该场景是否包含控制柜集群（默认柜体场景为 true）
+#   model         可选的静态地板模型（null 表示沿用世界 ground_plane）
+#     urdf        静态单 link URDF（package:// 引用）
+#     pose        实体 spawn 位姿 x/y/z/roll/pitch/yaw（与地图 origin 对齐）
+#   nav2_map      map_server 服务的 occupancy map YAML（package:// 引用）
+#   robot_spawn   切到该场景时机器人的初始位姿（x/y/z 为底盘/body 高度，
+#                 yaw 为 map 系 base_link 朝向；null 表示保持原位）
+#
+# 三个场景共用世界原点：默认场景在原点附近布柜体，两个新场景的地板同样
+# 从世界原点展开。切换 = 删除旧场景实体 + spawn 新场景地板/柜体 + LoadMap
+# + 把机器人 teleport 到 robot_spawn 并重定位。
+scenes:
+  - name: cabinet_operation
+    spawn_cabinet: true
+    model: null
+    nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map.yaml
+    robot_spawn: {x: 0.0, y: 0.0, z: 0.515, yaw: 1.5707963267948966}
+
+  - name: electrical_mezzanine
+    spawn_cabinet: false
+    model:
+      urdf: package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.urdf
+      pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map_electrical_mezzanine.yaml
+    # 占位初始位姿：近 floor 左下自由角落，待按实际地图与需求调整。
+    robot_spawn: {x: 2.0, y: 2.0, z: 0.515, yaw: 0.0}
+
+  - name: generator_plant
+    spawn_cabinet: false
+    model:
+      urdf: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.urdf
+      pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map_generator_plant.yaml
+    # 占位初始位姿：近 floor 左下自由角落，待按实际地图与需求调整。
+    robot_spawn: {x: 2.0, y: 2.0, z: 0.515, yaw: 0.0}

@@ -31,6 +31,11 @@ from rclpy.signals import SignalHandlerOptions
 
 from .cabinet_client import CabinetClient
 from .cabinet_client import CabinetClientError
+from .cabinet_spawn import CabinetSpawnError
+from .cabinet_spawn import build_cabinet_urdf
+from .cabinet_spawn import read_button_profiles
+from .gazebo_client import GazeboClient
+from .gazebo_client import SCENE_FLOOR_ENTITY
 from .inventory import CabinetInventory
 from .inventory import CabinetNotFoundError
 from .inventory import InventoryError
@@ -45,6 +50,13 @@ from .ros_node import ControlRequestError
 from .ros_node import RosControlNode
 from .robot_adapter import RobotAdapterError
 from .robot_adapter import load as load_robot_adapter
+from .scene_catalog import resolve_package_uri
+from .scene_catalog import SceneCatalog
+from .scene_catalog import SceneError
+from .scene_catalog import SceneModel
+from .scene_catalog import SceneNotFoundError
+from .scene_catalog import RobotSpawn
+from .scene_catalog import SceneSpec
 from .task_manager import EventHubClosed
 from .task_manager import TaskCanceledError
 from .task_manager import TaskConflictError
@@ -134,6 +146,10 @@ class ControlServer:
         cabinet_pose_path: Optional[str] = None,
         robot_control_path: Optional[str] = None,
         recordings_root: Optional[str] = None,
+        scenes_config_path: Optional[str] = None,
+        cabinet_xacro_path: Optional[str] = None,
+        robot_entity_name: str = "xczs_inspection_robot",
+        initial_scene: Optional[str] = None,
         fatal_callback: Optional[ExecutorFatalCallback] = None,
     ) -> None:
         if (
@@ -144,6 +160,14 @@ class ControlServer:
             raise ValueError("port must be an integer in [1, 65535].")
         if not isinstance(host, str) or not host.strip():
             raise ValueError("host must be a non-empty string.")
+        if (
+            not isinstance(robot_entity_name, str)
+            or not robot_entity_name.strip()
+            or any(character.isspace() for character in robot_entity_name)
+        ):
+            raise ValueError(
+                "robot_entity_name must be a non-empty string without whitespace."
+            )
         for label, value in (
             ("max_linear_speed", max_linear_speed),
             ("max_angular_speed", max_angular_speed),
@@ -206,6 +230,32 @@ class ControlServer:
             control_config / "robot_control.yaml"
         )
         recordings_path = recordings_root or str(workspace / "recordings")
+        scenes_path = scenes_config_path or str(control_config / "scenes.yaml")
+        cabinet_xacro = cabinet_xacro_path or str(
+            workspace
+            / "xczs_inspection_robot_description"
+            / "urdf"
+            / "control_cabinet.urdf.xacro"
+        )
+        try:
+            self._scene_catalog = SceneCatalog.load(scenes_path)
+        except SceneError as error:
+            raise RuntimeError(f"Invalid scene catalog: {error}") from error
+        active_scene = (
+            str(initial_scene) if initial_scene is not None else None
+        )
+        if active_scene is None:
+            active_scene = self._scene_catalog.names[0]
+        try:
+            self._scene_catalog.get(active_scene)
+        except SceneNotFoundError as error:
+            raise RuntimeError(f"Unknown initial scene: {active_scene}") from error
+        self._active_scene = active_scene
+        self._scenes_config_path = scenes_path
+        self._cabinet_xacro_path = cabinet_xacro
+        self._cabinet_controls_path = controls_path
+        self._robot_entity_name = robot_entity_name.strip()
+        self._scene_switch_lock = threading.Lock()
         try:
             validate_profile(
                 robot_adapter_path=robot_adapter_path,
@@ -286,6 +336,8 @@ class ControlServer:
         )
         self._executor = SingleThreadedExecutor(context=self._context)
         self._executor.add_node(self._node)
+        self._gazebo_client = GazeboClient(context=self._context)
+        self._executor.add_node(self._gazebo_client)
         # Serialize task admission/cancellation with legacy mutating routes.
         # TaskManager's own lock protects its records, but it cannot make the
         # following ROS side effect atomic with an active-task check.
@@ -937,6 +989,7 @@ class ControlServer:
                     if task_manager is not None
                     else None
                 ),
+                "active_scene": getattr(self, "_active_scene", None),
                 "cabinets": cabinet_states,
                 "replay_mode": replay["mode"],
                 "replay_read_only": replay["read_only"],
@@ -982,6 +1035,162 @@ class ControlServer:
                 "gripper_joint_count": len(adapter.gripper_joint_names),
                 "manual_joints": joints,
             }
+
+    def scenes(self) -> Dict[str, Any]:
+        """Return the scene catalog and the currently active scene."""
+        with self._request_scope():
+            return {
+                "active": self._active_scene,
+                "scenes": self._scene_catalog.list_scenes(),
+            }
+
+    def active_scene(self) -> Dict[str, Any]:
+        """Return the currently active scene specification."""
+        with self._request_scope():
+            return self._scene_catalog.get(self._active_scene).to_dict()
+
+    def switch_scene(self, name: str) -> Dict[str, Any]:
+        """Switch to another scene by reconciling Gazebo geometry, the Nav2
+        map and the robot pose.
+
+        The switch is serialized against concurrent switches by
+        ``_scene_switch_lock`` and against task admission / manual control by
+        ``_task_interlock_scope`` + ``_ensure_backend_quiescent``.  Geometry is
+        reconciled with delete-then-spawn, so re-issuing a switch after a
+        partial failure converges to the target scene.
+        """
+        if not isinstance(name, str) or not name.strip():
+            raise ControlRequestError(
+                "scene name must be a non-empty string.",
+                400,
+            )
+        with self._request_scope():
+            try:
+                target = self._scene_catalog.get(name.strip())
+            except SceneNotFoundError as error:
+                raise ControlRequestError(str(error), 404) from error
+            with self._task_interlock_scope():
+                self._ensure_backend_quiescent("Scene switch")
+                with self._scene_switch_lock:
+                    previous = self._active_scene
+                    if previous == target.name:
+                        return {"status": "unchanged", "scene": target.name}
+                    self._apply_scene_switch(previous, target)
+                    self._active_scene = target.name
+                    return {
+                        "status": "switched",
+                        "scene": target.name,
+                        "previous": previous,
+                    }
+
+    def _apply_scene_switch(self, previous_name: str, target: SceneSpec) -> None:
+        """Reconcile geometry, map and robot pose to ``target``.
+
+        ``_active_scene`` is only advanced by the caller after this returns,
+        so a raised error leaves the recorded scene at ``previous`` even if
+        geometry is partially reconciled.
+        """
+        previous = self._scene_catalog.get(previous_name)
+        try:
+            # Load the Nav2 map first.  It is the most likely external call to
+            # fail (map_server rejects bad metadata), and doing it before any
+            # geometry change keeps the world intact when it does.  ``package://``
+            # references are resolved to a filesystem path because this
+            # map_server is launched without a resolver and rejects URIs.
+            self._node.load_map(str(resolve_package_uri(target.nav2_map)))
+            if previous.model is not None:
+                self._gazebo_client.delete_entity(
+                    SCENE_FLOOR_ENTITY, ignore_missing=True
+                )
+            if previous.spawn_cabinet:
+                self._delete_cabinet_entities()
+            if target.model is not None:
+                self._spawn_scene_floor(target.model)
+            if target.spawn_cabinet:
+                self._spawn_cabinet_entities()
+            self._teleport_robot(target.robot_spawn)
+        except ControlRequestError:
+            raise
+        except (CabinetSpawnError, SceneError, OSError, ValueError) as error:
+            raise ControlRequestError(
+                f"Scene switch to '{target.name}' failed: {error}",
+                503,
+            ) from error
+
+    def _delete_cabinet_entities(self) -> None:
+        for cabinet in self._inventory:
+            self._gazebo_client.delete_entity(
+                cabinet.name, ignore_missing=True
+            )
+
+    def _spawn_cabinet_entities(self) -> None:
+        button_defaults, button_profiles = read_button_profiles(
+            self._cabinet_controls_path
+        )
+        for cabinet in self._inventory:
+            urdf = build_cabinet_urdf(
+                self._cabinet_xacro_path,
+                cabinet.name,
+                button_defaults,
+                button_profiles,
+            )
+            self._gazebo_client.delete_entity(
+                cabinet.name, ignore_missing=True
+            )
+            self._gazebo_client.spawn_entity(
+                cabinet.name,
+                urdf,
+                pose=(
+                    cabinet.x,
+                    cabinet.y,
+                    cabinet.z,
+                    cabinet.roll,
+                    cabinet.pitch,
+                    cabinet.yaw,
+                ),
+                reference_frame="world",
+            )
+
+    def _spawn_scene_floor(self, model: SceneModel) -> None:
+        try:
+            urdf_path = resolve_package_uri(model.urdf)
+            xml = Path(urdf_path).read_text(encoding="utf-8")
+        except (OSError, ValueError) as error:
+            raise ControlRequestError(
+                f"Could not read scene model '{model.urdf}': {error}",
+                503,
+            ) from error
+        self._gazebo_client.delete_entity(
+            SCENE_FLOOR_ENTITY, ignore_missing=True
+        )
+        self._gazebo_client.spawn_entity(
+            SCENE_FLOOR_ENTITY,
+            xml,
+            pose=model.pose,
+            reference_frame="world",
+        )
+
+    def _teleport_robot(self, robot_spawn: Optional[RobotSpawn]) -> None:
+        if robot_spawn is None:
+            return
+        # ``base_link`` is a fixed child of the root ``body`` link rotated
+        # +pi/2 about Z.  To point base_link at ``yaw`` in the map/world frame
+        # the body must be rotated back by that offset.
+        body_yaw = robot_spawn.yaw - math.pi / 2.0
+        self._gazebo_client.set_entity_state(
+            self._robot_entity_name,
+            x=robot_spawn.x,
+            y=robot_spawn.y,
+            z=robot_spawn.z,
+            yaw=body_yaw,
+            reference_frame="world",
+        )
+        self._node.publish_initial_pose(
+            robot_spawn.x,
+            robot_spawn.y,
+            robot_spawn.yaw,
+            frame_id=self._robot_adapter.navigation_frame,
+        )
 
     def recordings(self) -> Dict[str, Any]:
         """List retained recording manifests without exposing data paths."""
