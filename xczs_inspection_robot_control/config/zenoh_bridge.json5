@@ -1,0 +1,15 @@
+{
+  plugins: {
+    ros2dds: {
+      // The browser camera endpoint subscribes to ROS 2 directly. Routing the
+      // raw image through the local Zenoh bridge creates a second DDS writer
+      // for the same large sample and can leave CycloneDDS repeatedly taking
+      // an invalid/stale fragmented sample. Keep control/telemetry routing,
+      // but exclude both directions of the raw camera interface.
+      deny: {
+        publishers: ["/xczs/camera/.*"],
+        subscribers: ["/xczs/camera/.*"],
+      },
+    },
+  },
+}

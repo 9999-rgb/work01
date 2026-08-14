@@ -41,6 +41,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"          # work01 根目录
 JIANG_DIR="$WORK_DIR/jiang"
 ZENOH_BRIDGE="${ZENOH_BRIDGE:-/opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds}"
+ZENOH_BRIDGE_CONFIG="${ZENOH_BRIDGE_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/zenoh_bridge.json5}"
 BRIDGE_REST_PORT="${BRIDGE_REST_PORT:-8000}"
 BRIDGE_TCP_PORT="${BRIDGE_TCP_PORT:-7447}"
 ZENOH_LAN_ENABLED="${XCZS_ZENOH_LAN_ENABLED:-false}"
@@ -689,6 +690,9 @@ _require_file() {
 }
 
 _require_file "$CABINET_ROBOT_ADAPTER_PATH"
+if [ "$ZENOH_REQUIRED" = "true" ]; then
+    _require_file "$ZENOH_BRIDGE_CONFIG"
+fi
 if [ "$CONTROL_MODE" = "web" ]; then
     _require_file "$CABINET_INSTANCES_PATH"
     _require_file "$CABINET_CONTROLS_PATH"
@@ -1209,6 +1213,7 @@ _monitor_managed_processes() {
 
 _start_bridge() {
     _start_managed_process BRIDGE_PID "Zenoh Bridge" "$ZENOH_BRIDGE" \
+        --config "$ZENOH_BRIDGE_CONFIG" \
         --listen "tcp/$ZENOH_BIND_HOST:$BRIDGE_TCP_PORT" \
         --rest-http-port "$ZENOH_BIND_HOST:$BRIDGE_REST_PORT" \
         "${ZENOH_SCOUTING_ARGS[@]}"
@@ -1219,40 +1224,18 @@ _start_bridge() {
     echo "       REST: http://$ZENOH_BIND_HOST:$BRIDGE_REST_PORT"
 }
 
-# ── 1. 启动 Zenoh Bridge ──────────────────────────────────────────
-echo "[1/6] Zenoh Bridge..."
+# Zenoh 延后到 ROS/Gazebo publishers 稳定后再启动，以降低启动期端点
+# 抖动。zenoh_bridge.json5 还会阻止相机原始大消息被桥回注为第二个 DDS
+# writer；Web 传感器进程直接订阅 Gazebo 的 ROS 2 camera writer。
 
-# 端口冲突已在预检阶段 fail-fast，不复用或终止全机上的其他 Zenoh 桥。
-if [ "$ZENOH_REQUIRED" = "true" ]; then
-    _start_bridge
-else
-    echo "       跳过（键盘模式未启用 CDR→JSON 代理）"
-fi
-
-# ── 2. 启动 CDR→JSON 代理（可选） ─────────────────────────────────
-if [ "$WITH_PROXY" = "true" ]; then
-    echo "[2/6] 启动 XCZS Zenoh 代理..."
-    cd "$JIANG_DIR"
-    _start_managed_process PROXY_PID "XCZS Zenoh 代理" \
-        "$PYTHON_BIN" run_xczs_proxy.py \
-        --port "$BRIDGE_TCP_PORT" \
-        --control-port 0
-    _wait_for_stable_processes 5
-    echo "       代理已启动 (PID $PROXY_PID)"
-else
-    if [ "$ZENOH_REQUIRED" = "true" ]; then
-        echo "[2/6] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
-    else
-        echo "[2/6] 跳过 Zenoh 代理（键盘模式无需 Zenoh）"
+_start_web_control() {
+    # 迁移到 FastAPI 后，原先独立的 SSE 桥、传感器流、HTTP 文件服务器与
+    # Web 控制服务合并为单个 uvicorn 进程（默认 CONTROL_PORT 8090）。
+    # 本地仿真与 Zenoh 路由先稳定，再创建长期运行的传感器 readers。
+    if [ "$CONTROL_MODE" != "web" ]; then
+        return
     fi
-    PROXY_PID=""
-fi
-
-# ── 3. 启动统一 Web 服务（三合一：控制 API + SSE + 传感器 + 静态页） ──
-# 迁移到 FastAPI 后，原先独立的 SSE 桥、传感器流、HTTP 文件服务器与
-# Web 控制服务合并为单个 uvicorn 进程（默认 CONTROL_PORT 8090）。
-if [ "$CONTROL_MODE" = "web" ]; then
-    echo "[3/6] 启动统一 Web 控制服务 (port $CONTROL_PORT)..."
+    echo "       启动统一 Web 控制服务 (port $CONTROL_PORT)..."
     cd "$JIANG_DIR"
     _start_managed_process CONTROL_PID "Web 控制服务" \
         "$PYTHON_BIN" control_server.py \
@@ -1304,21 +1287,13 @@ if [ "$CONTROL_MODE" = "web" ]; then
     echo "       SSE 数据:  http://${_SHOW_HOST}:$CONTROL_PORT/sse/<key>"
     echo "       相机 MJPEG: http://${_SHOW_HOST}:$CONTROL_PORT/camera.mjpg"
     echo "       雷达 WebSocket: ws://${_SHOW_HOST}:$CONTROL_PORT/lidar/ws"
-else
-    echo "[3/6] 跳过 Web 控制服务（键盘模式由专用 ROS 2 节点控制）"
-fi
+}
 
-# ── 5. 显示访问地址 ───────────────────────────────────────────────
-echo ""
 if [ "$CONTROL_MODE" = "web" ]; then
-    echo "  ╔══════════════════════════════════════════════════════╗"
-    echo "  ║  🌐 监控面板: http://${_SHOW_HOST}:$CONTROL_PORT/monitor.html"
-    echo "  ║  📚 API 文档:  http://${_SHOW_HOST}:$CONTROL_PORT/docs"
-    echo "  ║  📡 SSE 数据:  http://${_SHOW_HOST}:$CONTROL_PORT/sse/<key>"
-    echo "  ║  📷 传感器流:  http://${_SHOW_HOST}:$CONTROL_PORT/camera.mjpg"
-    echo "  ╚══════════════════════════════════════════════════════╝"
+    echo "[1-3/6] Zenoh 与 Web 将在 ROS/Gazebo 稳定后启动"
+else
+    echo "[1-3/6] 按键模式按需延后启动 Zenoh 代理；不启动 Web"
 fi
-echo ""
 
 # ── 6. 启动 Gazebo + 机器人 ───────────────────────────────────────
 echo "[6/6] 启动 Gazebo + XCZS 机器人..."
@@ -1367,7 +1342,10 @@ _start_managed_process LAUNCH_PID "ROS 2 launch" \
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
     "${LAUNCH_ARGS[@]}"
 if [ "$LOCAL_LAUNCH_PERSISTENT" = "true" ]; then
-    _wait_for_stable_processes 10
+    # Each check is 200 ms.  Ten real seconds gives Gazebo sensor plugins and
+    # the Zenoh DDS routes time to finish their initial endpoint churn before
+    # the Web process creates long-lived image readers.
+    _wait_for_stable_processes 50
 else
     echo "       本入口未启用本地 ROS 节点，校验 launch 配置后连接外部完整栈..."
     if wait "$LAUNCH_PID"; then
@@ -1379,6 +1357,50 @@ else
         exit "$launch_status"
     fi
 fi
+
+# ROS/Gazebo publishers 已完成首轮发现后再创建 Zenoh 路由；等桥的 DDS
+# writers 稳定后，最后创建 Web 传感器 readers。外部栈模式的本地 launch
+# 已完成配置校验，此时同样可安全连接既有端点。
+echo "[1/6] Zenoh Bridge..."
+if [ "$ZENOH_REQUIRED" = "true" ]; then
+    _start_bridge
+    _wait_for_stable_processes 25
+else
+    echo "       跳过（键盘模式未启用 CDR→JSON 代理）"
+fi
+
+if [ "$WITH_PROXY" = "true" ]; then
+    echo "[2/6] 启动 XCZS Zenoh 代理..."
+    cd "$JIANG_DIR"
+    _start_managed_process PROXY_PID "XCZS Zenoh 代理" \
+        "$PYTHON_BIN" run_xczs_proxy.py \
+        --port "$BRIDGE_TCP_PORT" \
+        --control-port 0
+    _wait_for_stable_processes 5
+    echo "       代理已启动 (PID $PROXY_PID)"
+else
+    if [ "$ZENOH_REQUIRED" = "true" ]; then
+        echo "[2/6] 跳过 Zenoh 代理（使用桥自带 JSON 转发）"
+    else
+        echo "[2/6] 跳过 Zenoh 代理（键盘模式无需 Zenoh）"
+    fi
+    PROXY_PID=""
+fi
+
+_start_web_control
+
+# ── 5. 显示访问地址 ───────────────────────────────────────────────
+echo ""
+if [ "$CONTROL_MODE" = "web" ]; then
+    echo "  ╔══════════════════════════════════════════════════════╗"
+    echo "  ║  🌐 监控面板: http://${_SHOW_HOST}:$CONTROL_PORT/monitor.html"
+    echo "  ║  📚 API 文档:  http://${_SHOW_HOST}:$CONTROL_PORT/docs"
+    echo "  ║  📡 SSE 数据:  http://${_SHOW_HOST}:$CONTROL_PORT/sse/<key>"
+    echo "  ║  📷 传感器流:  http://${_SHOW_HOST}:$CONTROL_PORT/camera.mjpg"
+    echo "  ╚══════════════════════════════════════════════════════╝"
+fi
+echo ""
+
 if [ "$CONTROL_MODE" = "web" ]; then
     _wait_for_task_stack \
         "http://${_READY_URL_HOST}:$CONTROL_PORT/health" "$CABINET_ACTION_REQUIRED"

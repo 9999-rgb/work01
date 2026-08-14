@@ -14,6 +14,12 @@ ROOT = Path(__file__).resolve().parents[2]
 STARTUP = ROOT / "jiang" / "start_xczs_bridge.sh"
 WEB_VALIDATOR = ROOT / "scripts" / "validate_cabinet_web"
 RECORDING_VALIDATOR = ROOT / "scripts" / "validate_recording_replay"
+ZENOH_BRIDGE_CONFIG = (
+    ROOT
+    / "xczs_inspection_robot_control"
+    / "config"
+    / "zenoh_bridge.json5"
+)
 
 
 class StartupScriptContractTests(unittest.TestCase):
@@ -22,6 +28,9 @@ class StartupScriptContractTests(unittest.TestCase):
         cls.startup_source = STARTUP.read_text(encoding="utf-8")
         cls.validator_source = WEB_VALIDATOR.read_text(encoding="utf-8")
         cls.recording_validator_source = RECORDING_VALIDATOR.read_text(
+            encoding="utf-8"
+        )
+        cls.zenoh_bridge_config_source = ZENOH_BRIDGE_CONFIG.read_text(
             encoding="utf-8"
         )
 
@@ -132,6 +141,49 @@ class StartupScriptContractTests(unittest.TestCase):
             end = self.startup_source.index(next_name, start)
             function = self.startup_source[start:end]
             self.assertIn("curl -fsS --connect-timeout 1 --max-time 2", function)
+
+    def test_zenoh_and_web_start_after_ros_stack_stabilizes(self) -> None:
+        stable_wait = self.startup_source.index(
+            '_wait_for_stable_processes 50'
+        )
+        bridge_start = self.startup_source.index(
+            '_start_bridge\n',
+            stable_wait,
+        )
+        bridge_stable = self.startup_source.index(
+            '_wait_for_stable_processes 25',
+            bridge_start,
+        )
+        web_start = self.startup_source.index(
+            '_start_web_control\n',
+            bridge_stable,
+        )
+        task_readiness = self.startup_source.index(
+            '_wait_for_task_stack \\\n',
+            web_start,
+        )
+        self.assertLess(stable_wait, bridge_start)
+        self.assertLess(bridge_start, bridge_stable)
+        self.assertLess(bridge_stable, web_start)
+        self.assertLess(web_start, task_readiness)
+
+    def test_zenoh_bridge_does_not_reinject_raw_camera_topics(self) -> None:
+        self.assertIn(
+            'ZENOH_BRIDGE_CONFIG="${ZENOH_BRIDGE_CONFIG:-',
+            self.startup_source,
+        )
+        self.assertIn(
+            '--config "$ZENOH_BRIDGE_CONFIG"',
+            self.startup_source,
+        )
+        self.assertIn(
+            '_require_file "$ZENOH_BRIDGE_CONFIG"',
+            self.startup_source,
+        )
+        self.assertIn('publishers: ["/xczs/camera/.*"]',
+                      self.zenoh_bridge_config_source)
+        self.assertIn('subscribers: ["/xczs/camera/.*"]',
+                      self.zenoh_bridge_config_source)
 
     def test_gazebo_master_is_derived_from_domain_and_preflighted(self) -> None:
         self.assertIn(
