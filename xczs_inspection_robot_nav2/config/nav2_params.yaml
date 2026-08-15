@@ -18,8 +18,8 @@ amcl:
     laser_min_range: -1.0
     laser_model_type: likelihood_field
     max_beams: 90
-    max_particles: 2000
-    min_particles: 500
+    max_particles: 10000
+    min_particles: 1000
     odom_frame_id: odom
     pf_err: 0.05
     pf_z: 0.99
@@ -29,7 +29,7 @@ amcl:
     robot_model_type: nav2_amcl::OmniMotionModel
     save_pose_rate: 0.5
     set_initial_pose: true
-    always_reset_initial_pose: false
+    always_reset_initial_pose: true
     initial_pose:
       x: 0.0
       y: 0.0

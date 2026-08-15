@@ -120,6 +120,12 @@ NAVIGATION_YAW_TOLERANCE_RAD = 0.255
 NAVIGATION_AXIS_EPSILON_M = 0.05
 RESET_JOINT_STATE_POLL_SEC = 0.05
 MAP_STATION_MARGIN_M = 0.05
+# A manual takeover cancels its owning navigation task asynchronously.  Scene
+# switching immediately after a takeover would otherwise race that cancel and
+# reject with a transient "task active" conflict.  Wait this long, at most, for
+# an already-canceling task to reach a terminal state before giving up.
+SCENE_SWITCH_CANCELING_TASK_WAIT_SEC = 3.0
+SCENE_SWITCH_CANCELING_TASK_POLL_SEC = 0.10
 
 logger = logging.getLogger(__name__)
 
@@ -1049,6 +1055,28 @@ class ControlServer:
         with self._request_scope():
             return self._scene_catalog.get(self._active_scene).to_dict()
 
+    def _require_cabinet_scene(self, operation: str) -> None:
+        """Reject cabinet-scoped work when the active scene has no cabinets.
+
+        Plant scenes delete the cabinet entities but leave the cabinet C++
+        operators running, so an unchecked operate/reset/navigate request would
+        still be accepted against a deleted entity and fail (or report stale)
+        later.  The scene catalog is the single source of truth for whether
+        cabinet work is valid.
+        """
+        catalog = getattr(self, "_scene_catalog", None)
+        active_name = getattr(self, "_active_scene", None)
+        # Legacy direct-route servers without the scene subsystem govern
+        # cabinet work through the inventory only; never block them here.
+        if catalog is None or active_name is None:
+            return
+        if not catalog.get(active_name).spawn_cabinet:
+            raise ControlRequestError(
+                f"{operation} is unavailable in scene "
+                f"'{active_name}' (no cabinets).",
+                409,
+            )
+
     def switch_scene(self, name: str) -> Dict[str, Any]:
         """Switch to another scene by reconciling Gazebo geometry, the Nav2
         map and the robot pose.
@@ -1069,6 +1097,7 @@ class ControlServer:
                 target = self._scene_catalog.get(name.strip())
             except SceneNotFoundError as error:
                 raise ControlRequestError(str(error), 404) from error
+            self._await_canceling_task_quiescence("Scene switch")
             with self._task_interlock_scope():
                 self._ensure_backend_quiescent("Scene switch")
                 with self._scene_switch_lock:
@@ -1364,6 +1393,7 @@ class ControlServer:
     ) -> Dict[str, Any]:
         """Drive to the cabinet or a robot-calibrated control station."""
         with self._request_scope():
+            self._require_cabinet_scene("Navigation")
             try:
                 cabinet_instance = self._inventory.get(cabinet)
                 control_station = None
@@ -1484,6 +1514,7 @@ class ControlServer:
     ) -> Dict[str, Any]:
         """Accept a non-navigation cabinet operation task."""
         with self._request_scope():
+            self._require_cabinet_scene("Cabinet operation")
             client = self._client_for(cabinet)
             if isinstance(force, bool):
                 raise ControlRequestError("force must be a positive number.")
@@ -1539,6 +1570,7 @@ class ControlServer:
     def submit_reset_task(self, cabinet: str) -> Dict[str, Any]:
         """Reset one cabinet through the globally serialized task API."""
         with self._request_scope():
+            self._require_cabinet_scene("Cabinet reset")
             client = self._client_for(cabinet)
             request = {"cabinet": cabinet}
             with self._task_interlock_scope():
@@ -1702,6 +1734,7 @@ class ControlServer:
     ) -> Dict[str, Any]:
         """Compatibility direct operation, available only with one cabinet."""
         with self._request_scope():
+            self._require_cabinet_scene("Cabinet operation")
             with self._task_interlock_scope():
                 self._reject_active_task_types(
                     {"navigate", "operate", "reset"},
@@ -1733,6 +1766,7 @@ class ControlServer:
     ) -> Dict[str, Any]:
         """Compatibility direct operation, available only with one cabinet."""
         with self._request_scope():
+            self._require_cabinet_scene("Cabinet operation")
             with self._task_interlock_scope():
                 self._reject_active_task_types(
                     {"navigate", "operate", "reset"},
@@ -3756,6 +3790,42 @@ class ControlServer:
             "playback": playback,
             "task_replay": task_replay,
         }
+
+    def _await_canceling_task_quiescence(self, operation: str) -> None:
+        """Wait briefly for a manual-takeover cancel to fully drain.
+
+        A manual takeover cancels the owning navigation task *and* asks Nav2
+        to retire the already-accepted goal, both asynchronously.  A scene
+        switch issued right after a takeover can therefore race either the
+        task's ``canceling`` status or a Nav2 goal still retiring.  Both are
+        transient and are awaited for a bounded window; a still-running task
+        or an active Nav2 goal is left for :meth:`_ensure_backend_quiescent`
+        to reject so scene geometry is never torn down under a live goal.
+        """
+        node = getattr(self, "_node", None)
+        task_manager = getattr(self, "_task_manager", None)
+        if task_manager is None and node is None:
+            return
+        deadline = (
+            time.monotonic() + SCENE_SWITCH_CANCELING_TASK_WAIT_SEC
+        )
+        while time.monotonic() < deadline:
+            active = self._active_task_snapshot()
+            task_settled = (
+                active is None
+                or str(active.get("status", "")) != "canceling"
+            )
+            nav_settled = True
+            if node is not None:
+                navigation = node.navigation_snapshot()
+                nav_settled = (
+                    str(navigation.get("state", ""))
+                    not in RosControlNode.ACTIVE_NAVIGATION_STATES
+                    and int(navigation.get("retiring_goals", 0) or 0) == 0
+                )
+            if task_settled and nav_settled:
+                return
+            time.sleep(SCENE_SWITCH_CANCELING_TASK_POLL_SEC)
 
     def _ensure_backend_quiescent(self, operation: str) -> None:
         active_task = self._active_task_snapshot()

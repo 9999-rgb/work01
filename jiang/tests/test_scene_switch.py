@@ -312,6 +312,41 @@ class SceneSwitchTest(unittest.TestCase):
         self.assertEqual("cabinet_operation", active["name"])
         self.assertTrue(active["spawn_cabinet"])
 
+    def test_cabinet_operations_rejected_in_plant_scene(self) -> None:
+        catalog = SceneCatalog(
+            [
+                _spec("cabinet_operation", True),
+                _spec("generator_plant", False, model=self.floor_model),
+            ]
+        )
+        server, _gazebo, _node = self._server(catalog, active="generator_plant")
+
+        for operation in (
+            lambda: server.submit_operation_task(
+                "cabinet_a", "box_8_button_1", "press", None, None, None
+            ),
+            lambda: server.submit_reset_task("cabinet_a"),
+            lambda: server.press_cabinet_button("box_8_button_1", False),
+            lambda: server.submit_navigation_task("cabinet_a"),
+        ):
+            with self.assertRaises(ControlRequestError) as caught:
+                operation()
+            self.assertEqual(409, caught.exception.status)
+
+        # The cabinet scene still admits cabinet work: the call gets past the
+        # scene gate and fails at cabinet-client lookup instead (404, not 409).
+        inventory = SimpleNamespace(
+            get=lambda name: _Cabinet(name), names=["cabinet_a"]
+        )
+        cabinet_server, _gazebo2, _node2 = self._server(
+            catalog, inventory=inventory, active="cabinet_operation"
+        )
+        with self.assertRaises(ControlRequestError) as caught2:
+            cabinet_server.submit_operation_task(
+                "cabinet_a", "box_8_button_1", "press", None, None, None
+            )
+        self.assertEqual(404, caught2.exception.status)
+
 
 if __name__ == "__main__":
     unittest.main()
