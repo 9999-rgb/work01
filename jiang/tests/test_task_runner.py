@@ -637,6 +637,37 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("robot_joint_reset_timeout", task["failure_code"])
         self.assertEqual(0, node.navigation_goal_count)
 
+    def test_homing_timeout_uses_sim_clock_when_advancing(self) -> None:
+        server, node = _server()
+        # A generous wall timeout would hang this test past its wait deadline
+        # if homing were still timed on wall time; the sim clock advancing
+        # rapidly must trip the deadline instead, proving the arm trajectory's
+        # timeout runs on the ROS/sim clock (so a low real-time factor cannot
+        # false-trip it).
+        server._robot_adapter.reset_joint_timeout_sec = 5.0
+        server._robot_adapter.reset_joint_duration_sec = 0.02
+        node.joint_state_available = False  # arm never reaches home
+
+        real_snapshot = node.robot_joint_state_snapshot
+        calls = {"count": 0}
+
+        def advancing_snapshot() -> Dict[str, Any]:
+            calls["count"] += 1
+            if calls["count"] > 1:
+                # Advance the sim clock past the 5 sim-second deadline on the
+                # first poll after the baseline read.
+                node.ros_time_nanoseconds += 6_000_000_000
+            return real_snapshot()
+
+        node.robot_joint_state_snapshot = advancing_snapshot
+
+        accepted = server.submit_reset_task("cabinet_a")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("robot_joint_reset_timeout", task["failure_code"])
+        self.assertEqual(0, node.navigation_goal_count)
+
     def test_scene_reset_rejects_cancel_during_noncancelable_phase(
         self,
     ) -> None:
@@ -675,6 +706,45 @@ class TaskRunnerTest(unittest.TestCase):
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
 
         self.assertEqual("canceled", task["status"])
+
+    def test_scene_reset_base_homing_failure_preserves_components(self) -> None:
+        server, node = _server()
+        accepted = server.submit_reset_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation("failed", message="base route blocked")
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("target_unreachable", task["failure_code"])
+        components = task["result"]["components"]
+        self.assertEqual("reset", components["cabinet"]["status"])
+        self.assertEqual("verified", components["robot_joints"]["status"])
+        self.assertEqual("failed", components["robot_base"]["status"])
+        self.assertEqual(
+            "target_unreachable",
+            components["robot_base"]["code"],
+        )
+
+    def test_scene_reset_joint_failure_preserves_cabinet_component(self) -> None:
+        server, node = _server()
+        server._robot_adapter.reset_joint_timeout_sec = 0.05
+        server._robot_adapter.reset_joint_duration_sec = 0.02
+        node.joint_state_available = False
+
+        accepted = server.submit_reset_task("cabinet_a")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("robot_joint_reset_timeout", task["failure_code"])
+        self.assertEqual(0, node.navigation_goal_count)
+        components = task["result"]["components"]
+        self.assertEqual("reset", components["cabinet"]["status"])
+        self.assertEqual("failed", components["robot_joints"]["status"])
+        self.assertEqual(
+            "robot_joint_reset_timeout",
+            components["robot_joints"]["code"],
+        )
 
     def test_navigation_success_reports_final_pose_and_error(self) -> None:
         server, node = _server()
@@ -1432,6 +1502,48 @@ class TaskRunnerTest(unittest.TestCase):
             [leg["axis"] for leg in task["result"]["route"]["legs"]],
         )
 
+    def test_navigation_merges_small_cross_axis_into_direct_leg(self) -> None:
+        server, node = _server()
+        node.state["current_pose"] = {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
+        # A rear-door-style station: a large X offset with a small -Y lateral
+        # component (below NAVIGATION_MERGE_AXIS_M) must collapse into one
+        # direct holonomic leg rather than an X-then-Y pair.
+        station = NavigationStationSpec(
+            local_anchor=(0.0, -0.28, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=3.6,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertAlmostEqual(3.6, goal["x"])
+        self.assertAlmostEqual(-0.28, goal["y"])
+        self.assertAlmostEqual(math.pi, abs(goal["yaw"]))
+        self.assertEqual(1, node.navigation_goal_count)
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 3.6, "y": -0.28, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(
+            ["xy"],
+            [leg["axis"] for leg in task["result"]["route"]["legs"]],
+        )
+
     def test_navigation_skips_x_leg_when_already_on_target_x(self) -> None:
         server, node = _server()
         station = NavigationStationSpec(
@@ -1489,6 +1601,41 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("failed", task["status"])
         self.assertEqual("target_unreachable", task["failure_code"])
         self.assertEqual(1, node.navigation_goal_count)
+
+    def test_navigation_failure_recovers_arm(self) -> None:
+        server, node = _server()
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation("failed", message="route blocked")
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("target_unreachable", task["failure_code"])
+        # The arm was homed before driving, so recovery fast-paths.
+        self.assertEqual(
+            "already_home",
+            task["result"]["recovery"]["status"],
+        )
+
+    def test_operation_failure_recovers_arm_off_home(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a", "button_1", "press", None, None, None
+        )
+        self.assertTrue(client.submit_event.wait(timeout=1.0))
+        # Drive the arm off its home posture after the task's initial homing
+        # so the post-failure recovery must command it back.
+        node.joint_positions["arm1_arm2"] = 0.0
+        node.joint_state_received_monotonic = time.monotonic()
+        client.finish("failed", failure_code="unreachable")
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("unreachable", task["failure_code"])
+        self.assertEqual("homed", task["result"]["recovery"]["status"])
+        # Initial homing plus the post-failure recovery homing.
+        self.assertEqual(2, len(node.joint_targets))
 
     def test_navigation_retries_transient_nav2_goal_rejection(self) -> None:
         server, node = _server()

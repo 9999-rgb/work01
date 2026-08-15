@@ -78,7 +78,10 @@ TASK_MANAGER_SHUTDOWN_TIMEOUT_SEC = 8.0
 SHUTDOWN_RECHECK_TIMEOUT_SEC = 1.0
 BACKEND_SHUTDOWN_GRACE_SEC = 3.0
 REQUEST_DRAIN_TIMEOUT_SEC = 8.0
-NAVIGATION_TIMEOUT_SEC = 180.0
+# Measured on the ROS/sim clock (see _navigation_elapsed).  A slow Gazebo
+# real-time factor stretches this out in wall time, so keep it short enough
+# that a genuinely stuck goal fails promptly rather than running for minutes.
+NAVIGATION_TIMEOUT_SEC = 60.0
 NAVIGATION_CANCEL_GRACE_SEC = 5.0
 NAVIGATION_CLOCK_STALL_TIMEOUT_SEC = 30.0
 NAVIGATION_FINAL_POSE_WAIT_SEC = 2.0
@@ -118,6 +121,11 @@ NAVIGATION_YAW_TOLERANCE_RAD = 0.255
 # asking Nav2 to settle them as a separate leg forces a pointless 90-degree
 # corner rotation while the final goal already verifies the exact station.
 NAVIGATION_AXIS_EPSILON_M = 0.05
+# A minor cross-axis component this small is merged into a single direct
+# holonomic leg instead of a full second Nav2 goal (e.g. the rear-door
+# cabinet_main_switch station, whose -0.28 m lateral offset no longer pays a
+# whole extra plan + settle cycle).  Larger minors keep the X-then-Y split.
+NAVIGATION_MERGE_AXIS_M = 0.30
 RESET_JOINT_STATE_POLL_SEC = 0.05
 MAP_STATION_MARGIN_M = 0.05
 # A manual takeover cancels its owning navigation task asynchronously.  Scene
@@ -2007,18 +2015,26 @@ class ControlServer:
         navigation_kwargs: Dict[str, Any] = {}
         if station_refresh is not None:
             navigation_kwargs["station_refresh"] = station_refresh
-        if not replay_owned:
-            return self._execute_navigation_task(
+        try:
+            if not replay_owned:
+                return self._execute_navigation_task(
+                    context,
+                    station,
+                    **navigation_kwargs,
+                )
+            with self._replay_internal_scope():
+                return self._execute_navigation_task(
+                    context,
+                    station,
+                    **navigation_kwargs,
+                )
+        except TaskExecutionError as error:
+            self._annotate_task_failure_recovery(
                 context,
-                station,
-                **navigation_kwargs,
+                error,
+                str(station.get("cabinet") or "robot"),
             )
-        with self._replay_internal_scope():
-            return self._execute_navigation_task(
-                context,
-                station,
-                **navigation_kwargs,
-            )
+            raise
 
     def _execute_reset_task_owned(
         self,
@@ -2076,7 +2092,35 @@ class ControlServer:
             message="Returning the arm and gripper to adapter defaults.",
             data={"cabinet": cabinet, "component": "robot_joints"},
         )
-        joint_result = self._reset_robot_joints(context, cabinet)
+        try:
+            joint_result = self._reset_robot_joints(context, cabinet)
+        except TaskExecutionError as error:
+            # The cabinet is already reset; stop at the failing joint step and
+            # report the component picture rather than discarding it.
+            raise TaskExecutionError(
+                str(error),
+                code=error.code,
+                details=error.details,
+                result={
+                    "cabinet": cabinet,
+                    "components": {
+                        "cabinet": {
+                            "status": str(
+                                cabinet_result.get("status") or "reset"
+                            ),
+                            "message": str(
+                                cabinet_result.get("message")
+                                or "Cabinet controls reset."
+                            ),
+                        },
+                        "robot_joints": {
+                            "status": "failed",
+                            "code": error.code,
+                            "message": str(error),
+                        },
+                    },
+                },
+            ) from error
         if context.shutdown_requested:
             raise TaskExecutionError(
                 "Gateway shutdown interrupted the reset before base homing.",
@@ -2112,12 +2156,43 @@ class ControlServer:
             "yaw": reset_pose.yaw,
             "purpose": "robot_reset",
         }
-        base_result = self._execute_navigation_task(
-            context,
-            reset_station,
-            progress_start=0.55,
-            progress_span=0.44,
-        )
+        try:
+            base_result = self._execute_navigation_task(
+                context,
+                reset_station,
+                progress_start=0.55,
+                progress_span=0.44,
+            )
+        except TaskExecutionError as error:
+            # The cabinet and arm are already reset by the earlier phases.
+            # Stop at the failing base-homing step and report the full
+            # component picture so callers can see exactly which step failed
+            # and which ones succeeded, rather than discarding that progress.
+            raise TaskExecutionError(
+                str(error),
+                code=error.code,
+                details=error.details,
+                result={
+                    "cabinet": cabinet,
+                    "components": {
+                        "cabinet": {
+                            "status": str(
+                                cabinet_result.get("status") or "reset"
+                            ),
+                            "message": str(
+                                cabinet_result.get("message")
+                                or "Cabinet controls reset."
+                            ),
+                        },
+                        "robot_joints": joint_result,
+                        "robot_base": {
+                            "status": "failed",
+                            "code": error.code,
+                            "message": str(error),
+                        },
+                    },
+                },
+            ) from error
         return {
             "cabinet": cabinet,
             "status": "reset",
@@ -2185,6 +2260,16 @@ class ControlServer:
             }
 
         command_started = time.monotonic()
+        # The arm trajectory executes under the ROS/sim clock (the commanded
+        # JointTrajectoryPoint.time_from_start), so its deadline must be sim
+        # time too: a wall-only deadline false-trips when Gazebo's real-time
+        # factor is below one (5 sim-seconds of arm motion can exceed 15
+        # wall-seconds).  Fall back to wall time when the joint-state stamp is
+        # absent or the sim clock is frozen, and keep a stall watchdog for a
+        # sim clock that advances once then stops.
+        baseline_sim_seconds = self._joint_ros_time_seconds(
+            self._node.robot_joint_state_snapshot()
+        )
         try:
             commanded = self._node.set_joint_target(
                 list(targets),
@@ -2202,7 +2287,15 @@ class ControlServer:
                 result={"cabinet": cabinet},
             ) from error
 
-        deadline = command_started + float(adapter.reset_joint_timeout_sec)
+        timeout = float(adapter.reset_joint_timeout_sec)
+        wall_deadline = command_started + timeout
+        sim_deadline = (
+            baseline_sim_seconds + timeout
+            if baseline_sim_seconds is not None
+            else None
+        )
+        last_sim_seconds = baseline_sim_seconds
+        last_sim_advance_wall = command_started
         last_snapshot: Mapping[str, Any] = {}
         last_report_at = 0.0
         while True:
@@ -2224,7 +2317,28 @@ class ControlServer:
                 }
 
             now = time.monotonic()
-            if now >= deadline:
+            sim_now = self._joint_ros_time_seconds(snapshot)
+            if (
+                sim_now is not None
+                and last_sim_seconds is not None
+                and sim_now > last_sim_seconds + 1.0e-6
+            ):
+                last_sim_seconds = sim_now
+                last_sim_advance_wall = now
+            if (
+                sim_deadline is not None
+                and sim_now is not None
+                and last_sim_seconds > baseline_sim_seconds + 1.0e-6
+            ):
+                # The sim clock is advancing: the arm is moving in sim time.
+                timed_out = sim_now >= sim_deadline or (
+                    now - last_sim_advance_wall
+                    >= NAVIGATION_CLOCK_STALL_TIMEOUT_SEC
+                )
+            else:
+                # No usable advancing sim clock: bound the wait with wall time.
+                timed_out = now >= wall_deadline
+            if timed_out:
                 details: Dict[str, Any] = {
                     "joint_names": list(names),
                     "target_positions": list(commanded),
@@ -2281,6 +2395,49 @@ class ControlServer:
         )
         result["status"] = "verified"
         return result
+
+    def _recover_robot_after_failure(
+        self,
+        context: Any,
+        cabinet: str,
+    ) -> Dict[str, Any]:
+        """Best-effort arm homing after a task fails.
+
+        A failed navigate/operate task can leave the arm away from its adapter
+        default, which (per the robot-adapter contract) makes the next task
+        likely to fail as well.  Home the arm before the failure propagates so
+        the robot returns to a known-good posture.  Recovery is strictly
+        best-effort: it never masks the original failure, and a task that has
+        already been asked to cancel is left untouched.
+        """
+        if getattr(context, "cancellation_requested", False):
+            return {"status": "skipped", "reason": "cancel_requested"}
+        try:
+            return self._home_robot_joints(
+                context,
+                cabinet,
+                progress_stage="recovering_robot_joints",
+                progress_base=0.0,
+                progress_span=1.0,
+            )
+        except TaskExecutionError as error:
+            return {
+                "status": "failed",
+                "code": error.code,
+                "message": str(error),
+            }
+        except Exception as error:  # noqa: BLE001 - never mask the failure
+            return {"status": "failed", "message": str(error)}
+
+    def _annotate_task_failure_recovery(
+        self,
+        context: Any,
+        error: TaskExecutionError,
+        cabinet: str,
+    ) -> None:
+        """Record the post-failure arm recovery on a task failure result."""
+        recovery = self._recover_robot_after_failure(context, cabinet)
+        error.result = {**(error.result or {}), "recovery": recovery}
 
     def _execute_navigation_task(
         self,
@@ -3147,6 +3304,17 @@ class ControlServer:
             return None
         return nanoseconds / 1_000_000_000.0
 
+    @staticmethod
+    def _joint_ros_time_seconds(snapshot: Mapping[str, Any]) -> Optional[float]:
+        """Return the ROS/sim clock stamp carried by a joint-state snapshot."""
+        value = snapshot.get("stamp_ros_nanoseconds")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        nanoseconds = float(value)
+        if not math.isfinite(nanoseconds) or nanoseconds <= 0.0:
+            return None
+        return nanoseconds / 1_000_000_000.0
+
     @classmethod
     def _navigation_clock_state(
         cls,
@@ -3247,11 +3415,18 @@ class ControlServer:
 
         delta_x = target_x - start_x
         delta_y = target_y - start_y
+        has_x = abs(delta_x) > NAVIGATION_AXIS_EPSILON_M
+        has_y = abs(delta_y) > NAVIGATION_AXIS_EPSILON_M
+        minor_axis = min(abs(delta_x), abs(delta_y))
+        # A small cross-axis component is absorbed into one direct holonomic
+        # leg rather than a whole second Nav2 goal cycle.  This matters for
+        # stations like cabinet_main_switch (dx ~3.6 m, dy ~0.28 m), whose
+        # X-leg corner would otherwise detour through the cabinet midline and
+        # still need a separate lateral + heading leg afterward.
+        merge_into_direct = has_x and has_y and minor_axis <= NAVIGATION_MERGE_AXIS_M
+
         legs: List[Dict[str, Any]] = []
-        if (
-            abs(delta_x) > NAVIGATION_AXIS_EPSILON_M
-            and abs(delta_y) > NAVIGATION_AXIS_EPSILON_M
-        ):
+        if has_x and has_y and not merge_into_direct:
             corner = dict(station)
             corner.update(
                 {
@@ -3273,10 +3448,13 @@ class ControlServer:
                 }
             )
 
-        if abs(delta_y) > NAVIGATION_AXIS_EPSILON_M:
+        if merge_into_direct:
+            final_axis = "xy"
+            final_distance = math.hypot(delta_x, delta_y)
+        elif has_y:
             final_axis = "y"
             final_distance = abs(delta_y)
-        elif abs(delta_x) > NAVIGATION_AXIS_EPSILON_M:
+        elif has_x:
             final_axis = "x"
             final_distance = abs(delta_x)
         else:
@@ -3518,28 +3696,36 @@ class ControlServer:
         force: Optional[float],
         replay_owned: bool,
     ) -> Mapping[str, Any]:
-        if not replay_owned:
-            return self._execute_operation_task(
+        try:
+            if not replay_owned:
+                return self._execute_operation_task(
+                    context,
+                    cabinet,
+                    client,
+                    control_id,
+                    command,
+                    target_state,
+                    target_position,
+                    force,
+                )
+            with self._replay_internal_scope():
+                return self._execute_operation_task(
+                    context,
+                    cabinet,
+                    client,
+                    control_id,
+                    command,
+                    target_state,
+                    target_position,
+                    force,
+                )
+        except TaskExecutionError as error:
+            self._annotate_task_failure_recovery(
                 context,
+                error,
                 cabinet,
-                client,
-                control_id,
-                command,
-                target_state,
-                target_position,
-                force,
             )
-        with self._replay_internal_scope():
-            return self._execute_operation_task(
-                context,
-                cabinet,
-                client,
-                control_id,
-                command,
-                target_state,
-                target_position,
-                force,
-            )
+            raise
 
     def _execute_operation_task(
         self,

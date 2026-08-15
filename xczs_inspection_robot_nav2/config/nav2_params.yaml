@@ -149,7 +149,10 @@ controller_server:
       # Count about half a degree of real rotation as progress so a deliberate
       # corner turn is not mistaken for a stalled translation.
       required_movement_angle: 0.01
-      movement_time_allowance: 20.0
+      # Half the historical 20 s stall window so a genuinely stuck goal
+      # escalates to recovery (and, after the retry budget, to failure)
+      # promptly instead of idling for tens of sim-seconds per leg.
+      movement_time_allowance: 10.0
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker

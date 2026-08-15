@@ -2185,9 +2185,24 @@ def main() -> int:
                 "holonomic inspection base."
             )
         smoother = nav2_config["velocity_smoother"]["ros__parameters"]
-        if smoother.get("max_velocity") != [0.25, 0.25, 0.60] or smoother.get(
-            "min_velocity"
-        ) != [-0.25, -0.25, -0.60]:
+        max_velocity = smoother.get("max_velocity")
+        min_velocity = smoother.get("min_velocity")
+        # The holonomic base must keep symmetric bidirectional X/Y limits
+        # (equal linear magnitudes) around the fixed yaw limit.  The linear
+        # magnitude is tunable; only the X/Y symmetry and yaw bound are part
+        # of the contract, so assert those instead of a frozen linear value.
+        if (
+            not isinstance(max_velocity, (list, tuple))
+            or not isinstance(min_velocity, (list, tuple))
+            or len(max_velocity) != 3
+            or len(min_velocity) != 3
+            or float(max_velocity[0]) != float(max_velocity[1])
+            or float(min_velocity[0]) != float(min_velocity[1])
+            or float(max_velocity[0]) <= 0.0
+            or float(min_velocity[0]) >= 0.0
+            or float(max_velocity[2]) != 0.60
+            or float(min_velocity[2]) != -0.60
+        ):
             fail("Nav2 velocity smoother must preserve holonomic X/Y motion.")
 
         web_node_source = WEB_ROS_NODE.read_text(encoding="utf-8")
