@@ -5629,6 +5629,19 @@ $('btnCabinetPress').addEventListener('click', sendCabinetOperation);
 $('btnCabinetCancel').addEventListener('click', cancelCabinetOperation);
 $('btnCabinetReset').addEventListener('click', resetCabinetControls);
 $('btnSceneSwitch').addEventListener('click', switchScene);
+sceneSelect.addEventListener('change', () => {
+  const target = sceneSelect.value;
+  const canSwitch = sceneCatalog.length > 0 && !sceneSwitchInFlight &&
+    activeSceneName && target && target !== activeSceneName;
+  btnSceneSwitch.disabled = !canSwitch;
+  if (canSwitch) {
+    const entry = sceneCatalog.find(item => item.name === target);
+    const hasCabinet = !entry || entry.spawn_cabinet !== false;
+    sceneDetail.textContent = hasCabinet
+      ? `将切换到「${target}」：含控制柜，柜体控件与 Nav2 地图将随之更新。`
+      : `将切换到「${target}」：仅机器人与场地（无柜体），Nav2 地图已对应更新。`;
+  }
+});
 $('btnRecordingStart').addEventListener('click', startRecording);
 $('btnRecordingStop').addEventListener('click', stopRecording);
 $('btnRecordingsRefresh').addEventListener('click', refreshRecordings);

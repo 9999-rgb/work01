@@ -14,9 +14,9 @@ from sensor_bridge.ros_node import _alternate_camera_topic
 
 
 class SensorBridgeContractTest(unittest.TestCase):
-    def test_camera_reader_matches_best_effort_sensor_publishers(self) -> None:
+    def test_camera_reader_matches_reliable_sensor_publishers(self) -> None:
         self.assertEqual(
-            ReliabilityPolicy.BEST_EFFORT,
+            ReliabilityPolicy.RELIABLE,
             SensorStreamNode.CAMERA_QOS.reliability,
         )
 

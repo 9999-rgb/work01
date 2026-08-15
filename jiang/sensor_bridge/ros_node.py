@@ -64,12 +64,15 @@ def _alternate_camera_topic(topic: str) -> str:
 class SensorStreamNode(Node):
     """Convert ROS 2 Image and LaserScan messages for web clients."""
 
-    # A BEST_EFFORT reader is compatible with both BEST_EFFORT and RELIABLE
-    # writers.  Requesting RELIABLE here would not match the common
-    # BEST_EFFORT sensor publishers used by Gazebo and physical cameras.
+    # gazebo_ros_camera 3.x publishes image_raw with
+    # rclcpp::SensorDataQoS().reliable() (RELIABLE, KEEP_LAST).  Match it
+    # exactly with a RELIABLE reader: a BEST_EFFORT reader against a RELIABLE
+    # writer depends on CycloneDDS' lenient cross-reliability matching, which
+    # delivers only intermittently here (frames flow in isolation but stall
+    # once the aiohttp web server shares the process).
     CAMERA_QOS = QoSProfile(
         depth=10,
-        reliability=ReliabilityPolicy.BEST_EFFORT,
+        reliability=ReliabilityPolicy.RELIABLE,
         durability=DurabilityPolicy.VOLATILE,
         history=HistoryPolicy.KEEP_LAST,
     )
