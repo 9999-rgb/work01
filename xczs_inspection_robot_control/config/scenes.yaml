@@ -4,7 +4,8 @@
 #   name          场景标识（[a-z][a-z0-9_]*，进 API/topic/实体名）
 #   spawn_cabinet 该场景是否包含控制柜集群（默认柜体场景为 true）
 #   model         可选的静态地板模型（null 表示沿用世界 ground_plane）
-#     urdf        静态单 link URDF（package:// 引用）
+#     file        静态单 link 模型（SDF，package:// 引用；URDF 版会被
+#                 gazebo_ros 的 URDF→SDF 转换掉 mesh，故场景地板用 SDF）
 #     pose        实体 spawn 位姿 x/y/z/roll/pitch/yaw（与地图 origin 对齐）
 #   nav2_map      map_server 服务的 occupancy map YAML（package:// 引用）
 #   robot_spawn   切到该场景时机器人的初始位姿（x/y/z 为底盘/body 高度，
@@ -23,7 +24,7 @@ scenes:
   - name: electrical_mezzanine
     spawn_cabinet: false
     model:
-      urdf: package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.urdf
+      file: package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.sdf
       pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
     nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map_electrical_mezzanine.yaml
     # 占位初始位姿：近 floor 左下自由角落，待按实际地图与需求调整。
@@ -32,7 +33,7 @@ scenes:
   - name: generator_plant
     spawn_cabinet: false
     model:
-      urdf: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.urdf
+      file: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.sdf
       pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
     nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map_generator_plant.yaml
     # 占位初始位姿：近 floor 左下自由角落，待按实际地图与需求调整。

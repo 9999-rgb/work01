@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<!-- 发电机厂静态场景（由 SolidWorks 导出的单 link 网格，迁移为 SDF）。
+     URDF 版在经 gazebo_ros 的 URDF→SDF 转换时会把 mesh 掉成空模型，
+     因此场景地板直接以 SDF 提供，spawn 时视觉/碰撞均能正确加载。
+     网格沿用原 link 名 ground；网格本体仍是原始 STL，未改动几何。 -->
+<sdf version="1.6">
+  <model name="generator_plant">
+    <static>true</static>
+    <link name="ground">
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/ground.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.69804 0.69804 0.69804 1</ambient>
+          <diffuse>0.69804 0.69804 0.69804 1</diffuse>
+          <specular>0.1 0.1 0.1 1</specular>
+        </material>
+      </visual>
+      <collision name="collision">
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/ground.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

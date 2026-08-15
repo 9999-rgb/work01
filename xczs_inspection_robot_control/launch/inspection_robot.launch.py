@@ -257,14 +257,14 @@ def _read_scenes(path):
         if model is not None:
             if not isinstance(model, dict):
                 raise RuntimeError(f"Scene '{name}' model must be a mapping or null.")
-            urdf = model.get("urdf")
-            if not isinstance(urdf, str) or not urdf.strip():
-                raise RuntimeError(f"Scene '{name}' model.urdf must be a non-empty string.")
+            file = model.get("file")
+            if not isinstance(file, str) or not file.strip():
+                raise RuntimeError(f"Scene '{name}' model.file must be a non-empty string.")
             pose = model.get("pose")
             if not isinstance(pose, dict):
                 raise RuntimeError(f"Scene '{name}' model.pose must be a mapping.")
             model_spec = {
-                "urdf": urdf.strip(),
+                "file": file.strip(),
                 "x": _scene_pose_number(pose, "x", name),
                 "y": _scene_pose_number(pose, "y", name),
                 "z": _scene_pose_number(pose, "z", name),
@@ -855,9 +855,9 @@ def _scene_floor_nodes(context):
     model = _scene_spec(context).get("model")
     if model is None:
         return []
-    urdf_path = _resolve_package_path(model["urdf"])
-    if not Path(urdf_path).is_file():
-        raise RuntimeError(f"Scene floor URDF does not exist: {urdf_path}")
+    model_path = _resolve_package_path(model["file"])
+    if not Path(model_path).is_file():
+        raise RuntimeError(f"Scene floor model does not exist: {model_path}")
     return [
         Node(
             package="gazebo_ros",
@@ -867,7 +867,7 @@ def _scene_floor_nodes(context):
             prefix="/usr/bin/python3",
             arguments=[
                 "-entity", SCENE_FLOOR_ENTITY,
-                "-file", urdf_path,
+                "-file", model_path,
                 "-x", str(model["x"]),
                 "-y", str(model["y"]),
                 "-z", str(model["z"]),

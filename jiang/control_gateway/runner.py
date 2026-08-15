@@ -1182,11 +1182,11 @@ class ControlServer:
 
     def _spawn_scene_floor(self, model: SceneModel) -> None:
         try:
-            urdf_path = resolve_package_uri(model.urdf)
-            xml = Path(urdf_path).read_text(encoding="utf-8")
+            model_path = resolve_package_uri(model.file)
+            xml = Path(model_path).read_text(encoding="utf-8")
         except (OSError, ValueError) as error:
             raise ControlRequestError(
-                f"Could not read scene model '{model.urdf}': {error}",
+                f"Could not read scene model '{model.file}': {error}",
                 503,
             ) from error
         self._gazebo_client.delete_entity(

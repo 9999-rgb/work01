@@ -69,7 +69,7 @@ class SceneCatalogTest(unittest.TestCase):
                     name="scene_b",
                     spawn_cabinet=False,
                     model={
-                        "urdf": "package://pkg/urdf/floor.urdf",
+                        "file": "package://pkg/floor.sdf",
                         "pose": {
                             "x": 0.0,
                             "y": 0.0,
@@ -134,12 +134,12 @@ class SceneCatalogTest(unittest.TestCase):
             [
                 _scene(
                     model={
-                        "urdf": "package://p/floor.urdf",
+                        "file": "package://p/floor.sdf",
                         "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0},
                     }
                 )
             ],  # model pose missing yaw
-            [_scene(model={"urdf": ""})],
+            [_scene(model={"file": ""})],
             [_scene(model="not-a-mapping")],
             [_scene(robot_spawn=[])],
         ]
@@ -166,8 +166,8 @@ class SceneCatalogTest(unittest.TestCase):
 
     def test_resolves_plain_filesystem_paths_without_ros(self) -> None:
         self.assertEqual(
-            Path("/tmp/floor.urdf"),
-            resolve_package_uri("/tmp/floor.urdf"),
+            Path("/tmp/floor.sdf"),
+            resolve_package_uri("/tmp/floor.sdf"),
         )
 
     def test_on_disk_scenes_yaml_contract(self) -> None:
@@ -192,7 +192,7 @@ class SceneCatalogTest(unittest.TestCase):
             self.assertFalse(scene.spawn_cabinet)
             self.assertIsNotNone(scene.model)
             self.assertIsNotNone(scene.robot_spawn)
-            for uri in (scene.model.urdf, scene.nav2_map):
+            for uri in (scene.model.file, scene.nav2_map):
                 self.assertTrue(
                     uri.startswith("package://"),
                     f"{name} reference is not a package:// URI: {uri!r}",

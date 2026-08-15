@@ -2,8 +2,8 @@
 """Validate the scene catalog contract without starting ROS.
 
 Checks that ``scenes.yaml`` parses under the strict :class:`SceneCatalog`
-dataclass contract, that every referenced static-floor URDF and Nav2 map YAML
-resolves to a real file, and that each map YAML points at an existing PGM
+dataclass contract, that every referenced static-floor model (URDF/SDF) and
+Nav2 map YAML resolves to a real file, and that each map YAML points at an existing PGM
 image.  ``package://`` references are resolved against the workspace layout
 first (the description/nav2 packages live at the repo root) and fall back to
 ``ament_index_python`` when the package is not in this checkout.
@@ -104,11 +104,11 @@ def main() -> int:
     errors: list[str] = []
     for scene in catalog:
         if scene.model is not None:
-            urdf_path = _resolve(scene.model.urdf)
-            if not urdf_path.exists():
+            model_path = _resolve(scene.model.file)
+            if not model_path.exists():
                 errors.append(
-                    f"{scene.name}: model URDF {scene.model.urdf} "
-                    f"({urdf_path}) is missing."
+                    f"{scene.name}: model file {scene.model.file} "
+                    f"({model_path}) is missing."
                 )
         if scene.spawn_cabinet and scene.model is not None:
             errors.append(

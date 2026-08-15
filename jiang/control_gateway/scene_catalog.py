@@ -40,14 +40,20 @@ class SceneNotFoundError(SceneError):
 
 @dataclass(frozen=True)
 class SceneModel:
-    """A static scene floor spawned as a single Gazebo entity."""
+    """A static scene floor spawned as a single Gazebo entity.
 
-    urdf: str
+    ``file`` is a ``package://`` reference to a URDF or SDF model.  Scene
+    floors are provided as SDF because the gazebo_ros URDF→SDF conversion
+    silently drops the mesh for these large single-link meshes, leaving an
+    empty model with no visual or collision.
+    """
+
+    file: str
     pose: Tuple[float, float, float, float, float, float]
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            "urdf": self.urdf,
+            "file": self.file,
             "pose": dict(zip(_MODEL_POSE_FIELDS, self.pose)),
         }
 
@@ -215,18 +221,18 @@ def _parse_model(value: Any, context: str) -> Optional[SceneModel]:
         return None
     if not isinstance(value, Mapping):
         raise SceneError(f"{context} must be a mapping or null.")
-    allowed = {"urdf", "pose"}
+    allowed = {"file", "pose"}
     unknown = set(value) - allowed
     if unknown:
         raise SceneError(
             f"{context} has unknown fields: "
             + ", ".join(sorted(str(field) for field in unknown))
         )
-    urdf = value.get("urdf")
-    if not isinstance(urdf, str) or not urdf.strip():
-        raise SceneError(f"{context}.urdf must be a non-empty string.")
+    file = value.get("file")
+    if not isinstance(file, str) or not file.strip():
+        raise SceneError(f"{context}.file must be a non-empty string.")
     pose = _parse_pose(value.get("pose"), f"{context}.pose", _MODEL_POSE_FIELDS)
-    return SceneModel(urdf=urdf.strip(), pose=pose)
+    return SceneModel(file=file.strip(), pose=pose)
 
 
 def _parse_robot_spawn(value: Any, context: str) -> Optional[RobotSpawn]:

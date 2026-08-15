@@ -118,13 +118,13 @@ class SceneSwitchTest(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
         self.directory = Path(self._temporary_directory.name)
-        self.floor_urdf = self.directory / "floor.urdf"
-        self.floor_urdf.write_text(
-            '<robot name="floor"><link name="ground"/></robot>',
+        self.floor_file = self.directory / "floor.sdf"
+        self.floor_file.write_text(
+            '<sdf version="1.6"><model name="floor"/></sdf>',
             encoding="utf-8",
         )
         self.floor_model = SceneModel(
-            urdf=str(self.floor_urdf),
+            file=str(self.floor_file),
             pose=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         )
 
