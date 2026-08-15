@@ -78,7 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8090)
-    parser.add_argument("--max-linear-speed", type=float, default=0.25)
+    parser.add_argument("--max-linear-speed", type=float, default=0.50)
     parser.add_argument("--max-angular-speed", type=float, default=0.60)
     parser.add_argument("--command-timeout", type=float, default=0.30)
     parser.add_argument(

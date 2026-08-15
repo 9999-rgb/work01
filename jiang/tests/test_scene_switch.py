@@ -16,6 +16,7 @@ import math
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,11 +68,38 @@ class _FakeGazeboClient:
         self.calls.append(("teleport", name, x, y, z, yaw))
 
 
+_JOINT_NAMES = (
+    "body_arm1",
+    "arm1_arm2",
+    "arm2_arm3",
+    "arm3_arm4",
+    "arm4_arm5",
+    "arm5_end",
+    "end_worklink1",
+    "end_worklink2",
+)
+
+_HOME_POSITIONS = {
+    "body_arm1": 0.0,
+    "arm1_arm2": -math.pi / 2.0,
+    "arm2_arm3": 0.0,
+    "arm3_arm4": 0.0,
+    "arm4_arm5": 0.0,
+    "arm5_end": 0.0,
+    "end_worklink1": 0.0,
+    "end_worklink2": 0.0,
+}
+
+
 class _FakeNode:
     def __init__(self, fail_load_map: bool = False) -> None:
         self.loaded_maps: list[str] = []
         self.initial_poses: list[tuple[float, float, float, str]] = []
         self.fail_load_map = fail_load_map
+        self.joint_state_available = True
+        self.joint_positions: dict[str, float] = dict(_HOME_POSITIONS)
+        self.joint_state_received_monotonic: Optional[float] = 0.0
+        self.joint_targets: list[list[float]] = []
 
     def navigation_snapshot(self) -> dict[str, Any]:
         return {"state": "idle", "retiring_goals": 0}
@@ -85,6 +113,23 @@ class _FakeNode:
         self, x: float, y: float, yaw: float, frame_id: str = "map"
     ) -> None:
         self.initial_poses.append((x, y, yaw, frame_id))
+
+    def set_joint_target(
+        self, positions: list[float], duration_sec: float = 0.5
+    ) -> list[float]:
+        self.joint_targets.append(list(positions))
+        self.joint_positions = {
+            name: position for name, position in zip(_JOINT_NAMES, positions)
+        }
+        self.joint_state_received_monotonic = time.monotonic()
+        return list(positions)
+
+    def robot_joint_state_snapshot(self) -> dict[str, Any]:
+        return {
+            "available": self.joint_state_available,
+            "positions": dict(self.joint_positions),
+            "received_monotonic": self.joint_state_received_monotonic,
+        }
 
 
 class _Cabinet:
@@ -144,7 +189,19 @@ class SceneSwitchTest(unittest.TestCase):
         server._gazebo_client = _FakeGazeboClient()
         server._node = _FakeNode(fail_load_map=fail_load_map)
         server._inventory = inventory
-        server._robot_adapter = SimpleNamespace(navigation_frame="map")
+        server._robot_adapter = SimpleNamespace(
+            navigation_frame="map",
+            manual_joints=tuple(
+                SimpleNamespace(
+                    name=name,
+                    default_position=_HOME_POSITIONS[name],
+                )
+                for name in _JOINT_NAMES
+            ),
+            reset_joint_tolerance=0.02,
+            reset_joint_timeout_sec=0.5,
+            reset_joint_duration_sec=0.2,
+        )
         server._robot_entity_name = "xczs_inspection_robot"
         server._cabinet_xacro_path = "/nonexistent/cabinet.xacro"
         server._cabinet_controls_path = "/nonexistent/controls.yaml"
@@ -206,6 +263,30 @@ class SceneSwitchTest(unittest.TestCase):
         self.assertAlmostEqual(3.0, teleport[3])
         self.assertAlmostEqual(0.0 - math.pi / 2.0, teleport[5])
         self.assertEqual([(2.0, 3.0, 0.0, "map")], node.initial_poses)
+
+    def test_switch_homes_arm_before_teleport(self) -> None:
+        cabinet = _spec("cabinet_operation", True, robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963))
+        plant = _spec(
+            "generator_plant",
+            False,
+            model=self.floor_model,
+            robot_spawn=RobotSpawn(2.0, 3.0, 0.515, 0.0),
+        )
+        catalog = SceneCatalog([cabinet, plant])
+        server, gazebo, node = self._server(catalog, active="cabinet_operation")
+        # Leave the arm off its home pose so the switch must home it first.
+        node.joint_positions["arm1_arm2"] = 0.0
+
+        result = server.switch_scene("generator_plant")
+
+        self.assertEqual("switched", result["status"])
+        # The switch commanded the arm back to adapter defaults (arm1_arm2 is
+        # the second joint) before touching geometry.
+        self.assertEqual(1, len(node.joint_targets))
+        self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
+        teleports = [call for call in gazebo.calls if call[0] == "teleport"]
+        self.assertEqual(1, len(teleports))
+        self.assertEqual("xczs_inspection_robot", teleports[0][1])
 
     def test_switching_back_spawns_cabinets_and_deletes_floor(self) -> None:
         cabinet = _spec("cabinet_operation", True, robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963))

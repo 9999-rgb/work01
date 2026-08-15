@@ -1,8 +1,8 @@
 /**:
   ros__parameters:
-    linear_speed: 0.25
+    linear_speed: 0.50
     angular_speed: 0.60
-    linear_acceleration: 0.50
+    linear_acceleration: 1.00
     angular_acceleration: 1.20
     linear_jerk: 2.00
     angular_jerk: 4.80

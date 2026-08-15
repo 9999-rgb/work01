@@ -141,7 +141,7 @@ class ControlServer:
         cmd_vel_topic: Optional[str] = None,
         joint_trajectory_topic: Optional[str] = None,
         host: str = "127.0.0.1",
-        max_linear_speed: float = 0.25,
+        max_linear_speed: float = 0.50,
         max_angular_speed: float = 0.60,
         command_timeout: float = 0.30,
         cabinet_instances_path: Optional[str] = None,
@@ -1137,10 +1137,19 @@ class ControlServer:
                 self._spawn_scene_floor(target.model)
             if target.spawn_cabinet:
                 self._spawn_cabinet_entities()
+            # Home the arm before teleporting so an extended posture does not
+            # collide with the incoming scene geometry mid-switch.
+            self._home_robot_joints(None, self._robot_entity_name)
             self._teleport_robot(target.robot_spawn)
         except ControlRequestError:
             raise
-        except (CabinetSpawnError, SceneError, OSError, ValueError) as error:
+        except (
+            CabinetSpawnError,
+            SceneError,
+            OSError,
+            ValueError,
+            TaskExecutionError,
+        ) as error:
             raise ControlRequestError(
                 f"Scene switch to '{target.name}' failed: {error}",
                 503,
@@ -2126,17 +2135,55 @@ class ControlServer:
             },
         }
 
-    def _reset_robot_joints(
+    def _home_robot_joints(
         self,
-        context: Any,
+        context: Optional[Any],
         cabinet: str,
+        *,
+        progress_stage: str = "homing_robot_joints",
+        progress_base: float = 0.0,
+        progress_span: float = 1.0,
     ) -> Dict[str, Any]:
-        """Command adapter defaults and wait for fresh joint-state proof."""
+        """Restore the arm and gripper to adapter defaults, then wait for proof.
+
+        Navigate/operate tasks and scene switches call this *before* any
+        chassis motion so a robot left away from its nominal posture never
+        starts a navigation leg or a teleport mid-pose.  An already-home arm
+        fast-paths out with a single joint-state read and no command.
+        ``context`` is None for scene switches, which run outside task
+        progress reporting; the reset task reuses this via
+        :meth:`_reset_robot_joints`.
+        """
         adapter = self._robot_adapter
         names = tuple(joint.name for joint in adapter.manual_joints)
         targets = tuple(
             float(joint.default_position) for joint in adapter.manual_joints
         )
+        tolerance = float(adapter.reset_joint_tolerance)
+
+        def _errors(snapshot: Mapping[str, Any]) -> Optional[Dict[str, float]]:
+            positions = snapshot.get("positions")
+            if snapshot.get("available") is not True or not isinstance(
+                positions, Mapping
+            ):
+                return None
+            try:
+                return {
+                    name: abs(float(positions[name]) - target)
+                    for name, target in zip(names, targets)
+                }
+            except (KeyError, TypeError, ValueError):
+                return None
+
+        errors = _errors(self._node.robot_joint_state_snapshot())
+        if errors and max(errors.values()) <= tolerance:
+            return {
+                "status": "already_home",
+                "joint_count": len(names),
+                "max_error_rad": max(errors.values()),
+                "tolerance_rad": tolerance,
+            }
+
         command_started = time.monotonic()
         try:
             commanded = self._node.set_joint_target(
@@ -2156,34 +2203,25 @@ class ControlServer:
             ) from error
 
         deadline = command_started + float(adapter.reset_joint_timeout_sec)
-        tolerance = float(adapter.reset_joint_tolerance)
         last_snapshot: Mapping[str, Any] = {}
         last_report_at = 0.0
         while True:
             snapshot = self._node.robot_joint_state_snapshot()
             last_snapshot = snapshot
             received_at = snapshot.get("received_monotonic")
-            positions = snapshot.get("positions")
+            errors = _errors(snapshot)
             if (
-                snapshot.get("available") is True
+                errors
                 and isinstance(received_at, (int, float))
                 and float(received_at) >= command_started
-                and isinstance(positions, Mapping)
+                and max(errors.values()) <= tolerance
             ):
-                try:
-                    errors = {
-                        name: abs(float(positions[name]) - target)
-                        for name, target in zip(names, commanded)
-                    }
-                except (KeyError, TypeError, ValueError):
-                    errors = {}
-                if errors and max(errors.values()) <= tolerance:
-                    return {
-                        "status": "verified",
-                        "joint_count": len(names),
-                        "max_error_rad": max(errors.values()),
-                        "tolerance_rad": tolerance,
-                    }
+                return {
+                    "status": "homed",
+                    "joint_count": len(names),
+                    "max_error_rad": max(errors.values()),
+                    "tolerance_rad": tolerance,
+                }
 
             now = time.monotonic()
             if now >= deadline:
@@ -2208,12 +2246,13 @@ class ControlServer:
                     details=details,
                     result={"cabinet": cabinet},
                 )
-            if now - last_report_at >= 1.0:
+            if context is not None and now - last_report_at >= 1.0:
                 elapsed = max(0.0, now - command_started)
                 timeout = float(adapter.reset_joint_timeout_sec)
                 context.progress(
-                    "resetting_robot_joints",
-                    min(0.49, 0.20 + 0.29 * elapsed / timeout),
+                    progress_stage,
+                    progress_base
+                    + progress_span * min(1.0, elapsed / timeout),
                     message="Waiting for fresh robot joint-state confirmation.",
                     data={
                         "cabinet": cabinet,
@@ -2222,6 +2261,26 @@ class ControlServer:
                 )
                 last_report_at = now
             time.sleep(RESET_JOINT_STATE_POLL_SEC)
+
+    def _reset_robot_joints(
+        self,
+        context: Any,
+        cabinet: str,
+    ) -> Dict[str, Any]:
+        """Return the arm and gripper to adapter defaults (reset-task wrapper).
+
+        Delegates to :meth:`_home_robot_joints` while keeping the reset task's
+        progress band and ``verified`` status contract.
+        """
+        result = self._home_robot_joints(
+            context,
+            cabinet,
+            progress_stage="resetting_robot_joints",
+            progress_base=0.20,
+            progress_span=0.29,
+        )
+        result["status"] = "verified"
+        return result
 
     def _execute_navigation_task(
         self,
@@ -2234,6 +2293,13 @@ class ControlServer:
             Tuple[str, NavigationStationSpec]
         ] = None,
     ) -> Mapping[str, Any]:
+        context.raise_if_canceled()
+        self._home_robot_joints(
+            context,
+            str(station.get("cabinet") or "robot"),
+            progress_base=0.0,
+            progress_span=0.02,
+        )
         task_started = time.monotonic()
         initial_snapshot = self._node.navigation_snapshot()
         navigation_clock = self._navigation_clock_state(
@@ -3486,6 +3552,13 @@ class ControlServer:
         target_position: Optional[float],
         force: Optional[float],
     ) -> Mapping[str, Any]:
+        context.raise_if_canceled()
+        self._home_robot_joints(
+            context,
+            cabinet,
+            progress_base=0.0,
+            progress_span=0.02,
+        )
         event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         with self._operation_bindings_lock:
             self._operation_event_queues[cabinet] = event_queue

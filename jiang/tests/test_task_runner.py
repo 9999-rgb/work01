@@ -701,6 +701,62 @@ class TaskRunnerTest(unittest.TestCase):
             [leg["axis"] for leg in task["result"]["route"]["legs"]],
         )
 
+    def test_navigation_homes_arm_before_driving(self) -> None:
+        server, node = _server()
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertTrue(node.joint_target_event.wait(timeout=1.0))
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        # The arm is restored to adapter defaults before the chassis moves.
+        self.assertEqual(1, len(node.joint_targets))
+        self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
+        self.assertEqual(1, node.navigation_goal_count)
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_navigation_skips_homing_when_already_home(self) -> None:
+        server, node = _server()
+        node.joint_positions = {
+            "body_arm1": 0.0,
+            "arm1_arm2": -math.pi / 2.0,
+            "arm2_arm3": 0.0,
+            "arm3_arm4": 0.0,
+            "arm4_arm5": 0.0,
+            "arm5_end": 0.0,
+            "end_worklink1": 0.0,
+            "end_worklink2": 0.0,
+        }
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        self.assertEqual([], node.joint_targets)
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_operation_homes_arm_before_submission(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        self.assertTrue(client.submit_event.wait(timeout=1.0))
+        self.assertEqual(1, len(node.joint_targets))
+        self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
+        client.finish("success")
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
     def test_navigation_uses_live_tf_station_when_node_supports_it(self) -> None:
         server, node = _server()
         calls = []
@@ -2350,7 +2406,11 @@ class TaskRunnerTest(unittest.TestCase):
                 self.assert_task_conflict(accepted["task_id"], callback)
 
         self.assertEqual([], node.base_targets)
-        self.assertEqual([], node.joint_targets)
+        # The operation preflight homes the arm through the internal joint
+        # route before submitting to the cabinet operator; the blocked manual
+        # routes exercised above add no further targets.
+        self.assertEqual(1, len(node.joint_targets))
+        self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
         self.assertEqual([], node.navigation_mode_requests)
         self.assertEqual(0, node.navigation_goal_count)
         self.assertEqual(0, node.takeover_count)

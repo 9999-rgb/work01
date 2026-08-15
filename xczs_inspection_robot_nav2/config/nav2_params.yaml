@@ -162,19 +162,19 @@ controller_server:
     FollowPath:
       plugin: dwb_core::DWBLocalPlanner
       debug_trajectory_details: false
-      min_vel_x: -0.25
-      min_vel_y: -0.25
-      max_vel_x: 0.25
-      max_vel_y: 0.25
+      min_vel_x: -0.50
+      min_vel_y: -0.50
+      max_vel_x: 0.50
+      max_vel_y: 0.50
       max_vel_theta: 0.60
       min_speed_xy: 0.0
-      max_speed_xy: 0.25
+      max_speed_xy: 0.50
       min_speed_theta: 0.0
-      acc_lim_x: 0.50
-      acc_lim_y: 0.50
+      acc_lim_x: 1.00
+      acc_lim_y: 1.00
       acc_lim_theta: 1.20
-      decel_lim_x: -0.50
-      decel_lim_y: -0.50
+      decel_lim_x: -1.00
+      decel_lim_y: -1.00
       decel_lim_theta: -1.20
       # Odd counts retain an exact zero sample and symmetric positive/negative
       # velocities for the omnidirectional base while avoiding the previous
@@ -371,10 +371,10 @@ velocity_smoother:
     smoothing_frequency: 20.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    max_velocity: [0.25, 0.25, 0.60]
-    min_velocity: [-0.25, -0.25, -0.60]
-    max_accel: [0.50, 0.50, 1.20]
-    max_decel: [-0.50, -0.50, -1.20]
+    max_velocity: [0.50, 0.50, 0.60]
+    min_velocity: [-0.50, -0.50, -0.60]
+    max_accel: [1.00, 1.00, 1.20]
+    max_decel: [-1.00, -1.00, -1.20]
     odom_topic: /xczs/odom
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]
