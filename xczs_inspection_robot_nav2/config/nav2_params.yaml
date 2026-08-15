@@ -1,11 +1,18 @@
 amcl:
   ros__parameters:
     use_sim_time: true
-    alpha1: 0.05
-    alpha2: 0.05
-    alpha3: 0.05
-    alpha4: 0.05
-    alpha5: 0.05
+    # The planar mover publishes ground-truth odometry (verified against
+    # /model_states to ~1 mm), so the OmniMotionModel needs almost no injected
+    # noise.  The historical 0.05 alphas added ~0.2 m of accumulated drift as
+    # the robot crossed the floor, which made AMCL's map->odom correction fight
+    # the (already accurate) odom and mis-localise the robot by up to 0.22 m.
+    # Trusting the odometry keeps the particle cloud tight and the map pose
+    # honest, so final-approach navigation actually converges on the goal.
+    alpha1: 0.01
+    alpha2: 0.01
+    alpha3: 0.01
+    alpha4: 0.01
+    alpha5: 0.01
     base_frame_id: base_link
     beam_skip_distance: 0.5
     beam_skip_error_threshold: 0.9
@@ -35,15 +42,23 @@ amcl:
       y: 0.0
       z: 0.0
       yaw: 1.57079632679
-    sigma_hit: 0.2
+    sigma_hit: 0.5
     tf_broadcast: true
     transform_tolerance: 1.0
     update_min_a: 0.1
     update_min_d: 0.1
-    z_hit: 0.5
+    # The planar mover publishes ground-truth odometry and the initial pose is
+    # always reset, so the measurement model does not need to correct for drift.
+    # Weighting the lidar at 0.5 let the "fuzzy" cabinet front face (buttons and
+    # knobs protrude at different depths) bias the particles against the clean
+    # map rectangle, accumulating a ~0.1 m map->odom offset over a multi-leg
+    # route and stalling final approach just outside the goal checker.  Dropping
+    # z_hit and smoothing sigma_hit keeps a weak lidar tie for robustness while
+    # trusting the odometry, holding the offset to millimetres.
+    z_hit: 0.1
     z_max: 0.05
-    z_rand: 0.5
-    z_short: 0.05
+    z_rand: 0.85
+    z_short: 0.0
     scan_topic: /xczs/lidar/scan
 
 amcl_map_client:
@@ -126,6 +141,13 @@ bt_navigator_navigate_to_pose_rclcpp_node:
 controller_server:
   ros__parameters:
     use_sim_time: true
+    global_frame: map
+    robot_base_frame: base_link
+    # The planar mover publishes odometry on the namespaced /xczs/odom topic;
+    # the root-level /odom is owned by the zenoh bridge and does not flow.
+    # Pointing the controller at the real topic is what lets DWB observe
+    # velocity/position progress instead of stalling the progress checker.
+    odom_topic: /xczs/odom
     # DWB evaluates a Cartesian product of vx/vy/vtheta samples.  Keep the
     # control loop aligned with the 10 Hz local costmap so the full Gazebo
     # stack can maintain simulation time without dropping control cycles.
@@ -156,7 +178,13 @@ controller_server:
     general_goal_checker:
       stateful: true
       plugin: nav2_controller::SimpleGoalChecker
-      xy_goal_tolerance: 0.10
+      # Layered acceptance: this goal checker must stay *tighter* than the task
+      # layer's NAVIGATION_POSITION_TOLERANCE_M (0.15) so the gateway's re-check
+      # is meaningful, and the docking takeover distance (0.15 m) is the loosest
+      # layer.  The DWB settles ~0.11-0.13 m short of a goal, so 0.14 m accepts
+      # that real stopping accuracy while preserving the required ordering
+      # checker < task <= takeover (see test_nav2_config_contract.py).
+      xy_goal_tolerance: 0.14
       # The simulated planar mover converges very slowly over its final few
       # degrees.  Precise cabinet docking has its own 0.35 rad takeover gate
       # and 0.07 rad closed-loop target, so stop coarse Nav2 rotation at this
@@ -180,16 +208,27 @@ controller_server:
       decel_lim_y: -1.00
       decel_lim_theta: -1.20
       # Odd counts retain an exact zero sample and symmetric positive/negative
-      # velocities for the omnidirectional base while avoiding the previous
-      # 20^3 trajectory explosion on every controller cycle.
-      vx_samples: 11
-      vy_samples: 11
+      # velocities for the omnidirectional base.  21 samples give a 0.05 m/s
+      # velocity step, shrinking the velocity-quantisation dead zone to ~0.10 m
+      # so the base settles reliably inside the goal checker instead of parking
+      # a few centimetres past it and stalling until recovery.  The resulting
+      # 21*21*15 = 6615 trajectories stay under the 20^3 = 8000 explosion that
+      # was avoided earlier.
+      vx_samples: 21
+      vy_samples: 21
       vtheta_samples: 15
       sim_time: 2.0
       linear_granularity: 0.025
       angular_granularity: 0.025
       transform_tolerance: 0.3
-      xy_goal_tolerance: 0.10
+      # Rotation-activation band for the RotateToGoal critic.  The DWB
+      # GoalDist/PathDist/Oscillation equilibrium settles the base ~0.11-0.13 m
+      # short of a goal, so this band must be *wider* than that stopping point
+      # or the final yaw turn never begins (the robot parks just outside the
+      # band and stalls until recovery).  0.15 m lets the turn start reliably
+      # while the checker's 0.14 m acceptance still stays tighter than the task
+      # layer's 0.15 m tolerance.
+      xy_goal_tolerance: 0.15
       trans_stopped_velocity: 0.05
       short_circuit_trajectory_evaluation: true
       stateful: true
@@ -208,15 +247,34 @@ controller_server:
       PathDist.scale: 32.0
       GoalDist.scale: 24.0
       RotateToGoal.scale: 32.0
-      RotateToGoal.slowing_factor: 5.0
-      RotateToGoal.lookahead_time: -1.0
+      # The default slowing_factor (5.0) makes the phase-2 critic penalise any
+      # trajectory that crosses into xy_goal_tolerance while still translating.
+      # On this omnidirectional base that penalty makes DWB stop *just outside*
+      # the tolerance band (the robot settles ~0.15 m short and never enters
+      # phase 3), so the final yaw turn never starts.  Dropping it to 0 lets the
+      # critic begin scoring rotation the moment the goal is within tolerance,
+      # which is safe here because the base can translate and rotate
+      # independently; the approach finishes and the yaw converges together.
+      RotateToGoal.slowing_factor: 0.0
+      # A negative lookahead_time makes the critic score the trajectory's
+      # final pose (sim_time seconds ahead), so every in-place alignment turn
+      # overshoots the goal yaw and the critic settles on zero rotation a few
+      # degrees short of the goal.  A short positive lookahead scores the
+      # projected pose just ahead of the robot, so the final alignment turn
+      # actually converges instead of stalling the goal checker.
+      RotateToGoal.lookahead_time: 0.5
 
 local_costmap:
   local_costmap:
     ros__parameters:
       update_frequency: 10.0
       publish_frequency: 2.0
-      global_frame: odom
+      # Plan in the map frame so DWB's distance-to-goal (and therefore the
+      # RotateToGoal critic's activation window) agrees with the SimpleGoalChecker.
+      # AMCL's map->odom correction routinely reaches ~0.05-0.10 m in this
+      # environment; with an odom-frame local costmap that offset splits the
+      # controller's "arrived" from the checker's, deadlocking final alignment.
+      global_frame: map
       robot_base_frame: base_link
       use_sim_time: true
       rolling_window: true

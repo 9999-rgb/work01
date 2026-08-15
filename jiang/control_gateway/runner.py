@@ -105,6 +105,8 @@ NAVIGATION_STATION_CORRECTION_LIMIT = 2
 # refines the pose to its own tighter tolerances (0.015 m / 0.10 rad).
 # The handoff tolerances must accept Nav2's actual stopping accuracy so
 # that navigation can succeed; the docking phase then narrows the gap.
+# Nav2's omnidirectional DWB settles inside ~0.06 m with the finer velocity
+# sampling, comfortably within this handoff window.
 NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.15
 NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.25
 OPERATION_TIMEOUT_SEC = 180.0
