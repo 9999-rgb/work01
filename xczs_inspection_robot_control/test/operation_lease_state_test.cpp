@@ -104,4 +104,17 @@ TEST(OperationLeaseState, ExpiredOwnerCannotRenewAndResourceRecovers)
   EXPECT_TRUE(state.acquire("cabinet_b", 1s, now + 1100ms).success);
 }
 
+TEST(OperationLeaseState, SubTickDurationIsRejected)
+{
+  OperationLeaseState state;
+  const auto now = OperationLeaseState::TimePoint{} + 1s;
+  // 小于一个时钟 tick 的时长会向下取整为 0，应当被拒绝而不是授予
+  // 一个立即过期的租约。
+  const auto reply = state.acquire(
+    "cabinet_a", std::chrono::duration<double>(0.1e-9), now);
+  EXPECT_FALSE(reply.success);
+  EXPECT_EQ(reply.status, OperationLeaseStatus::INVALID_REQUEST);
+  EXPECT_TRUE(reply.lease_id.empty());
+}
+
 }  // namespace xczs_inspection_robot_control

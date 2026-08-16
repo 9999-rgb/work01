@@ -35,6 +35,23 @@ from app.database.engine import get_db
 
 router = APIRouter(tags=["认证"])
 
+_dummy_password_hash: str | None = None
+
+
+def _dummy_hash() -> str:
+    """A valid bcrypt-sha256 hash used to equalize login timing.
+
+    Without it, an unknown username short-circuits before ``verify_password``
+    and returns near-instantly, while a known username with a wrong password
+    pays the bcrypt cost — leaking account existence through response timing.
+    """
+    global _dummy_password_hash
+    if _dummy_password_hash is None:
+        _dummy_password_hash = hash_password(
+            "xczs-invalid-password-placeholder"
+        )
+    return _dummy_password_hash
+
 
 @router.post(
     "/auth/login",
@@ -54,7 +71,14 @@ async def login(
         select(User).where(User.username == body.username)
     )
     user = result.scalar_one_or_none()
-    if user is None or not verify_password(body.password, user.hashed_password):
+    if user is None:
+        # Equalize timing against the known-user/wrong-password path.
+        verify_password(body.password, _dummy_hash())
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="用户名或密码错误。",
+        )
+    if not verify_password(body.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误。",

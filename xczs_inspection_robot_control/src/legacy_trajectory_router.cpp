@@ -318,6 +318,11 @@ private:
     gripper_status_subscription_;
   std::vector<std::string> arm_joint_names_;
   std::vector<std::string> gripper_joint_names_;
+  // 注意：这两个标志初始为 false（「无活动 action → 放行手动轨迹」）。
+  // 仅在收到 GoalStatusArray 时置 true。若初始化为 true（fail-closed），
+  // 在状态话题静默（如空闲时控制器不发布 _action/status）期间会永久阻断
+  // 手动控制，因此保留当前 fail-open 语义。代价是：MoveIt 正在执行而状态
+  // 话题尚未到达首帧的短暂窗口内，手动轨迹可能与 MoveIt 执行交叠。
   bool arm_action_active_{false};
   bool gripper_action_active_{false};
 };

@@ -144,6 +144,11 @@ if [ "$CONTROL_MODE" = "keyboard" ] &&
     echo "ERROR: 键盘调试控制需要可连接的 DISPLAY 和终端界面。"
     exit 1
 fi
+if [ "$CONTROL_MODE" = "keyboard" ] &&
+    ! command -v xfce4-terminal >/dev/null 2>&1; then
+    echo "ERROR: 键盘调试控制的启动前缀依赖 xfce4-terminal，请安装后重试。"
+    exit 1
+fi
 # Web 是统一操作界面，任务导航需要 Nav2；外接完整机器人栈模式由外部
 # 提供相同 Action/Service 合同，本 launch 不重复启动 Nav2。
 if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "true" ]; then

@@ -1502,7 +1502,7 @@ class RosControlNode(Node):
                     "A previous Nav2 goal is still retiring.",
                     409,
                 )
-            if not self._navigation_mode_client.service_is_ready():
+            if not self._service_ready(self._navigation_mode_client):
                 raise ControlRequestError(
                     "Base navigation mode service is unavailable.",
                     503,
@@ -1523,7 +1523,7 @@ class RosControlNode(Node):
         """
         with self._lock:
             self._reject_if_cabinet_active_locked()
-            service_ready = self._navigation_mode_client.service_is_ready()
+            service_ready = self._service_ready(self._navigation_mode_client)
             takeover_in_progress = (
                 self._manual_takeover_generation
                 == self._navigation_generation
@@ -1664,7 +1664,7 @@ class RosControlNode(Node):
                     ],
                 },
             )
-        if not self._navigation_mode_client.service_is_ready():
+        if not self._service_ready(self._navigation_mode_client):
             raise ControlRequestError(
                 "Base navigation mode service is unavailable.",
                 503,

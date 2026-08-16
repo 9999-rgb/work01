@@ -47,11 +47,13 @@ def msg_to_dict(msg: Any) -> Any:
     if isinstance(msg, float):
         return msg if math.isfinite(msg) else None
 
-    # numpy ndarray (e.g. float64 arrays from JointState/Odometry)
+    # numpy ndarray (e.g. float64 arrays from JointState/Odometry) and
+    # array.array — convert to a list, then recurse so that any non-finite
+    # float element is sanitized to null just like scalar floats above.
     try:
         import numpy as np
         if isinstance(msg, np.ndarray):
-            return msg.tolist()
+            return msg_to_dict(msg.tolist())
     except ImportError:
         pass
 
@@ -59,7 +61,7 @@ def msg_to_dict(msg: Any) -> Any:
     try:
         import array
         if isinstance(msg, array.array):
-            return msg.tolist()
+            return msg_to_dict(msg.tolist())
     except ImportError:
         pass
 
@@ -132,8 +134,11 @@ def deserialize_and_convert(
     if registration.handler is not None:
         data = registration.handler(topic, data)
 
-    # Step 4: Dict → JSON string
-    return json.dumps(data)
+    # Step 4: Dict → JSON string.  ``allow_nan=False`` is a hard guard against
+    # any non-finite float that survived conversion (e.g. introduced by a
+    # custom handler): it fails loudly rather than emitting bare NaN/Infinity
+    # tokens that strict JSON consumers reject.
+    return json.dumps(data, allow_nan=False)
 
 
 class CDRTypeMismatchError(RuntimeError):

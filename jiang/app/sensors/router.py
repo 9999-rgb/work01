@@ -8,6 +8,7 @@ Bearer Header 或 ``?token=``；浏览器 WebSocket 使用 ``?token=``。
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Annotated, Any
 from urllib.parse import urlsplit
 
@@ -26,6 +27,8 @@ from app.database.engine import async_session
 from sensor_bridge.state import SensorStreamState
 
 MJPEG_BOUNDARY = "xczs-camera-frame"
+
+logger = logging.getLogger(__name__)
 
 
 def get_sensor_state(request: Request) -> SensorStreamState:
@@ -300,6 +303,16 @@ async def _authorize_websocket(
             websocket,
             code=4401,
             reason="token 无效或已过期。",
+        )
+        return None
+    except Exception:
+        # 数据库/解码等非预期错误绝不能把原始异常泄漏进握手；失败即拒绝，
+        # 与 ``ActiveTokenChecker.is_valid`` 的 fail-closed 语义一致。
+        logger.exception("WebSocket 鉴权失败（非预期异常）。")
+        await _close_websocket_noexcept(
+            websocket,
+            code=1011,
+            reason="鉴权失败。",
         )
         return None
     return ActiveTokenChecker(

@@ -269,6 +269,28 @@ class SSEHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         print(f"[http] {args[0]}", file=sys.stderr)
 
+    def _reflect_origin_header(self):
+        """Reflect the request Origin only when it shares the request's host.
+
+        与 FastAPI 传感器路由的同源规则一致：同一主机（任意端口/协议）的页面
+        可以读取 SSE 流——这是 LAN 监控页 ``<host>:8090`` 跨端口访问所需的。
+        跨主机的 Origin 通过「不下发 ``Access-Control-Allow-Origin``」来拒绝，
+        浏览器会阻止跨源读取；这也封堵了通配 ``*`` 无法防住的 DNS rebinding。
+        """
+        headers = getattr(self, "headers", None)
+        origin = headers.get("Origin") if headers is not None else None
+        host = headers.get("Host") if headers is not None else None
+        if not origin or not host:
+            return None
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"}:
+            return None
+        origin_host = (parsed.hostname or "").lower()
+        request_host = host.split(":", 1)[0].lower()
+        if not origin_host or origin_host != request_host:
+            return None
+        return origin
+
     def do_GET(self):
         global _zenoh_source
         parsed = urlparse(self.path)
@@ -315,7 +337,10 @@ class SSEHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "keep-alive")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Vary", "Origin")
+            reflected_origin = self._reflect_origin_header()
+            if reflected_origin:
+                self.send_header("Access-Control-Allow-Origin", reflected_origin)
             self.end_headers()
             while True:
                 try:
@@ -359,7 +384,10 @@ class SSEHandler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Vary", "Origin")
+        reflected_origin = self._reflect_origin_header()
+        if reflected_origin:
+            self.send_header("Access-Control-Allow-Origin", reflected_origin)
         self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()

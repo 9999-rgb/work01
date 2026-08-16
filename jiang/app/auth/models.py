@@ -1,6 +1,11 @@
 """用户 ORM 模型。
 
 角色：``admin``（用户管理 + 全部操作）与 ``operator``（仅任务操作）。
+
+注意：``role`` 目前仅是**建议性**元数据——鉴权只校验登录态，任务 API 并不
+按角色拒绝请求；``admin``/``operator`` 的区分仅体现在用户管理端点的
+``require_admin`` 依赖上。若未来需要真正的 RBAC 权限隔离，需在任务路由层
+按角色显式授权。
 """
 
 from __future__ import annotations

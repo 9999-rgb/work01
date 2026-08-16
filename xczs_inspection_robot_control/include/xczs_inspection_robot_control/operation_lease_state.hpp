@@ -134,8 +134,15 @@ private:
     const std::string & owner_id,
     Duration duration)
   {
-    return !owner_id.empty() && std::isfinite(duration.count()) &&
-           duration.count() > 0.0;
+    if (owner_id.empty() || !std::isfinite(duration.count()) ||
+        duration.count() <= 0.0)
+    {
+      return false;
+    }
+    // 正时长若向下取整到 0 个时钟 tick，会授予一个「已过期」的租约
+    // （expires_at_ 等于 now）；要求至少一个 tick，避免 sub-tick 时长
+    // 让 acquire/renew 立即失效、破坏互斥语义。
+    return std::chrono::duration_cast<Clock::duration>(duration).count() >= 1;
   }
 
   static OperationLeaseReply invalid_request()

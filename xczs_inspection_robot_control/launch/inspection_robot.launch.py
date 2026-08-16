@@ -966,15 +966,21 @@ def _active_robot_spawn(context):
     ``robot_spawn`` may be null (keep current pose), which only makes sense on
     scene *switch*; at initial launch there is no prior pose, so default to the
     historical origin spawn used by the cabinet-operation scene.
+
+    顶层 ``spawn_z``（对应 shell 的 ``SPAWN_Z``）始终覆盖场景里的 ``z``，
+    否则当场景显式指定了 ``robot_spawn`` 时，用户设置的覆盖高度会被静默忽略。
     """
     spawn = _scene_spec(context).get("robot_spawn")
+    override_z = _launch_finite_number(context, "spawn_z")
     if spawn is None:
         return {
             "x": 0.0,
             "y": 0.0,
-            "z": _launch_finite_number(context, "spawn_z"),
+            "z": override_z,
             "yaw": math.pi / 2.0,
         }
+    spawn = dict(spawn)
+    spawn["z"] = override_z
     return spawn
 
 

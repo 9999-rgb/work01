@@ -1167,9 +1167,13 @@ class TaskManager:
                 elif not retained_terminal and task["status"] in TERMINAL_STATUSES:
                     release_after_error = bool(task.get("reservation_active"))
             if release_after_error:
+                # The cancel callback raised, so the backend cancel was never
+                # delivered.  Do not fabricate ``backend_completed_at``; record
+                # that termination is unconfirmed rather than claiming a clean
+                # release of the global task slot.
                 self.release_reservation(
                     task_id,
-                    backend_termination_confirmed=True,
+                    backend_termination_confirmed=False,
                     details={"cancel_callback_error": _exception_message(error)},
                 )
             if isinstance(error, TaskCancellationError):

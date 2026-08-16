@@ -573,6 +573,10 @@ public:
       [this](const std::shared_ptr<OperateGoalHandle> goal_handle) {
         handle_operate_accepted(goal_handle);
       });
+    // reset_controls 在 handler 内同步 wait_for_service/wait_for 可达数秒；
+    // 放在独立的 Reentrant 组，避免阻塞默认组的 action server 与其它服务。
+    reset_service_callback_group_ = create_callback_group(
+      rclcpp::CallbackGroupType::Reentrant);
     reset_controls_service_ = create_service<std_srvs::srv::Trigger>(
       kResetControlsService,
       [this](
@@ -580,7 +584,9 @@ public:
         std::shared_ptr<std_srvs::srv::Trigger::Response> response)
       {
         reset_controls(response);
-      });
+      },
+      rmw_qos_profile_services_default,
+      reset_service_callback_group_);
     publish_control_catalog();
     publish_active_control("");
 
@@ -5640,6 +5646,7 @@ private:
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_physics_client_;
   rclcpp::CallbackGroup::SharedPtr reset_client_callback_group_;
   rclcpp::CallbackGroup::SharedPtr operation_lease_client_callback_group_;
+  rclcpp::CallbackGroup::SharedPtr reset_service_callback_group_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_controls_service_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr
     manual_base_publisher_;

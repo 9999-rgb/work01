@@ -84,6 +84,11 @@ _MAX_DURATION_NANOSECONDS = (1 << 63) - 1
 _PROCESS_GROUP_CONFIRM_SECONDS = 1.0
 _PROCESS_GROUP_POLL_SECONDS = 0.05
 
+# Task events that change the extracted scenario (see _write_scenario_locked).
+# Only these need a scenario.yaml + manifest.json rewrite on arrival; all other
+# events (notably the ~1 Hz ``task_progress``) append a timeline line only.
+_SCENARIO_AFFECTING_EVENTS = frozenset({"task_accepted", "task_completed"})
+
 
 class _UniqueKeySafeLoader(yaml.SafeLoader):
     """Safe YAML loader that rejects ambiguous duplicate mapping keys."""
@@ -256,7 +261,25 @@ class RecordingManager:
         with self._lock:
             self._refresh_playback_locked()
             if self._recording_process is not None:
-                return "recording"
+                # A recorder that died without an explicit stop would otherwise
+                # leave the manager stuck in "recording" forever, blocking new
+                # recordings and playback.  Reap and finalize it here, exactly
+                # as ``recording_status`` does.
+                process_code = self._process_poll(self._recording_process)
+                if process_code is not None:
+                    try:
+                        self.stop_recording(
+                            reason=(
+                                "ros2 bag record exited unexpectedly with "
+                                f"code {process_code}."
+                            )
+                        )
+                    except RecordingError:
+                        # Ownership was retained; still report the active state
+                        # honestly below rather than pretending it is idle.
+                        pass
+                if self._recording_process is not None:
+                    return "recording"
             if self._playback.get("state") in {"playing", "paused"}:
                 return "playback"
             return "idle"
@@ -649,15 +672,20 @@ class RecordingManager:
                     + "\n"
                 )
                 stream.flush()
-            # Keep scenario.yaml useful even if the process crashes before an
-            # explicit stop.  The file is tiny compared with rosbag I/O.
-            scenario = self._write_scenario_locked(self._recording_id)
-            manifest["tasks"] = _scenario_task_summaries(scenario)
-            _write_json(
-                self._recording_path(self._recording_id, must_exist=True)
-                / "manifest.json",
-                manifest,
-            )
+            # Only task_accepted / task_completed mutate the extracted scenario
+            # (see _write_scenario_locked).  task_progress fires ~1 Hz during
+            # navigation, so rebuilding scenario.yaml + manifest.json on every
+            # event would be O(n^2) in the timeline length.  The scenario is
+            # still rebuilt in full at stop_recording, so skipping it here for
+            # non-affecting events loses nothing.
+            if event_type in _SCENARIO_AFFECTING_EVENTS:
+                scenario = self._write_scenario_locked(self._recording_id)
+                manifest["tasks"] = _scenario_task_summaries(scenario)
+                _write_json(
+                    self._recording_path(self._recording_id, must_exist=True)
+                    / "manifest.json",
+                    manifest,
+                )
             return copy.deepcopy(envelope)
 
     def list_recordings(self) -> list[dict[str, Any]]:
@@ -1563,14 +1591,16 @@ class RecordingManager:
         if process is None:
             return None, "Process handle is unavailable."
         errors: list[str] = []
-        requested_signal_exit_codes: set[int] = set()
+        # Only a graceful SIGINT lets ros2 bag record finalize its metadata and
+        # exit 0.  If the recorder ignored SIGINT and had to be terminated by
+        # SIGTERM/SIGKILL, its bag is truncated, so a negative signal return
+        # code must stay an error rather than being folded into a clean exit
+        # that would finalize the recording as "completed".
+        graceful_signal_exit_codes: set[int] = {-signal.SIGINT}
 
         def requested_stop_code(code: int) -> int:
             # ``subprocess`` reports a process killed by signal N as ``-N``.
-            # That is a successful outcome when this method delivered the
-            # matching termination signal, but remains an error when observed
-            # before we requested a stop.
-            return 0 if code in requested_signal_exit_codes else code
+            return 0 if code in graceful_signal_exit_codes else code
 
         try:
             existing = self._process_poll(process)
@@ -1591,7 +1621,6 @@ class RecordingManager:
         for signal_number, timeout, label in stages:
             try:
                 self._send_signal(process, signal_number)
-                requested_signal_exit_codes.add(-signal_number)
             except Exception as error:
                 errors.append(
                     f"Could not send {label}: "
