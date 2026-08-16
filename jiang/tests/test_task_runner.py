@@ -799,6 +799,9 @@ class TaskRunnerTest(unittest.TestCase):
             "end_worklink1": 0.0,
             "end_worklink2": 0.0,
         }
+        # The already_home fast path requires a *fresh* joint-state snapshot;
+        # a stale read (or a stalled publisher) must fall through to homing.
+        node.joint_state_received_monotonic = time.monotonic()
         accepted = server.submit_navigation_task("cabinet_a")
         self.assertIsNotNone(node.wait_for_navigation_goal(1))
         self.assertEqual([], node.joint_targets)

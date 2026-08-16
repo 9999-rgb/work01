@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import queue
+import socket
 from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, FrozenSet, Optional
 from urllib.parse import parse_qs, unquote, urlparse
@@ -18,6 +19,10 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     protocol_version = "HTTP/1.1"
     SSE_HEARTBEAT_SECONDS = 15.0
+    # Bound a request-body read so a client that advertises a Content-Length
+    # but sends only part of the body (and holds the socket open) cannot pin
+    # this handler thread indefinitely.
+    BODY_READ_TIMEOUT_SECONDS = 10.0
 
     control_server: Any
     allowed_origins: FrozenSet[str] = frozenset(
@@ -662,9 +667,25 @@ class ControlHandler(BaseHTTPRequestHandler):
                 415,
             )
         try:
-            body = json.loads(self.rfile.read(length))
+            # Bound the read so a slow or partial body cannot pin this handler
+            # thread.  A timeout or short read closes the connection instead of
+            # reinterpreting leftover bytes as the next pipelined request.
+            self.connection.settimeout(self.BODY_READ_TIMEOUT_SECONDS)
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                self.close_connection = True
+                raise ControlRequestError("Incomplete request body.", 400)
+            body = json.loads(raw)
+        except (TimeoutError, socket.timeout) as error:
+            self.close_connection = True
+            raise ControlRequestError(
+                "Timed out reading the request body.",
+                408,
+            ) from error
         except (json.JSONDecodeError, UnicodeDecodeError) as error:
             raise ControlRequestError(f"Invalid JSON: {error}") from error
+        finally:
+            self.connection.settimeout(None)
         if not isinstance(body, dict):
             raise ControlRequestError("JSON body must be an object.")
         return body

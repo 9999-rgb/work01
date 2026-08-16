@@ -70,7 +70,8 @@ MOVEIT_CONTROLLERS_PATH="${MOVEIT_CONTROLLERS_PATH:-$WORK_DIR/xczs_inspection_ro
 MOVEIT_RVIZ_CONFIG_PATH="${MOVEIT_RVIZ_CONFIG_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/moveit.rviz}"
 MOVEIT_LAUNCH_PATH="${MOVEIT_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/launch/move_group.launch.py}"
 NAV2_LAUNCH_PATH="${NAV2_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/launch/navigation.launch.py}"
-NAV2_MAP_PATH="${NAV2_MAP_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/maps/inspection_map.yaml}"
+# 可选覆盖：默认留空，由 scenes.yaml 的 nav2_map 决定实际地图。
+NAV2_MAP_PATH="${NAV2_MAP_PATH:-}"
 NAV2_PARAMS_FILE="${NAV2_PARAMS_FILE:-$WORK_DIR/xczs_inspection_robot_nav2/config/nav2_params.yaml}"
 SCENE="${SCENE:-cabinet_operation}"
 SCENES_CONFIG="${SCENES_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/scenes.yaml}"
@@ -731,7 +732,9 @@ if [ "$ROBOT_BRINGUP" = "true" ]; then
     fi
     if [ "$NAV2_ENABLED" = "true" ]; then
         _require_file "$NAV2_LAUNCH_PATH"
-        _require_file "$NAV2_MAP_PATH"
+        if [ -n "$NAV2_MAP_PATH" ]; then
+            _require_file "$NAV2_MAP_PATH"
+        fi
         _require_file "$NAV2_PARAMS_FILE"
     fi
 fi
@@ -1330,7 +1333,6 @@ LAUNCH_ARGS=(
     "moveit_rviz_config:=$MOVEIT_RVIZ_CONFIG_PATH"
     "moveit_launch:=$MOVEIT_LAUNCH_PATH"
     "nav2_launch:=$NAV2_LAUNCH_PATH"
-    "nav2_map:=$NAV2_MAP_PATH"
     "nav2_params_file:=$NAV2_PARAMS_FILE"
     "world:=$SIMULATION_WORLD_PATH"
     "robot_control:=$ROBOT_CONTROL_PATH"
@@ -1347,6 +1349,11 @@ LAUNCH_ARGS=(
     "spawn_z:=$SPAWN_Z"
     "cabinet_pose_source:=$CABINET_POSE_SOURCE"
 )
+# nav2_map 是可选覆盖：默认留空由 scenes.yaml 决定实际地图。空值不能作为
+# launch 参数传递（会生成非法的 ``nav2_map:=``），仅在显式设置时追加。
+if [ -n "$NAV2_MAP_PATH" ]; then
+    LAUNCH_ARGS+=("nav2_map:=$NAV2_MAP_PATH")
+fi
 _start_managed_process LAUNCH_PID "ROS 2 launch" \
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
     "${LAUNCH_ARGS[@]}"

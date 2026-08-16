@@ -736,9 +736,9 @@ class RecordingManagerTest(unittest.TestCase):
         failing_log = _CloseFailure(manager._recording_log)
         manager._recording_log = failing_log
 
-        with self.assertRaises(RecordingBackendUnavailableError) as raised:
-            manager.stop_recording()
-        self.assertEqual("recording_log_close_failed", raised.exception.code)
+        stopped = manager.stop_recording()
+        self.assertEqual("completed", stopped["state"])
+        self.assertIn("injected close failure", stopped["error"])
         self.assertTrue(failing_log.attempted)
         self.assertIsNone(manager._recording_process)
         self.assertIsNone(manager._recording_log)

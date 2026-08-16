@@ -649,7 +649,7 @@ class TaskManager:
             requested_at = self._shutdown_requested_at
         if requested_at is None:
             return 0.0
-        return max(0.0, time.monotonic() - requested_at)
+        return max(0.0, self._monotonic_clock() - requested_at)
 
     def create_task(
         self,
@@ -762,7 +762,7 @@ class TaskManager:
         with self._condition:
             if not self._shutdown_requested:
                 self._shutdown_requested = True
-                self._shutdown_requested_at = time.monotonic()
+                self._shutdown_requested_at = self._monotonic_clock()
             active_task_id = self._active_task_id
             worker_task_ids = list(self._workers)
             self._condition.notify_all()
@@ -792,7 +792,7 @@ class TaskManager:
             or timeout < 0.0
         ):
             raise ValueError("shutdown timeout must be a finite nonnegative number.")
-        deadline = time.monotonic() + float(timeout)
+        deadline = self._monotonic_clock() + float(timeout)
         # Backend cancel callbacks may enter rclpy and are not guaranteed to
         # return.  Run them as tracked daemon workers so the caller's timeout
         # covers cancellation as well as the task executor itself.
@@ -816,7 +816,7 @@ class TaskManager:
             all_workers = list(workers.values()) + list(cancel_workers.values())
             if not all_workers:
                 break
-            remaining = deadline - time.monotonic()
+            remaining = deadline - self._monotonic_clock()
             if remaining <= 0.0:
                 break
             # Join in short slices so a worker finishing wakes the next audit
@@ -824,7 +824,7 @@ class TaskManager:
             slice_timeout = min(0.05, remaining)
             for worker in all_workers:
                 worker.join(timeout=slice_timeout)
-                if time.monotonic() >= deadline:
+                if self._monotonic_clock() >= deadline:
                     break
 
         with self._condition:
@@ -1255,7 +1255,7 @@ class TaskManager:
         """Wait for a terminal state, primarily for orchestration and tests."""
         if timeout is not None and timeout < 0.0:
             raise ValueError("timeout must not be negative")
-        deadline = None if timeout is None else time.monotonic() + timeout
+        deadline = None if timeout is None else self._monotonic_clock() + timeout
         with self._condition:
             while True:
                 task = self._task_locked(task_id)
@@ -1264,7 +1264,7 @@ class TaskManager:
                 if deadline is None:
                     self._condition.wait()
                     continue
-                remaining = deadline - time.monotonic()
+                remaining = deadline - self._monotonic_clock()
                 if remaining <= 0.0:
                     raise TimeoutError(f"Task {task_id} did not finish in time.")
                 self._condition.wait(remaining)

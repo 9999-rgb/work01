@@ -96,6 +96,12 @@ class RosControlNode(Node):
     NAVIGATION_MODE_MAX_ATTEMPTS = 3
     NAVIGATION_READINESS_POLL_SECONDS = 0.25
     NAVIGATION_READINESS_REQUEST_TIMEOUT_SECONDS = 2.0
+    # A discovered-but-unresponsive action server leaves a goal stuck in
+    # 'sending' (or 'canceling' before acceptance) forever; the watchdog below
+    # fails such goals so the state machine returns to idle instead of every
+    # later operation being rejected with 409 until restart.
+    GOAL_ACCEPTANCE_TIMEOUT_SEC = 5.0
+    GOAL_ACCEPTANCE_WATCHDOG_PERIOD_SEC = 1.0
 
     TASK_PUBLISHER_HISTORY_LIMIT = 256
     DEFAULT_MANUAL_TRAJECTORY_DURATION_SECONDS = 0.50
@@ -311,6 +317,7 @@ class RosControlNode(Node):
         self._navigation_generation = 0
         self._navigation_goal_handle: Any = None
         self._navigation_goal_token: Any = None
+        self._navigation_goal_sent_monotonic: Optional[float] = None
         self._navigation_cancel_requested = False
         self._manual_takeover_generation: Optional[int] = None
         self._navigation_mode_desired: Optional[Tuple[bool, int]] = None
@@ -339,6 +346,7 @@ class RosControlNode(Node):
         self._cabinet_goal_handle: Any = None
         self._cabinet_cancel_requested = False
         self._cabinet_generation = 0
+        self._cabinet_goal_sent_monotonic: Optional[float] = None
         self._cabinet_terminal_event = threading.Event()
         self._cabinet_terminal_event.set()
         self._cabinet_state: Dict[str, Any] = {
@@ -373,6 +381,10 @@ class RosControlNode(Node):
         self.create_timer(
             self.NAVIGATION_READINESS_POLL_SECONDS,
             self._poll_navigation_readiness,
+        )
+        self.create_timer(
+            self.GOAL_ACCEPTANCE_WATCHDOG_PERIOD_SEC,
+            self._check_goal_acceptance,
         )
 
     def publish_task_event(self, event: Dict[str, Any]) -> None:
@@ -1114,6 +1126,7 @@ class RosControlNode(Node):
             generation = self._cabinet_generation
             self._cabinet_cancel_requested = False
             self._cabinet_goal_handle = None
+            self._cabinet_goal_sent_monotonic = time.monotonic()
             self._cabinet_terminal_event.clear()
             physical_state = self._cabinet_control_states.get(control_id, {})
             current_position = physical_state.get("current_position")
@@ -1270,6 +1283,7 @@ class RosControlNode(Node):
             generation = self._cabinet_generation
             self._cabinet_cancel_requested = False
             self._cabinet_goal_handle = None
+            self._cabinet_goal_sent_monotonic = time.monotonic()
             self._cabinet_terminal_event.clear()
             self._cabinet_state.update(
                 {
@@ -2001,6 +2015,7 @@ class RosControlNode(Node):
             return
         goal_token = object()
         self._navigation_goal_token = goal_token
+        self._navigation_goal_sent_monotonic = time.monotonic()
         self._navigation_state.update(
             {
                 "state": "sending",
@@ -2088,6 +2103,7 @@ class RosControlNode(Node):
             )
             if is_current:
                 self._navigation_goal_handle = goal_handle
+                self._navigation_goal_sent_monotonic = None
                 self._navigation_state.update(
                     {
                         "state": (
@@ -2427,6 +2443,7 @@ class RosControlNode(Node):
             return
         self._navigation_goal_handle = None
         self._navigation_goal_token = None
+        self._navigation_goal_sent_monotonic = None
         self._navigation_cancel_requested = False
         self._navigation_state.update(
             {
@@ -2488,6 +2505,7 @@ class RosControlNode(Node):
                 return
             canceled_before_acceptance = self._cabinet_cancel_requested
             self._cabinet_goal_handle = goal_handle
+            self._cabinet_goal_sent_monotonic = None
             self._cabinet_state.update(
                 {
                     "state": (
@@ -2504,7 +2522,22 @@ class RosControlNode(Node):
                 }
             )
 
-        result_future = goal_handle.get_result_async()
+        try:
+            result_future = goal_handle.get_result_async()
+        except Exception as error:  # noqa: BLE001
+            # Mirror the navigation path: if the result channel cannot be
+            # opened (goal handle invalidated after acceptance), route to a
+            # terminal state so the cabinet returns to idle instead of being
+            # left wedged in 'operating' with the terminal event never set.
+            self._set_cabinet_terminal(
+                "failed",
+                f"Cabinet result channel failed: {error}",
+                False,
+                None,
+                generation=generation,
+                expected_goal_handle=goal_handle,
+            )
+            return
         result_future.add_done_callback(
             (
                 lambda result: self._cabinet_operation_result_callback(
@@ -2844,6 +2877,7 @@ class RosControlNode(Node):
                 )
             self._cabinet_goal_handle = None
             self._cabinet_cancel_requested = False
+            self._cabinet_goal_sent_monotonic = None
             self._cabinet_state.update(
                 {
                     "state": state,
@@ -3813,6 +3847,46 @@ class RosControlNode(Node):
             self._navigation_readiness_active = active
             self._navigation_readiness_state = state
             self._navigation_readiness_message = message
+
+    def _check_goal_acceptance(self) -> None:
+        """Fail a goal whose action server never returns an acceptance response.
+
+        ``send_goal_async``'s done-callback only fires when the server accepts
+        or rejects the goal, so a discovered-but-unresponsive server leaves the
+        state machine in 'sending' (or 'canceling' before acceptance) forever.
+        Without this watchdog the cabinet/navigation stays active and every
+        later operation is rejected with 409 until the process restarts.
+        """
+        now = time.monotonic()
+        with self._lock:
+            cabinet_sent = self._cabinet_goal_sent_monotonic
+            if (
+                self._cabinet_state["state"] in {"sending", "canceling"}
+                and isinstance(cabinet_sent, (int, float))
+                and now - float(cabinet_sent)
+                >= self.GOAL_ACCEPTANCE_TIMEOUT_SEC
+            ):
+                self._set_cabinet_terminal(
+                    "failed",
+                    "Cabinet action server did not respond to the goal in "
+                    "time.",
+                    False,
+                    None,
+                    generation=self._cabinet_generation,
+                )
+            navigation_sent = self._navigation_goal_sent_monotonic
+            if (
+                self._navigation_state["state"] in {"sending", "canceling"}
+                and isinstance(navigation_sent, (int, float))
+                and now - float(navigation_sent)
+                >= self.GOAL_ACCEPTANCE_TIMEOUT_SEC
+            ):
+                self._set_navigation_terminal_locked(
+                    "failed",
+                    "Nav2 action server did not respond to the goal in time.",
+                    self._navigation_generation,
+                    self._navigation_goal_token,
+                )
 
     @staticmethod
     def _service_ready(client: Any) -> bool:

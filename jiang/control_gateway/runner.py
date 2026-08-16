@@ -136,6 +136,10 @@ NAVIGATION_AXIS_EPSILON_M = 0.05
 # whole extra plan + settle cycle).  Larger minors keep the X-then-Y split.
 NAVIGATION_MERGE_AXIS_M = 0.30
 RESET_JOINT_STATE_POLL_SEC = 0.05
+# The joint-state broadcaster publishes continuously while the simulation
+# runs, so a snapshot older than this is treated as stale (publisher stalled)
+# rather than as proof the arm is already at its home posture.
+JOINT_STATE_FRESHNESS_MAX_AGE_SEC = 2.0
 MAP_STATION_MARGIN_M = 0.05
 # A manual takeover cancels its owning navigation task asynchronously.  Scene
 # switching immediately after a takeover would otherwise race that cancel and
@@ -2259,8 +2263,17 @@ class ControlServer:
             except (KeyError, TypeError, ValueError):
                 return None
 
-        errors = _errors(self._node.robot_joint_state_snapshot())
-        if errors and max(errors.values()) <= tolerance:
+        snapshot = self._node.robot_joint_state_snapshot()
+        errors = _errors(snapshot)
+        received_monotonic = snapshot.get("received_monotonic")
+        fresh_snapshot = isinstance(received_monotonic, (int, float)) and (
+            time.monotonic() - float(received_monotonic)
+            <= JOINT_STATE_FRESHNESS_MAX_AGE_SEC
+        )
+        # The fast path must not trust a snapshot that has gone stale: a stalled
+        # joint-state broadcaster would otherwise report the arm as already home
+        # and let navigation/operation proceed on a frozen backend.
+        if errors and fresh_snapshot and max(errors.values()) <= tolerance:
             return {
                 "status": "already_home",
                 "joint_count": len(names),
@@ -3762,6 +3775,16 @@ class ControlServer:
         timeout_reported = False
         last_timeout_cancel_at = 0.0
         last_progress = 0.0
+        # The cabinet action drives MoveIt/Gazebo under the ROS/sim clock, so
+        # its deadline must be sim time too: a wall-only deadline false-trips
+        # when Gazebo's real-time factor is below one.  Sample the sim baseline
+        # from the joint-state stamp and fall back to wall time when the stamp
+        # is absent, mirroring _home_robot_joints.
+        operation_sim_baseline = self._joint_ros_time_seconds(
+            self._node.robot_joint_state_snapshot()
+        )
+        operation_last_sim = operation_sim_baseline
+        operation_last_sim_advance_wall = started
         try:
             try:
                 # See the navigation equivalent above.  This makes the
@@ -3819,11 +3842,36 @@ class ControlServer:
             while True:
                 now = time.monotonic()
                 elapsed = now - started
-                if (
-                    timeout_started_at is None
-                    and elapsed >= OPERATION_TIMEOUT_SEC
-                ):
-                    timeout_started_at = now
+                if timeout_started_at is None:
+                    op_sim_now = self._joint_ros_time_seconds(
+                        self._node.robot_joint_state_snapshot()
+                    )
+                    if (
+                        op_sim_now is not None
+                        and operation_last_sim is not None
+                        and op_sim_now > operation_last_sim + 1.0e-6
+                    ):
+                        operation_last_sim = op_sim_now
+                        operation_last_sim_advance_wall = now
+                    if (
+                        operation_sim_baseline is not None
+                        and op_sim_now is not None
+                        and operation_last_sim
+                        > operation_sim_baseline + 1.0e-6
+                    ):
+                        # Sim clock advancing: time out on the sim deadline or
+                        # a stalled sim clock (advances once then stops).
+                        op_timed_out = (
+                            op_sim_now
+                            >= operation_sim_baseline + OPERATION_TIMEOUT_SEC
+                            or now - operation_last_sim_advance_wall
+                            >= NAVIGATION_CLOCK_STALL_TIMEOUT_SEC
+                        )
+                    else:
+                        # No usable advancing sim clock: bound with wall time.
+                        op_timed_out = elapsed >= OPERATION_TIMEOUT_SEC
+                    if op_timed_out:
+                        timeout_started_at = now
                 timed_out = timeout_started_at is not None
                 cancel_for_shutdown = context.shutdown_requested
                 if (
@@ -3995,6 +4043,16 @@ class ControlServer:
                     )
                     return {}
         finally:
+            # An unexpected exception escaping the monitor loop (for example a
+            # task cancellation surfaced through context.progress, or a bug)
+            # must not leave the cabinet action goal running on the backend.
+            # client.cancel() is a no-op when the operation already reached a
+            # terminal state, so this is safe on every exit path — including the
+            # timeout/shutdown paths that already cancel periodically above.
+            try:
+                client.cancel()
+            except Exception:  # noqa: BLE001
+                pass
             with self._operation_bindings_lock:
                 if self._operation_event_queues.get(cabinet) is event_queue:
                     self._operation_event_queues.pop(cabinet, None)

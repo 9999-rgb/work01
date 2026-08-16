@@ -393,6 +393,7 @@ class RecordingManager:
             # Once wait()/poll() has confirmed a terminal return code, this
             # manager must release process ownership even when a damaged
             # timeline or manifest prevents normal finalization.
+            finalized: Optional[dict[str, Any]] = None
             try:
                 try:
                     path = self._recording_path(identifier, must_exist=True)
@@ -403,7 +404,7 @@ class RecordingManager:
                         f"{str(error) or type(error).__name__}",
                         code="recording_finalize_failed",
                     ) from error
-                return self._finalize_recording_locked(
+                finalized = self._finalize_recording_locked(
                     identifier,
                     path,
                     exit_code=exit_code,
@@ -419,12 +420,19 @@ class RecordingManager:
                     self._recording_process = None
                     self._recording_id = None
                     self._recording_started_monotonic = None
-                if close_error:
-                    raise RecordingBackendUnavailableError(
-                        "Rosbag2 recorder stopped, but its log could not be "
-                        f"closed: {close_error}",
-                        code="recording_log_close_failed",
-                    )
+
+            # A log-close failure must not mask a successful finalization: the
+            # recording itself is already finalized and persisted, so fold it
+            # into the status as a non-fatal warning instead of raising over
+            # the completed result.
+            if finalized is not None and close_error:
+                existing_error = finalized.get("error")
+                finalized["error"] = (
+                    close_error
+                    if not existing_error
+                    else f"{existing_error}; log close: {close_error}"
+                )
+            return finalized
 
     def recording_status(self) -> dict[str, Any]:
         """Return a stable status object for the active/latest recorder."""

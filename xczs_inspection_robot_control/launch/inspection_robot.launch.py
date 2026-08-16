@@ -900,7 +900,12 @@ def _nav2_nodes(context):
     nav2_enabled = _launch_boolean(context, "nav2")
     if not (robot_bringup and nav2_enabled):
         return []
-    nav2_map = _resolve_package_path(_scene_spec(context)["nav2_map"])
+    # ``nav2_map`` is an optional per-run override (empty by default); the
+    # active scene's ``nav2_map`` is the single source of truth otherwise.
+    nav2_map_override = LaunchConfiguration("nav2_map").perform(context).strip()
+    nav2_map = _resolve_package_path(
+        nav2_map_override or _scene_spec(context)["nav2_map"]
+    )
     return [
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(
@@ -964,7 +969,12 @@ def _active_robot_spawn(context):
     """
     spawn = _scene_spec(context).get("robot_spawn")
     if spawn is None:
-        return {"x": 0.0, "y": 0.0, "z": 0.515, "yaw": math.pi / 2.0}
+        return {
+            "x": 0.0,
+            "y": 0.0,
+            "z": _launch_finite_number(context, "spawn_z"),
+            "yaw": math.pi / 2.0,
+        }
     return spawn
 
 
@@ -1059,7 +1069,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("nav2_rviz", default_value="false"),
         DeclareLaunchArgument(
             "nav2_map",
-            default_value=str(nav2_share / "maps" / "inspection_map.yaml"),
+            default_value="",
         ),
         DeclareLaunchArgument(
             "nav2_params_file",

@@ -8,6 +8,7 @@ Provides reusable conversion utilities for the XCZS Zenoh bridge.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -36,9 +37,15 @@ def msg_to_dict(msg: Any) -> Any:
 
     Supports nested messages, numpy ndarray, array.array, tuple, and list.
     """
-    # Primitive types — return as-is
-    if isinstance(msg, (int, float, str, bool, type(None))):
+    # Primitive types — return as-is.  Non-finite floats (NaN/Infinity) are
+    # not valid JSON, so serialize them as null instead of emitting bare
+    # ``NaN``/``Infinity`` tokens that break strict consumers.
+    if isinstance(msg, bool):
         return msg
+    if isinstance(msg, (int, str, type(None))):
+        return msg
+    if isinstance(msg, float):
+        return msg if math.isfinite(msg) else None
 
     # numpy ndarray (e.g. float64 arrays from JointState/Odometry)
     try:

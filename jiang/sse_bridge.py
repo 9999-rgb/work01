@@ -178,6 +178,10 @@ class ZenohSource:
                 if not self._listeners[key]:
                     subscriber = self._subs.pop(key, None)
                     del self._listeners[key]
+                    # The latest-sample cache only exists to replay to a later
+                    # listener on an already-live key; once the last listener
+                    # leaves, drop it so the cache cannot grow without bound.
+                    self._last.pop(key, None)
         if subscriber is not None:
             try:
                 subscriber.undeclare()
@@ -191,7 +195,14 @@ class ZenohSource:
             topic = str(sample.key_expr)
             # Try CDR decode first (ROS2 binary), then JSON, then hex fallback
             json_str = None
-            decoder = _get_cdr_decoder()
+            try:
+                decoder = _get_cdr_decoder()
+            except Exception:
+                # rclpy/ROS message modules unavailable: fall through to the
+                # JSON/hex fallback instead of letting the ImportError escape
+                # the Zenoh callback (which would skip the _last update and
+                # every listener).
+                decoder = None
             if decoder:
                 result = decoder.decode(topic, payload)
                 if result:
@@ -229,6 +240,7 @@ class ZenohSource:
             subscribers = tuple(self._subs.values())
             self._subs.clear()
             self._listeners.clear()
+            self._last.clear()
         for sub in subscribers:
             try:
                 sub.undeclare()

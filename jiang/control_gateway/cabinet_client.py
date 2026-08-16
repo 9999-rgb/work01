@@ -273,8 +273,6 @@ class CabinetClient(Node):
             )
         )
         with self._lock:
-            if generation != self._operation_generation:
-                return {"status": "superseded", "cabinet": self.cabinet_name}
             self._status["force"] = requested_force
 
         if not self._action_server_ready():
@@ -490,10 +488,20 @@ class CabinetClient(Node):
 
         self._destroy_subscription_map(old_subscriptions)
         for control in controls.values():
-            subscriptions = self._create_control_subscriptions(
-                control,
-                generation,
-            )
+            try:
+                subscriptions = self._create_control_subscriptions(
+                    control,
+                    generation,
+                )
+            except Exception as error:  # noqa: BLE001
+                # One malformed control must not abort subscription for the
+                # rest of the catalog.  _create_control_subscriptions already
+                # tears down its own partial subscriptions before re-raising.
+                self.get_logger().error(
+                    f"Failed to subscribe to control "
+                    f"{control.get('control_id')!r}: {error}"
+                )
+                continue
             with self._lock:
                 if generation == self._catalog_generation:
                     self._control_subscriptions[
