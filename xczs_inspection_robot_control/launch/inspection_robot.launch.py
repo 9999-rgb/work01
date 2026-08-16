@@ -1010,21 +1010,23 @@ def _robot_spawn_node(context, *, controllers=None):
         ],
         condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
-    actions = [spawn_node]
-    if controllers is not None:
-        actions.append(
-            RegisterEventHandler(
-                OnProcessExit(
-                    target_action=spawn_node,
-                    on_exit=partial(
-                        _continue_or_shutdown_required_process,
-                        process_label="Gazebo robot spawn",
-                        success_actions=[controllers],
-                    ),
-                )
+    if controllers is None:
+        return [spawn_node]
+    # Register the watchdog before the spawn process so a fast spawn exit
+    # cannot race handler registration (same convention as _cabinet_nodes).
+    return [
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawn_node,
+                on_exit=partial(
+                    _continue_or_shutdown_required_process,
+                    process_label="Gazebo robot spawn",
+                    success_actions=[controllers],
+                ),
             )
-        )
-    return actions
+        ),
+        spawn_node,
+    ]
 
 
 def _cleanup_generated_files(_context):

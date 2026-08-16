@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 from launch import LaunchContext, LaunchDescription, LaunchService
 from launch.actions import EmitEvent, ExecuteProcess, LogInfo
-from launch.actions import IncludeLaunchDescription
+from launch.actions import IncludeLaunchDescription, OpaqueFunction
 from launch.actions import RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
@@ -60,6 +60,8 @@ def _build_cabinet_actions(module, tmp_path, *, spawn_cabinet):
         {
             "cabinet_bringup": "true",
             "spawn_cabinet": str(spawn_cabinet).lower(),
+            "scene": "test_scene",
+            "scenes_config": "scenes.yaml",
             "moveit": "true",
             "robot_name": "test_robot",
             "robot_xacro": "robot.xacro",
@@ -98,8 +100,21 @@ def _build_cabinet_actions(module, tmp_path, *, spawn_cabinet):
         "navigation_frame": "map",
         "joint_state_topic": "/joint_states",
     }
+    # The scene's ``spawn_cabinet`` stays true so the global ``spawn_cabinet``
+    # launch argument (the ``spawn_cabinet`` param) alone controls whether the
+    # cabinet is spawned at runtime.
+    fake_scenes = {
+        "test_scene": {
+            "name": "test_scene",
+            "spawn_cabinet": True,
+            "model": None,
+            "nav2_map": "package://test/map.yaml",
+            "robot_spawn": None,
+        }
+    }
     with (
         patch.object(module, "_read_instances", return_value=[instance]),
+        patch.object(module, "_read_scenes", return_value=fake_scenes),
         patch.object(
             module,
             "_read_button_profiles",
@@ -269,7 +284,7 @@ def test_required_process_handlers_are_registered_before_nodes(tmp_path):
         if isinstance(entity, Node)
     ]
 
-    assert len(required_handler_indexes) == 7
+    assert len(required_handler_indexes) == 6
     assert node_indexes
     assert max(required_handler_indexes) < min(node_indexes)
 
@@ -277,6 +292,9 @@ def test_required_process_handlers_are_registered_before_nodes(tmp_path):
         _on_process_exit_target(entities[index])
         for index in required_handler_indexes
     ]
+    # The robot spawn (spawn_entity.py) handler is now returned by
+    # ``_robot_spawn_node`` inside an OpaqueFunction, so it is not a top-level
+    # watchdog target; the remaining six top-level handlers are listed here.
     assert sorted(
         target.node_executable
         for target in targets
@@ -284,7 +302,6 @@ def test_required_process_handlers_are_registered_before_nodes(tmp_path):
     ) == sorted(
         [
             "spawner",
-            "spawn_entity.py",
             "robot_state_publisher",
             "base_command_router",
             "legacy_trajectory_router",
@@ -323,12 +340,19 @@ def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
         SimpleNamespace(returncode=0),
         None,
     )
-    includes = [
+    # move_group is the only direct include; Nav2 is wrapped in an
+    # OpaqueFunction so its map can be resolved from the active scene at
+    # launch time.
+    move_group = next(
         action
         for action in downstream
         if isinstance(action, IncludeLaunchDescription)
-    ]
-    assert len(includes) == 2
+    )
+    nav2 = next(
+        action
+        for action in downstream
+        if isinstance(action, OpaqueFunction)
+    )
 
     external = LaunchContext()
     external.launch_configurations.update(
@@ -336,7 +360,10 @@ def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
         moveit="true",
         nav2="true",
     )
-    assert all(not action.condition.evaluate(external) for action in includes)
+    # External-stack mode must neither include our local move_group nor emit
+    # any local Nav2 include.
+    assert not move_group.condition.evaluate(external)
+    assert nav2.execute(external) == []
 
     local = LaunchContext()
     local.launch_configurations.update(
@@ -344,7 +371,7 @@ def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
         moveit="true",
         nav2="true",
     )
-    assert all(action.condition.evaluate(local) for action in includes)
+    assert move_group.condition.evaluate(local)
 
 
 def test_runtime_exit_requests_shutdown_even_for_clean_exit():
