@@ -134,11 +134,21 @@ class ZenohSource:
         self._session = zenoh.open(conf)
         self._subs: dict[str, zenoh.Subscriber] = {}
         self._listeners: dict[str, list] = {}  # key -> list of callback functions
+        self._last: dict[str, tuple[str, str]] = {}  # key -> (topic, json_str)
         self._lock = threading.RLock()
         self._closed = False
 
     def add_listener(self, key: str, callback) -> None:
-        """Register a callback for a Zenoh key expression. Auto-subscribes."""
+        """Register a callback for a Zenoh key expression. Auto-subscribes.
+
+        A late subscriber (one that attaches after the source already received
+        the last sample for ``key``) is replayed the cached sample so it does
+        not miss latched (transient-local) topics such as ``tf_static``.  The
+        underlying Zenoh bridge already replays its retained transient-local
+        value to the first subscriber that declares a subscription; the replay
+        here covers every *subsequent* subscriber that joins an already-live
+        key, which would otherwise only see samples published after it joined.
+        """
         with self._lock:
             if self._closed:
                 raise RuntimeError("Zenoh source is closed.")
@@ -149,6 +159,13 @@ class ZenohSource:
                 self._listeners[key] = []
                 print(f"[zenoh] subscribed: {key}", file=sys.stderr)
             self._listeners[key].append(callback)
+            cached = self._last.get(key)
+
+        if cached is not None:
+            try:
+                callback(*cached)
+            except Exception:
+                pass
 
     def remove_listener(self, key: str, callback) -> None:
         """Remove a callback. Unsubscribes when last listener is removed."""
@@ -191,8 +208,9 @@ class ZenohSource:
                             "_len": len(payload),
                         }
                     )
-            # Fan out to all listeners for this key
+            # Store the latest decoded sample so late listeners can be replayed.
             with self._lock:
+                self._last[key] = (topic, json_str)
                 listeners = list(self._listeners.get(key, []))
             for cb in listeners:
                 try:

@@ -198,6 +198,51 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self.assertEqual(lock_available, [True, True])
         session.close.assert_called_once_with()
 
+    def test_zenoh_source_replays_last_sample_to_late_listener(self) -> None:
+        import sse_bridge
+
+        config = _Config()
+        session = MagicMock()
+        with (
+            patch.object(sse_bridge.zenoh, "Config", return_value=config),
+            patch.object(sse_bridge.zenoh, "open", return_value=session),
+        ):
+            source = sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
+
+            seen: list[tuple[str, str]] = []
+
+            # First listener establishes the subscription and seeds the cache
+            # exactly as _make_callback would after a decoded sample.
+            source.add_listener("xczs/odom", lambda *a: seen.append(a))
+            source._last["xczs/odom"] = ("xczs/odom", '{"x":1}')
+
+            # A second listener joins the already-live key; it must be replayed
+            # the cached last sample rather than waiting for the next publish.
+            source.add_listener("xczs/odom", lambda *a: seen.append(a))
+
+            source.close()
+
+        # The replay is only for the late listener, not the original one.
+        self.assertEqual(seen, [("xczs/odom", '{"x":1}')])
+        session.declare_subscriber.assert_called_once()
+
+    def test_zenoh_source_does_not_replay_when_no_sample_seen(self) -> None:
+        import sse_bridge
+
+        config = _Config()
+        session = MagicMock()
+        with (
+            patch.object(sse_bridge.zenoh, "Config", return_value=config),
+            patch.object(sse_bridge.zenoh, "open", return_value=session),
+        ):
+            source = sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
+            seen: list[tuple[str, str]] = []
+            source.add_listener("xczs/odom", lambda *a: seen.append(a))
+            source.close()
+
+        self.assertEqual(seen, [])
+        session.declare_subscriber.assert_called_once()
+
     def test_topic_globstar_matches_zero_or_more_segments(self) -> None:
         from zenoh_proxy.registry import TopicRegistry
 
