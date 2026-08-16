@@ -106,14 +106,21 @@ NAVIGATION_STATION_CORRECTION_LIMIT = 2
 # The handoff tolerances must accept Nav2's actual stopping accuracy so
 # that navigation can succeed; the docking phase then narrows the gap.
 # Nav2's omnidirectional DWB settles inside ~0.06 m with the finer velocity
-# sampling, comfortably within this handoff window.
-NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.15
+# sampling, comfortably within this handoff window.  The window is loosened
+# from 0.15 m to absorb AMCL's ~0.09-0.11 m longitudinal drift in the open
+# inspection scenes (no longitudinal lidar features), so navigation accepts
+# before the docking phase narrows to its own 0.015 m target.
+NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.22
 NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.25
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
 TASK_MONITOR_PERIOD_SEC = 0.10
 EXECUTOR_SPIN_PERIOD_SEC = 0.10
-NAVIGATION_POSITION_TOLERANCE_M = 0.15
+# Must stay looser than the Nav2 goal checker (0.20 m) and tighter than the
+# docking takeover distance (0.22 m) — see test_nav2_config_contract.py.
+# 0.22 m absorbs the open-scene AMCL longitudinal drift that otherwise leaves
+# the map-frame pose just outside the checker and stalls final approach.
+NAVIGATION_POSITION_TOLERANCE_M = 0.22
 # Nav2's 0.25 rad goal checker and the following TF sample can differ by a
 # fraction of a degree while the base settles.  Keep a 5 mrad verification
 # margin without relaxing the controller's own stopping criterion.

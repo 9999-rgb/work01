@@ -102,7 +102,11 @@
     allow_replanning: true
     docking_base_frame: body
     grasp_brake_link: body
-    navigation_takeover_distance: 0.15
+    # Loosest position layer of the navigation->docking handoff.  Must be >=
+    # NAVIGATION_POSITION_TOLERANCE_M (0.22) — see test_nav2_config_contract.py.
+    # 0.22 m absorbs the open-scene AMCL longitudinal drift; the docking
+    # controller then narrows to its own 0.008 m target.
+    navigation_takeover_distance: 0.22
     navigation_takeover_yaw_tolerance: 0.35
     navigation_takeover_stall_timeout: 4.0
     docking_timeout: 45.0

@@ -272,11 +272,26 @@ def _read_scenes(path):
                 "pitch": _scene_pose_number(pose, "pitch", name),
                 "yaw": _scene_pose_number(pose, "yaw", name),
             }
+        # The robot's initial pose in the map frame.  Used both to place the
+        # Gazebo entity at launch and to re-localise AMCL, so the robot never
+        # starts inside an obstacle or with a mismatched map pose.
+        robot_spawn = raw.get("robot_spawn")
+        robot_spawn_spec = None
+        if robot_spawn is not None:
+            if not isinstance(robot_spawn, dict):
+                raise RuntimeError(f"Scene '{name}' robot_spawn must be a mapping or null.")
+            robot_spawn_spec = {
+                "x": _scene_pose_number(robot_spawn, "x", name),
+                "y": _scene_pose_number(robot_spawn, "y", name),
+                "z": _scene_pose_number(robot_spawn, "z", name),
+                "yaw": _scene_pose_number(robot_spawn, "yaw", name),
+            }
         scenes[name] = {
             "name": name,
             "spawn_cabinet": spawn_cabinet,
             "model": model_spec,
             "nav2_map": nav2_map.strip(),
+            "robot_spawn": robot_spawn_spec,
         }
     return scenes
 
@@ -880,7 +895,7 @@ def _scene_floor_nodes(context):
 
 
 def _nav2_nodes(context):
-    """Include Nav2 with the map resolved from the active scene."""
+    """Include Nav2 with the map and AMCL initial pose from the active scene."""
     robot_bringup = _launch_boolean(context, "robot_bringup")
     nav2_enabled = _launch_boolean(context, "nav2")
     if not (robot_bringup and nav2_enabled):
@@ -893,9 +908,7 @@ def _nav2_nodes(context):
             ),
             launch_arguments={
                 "map": nav2_map,
-                "nav2_params_file": LaunchConfiguration(
-                    "nav2_params_file"
-                ).perform(context),
+                "nav2_params_file": _nav2_params_for_scene(context),
                 "rviz": LaunchConfiguration("nav2_rviz").perform(context),
                 "use_sim_time": LaunchConfiguration(
                     "use_sim_time"
@@ -903,6 +916,105 @@ def _nav2_nodes(context):
             }.items(),
         )
     ]
+
+
+def _nav2_params_for_scene(context):
+    """Write a scene-specific copy of ``nav2_params.yaml``.
+
+    AMCL's ``initial_pose`` is shared across scenes in the committed params
+    file (it matches only the cabinet-operation origin spawn).  Rewrite it to
+    the active scene's ``robot_spawn`` so AMCL never starts with a pose that
+    contradicts where Gazebo actually placed the robot.
+    """
+    base_path = Path(
+        LaunchConfiguration("nav2_params_file").perform(context)
+    ).expanduser()
+    try:
+        params = yaml.safe_load(base_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError) as error:
+        raise RuntimeError(f"Could not read nav2 params '{base_path}': {error}") from error
+    if not isinstance(params, dict):
+        raise RuntimeError(f"nav2 params '{base_path}' must be a mapping.")
+
+    spawn = _active_robot_spawn(context)
+    amcl_params = params.setdefault("amcl", {}).setdefault("ros__parameters", {})
+    amcl_params["initial_pose"] = {
+        "x": spawn["x"],
+        "y": spawn["y"],
+        "z": 0.0,
+        "yaw": spawn["yaw"],
+    }
+
+    generated_directory = Path(tempfile.mkdtemp(prefix="xczs_nav2_params_"))
+    _GENERATED_DIRECTORIES.append(generated_directory)
+    out_path = generated_directory / "nav2_params.yaml"
+    out_path.write_text(
+        yaml.safe_dump(params, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    return str(out_path)
+
+
+def _active_robot_spawn(context):
+    """Return the active scene's robot_spawn, falling back to the origin pose.
+
+    ``robot_spawn`` may be null (keep current pose), which only makes sense on
+    scene *switch*; at initial launch there is no prior pose, so default to the
+    historical origin spawn used by the cabinet-operation scene.
+    """
+    spawn = _scene_spec(context).get("robot_spawn")
+    if spawn is None:
+        return {"x": 0.0, "y": 0.0, "z": 0.515, "yaw": math.pi / 2.0}
+    return spawn
+
+
+def _robot_spawn_node(context, *, controllers=None):
+    """Spawn the robot at the active scene's ``robot_spawn``.
+
+    ``spawn_entity`` places the root ``body`` link, whose +Y is the physical
+    forward direction.  ``base_link`` is a fixed +pi/2 child of ``body`` (see
+    ``mobile_base.xacro``), so to point ``base_link`` at ``robot_spawn.yaw`` in
+    the map frame the body must be rotated back by pi/2 -- the same convention
+    used by ``runner._teleport_robot`` on scene switch.
+
+    When ``controllers`` is supplied, the returned action also chains the
+    controller spawner behind the robot spawn.  ``OnProcessExit`` must target
+    the concrete spawn ``Node`` created here rather than the wrapping
+    ``OpaqueFunction``, so the event handler is built inside this function.
+    """
+    spawn = _active_robot_spawn(context)
+    body_yaw = spawn["yaw"] - math.pi / 2.0
+    spawn_node = Node(
+        package="gazebo_ros",
+        executable="spawn_entity.py",
+        name="spawn_xczs_inspection_robot",
+        output="screen",
+        prefix="/usr/bin/python3",
+        arguments=[
+            "-entity", LaunchConfiguration("robot_name"),
+            "-topic", "robot_description",
+            "-x", str(spawn["x"]),
+            "-y", str(spawn["y"]),
+            "-z", str(spawn["z"]),
+            "-Y", str(body_yaw),
+        ],
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
+    )
+    actions = [spawn_node]
+    if controllers is not None:
+        actions.append(
+            RegisterEventHandler(
+                OnProcessExit(
+                    target_action=spawn_node,
+                    on_exit=partial(
+                        _continue_or_shutdown_required_process,
+                        process_label="Gazebo robot spawn",
+                        success_actions=[controllers],
+                    ),
+                )
+            )
+        )
+    return actions
 
 
 def _cleanup_generated_files(_context):
@@ -1129,19 +1241,6 @@ def generate_launch_description() -> LaunchDescription:
         ],
         condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
-    spawn_robot = Node(
-        package="gazebo_ros",
-        executable="spawn_entity.py",
-        name="spawn_xczs_inspection_robot",
-        output="screen",
-        prefix="/usr/bin/python3",
-        arguments=[
-            "-entity", LaunchConfiguration("robot_name"),
-            "-topic", "robot_description",
-            "-z", LaunchConfiguration("spawn_z"),
-        ],
-        condition=IfCondition(LaunchConfiguration("robot_bringup")),
-    )
     controllers = Node(
         package="controller_manager",
         executable="spawner",
@@ -1155,6 +1254,10 @@ def generate_launch_description() -> LaunchDescription:
             "--activate-as-group",
         ],
         condition=IfCondition(LaunchConfiguration("robot_bringup")),
+    )
+    spawn_robot = OpaqueFunction(
+        function=_robot_spawn_node,
+        kwargs={"controllers": controllers},
     )
     base_router = Node(
         package=CONTROL_PACKAGE,
@@ -1267,16 +1370,6 @@ def generate_launch_description() -> LaunchDescription:
             ),
         )
     )
-    start_controllers = RegisterEventHandler(
-        OnProcessExit(
-            target_action=spawn_robot,
-            on_exit=partial(
-                _continue_or_shutdown_required_process,
-                process_label="Gazebo robot spawn",
-                success_actions=[controllers],
-            ),
-        )
-    )
     cabinet_loader = OpaqueFunction(
         function=_cabinet_nodes,
         kwargs={
@@ -1302,8 +1395,9 @@ def generate_launch_description() -> LaunchDescription:
             # Register the required-process handlers before either short-lived
             # process can start.  In particular, a spawn failure may exit
             # immediately and must not race handler registration while cabinet
-            # Xacros are being generated.
-            start_controllers,
+            # Xacros are being generated.  The robot-spawn -> controller chain
+            # is returned by _robot_spawn_node itself so its OnProcessExit can
+            # reference the concrete spawn Node.
             after_controllers,
             *runtime_watchdogs,
             gazebo_server,

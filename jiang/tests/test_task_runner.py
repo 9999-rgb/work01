@@ -990,7 +990,7 @@ class TaskRunnerTest(unittest.TestCase):
             return NavigationStation(
                 cabinet=cabinet,
                 frame_id="map",
-                x=1.0 if calls == 1 else 1.05,
+                x=1.0 if calls == 1 else 1.15,
                 y=0.0,
                 z=0.0,
                 yaw=math.pi,
@@ -999,9 +999,9 @@ class TaskRunnerTest(unittest.TestCase):
         node.navigation_station_from_tf = live_station
         accepted = server.submit_navigation_task("cabinet_a")
         self.assertIsNotNone(node.wait_for_navigation_goal(1))
-        # The first goal is valid against its own station (0.11 m error), but
-        # the sub-threshold 0.019 m TF shift puts it outside the stricter
-        # 0.15 m operation handoff margin.
+        # The first goal is valid against its own station, but the live station
+        # drifts to x=1.15, so the localized finish pose (x=0.87) lands 0.28 m
+        # away — outside the 0.22 m operation handoff margin.
         node.finish_navigation(
             "succeeded",
             pose={"x": 0.87, "y": 0.0, "yaw": math.pi},
@@ -1009,16 +1009,16 @@ class TaskRunnerTest(unittest.TestCase):
         correction = node.wait_for_navigation_goal(2)
         self.assertIsNotNone(correction)
         assert correction is not None
-        self.assertAlmostEqual(1.05, correction["x"])
+        self.assertAlmostEqual(1.15, correction["x"])
         node.finish_navigation(
             "succeeded",
-            pose={"x": 1.05, "y": 0.0, "yaw": math.pi},
+            pose={"x": 1.15, "y": 0.0, "yaw": math.pi},
         )
 
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
         self.assertEqual("success", task["status"])
         self.assertEqual(1, task["result"]["route"]["correction_count"])
-        self.assertAlmostEqual(1.05, task["result"]["station"]["x"])
+        self.assertAlmostEqual(1.15, task["result"]["station"]["x"])
 
     def test_navigation_records_station_drift_without_a_redundant_goal(
         self,
