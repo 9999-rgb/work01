@@ -1,0 +1,24 @@
+# 样例场景资产内柜体摆放清单（与默认 cabinet_instances.yaml 一致）。
+# 导入后经 CABINET_INSTANCES_PATH 交给现有 launch / 适配层消费。
+
+instances:
+  - name: "cabinet_a"
+    x: 2.0
+    y: 0.33
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
+
+  - name: "cabinet_b"
+    x: 2.0
+    y: 2.83
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
+
+  - name: "cabinet_c"
+    x: 2.0
+    y: -2.17
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679

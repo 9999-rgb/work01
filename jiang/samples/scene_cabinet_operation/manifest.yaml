@@ -1,0 +1,15 @@
+# 样例场景资产：自包含的控制柜操作场景。
+#
+# 导入后相对引用（nav2_map / model.file）会被归一化为资产库内的绝对路径，
+# 使导入资产不依赖仓库里的 ROS 包目录。本样例与默认 cabinet_operation 场景
+# 等价，但地图与柜体摆放全部打包在资产目录内。
+kind: scene
+name: scene_cabinet_operation
+version: 1.0.0
+description: 自包含的控制柜操作场景样例（Nav2 地图 + 柜体摆放打包）
+files:
+  scenes: scenes.yaml
+  instances: cabinet_instances.yaml
+references:
+  cabinet: null
+  gripper_variant: null
