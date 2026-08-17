@@ -157,10 +157,22 @@ Web 选择场景 / 柜体 / 夹爪变体 → 持久化到 `jiang/data/selection.
 
 | 阶段 | 状态 | 落点 |
 |---|---|---|
-| **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射)、`scripts/xczs_import_asset`(CLI 导入,复用 `check_scene_config` 语义校验)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
-| 2 · Web 导入/选择页 | ⬜ 待实施 | `app/api/assets.py` + `monitor.html`「资产」区块 + `app/main.py` 挂载 |
+| **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/xczs_import_asset`(CLI 导入)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
+| **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/组合选择,重启生效提示,非管理员禁用导入/删除) |
 | 3 · 换柜体 | ⬜ 待实施 | 柜体资产导入 + 夹爪×柜体可达性配对 + `check_cabinet_model` 参数化 |
 | 4 · 多夹爪变体重构 | ⬜ 待实施 | 机器人模型单夹爪 → N 变体 + 选择开关 |
+
+阶段2 验证结果(2026-08-17):
+
+- 新增 pytest:`test_asset_web.py`(17 用例:读取/选择契约、导入/删除契约、auth 门禁);全量 `python3 -m pytest jiang/tests/ -q` = **559 passed**(阶段1 542 + 阶段2 新增 17)。
+- Web 闭环(TestClient 驱动真实 create_app + 真实资产库):
+  - 上传 zip → 校验 manifest → 语义校验(未 skip 时跑 `check_scene_config`)→ 导入 asset_library → 201 登记;
+  - 重复导入 → 409;`force` 覆盖 → 201 且版本更新;zip-slip(`../`)→ 400 且目录外无残留;
+  - 选择校验:未知场景 → 404、未知夹爪变体 → 400、空串清除选择;`selection.yaml` 落盘;
+  - 删除资产 → 200 且目录/catalog 移除、选中字段同步清空;未知 → 404、非法类型 → 400;
+  - auth 门禁:匿名 401、operator 403、admin 放行(导入/删除挂 `require_admin`,与 `/users` 同姿态)。
+- 端到端:CLI 导入样例场景 → 选择 → `selection_to_env` 输出正确指针 → `XCZS_PREFLIGHT_ONLY` 预检通过;复位选择为空后默认路径( `cabinet_operation`)预检同样通过,默认行为不变。
+- 前端 `monitor.html`「资产库」卡片:`refreshAssets` 在连接成功时加载,导入/删除按 `currentUserRole==='admin'` 显隐可用,组合选择保存后提示「重启后生效」;JS 语法经 `node --check` 校验。
 
 阶段1 验证结果(2026-08-17):
 

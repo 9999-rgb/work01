@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.api import (
+    assets,
     cabinet_legacy,
     cabinets,
     health,
@@ -21,6 +22,7 @@ api_router = APIRouter()
 
 # 按领域挂载。路径不冲突时各 router 独立工作；若未来引入前缀，
 # 可在此统一调整。
+api_router.include_router(assets.router)
 api_router.include_router(health.router)
 api_router.include_router(cabinet_legacy.router)
 api_router.include_router(cabinets.router)

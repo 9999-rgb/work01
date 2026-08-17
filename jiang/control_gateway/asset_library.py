@@ -51,6 +51,19 @@ class AssetNotFoundError(AssetLibraryError):
         self.name = name
 
 
+class AssetExistsError(AssetLibraryError):
+    """Raised when importing an asset that already exists (no ``force``)."""
+
+    def __init__(self, kind: str, name: str, version: str) -> None:
+        super().__init__(
+            f"{kind} asset {name!r} is already imported "
+            f"(version {version}). Use force=True to replace it."
+        )
+        self.kind = kind
+        self.name = name
+        self.version = version
+
+
 @dataclass(frozen=True)
 class AssetRecord:
     """One entry in the asset catalog."""
@@ -198,10 +211,7 @@ class AssetLibrary:
         ]
         if existing and not force:
             record = existing[0]
-            raise AssetLibraryError(
-                f"{manifest.kind} asset {manifest.name!r} is already imported "
-                f"(version {record.version}). Use force=True to replace it."
-            )
+            raise AssetExistsError(record.kind, record.name, record.version)
 
         destination = self.root / manifest.kind / manifest.name
         try:
@@ -239,6 +249,42 @@ class AssetLibrary:
             if not (entry.kind == record.kind and entry.name == record.name)
         ]
         self._save_catalog(remaining + [record])
+        return record
+
+    def remove_asset(self, kind: str, name: str) -> AssetRecord:
+        """Delete an asset and clear it from the selection if selected.
+
+        Raises :class:`AssetNotFoundError` when the asset is not in the catalog.
+        The directory is removed and the catalog entry dropped in one step; the
+        selection's matching field (``scene`` / ``cabinet``) is reset to ``None``
+        so a later ``selection_to_env`` does not point at a deleted asset.
+        """
+        record = self.find(kind, name)
+        shutil.rmtree(self.asset_root(record), ignore_errors=True)
+        remaining = [
+            entry for entry in self.load_catalog()
+            if not (entry.kind == kind and entry.name == name)
+        ]
+        self._save_catalog(remaining)
+
+        selection = self.load_selection()
+        changed = False
+        if kind == "scene" and selection.scene == name:
+            selection = AssetSelection(
+                scene=None,
+                cabinet=selection.cabinet,
+                gripper_variant=selection.gripper_variant,
+            )
+            changed = True
+        elif kind == "cabinet" and selection.cabinet == name:
+            selection = AssetSelection(
+                scene=selection.scene,
+                cabinet=None,
+                gripper_variant=selection.gripper_variant,
+            )
+            changed = True
+        if changed:
+            self.save_selection(selection)
         return record
 
     # ── selection ───────────────────────────────────────────────────────

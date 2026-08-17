@@ -22,7 +22,6 @@ Selection maps onto the existing ``SCENES_CONFIG`` / ``SCENE`` /
 from __future__ import annotations
 
 import argparse
-import subprocess
 import sys
 import types
 from pathlib import Path
@@ -46,30 +45,7 @@ from control_gateway.asset_library import (  # noqa: E402
 )
 from control_gateway.asset_manifest import ManifestError  # noqa: E402
 from control_gateway.asset_manifest import load_manifest  # noqa: E402
-
-SCENE_CHECKER = Path(__file__).resolve().parent / "check_scene_config"
-
-
-def _scene_validator(manifest, root: Path) -> None:
-    """Run the real scene checker against the imported, normalized scenes.yaml."""
-    scenes = manifest.file_path(root, "scenes")
-    proc = subprocess.run(
-        [sys.executable, str(SCENE_CHECKER), "--scenes", str(scenes)],
-        capture_output=True,
-        text=True,
-    )
-    if proc.returncode != 0:
-        message = (proc.stderr or proc.stdout or "").strip()
-        raise ValueError(message or f"scene config check failed ({proc.returncode})")
-
-
-def _kind_validator(kind: str):
-    """Return the semantic validator for an asset kind, or ``None``."""
-    if kind == "scene":
-        return _scene_validator
-    # Cabinet semantic validation (adapter contract / cabinet model) is wired
-    # in 阶段3; the manifest schema and declared-file checks always run.
-    return None
+from control_gateway.asset_validators import kind_validator  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -147,7 +123,7 @@ def main() -> int:
     validate = (
         None
         if arguments.skip_validate
-        else _kind_validator(manifest.kind)
+        else kind_validator(manifest.kind)
     )
     try:
         record = library.import_asset(

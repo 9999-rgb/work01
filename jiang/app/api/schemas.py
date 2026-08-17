@@ -301,3 +301,34 @@ class SceneSwitchRequest(BaseModel):
     @classmethod
     def _name(cls, value: str) -> str:
         return nonempty_string(value, "name")
+
+
+class AssetSelectionRequest(BaseModel):
+    """POST /assets/selection 请求体。
+
+    三个字段均可选；``null`` 或空串表示该维度不选择（保持现状）。
+    名称将在后端再次校验：scene / cabinet 必须已在资产库 catalog 中，
+    gripper_variant 必须是固定变体之一。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    scene: str | None = Field(
+        default=None, description="场景资产名；null 表示不选择场景"
+    )
+    cabinet: str | None = Field(
+        default=None, description="柜体资产名；null 表示不选择柜体"
+    )
+    gripper_variant: str | None = Field(
+        default=None, description="夹爪变体名；null 表示不选择夹爪变体"
+    )
+
+    @field_validator("scene", "cabinet", "gripper_variant")
+    @classmethod
+    def _name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("必须是字符串或 null")
+        stripped = value.strip()
+        return stripped or None

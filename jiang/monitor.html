@@ -405,6 +405,7 @@
 }
 .navigation-card { grid-column: 1 / -1; }
 .cabinet-card { grid-column: 1 / -1; }
+.asset-card { grid-column: 1 / -1; }
 .autonomy-header {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; padding: 11px 14px;
@@ -989,6 +990,77 @@
       </div>
     </div>
   </section>
+
+  <section class="autonomy-card asset-card">
+    <div class="autonomy-header">
+      <h3>📦 资产库 · 场景 / 柜体导入与选择（重启生效）</h3>
+      <span class="autonomy-state" id="assetState">等待服务</span>
+    </div>
+    <div class="autonomy-body">
+      <div class="replay-grid">
+        <div>
+          <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
+            导入资产（zip，需管理员）
+          </div>
+          <div class="replay-form-grid">
+            <div class="form-field">
+              <label for="assetUpload">场景 / 柜体资产包</label>
+              <input id="assetUpload" type="file" accept=".zip,application/zip">
+            </div>
+          </div>
+          <label class="replay-option" for="assetSkipValidate">
+            <input id="assetSkipValidate" type="checkbox">
+            跳过语义校验（仅查 manifest 结构与文件存在）
+          </label>
+          <div class="command-row">
+            <button class="btn btn-primary" id="btnAssetImport" disabled>导入</button>
+            <button class="btn btn-outline" id="btnAssetRefresh" disabled>刷新列表</button>
+          </div>
+          <label class="section-label" for="assetList">已导入资产</label>
+          <select class="replay-list" id="assetList" size="6" disabled>
+            <option value="">等待资产列表</option>
+          </select>
+          <div class="command-row">
+            <button class="btn btn-danger" id="btnAssetDelete" disabled>删除选中资产</button>
+          </div>
+          <div class="status-detail" id="assetDetail">
+            导入结果与错误信息显示于此。删除资产会同步清空对该资产的选中。
+          </div>
+        </div>
+        <div>
+          <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
+            本次运行组合（启动时应用）
+          </div>
+          <div class="replay-form-grid">
+            <div class="form-field">
+              <label for="assetSceneSelect">场景资产</label>
+              <select id="assetSceneSelect" disabled>
+                <option value="">（保持默认）</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="assetCabinetSelect">柜体资产</label>
+              <select id="assetCabinetSelect" disabled>
+                <option value="">（保持默认）</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="assetGripperSelect">末端夹爪变体</label>
+              <select id="assetGripperSelect" disabled>
+                <option value="">（保持默认）</option>
+              </select>
+            </div>
+          </div>
+          <div class="command-row">
+            <button class="btn btn-primary" id="btnAssetApply" disabled>保存选择</button>
+          </div>
+          <div class="status-detail" id="assetLibraryRoot">
+            选择会在下次启动时由 <strong>./run_all.sh</strong> 应用到场景 / 导航 / 柜体配置。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
 
 <!-- ─── Dashboard ─── -->
@@ -1163,6 +1235,19 @@ const sceneSelect = $('sceneSelect');
 const sceneState = $('sceneState');
 const sceneDetail = $('sceneDetail');
 const btnSceneSwitch = $('btnSceneSwitch');
+const assetState = $('assetState');
+const assetDetail = $('assetDetail');
+const assetList = $('assetList');
+const assetUpload = $('assetUpload');
+const assetSkipValidate = $('assetSkipValidate');
+const assetSceneSelect = $('assetSceneSelect');
+const assetCabinetSelect = $('assetCabinetSelect');
+const assetGripperSelect = $('assetGripperSelect');
+const btnAssetImport = $('btnAssetImport');
+const btnAssetRefresh = $('btnAssetRefresh');
+const btnAssetDelete = $('btnAssetDelete');
+const btnAssetApply = $('btnAssetApply');
+const assetLibraryRoot = $('assetLibraryRoot');
 
 function defaultServiceUrl(port) {
   // 自动使用当前页面的 host，不再硬编码 localhost。
@@ -1826,6 +1911,8 @@ let ctrlBaseUrl = (() => {
 })();
 // ─── 登录 token ───────────────────────────────────────────────
 let authToken = sessionStorage.getItem('xczs_token') || '';
+// 当前用户角色（登录响应写入；用于区分资产导入/删除的管理员门禁）。
+let currentUserRole = '';
 // 清理旧版长期保存的 token，避免共用浏览器在关闭页面后
 // 仍保留机器控制凭证。
 localStorage.removeItem('xczs_token');
@@ -1871,6 +1958,7 @@ async function doLogin() {
     if (!response.ok) { throw new Error(body.error || `HTTP ${response.status}`); }
     authToken = body.access_token;
     sessionStorage.setItem('xczs_token', authToken);
+    currentUserRole = body.user && body.user.role || '';
     $('loginPass').value = '';
     toast(`✓ 登录成功: ${body.user.username} (${body.user.role})`);
     updateLoginStatus();
@@ -2218,6 +2306,16 @@ async function testControlConnection() {
           `回放状态初始化失败：${replayError.message}\n` +
           '为保证安全，实时写控制保持锁定并自动重试。';
       }
+      try {
+        await refreshAssets();
+      } catch (assetError) {
+        setAutonomyState(
+          assetState,
+          '资产服务不可用',
+          'err'
+        );
+        assetDetail.textContent = `资产列表加载失败：${assetError.message}`;
+      }
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
       log('ok', '控制服务器已连接: ' + url);
@@ -2371,6 +2469,7 @@ function handleTokenExpired() {
   if (!authToken && !ctrlConnected) return;
   authToken = '';
   sessionStorage.removeItem('xczs_token');
+  currentUserRole = '';
   ctrlConnected = false;
   cabinetAvailableFromHealth = false;
   cabinetActiveFromHealth = false;
@@ -3435,6 +3534,194 @@ async function switchScene() {
     sceneSelect.disabled = !sceneCatalog.length;
     btnSceneSwitch.disabled = !sceneCatalog.length || !activeSceneName ||
       sceneSelect.value === activeSceneName;
+  }
+}
+
+// ─── 资产库（导入 / 选择，重启生效） ─────────────────────────────
+let assetCatalog = [];
+let assetSelectionSnapshot = {scene: null, cabinet: null, gripper_variant: null};
+let assetGripperVariants = [];
+let assetImportInFlight = false;
+
+function assetIsAdmin() {
+  return currentUserRole === 'admin';
+}
+
+// 资产写操作不走 controlRequest：资产管理与回放只读互不干扰，
+// 只复用其鉴权 / token 失效语义。
+async function assetRequest(path, method = 'GET', payload = null) {
+  const options = {method, cache: 'no-store'};
+  const headers = {};
+  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
+  if (payload !== null) {
+    headers['Content-Type'] = 'application/json';
+    options.body = JSON.stringify(payload);
+  }
+  options.headers = headers;
+  const response = await fetch(ctrlBaseUrl + path, options);
+  let body = {};
+  try { body = await response.json(); } catch (_) {}
+  if (response.status === 401) {
+    handleTokenExpired();
+    throw new Error('登录已失效，请重新登录');
+  }
+  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  return body;
+}
+
+function assetOption(value, label) {
+  const option = document.createElement('option');
+  option.value = value || '';
+  option.textContent = label || value || '';
+  return option;
+}
+
+function fillAssetSelect(select, options, selected) {
+  const previous = select.value;
+  const nodes = [assetOption('', '（保持默认）')];
+  for (const name of options) {
+    if (!name) continue;
+    nodes.push(assetOption(name, name));
+  }
+  select.replaceChildren(...nodes);
+  select.value = previous && options.includes(previous)
+    ? previous
+    : (selected || '');
+}
+
+function updateAssetControlState() {
+  const enabled = Boolean(ctrlConnected) && Boolean(authToken);
+  const admin = enabled && assetIsAdmin();
+  btnAssetImport.disabled = !admin || assetImportInFlight;
+  btnAssetRefresh.disabled = !enabled;
+  btnAssetDelete.disabled = !admin || !assetList.value || assetImportInFlight;
+  btnAssetApply.disabled = !enabled || assetImportInFlight;
+  assetSceneSelect.disabled = !enabled;
+  assetCabinetSelect.disabled = !enabled;
+  assetGripperSelect.disabled = !enabled;
+}
+
+function applyAssets(payload) {
+  assetCatalog = Array.isArray(payload && payload.assets) ? payload.assets : [];
+  assetSelectionSnapshot = payload && payload.selection
+    ? payload.selection
+    : assetSelectionSnapshot;
+  assetGripperVariants = Array.isArray(payload && payload.gripper_variants)
+    ? payload.gripper_variants
+    : [];
+  if (payload && payload.library_root) {
+    assetLibraryRoot.textContent = `资产库目录：${payload.library_root}`;
+  }
+
+  const scenes = assetCatalog.filter(a => a.kind === 'scene').map(a => a.name);
+  const cabinets = assetCatalog.filter(a => a.kind === 'cabinet').map(a => a.name);
+
+  const previousAsset = assetList.value;
+  const listNodes = assetCatalog.map(record => assetOption(
+    `${record.kind}/${record.name}`,
+    `${record.kind}/${record.name} v${record.version}` +
+      (record.validated ? '' : '（仅结构校验）')
+  ));
+  if (!listNodes.length) listNodes.push(assetOption('', '（尚无资产）'));
+  assetList.replaceChildren(...listNodes);
+  if (previousAsset && assetCatalog.some(r => `${r.kind}/${r.name}` === previousAsset)) {
+    assetList.value = previousAsset;
+  } else if (assetCatalog.length) {
+    assetList.selectedIndex = 0;
+  }
+
+  fillAssetSelect(assetSceneSelect, scenes, assetSelectionSnapshot.scene);
+  fillAssetSelect(assetCabinetSelect, cabinets, assetSelectionSnapshot.cabinet);
+  fillAssetSelect(assetGripperSelect, assetGripperVariants, assetSelectionSnapshot.gripper_variant);
+
+  const count = assetCatalog.length;
+  setAutonomyState(assetState, `${count} 项`, count ? 'ok' : '');
+  assetDetail.textContent = count
+    ? `共 ${count} 项资产；选择在下次启动时生效（重启 ./run_all.sh）。`
+    : '尚未导入资产。管理员可上传 zip 场景 / 柜体资产包。';
+  updateAssetControlState();
+}
+
+async function refreshAssets() {
+  applyAssets(await assetRequest('/assets'));
+}
+
+async function importAssetFile() {
+  const file = assetUpload.files && assetUpload.files[0];
+  if (!file) { toast('请先选择要导入的 zip 文件', 'warn'); return; }
+  assetImportInFlight = true;
+  updateAssetControlState();
+  setAutonomyState(assetState, '导入中 ...', 'busy');
+  assetDetail.textContent = `正在导入 ${file.name}，校验并登记资产库 ...`;
+  try {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('skip_validate', assetSkipValidate.checked ? 'true' : 'false');
+    const response = await fetch(ctrlBaseUrl + '/assets/import', {
+      method: 'POST',
+      cache: 'no-store',
+      headers: authHeaders({}),
+      body: form
+    });
+    let body = {};
+    try { body = await response.json(); } catch (_) {}
+    if (response.status === 401) { handleTokenExpired(); throw new Error('登录已失效，请重新登录'); }
+    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+    const record = body.asset || {};
+    toast(`已导入 ${record.kind}/${record.name} v${record.version}`, 'ok');
+    log('ok', `资产已导入：${record.kind}/${record.name} v${record.version}`);
+    assetUpload.value = '';
+    await refreshAssets();
+  } catch (error) {
+    setAutonomyState(assetState, '导入失败', 'err');
+    assetDetail.textContent = `导入失败：${error.message}`;
+    toast(`导入失败：${error.message}`, 'err');
+    log('err', `资产导入失败: ${error.message}`);
+  } finally {
+    assetImportInFlight = false;
+    updateAssetControlState();
+  }
+}
+
+async function saveAssetSelection() {
+  const payload = {
+    scene: assetSceneSelect.value || null,
+    cabinet: assetCabinetSelect.value || null,
+    gripper_variant: assetGripperSelect.value || null
+  };
+  setAutonomyState(assetState, '保存中 ...', 'busy');
+  try {
+    const saved = await assetRequest('/assets/selection', 'POST', payload);
+    assetSelectionSnapshot = saved;
+    toast('已保存本次运行组合，重启后生效', 'ok');
+    log('ok', `资产选择已保存：${JSON.stringify(saved)}`);
+    await refreshAssets();
+  } catch (error) {
+    setAutonomyState(assetState, '保存失败', 'err');
+    assetDetail.textContent = `保存选择失败：${error.message}`;
+    toast(`保存失败：${error.message}`, 'err');
+  }
+}
+
+async function deleteSelectedAsset() {
+  const value = assetList.value;
+  if (!value) return;
+  const slash = value.indexOf('/');
+  const kind = value.slice(0, slash);
+  const name = value.slice(slash + 1);
+  if (!kind || !name) return;
+  if (!confirm(`确认删除资产 ${kind}/${name}？\n目录与 catalog 条目将一并移除，且会清空对该资产的选中。`)) return;
+  setAutonomyState(assetState, '删除中 ...', 'busy');
+  try {
+    const result = await assetRequest(`/assets/${kind}/${name}`, 'DELETE');
+    assetSelectionSnapshot = result.selection || assetSelectionSnapshot;
+    toast(`已删除 ${kind}/${name}`, 'ok');
+    log('ok', `资产已删除：${kind}/${name}`);
+    await refreshAssets();
+  } catch (error) {
+    setAutonomyState(assetState, '删除失败', 'err');
+    assetDetail.textContent = `删除失败：${error.message}`;
+    toast(`删除失败：${error.message}`, 'err');
   }
 }
 
@@ -4511,6 +4798,7 @@ function updateControlInterlocks() {
   $('cabinetForce').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
   renderBaseControlStatus();
   if (typeof updateReplayControls === 'function') updateReplayControls();
+  if (typeof updateAssetControlState === 'function') updateAssetControlState();
 }
 
 const manualTakeoverRequestTimeoutMs = 2500;
@@ -5642,6 +5930,15 @@ sceneSelect.addEventListener('change', () => {
       : `将切换到「${target}」：仅机器人与场地（无柜体），Nav2 地图已对应更新。`;
   }
 });
+$('btnAssetImport').addEventListener('click', importAssetFile);
+$('btnAssetRefresh').addEventListener('click', () => {
+  refreshAssets().catch(error => {
+    setAutonomyState(assetState, '刷新失败', 'err');
+    assetDetail.textContent = `刷新失败：${error.message}`;
+  });
+});
+$('btnAssetDelete').addEventListener('click', deleteSelectedAsset);
+$('btnAssetApply').addEventListener('click', saveAssetSelection);
 $('btnRecordingStart').addEventListener('click', startRecording);
 $('btnRecordingStop').addEventListener('click', stopRecording);
 $('btnRecordingsRefresh').addEventListener('click', refreshRecordings);
