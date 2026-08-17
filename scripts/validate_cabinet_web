@@ -12,6 +12,9 @@ TASK_TIMEOUT="${XCZS_CABINET_TIMEOUT:-360}"
 RUN_NAVIGATION="true"
 RUN_EXHAUSTIVE="false"
 RUN_CONTRACT_TESTS="false"
+EXPECTED_CONTROLS=33
+EXPECTED_COUNTS_DEFAULT="20 11 1 1"
+EXPECTED_COUNTS="$EXPECTED_COUNTS_DEFAULT"
 RESPONSE_BODY=""
 TASK_BODY=""
 ACTIVE_TASK_ID=""
@@ -39,8 +42,10 @@ usage() {
   --password PASSWORD 登录密码（建议使用 XCZS_CONTROL_PASSWORD）
   --cabinet NAME      柜体实例（默认 cabinet_a；全量验收时逐实例调用）
   --timeout SECONDS   单个任务超时（默认 360）
+  --expect-controls N 柜体目录预期控件总数（默认 33）
+  --expect-counts STR 四类控件预期数量 "按钮 旋钮 开关 门"（默认 "20 11 1 1"）
   --no-navigate       仅跳过通用工位导航；实际操作仍执行逐控件导航
-  --exhaustive        验收全部 33 项：可操作项实操，受限项逐项实时规划验证
+  --exhaustive        验收全部可操作控件：可操作项实操，受限项逐项实时规划验证
   --contract-tests    追加并发冲突和 /task/{id}/cancel 验证
   -h, --help          显示帮助
 EOF
@@ -96,6 +101,16 @@ while [[ $# -gt 0 ]]; do
       TASK_TIMEOUT="$2"
       shift 2
       ;;
+    --expect-controls)
+      [[ $# -ge 2 ]] || fail "--expect-controls 缺少数量"
+      EXPECTED_CONTROLS="$2"
+      shift 2
+      ;;
+    --expect-counts)
+      [[ $# -ge 2 ]] || fail "--expect-counts 缺少数量串"
+      EXPECTED_COUNTS="$2"
+      shift 2
+      ;;
     --no-navigate)
       RUN_NAVIGATION="false"
       shift
@@ -122,6 +137,19 @@ done
   fail "--cabinet 必须以小写字母开头，只能包含小写字母、数字和下划线，且总长度不超过 63"
 normalize_task_timeout "$TASK_TIMEOUT" ||
   fail "--timeout 必须是 1..86400 的整数"
+[[ "$EXPECTED_CONTROLS" =~ ^[1-9][0-9]{0,6}$ ]] ||
+  fail "--expect-controls 必须是正整数"
+if [[ "$(wc -w <<<"$EXPECTED_COUNTS")" -ne 4 ]]; then
+  fail "--expect-counts 必须是四个空格分隔的整数（如 '20 11 1 1'）"
+fi
+read -r EXPECTED_BUTTONS EXPECTED_KNOBS EXPECTED_SWITCHES EXPECTED_DOORS <<<"$EXPECTED_COUNTS"
+for _expected_count in "$EXPECTED_BUTTONS" "$EXPECTED_KNOBS" "$EXPECTED_SWITCHES" "$EXPECTED_DOORS"; do
+  [[ "$_expected_count" =~ ^[0-9]+$ ]] ||
+    fail "--expect-counts 必须是四个非负整数（如 '20 11 1 1'）"
+done
+if (( EXPECTED_BUTTONS + EXPECTED_KNOBS + EXPECTED_SWITCHES + EXPECTED_DOORS != EXPECTED_CONTROLS )); then
+  fail "四类控件计数之和需等于 --expect-controls（$EXPECTED_CONTROLS），当前为 $EXPECTED_COUNTS"
+fi
 require_command curl
 require_command jq
 require_command mktemp
@@ -330,10 +358,11 @@ wait_for_system_ready() {
         .map_available == true and
         (.cabinet_count >= 1)
       ' <<<"$health_body" >/dev/null 2>&1 &&
-      jq -e --arg cabinet "$CABINET" '
+      jq -e --arg cabinet "$CABINET" \
+        --argjson expect_controls "$EXPECTED_CONTROLS" '
         .cabinet == $cabinet and .catalog_received == true and
-        .available == true and (.controls | length) == 33 and
-        ([.controls[] | select(.valid == true)] | length) == 33
+        .available == true and (.controls | length) == $expect_controls and
+        ([.controls[] | select(.valid == true)] | length) == $expect_controls
       ' <<<"$controls_body" >/dev/null 2>&1
     then
       RESPONSE_BODY="$controls_body"
@@ -343,7 +372,7 @@ wait_for_system_ready() {
   done
   [[ -z "$health_body" ]] || jq . <<<"$health_body" >&2
   [[ -z "$controls_body" ]] || jq . <<<"$controls_body" >&2
-  fail "Web/ROS 2 未在 120 秒内确认 33 项柜体目录、状态及 Nav2 可用"
+  fail "Web/ROS 2 未在 120 秒内确认 ${EXPECTED_CONTROLS} 项柜体目录、状态及 Nav2 可用"
 }
 
 start_sse_capture() {
@@ -454,7 +483,7 @@ navigate_for_control() {
 
 cabinet_controls_snapshot() {
   get_json "/cabinets/$CABINET/controls"
-  jq -ce '
+  jq -ce --argjson expect_controls "$EXPECTED_CONTROLS" '
     [.controls[] |
       {control_id:.control_id,
        state:.current_state,
@@ -464,14 +493,14 @@ cabinet_controls_snapshot() {
        in_motion:.in_motion}] |
     sort_by(.control_id) |
     select(
-      length == 33 and
+      length == $expect_controls and
       all(.[];
         .valid == true and .in_motion == false and
         (.state | type) == "string" and (.state | length) > 0 and
         (.position | type) == "number" and (.position | isfinite) and
         (.sequence | type) == "number" and (.sequence | isfinite)))
   ' <<<"$RESPONSE_BODY" ||
-    fail "$CABINET 无法生成33项有效、静止且数值完整的实时状态快照"
+    fail "$CABINET 无法生成 ${EXPECTED_CONTROLS} 项有效、静止且数值完整的实时状态快照"
 }
 
 assert_cabinet_controls_unchanged() {
@@ -481,8 +510,9 @@ assert_cabinet_controls_unchanged() {
 
   after="$(cabinet_controls_snapshot)"
   jq -ne --arg excluded "$excluded_control" \
-    --argjson before "$before" --argjson after "$after" '
-      ($before | length) == 33 and ($after | length) == 33 and
+    --argjson before "$before" --argjson after "$after" \
+    --argjson expect_controls "$EXPECTED_CONTROLS" '
+      ($before | length) == $expect_controls and ($after | length) == $expect_controls and
       all(range(0; $before | length);
         . as $index |
         $before[$index].control_id == $after[$index].control_id and
@@ -746,13 +776,18 @@ jq -e --arg cabinet "$CABINET" '
 
 get_json "/cabinets/$CABINET/controls"
 CONTROLS_BODY="$RESPONSE_BODY"
-jq -e --arg namespace "/xczs/cabinet/$CABINET/" '
+jq -e --arg namespace "/xczs/cabinet/$CABINET/" \
+  --argjson expect_controls "$EXPECTED_CONTROLS" \
+  --argjson expect_buttons "$EXPECTED_BUTTONS" \
+  --argjson expect_knobs "$EXPECTED_KNOBS" \
+  --argjson expect_switches "$EXPECTED_SWITCHES" \
+  --argjson expect_doors "$EXPECTED_DOORS" '
   .catalog_received == true and .available == true and
-  (.controls | length) == 33 and
-  ([.controls[] | select(.control_type == 0)] | length) == 20 and
-  ([.controls[] | select(.control_type == 1)] | length) == 11 and
-  ([.controls[] | select(.control_type == 2)] | length) == 1 and
-  ([.controls[] | select(.control_type == 3)] | length) == 1 and
+  (.controls | length) == $expect_controls and
+  ([.controls[] | select(.control_type == 0)] | length) == $expect_buttons and
+  ([.controls[] | select(.control_type == 1)] | length) == $expect_knobs and
+  ([.controls[] | select(.control_type == 2)] | length) == $expect_switches and
+  ([.controls[] | select(.control_type == 3)] | length) == $expect_doors and
   all(.controls[];
     (.resolved_state_topic | startswith($namespace)) and
     (.operable == true or

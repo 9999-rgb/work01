@@ -93,6 +93,35 @@ def _scene_zip_bytes(name: str = "web_scene", version: str = "1.0.0") -> bytes:
     return buffer.getvalue()
 
 
+def _cabinet_zip_bytes(name: str = "web_cabinet", version: str = "1.0.0") -> bytes:
+    """Build a cabinet-asset zip (占位文件，配合 skip_validate 验证 kind 接线)。"""
+    manifest = {
+        "kind": "cabinet",
+        "name": name,
+        "version": version,
+        "description": "Web cabinet import fixture.",
+        "files": {
+            "controls": "cabinet_controls.yaml",
+            "scene": "cabinet_scene.yaml",
+            "pose": "cabinet_pose.yaml",
+            "adapter": "cabinet_robot_adapter.yaml",
+            "xacro": "control_cabinet.urdf.xacro",
+        },
+    }
+    return _zipped_bytes(
+        {
+            f"{name}/manifest.yaml": yaml.safe_dump(
+                manifest, sort_keys=False
+            ).encode(),
+            f"{name}/cabinet_controls.yaml": b"# fixture\n",
+            f"{name}/cabinet_scene.yaml": b"# fixture\n",
+            f"{name}/cabinet_pose.yaml": b"# fixture\n",
+            f"{name}/cabinet_robot_adapter.yaml": b"# fixture\n",
+            f"{name}/control_cabinet.urdf.xacro": b"# fixture\n",
+        }
+    )
+
+
 def _zipped_bytes(members: Dict[str, bytes]) -> bytes:
     """Pack arbitrary ``path -> bytes`` members into a zip (for negative cases)."""
     buffer = io.BytesIO()
@@ -241,6 +270,35 @@ class AssetWebImportContractTest(_AssetWebTestCase):
             "/assets", headers=self.admin_headers
         ).json()
         self.assertEqual(["web_scene"], [a["name"] for a in listing["assets"]])
+
+    def test_import_cabinet_zip_routes_through_shared_endpoint(self) -> None:
+        # 阶段3：Web 导入端点接受 cabinet kind 并走共享导入路径（占位文件 +
+        # skip_validate；真实柜体语义校验由 CLI 端到端用例覆盖）。
+        response = self.client.post(
+            "/assets/import",
+            headers=self.admin_headers,
+            files={
+                "file": (
+                    "web_cabinet.zip",
+                    _cabinet_zip_bytes("web_cabinet"),
+                    "application/zip",
+                )
+            },
+            data={"skip_validate": "true"},
+        )
+        self.assertEqual(201, response.status_code, response.text)
+        record = response.json()["asset"]
+        self.assertEqual("cabinet", record["kind"])
+        self.assertEqual("web_cabinet", record["name"])
+        self.assertTrue(record["path"].startswith("cabinet/"))
+        self.assertTrue(
+            (
+                self.assets_dir
+                / "cabinet"
+                / "web_cabinet"
+                / "control_cabinet.urdf.xacro"
+            ).is_file()
+        )
 
     def test_import_validates_scene_when_not_skipped(self) -> None:
         # Without skip_validate, the shared check_scene_config runs against the

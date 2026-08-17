@@ -1,0 +1,25 @@
+# 样例柜体资产：内置控制柜的「物理孪生」。
+#
+# demo_cabinet 与仓库内置 control_cabinet 是同一台物理柜体（33 项控件、
+# 20 按钮 + 11 旋钮 + 1 开关 + 1 门），文件即内置配置的整树拷贝，唯一
+# 区别是 xacro 的 cabinet_name 参数默认值。导入校验（check_cabinet_model
+# --asset）会对该 xacro 做实例参数化验证：插件名 / 命名空间 / 话题全部
+# 派生自 cabinet_name，保证同一台柜体可在多实例场景下展开为互不冲突的
+# 名字空间。mesh 仍引用内置包 package://xczs_inspection_robot_description。
+#
+# 本样例证明「柜体资产导入 → 校验 → 选择 → 预检 → 操作闭环」全链路；
+# 非 33 控件的参数化能力由单测中的合成柜体 fixture 证明（tests 见
+# jiang/tests/test_cabinet_asset_import.py）。
+kind: cabinet
+name: demo_cabinet
+version: 1.0.0
+description: 内置控制柜的物理孪生样例（33 控件，可直接导入并通过操作闭环）
+references:
+  cabinet: null
+  gripper_variant: null
+files:
+  controls: cabinet_controls.yaml
+  scene: cabinet_scene.yaml
+  pose: cabinet_pose.yaml
+  adapter: cabinet_robot_adapter.yaml
+  xacro: control_cabinet.urdf.xacro

@@ -1,0 +1,186 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro name="control_cabinet_body" params="">
+    <!-- Anchor the dynamic cabinet body while allowing child controls to move. -->
+    <link name="world" />
+    <joint name="world_cabinet_body" type="fixed">
+      <parent link="world" />
+      <child link="cabinet_body" />
+    </joint>
+
+    <link name="cabinet_body">
+      <!--
+        Gazebo's URDF converter requires physical data on the root link.
+        The original CAD inertia is retained even though the model is static.
+      -->
+      <inertial>
+        <origin
+          xyz="0.330766521229304 1.03415228323184 -0.397159955186761"
+          rpy="0 0 0" />
+        <mass value="1451.51992534344" />
+        <inertia
+          ixx="733.581502457551"
+          ixy="0.156713592222765"
+          ixz="0.0840247478052017"
+          iyy="83.6204876914266"
+          iyz="29.0108942178945"
+          izz="757.514081227971" />
+      </inertial>
+
+      <!--
+        The exported STL baked the rear panel into the enclosure, so it could
+        never open.  Convex native primitives form an open-backed frame while
+        the module meshes remain the detailed front appearance.
+      -->
+      <visual name="cabinet_front_panel_visual">
+        <origin xyz="0.331 1.115 -0.005" rpy="0 0 0" />
+        <geometry><box size="0.642 2.210 0.010" /></geometry>
+        <material name="cabinet_light_gray" />
+      </visual>
+      <collision name="cabinet_front_panel_collision">
+        <!--
+          Keep the structural collision behind the control travel envelope.
+          A coplanar full-panel collision lets a robot finger contact the
+          panel and bypass the short-stroke buttons before they latch.
+        -->
+        <origin xyz="0.331 1.115 -0.025" rpy="0 0 0" />
+        <geometry><box size="0.642 2.210 0.010" /></geometry>
+      </collision>
+
+      <visual name="cabinet_left_frame_visual">
+        <origin xyz="0.005 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_left_frame_collision">
+        <origin xyz="0.005 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+      </collision>
+
+      <visual name="cabinet_right_frame_visual">
+        <origin xyz="0.657 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_right_frame_collision">
+        <origin xyz="0.657 1.115 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.010 2.230 0.600" /></geometry>
+      </collision>
+
+      <visual name="cabinet_bottom_frame_visual">
+        <origin xyz="0.331 0.005 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_bottom_frame_collision">
+        <origin xyz="0.331 0.005 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+      </collision>
+
+      <visual name="cabinet_top_frame_visual">
+        <origin xyz="0.331 2.225 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_top_frame_collision">
+        <origin xyz="0.331 2.225 -0.300" rpy="0 0 0" />
+        <geometry><box size="0.642 0.010 0.600" /></geometry>
+      </collision>
+    </link>
+    <xacro:control_cabinet_gazebo_link
+      link_name="cabinet_body"
+      gazebo_material="Gazebo/DarkGrey"
+      has_collision="true" />
+
+    <link name="cabinet_rear_door">
+      <inertial>
+        <origin xyz="0.321 1.105 -0.005" rpy="0 0 0" />
+        <mass value="${cabinet_door_mass}" />
+        <inertia
+          ixx="8.1403" ixy="0" ixz="0"
+          iyy="0.6871" iyz="0" izz="8.8271" />
+      </inertial>
+      <visual name="cabinet_rear_door_visual">
+        <!--
+          A visible reveal keeps the panel clear of the fixed frame throughout
+          the hinge sweep instead of sharing coplanar faces at both detents.
+        -->
+        <origin xyz="0.321 1.105 -${cabinet_door_thickness / 2 + cabinet_door_visual_depth_clearance}" rpy="0 0 0" />
+        <geometry>
+          <box size="${cabinet_door_width - 2 * cabinet_door_visual_clearance} ${cabinet_door_height - 2 * cabinet_door_visual_clearance} ${cabinet_door_thickness}" />
+        </geometry>
+        <material name="cabinet_dark_gray" />
+      </visual>
+      <collision name="cabinet_rear_door_collision">
+        <!--
+          Keep physical assembly clearance while overlapping most of the
+          visible panel depth, so contact occurs before visible penetration.
+        -->
+        <origin xyz="0.321 1.105 -${cabinet_door_thickness / 2 + cabinet_door_collision_depth_clearance}" rpy="0 0 0" />
+        <geometry>
+          <box size="${cabinet_door_width - 2 * cabinet_door_collision_clearance} ${cabinet_door_height - 2 * cabinet_door_collision_clearance} ${cabinet_door_thickness}" />
+        </geometry>
+      </collision>
+
+      <!--
+        Keep the switch base rigid by making it part of the door link.  A
+        separate dynamic link joined with a Gazebo fixed constraint can
+        accumulate solver error while the probe creates a cross-model grasp
+        constraint, permanently displacing the switch after an operation.
+      -->
+      <visual name="cabinet_switch_base_visual">
+        <origin xyz="0.342 1.680 -0.018" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/cabinet_switch_base.stl" />
+        </geometry>
+        <material name="cabinet_light_gray" />
+      </visual>
+      <collision name="cabinet_switch_base_collision">
+        <origin xyz="0.342 1.680 -0.008" rpy="0 0 0" />
+        <geometry><cylinder radius="0.005" length="0.020" /></geometry>
+      </collision>
+
+      <!-- Native U-shaped handle on the free edge of the rear door. -->
+      <visual name="cabinet_door_handle_lower_visual">
+        <origin xyz="0.600 1.035 -0.045" rpy="0 0 0" />
+        <geometry><box size="0.025 0.025 0.070" /></geometry>
+        <material name="cabinet_black" />
+      </visual>
+      <visual name="cabinet_door_handle_upper_visual">
+        <origin xyz="0.600 1.175 -0.045" rpy="0 0 0" />
+        <geometry><box size="0.025 0.025 0.070" /></geometry>
+        <material name="cabinet_black" />
+      </visual>
+      <visual name="cabinet_door_handle_grip_visual">
+        <origin xyz="0.600 1.105 -0.080" rpy="0 0 0" />
+        <geometry><box size="0.025 0.165 0.025" /></geometry>
+        <material name="cabinet_black" />
+      </visual>
+      <!--
+        Grasping is enforced by the cabinet plugin's near-distance fixed
+        constraint.  Keeping decorative handle contacts enabled makes ODE
+        strike the probe again immediately after constraint release and can
+        throw the large door across its detent.  The door panel remains a
+        physical collision, while MoveIt still models all handle pieces for
+        conservative avoidance when the door is not the active target.
+      -->
+    </link>
+    <joint name="cabinet_body_cabinet_rear_door" type="revolute">
+      <origin xyz="0.010 0.010 -0.600" rpy="0 0 0" />
+      <parent link="cabinet_body" />
+      <child link="cabinet_rear_door" />
+      <!-- Local Y is vertical after the exported cabinet roll. -->
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="${cabinet_door_limit}" effort="200" velocity="0.5" />
+      <dynamics damping="1.0" friction="0.5" />
+    </joint>
+    <xacro:control_cabinet_gazebo_link
+      link_name="cabinet_rear_door"
+      gazebo_material="Gazebo/DarkGrey"
+      has_collision="true" />
+    <gazebo reference="cabinet_body_cabinet_rear_door">
+      <implicitSpringDamper>true</implicitSpringDamper>
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+  </xacro:macro>
+</robot>

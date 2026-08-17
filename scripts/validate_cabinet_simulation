@@ -38,12 +38,39 @@ from xczs_inspection_robot_control.msg import CabinetControlState
 from cabinet_validation_targets import select_non_noop_target_state
 
 
-EXPECTED_TYPE_COUNTS = {
+#: Built-in cabinet type counts (button/knob/switch/door).  The validator
+#: accepts an arbitrary catalog contract via ``--expect-counts`` so imported
+#: cabinet assets can be closed-loop checked without re-coding the built-in
+#: 33 / 20+11+1+1 identity here.
+_DEFAULT_TYPE_COUNTS = {
     CabinetControl.TYPE_BUTTON: 20,
     CabinetControl.TYPE_KNOB: 11,
     CabinetControl.TYPE_SWITCH: 1,
     CabinetControl.TYPE_DOOR: 1,
 }
+
+
+def _expected_type_counts(spec: str) -> Dict[int, int]:
+    """Parse ``--expect-counts "B K S D"`` into a type -> count mapping."""
+    try:
+        values = [int(value) for value in spec.split()]
+    except ValueError as error:
+        raise SystemExit(
+            "--expect-counts must be four integers "
+            "'buttons knobs switches doors'"
+        ) from error
+    if len(values) != 4 or any(value < 0 for value in values):
+        raise SystemExit(
+            "--expect-counts must be four non-negative integers "
+            "'buttons knobs switches doors'"
+        )
+    order = (
+        CabinetControl.TYPE_BUTTON,
+        CabinetControl.TYPE_KNOB,
+        CabinetControl.TYPE_SWITCH,
+        CabinetControl.TYPE_DOOR,
+    )
+    return dict(zip(order, values))
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 
 
@@ -1246,14 +1273,21 @@ class CabinetValidator(Node):
             )
 
 
-def validate_catalog(catalog: CabinetControlCatalog) -> None:
+def validate_catalog(
+    catalog: CabinetControlCatalog,
+    expected_total: int = 33,
+    expected_counts: Optional[Dict[int, int]] = None,
+) -> None:
     controls = list(catalog.controls)
     ids = [entry.control_id for entry in controls]
-    if len(ids) != 33 or len(set(ids)) != 33:
+    if len(ids) != expected_total or len(set(ids)) != expected_total:
         raise RuntimeError(
-            f"Expected 33 unique controls, received {len(ids)} entries."
+            f"Expected {expected_total} unique controls, received "
+            f"{len(ids)} entries."
         )
-    for control_type, expected_count in EXPECTED_TYPE_COUNTS.items():
+    if expected_counts is None:
+        expected_counts = _DEFAULT_TYPE_COUNTS
+    for control_type, expected_count in expected_counts.items():
         actual = sum(
             entry.control_type == control_type for entry in controls
         )
@@ -1464,6 +1498,20 @@ def parse_arguments() -> argparse.Namespace:
     )
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--expect-controls",
+        type=int,
+        default=33,
+        help="expected total control count (built-in cabinet default: 33)",
+    )
+    parser.add_argument(
+        "--expect-counts",
+        default="20 11 1 1",
+        help=(
+            "expected per-type counts 'buttons knobs switches doors' "
+            "(built-in cabinet default: '20 11 1 1')"
+        ),
+    )
     args = parser.parse_args()
     if _CABINET_NAME_PATTERN.fullmatch(args.cabinet) is None:
         parser.error(
@@ -1485,6 +1533,9 @@ def parse_arguments() -> argparse.Namespace:
             "low-level --exhaustive motion is unsafe without Nav2; use "
             "validate_cabinet_web --exhaustive"
         )
+    if args.expect_controls < 1:
+        parser.error("--expect-controls must be at least 1")
+    args.expected_counts = _expected_type_counts(args.expect_counts)
     return args
 
 
@@ -1497,7 +1548,9 @@ def main() -> int:
     expected_failures = 0
     try:
         catalog = node.wait_for_catalog(args.timeout)
-        validate_catalog(catalog)
+        validate_catalog(
+            catalog, args.expect_controls, args.expected_counts
+        )
         node.wait_for_all_states(min(args.timeout, 30.0))
         node.verify_cabinet_transform(min(args.timeout, 10.0))
         print(

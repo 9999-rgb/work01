@@ -101,11 +101,13 @@ class CabinetValidationTargetTests(unittest.TestCase):
         )
         snapshot_contract = source[snapshot_start:snapshot_end]
 
-        self.assertIn("length == 33", snapshot_contract)
+        self.assertIn("length == $expect_controls", snapshot_contract)
         self.assertIn("position:.current_position", snapshot_contract)
         self.assertNotIn("position:.position", snapshot_contract)
         self.assertIn("transition_sequence", snapshot_contract)
         self.assertIn("$delta >= -0.0001", snapshot_contract)
+        # 参数化后默认仍为 33，未显式传入时保持内置柜体契约。
+        self.assertIn("EXPECTED_CONTROLS=33", source)
         self.assertIn(
             'jq -ne --arg excluded "$excluded_control"',
             snapshot_contract,

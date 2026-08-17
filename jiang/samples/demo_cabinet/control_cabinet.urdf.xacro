@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<robot
+  xmlns:xacro="http://www.ros.org/wiki/xacro"
+  name="control_cabinet">
+  <!-- 样例资产以 demo_cabinet 为标识；运行时由 launch 按实例名显式覆盖 -->
+  <xacro:arg name="cabinet_name" default="demo_cabinet" />
+  <xacro:arg name="button_max_travel" default="0.008" />
+  <xacro:arg name="button_spring_stiffness" default="800.0" />
+  <xacro:arg name="button_press_threshold" default="0.006" />
+  <xacro:property
+    name="cabinet_namespace"
+    value="/xczs/cabinet/$(arg cabinet_name)" />
+  <!-- Shared cabinet definitions. -->
+  <xacro:include filename="control_cabinet/components/properties.xacro" />
+  <xacro:include filename="control_cabinet/components/materials.xacro" />
+  <xacro:include filename="control_cabinet/components/gazebo.xacro" />
+  <xacro:include filename="control_cabinet/components/primitives.xacro" />
+
+  <!-- Cabinet components. -->
+  <xacro:include filename="control_cabinet/components/cabinet_body.xacro" />
+  <xacro:include filename="control_cabinet/components/cabinet_modules.xacro" />
+
+  <xacro:control_cabinet_body />
+  <xacro:control_cabinet_modules />
+  <xacro:control_cabinet_gazebo />
+</robot>

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import math
 import re
 import subprocess
@@ -308,8 +309,537 @@ def convert_urdf_to_sdf(root: ElementTree.Element) -> ElementTree.Element:
     return ElementTree.fromstring(result.stdout)
 
 
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Statically verify cabinet Xacro, physical joints, plugin and "
+            "catalog config. With no overrides it validates the full built-in "
+            "contract (cabinet physics + fixed robot stack). Pass --asset to "
+            "validate an imported cabinet asset: structural self-consistency "
+            "without the built-in frozen counts/geometry or the fixed robot "
+            "stack, and without claiming physical closure."
+        )
+    )
+    parser.add_argument(
+        "--controls",
+        default=str(CONFIG),
+        help="cabinet controls YAML (default: built-in cabinet_controls.yaml)",
+    )
+    parser.add_argument(
+        "--scene",
+        default=str(SCENE_CONFIG),
+        help="cabinet scene YAML (default: built-in cabinet_scene.yaml)",
+    )
+    parser.add_argument(
+        "--adapter",
+        default=str(ROBOT_ADAPTER_CONFIG),
+        help="cabinet robot-adapter YAML (default: built-in)",
+    )
+    parser.add_argument(
+        "--xacro",
+        default=str(XACRO),
+        help="cabinet Xacro (default: built-in control_cabinet.urdf.xacro)",
+    )
+    parser.add_argument(
+        "--cabinet-name",
+        default=CABINET_NAME,
+        help="cabinet instance name used for the structural expansion",
+    )
+    parser.add_argument(
+        "--asset",
+        action="store_true",
+        help="validate an imported cabinet asset (skip built-in frozen physics "
+        "and the fixed robot stack)",
+    )
+    return parser
+
+
+def validate_cabinet_asset() -> None:
+    """Validate an imported cabinet asset (structural self-consistency).
+
+    Accepts an arbitrary control catalog (no frozen 33 / 20+13 counts, no
+    built-in door geometry) and verifies that controls, URDF, state plugin and
+    the per-cabinet robot-adapter reachability pairing agree with each other.
+    Physical closure is *not* asserted here: the asset's own adapter declares
+    which controls are ``operable`` (passed through runtime physical validation)
+    versus unavailable with a concrete reason.
+    """
+    parameters = load_config()
+    scene_parameters = load_scene_config()
+    robot_parameters = load_robot_adapter_config()
+    root = expand_xacro(XACRO)
+
+    control_ids = parameters.get("control_ids")
+    controls = parameters.get("controls")
+    if not isinstance(control_ids, list) or not isinstance(controls, dict):
+        fail("control_ids and controls mappings are required.")
+    if not control_ids:
+        fail("control_ids must be non-empty.")
+    if len(control_ids) != len(set(control_ids)):
+        fail("control_ids contains duplicates.")
+    if set(control_ids) != set(controls):
+        fail("control_ids and controls keys differ.")
+
+    # ── adapter reachability pairing (fixed gripper x this cabinet) ──────
+    unreachable_control_ids = robot_parameters.get("unreachable_control_ids", [])
+    if not isinstance(unreachable_control_ids, list) or any(
+        not isinstance(control_id, str) or not control_id.strip()
+        for control_id in unreachable_control_ids
+    ):
+        fail("Robot adapter unreachable_control_ids must be a string list.")
+    if len(unreachable_control_ids) != len(set(unreachable_control_ids)):
+        fail("Robot adapter unreachable_control_ids contains duplicates.")
+    adapter_controls = robot_parameters.get("controls", {})
+    if not isinstance(adapter_controls, dict):
+        fail("Robot adapter controls must be a mapping.")
+    unknown_adapter_ids = (
+        set(unreachable_control_ids) | set(adapter_controls)
+    ) - set(control_ids)
+    if unknown_adapter_ids:
+        fail(
+            "Robot adapter references unknown controls: "
+            + ", ".join(sorted(unknown_adapter_ids))
+            + "."
+        )
+    navigation_frame = str(robot_parameters.get("navigation_frame", ""))
+    all_unreachable = list(unreachable_control_ids)
+    for control_id, override in adapter_controls.items():
+        if not isinstance(override, dict):
+            fail(f"Robot adapter override for {control_id} must be a mapping.")
+        operable = override.get("operable", True)
+        if not isinstance(operable, bool):
+            fail(f"Robot adapter {control_id}.operable must be boolean.")
+        if not operable and not str(
+            override.get("unavailable_reason", "")
+        ).strip():
+            fail(
+                f"Robot adapter {control_id} requires a non-empty "
+                "unavailable_reason."
+            )
+        if not operable:
+            all_unreachable.append(control_id)
+        station = override.get("navigation_station")
+        if station is None:
+            continue
+        if not isinstance(station, dict):
+            fail(
+                f"Robot adapter {control_id}.navigation_station must "
+                "be a mapping."
+            )
+        allowed_station_fields = {
+            "local_anchor",
+            "outward_axis",
+            "standoff",
+            "base_yaw_offset",
+            "frame_id",
+        }
+        unknown_station_fields = set(station) - allowed_station_fields
+        if unknown_station_fields:
+            fail(
+                f"Robot adapter {control_id}.navigation_station has "
+                "unknown fields: "
+                + ", ".join(sorted(unknown_station_fields))
+                + "."
+            )
+        for vector_name in ("local_anchor", "outward_axis"):
+            vector = station.get(vector_name)
+            if (
+                not isinstance(vector, list)
+                or len(vector) != 3
+                or any(
+                    isinstance(value, bool)
+                    or not isinstance(value, (int, float))
+                    or not math.isfinite(float(value))
+                    for value in vector
+                )
+            ):
+                fail(
+                    f"Robot adapter {control_id}.navigation_station."
+                    f"{vector_name} must contain three finite numbers."
+                )
+        if sum(
+            float(value) * float(value)
+            for value in station["outward_axis"]
+        ) <= 1.0e-12:
+            fail(
+                f"Robot adapter {control_id}.navigation_station."
+                "outward_axis must not be zero."
+            )
+        standoff = station.get("standoff")
+        if (
+            isinstance(standoff, bool)
+            or not isinstance(standoff, (int, float))
+            or not math.isfinite(float(standoff))
+            or float(standoff) <= 0.0
+        ):
+            fail(
+                f"Robot adapter {control_id}.navigation_station."
+                "standoff must be a positive finite number."
+            )
+        yaw_offset = station.get("base_yaw_offset", 0.0)
+        if (
+            isinstance(yaw_offset, bool)
+            or not isinstance(yaw_offset, (int, float))
+            or not math.isfinite(float(yaw_offset))
+        ):
+            fail(
+                f"Robot adapter {control_id}.navigation_station."
+                "base_yaw_offset must be finite."
+            )
+        if station.get("frame_id", navigation_frame) != navigation_frame:
+            fail(
+                f"Robot adapter {control_id}.navigation_station frame "
+                "must match navigation_frame."
+            )
+    if len(all_unreachable) != len(set(all_unreachable)):
+        fail("Robot adapter declares an unreachable control more than once.")
+    if unreachable_control_ids and not str(
+        robot_parameters.get("unreachable_control_reason", "")
+    ).strip():
+        fail("Robot adapter unreachable controls require a shared reason.")
+    controls_without_station = sorted(
+        control_id
+        for control_id in control_ids
+        if not isinstance(
+            adapter_controls.get(control_id, {}).get("navigation_station"),
+            dict,
+        )
+    )
+    if controls_without_station:
+        fail(
+            "Every submitted control requires an explicit robot-adapter "
+            "navigation_station: "
+            + ", ".join(controls_without_station)
+            + "."
+        )
+    for control_id in sorted(control_ids):
+        if controls[control_id].get("type") in {"button", "knob"}:
+            outward = numbers(
+                adapter_controls[control_id]["navigation_station"][
+                    "outward_axis"
+                ],
+                f"Robot adapter {control_id} navigation outward axis",
+            )
+            outward_norm = math.sqrt(sum(value * value for value in outward))
+            if not close_lists(
+                [value / outward_norm for value in outward],
+                [0.0, 0.0, 1.0],
+            ):
+                fail(
+                    f"Front control {control_id} navigation station must "
+                    "approach the cabinet from its local +Z face."
+                )
+
+    staging_distance = float(parameters.get("staging_distance", 0.0))
+    if not math.isfinite(staging_distance) or staging_distance < 0.93:
+        fail("Cabinet staging distance must preserve at least 0.93 m.")
+    grasp_offset = float(parameters.get("grasp_outward_offset", 0.0))
+    if not math.isfinite(grasp_offset) or grasp_offset < 0.020:
+        fail(
+            "Rotary grasp must remain at least 0.020 m outside the "
+            "configured control center."
+        )
+    for timing_field, minimum in (
+        ("grasp_release_settle_duration", 0.30),
+        ("grasp_attach_settle_duration", 0.10),
+    ):
+        value = float(parameters.get(timing_field, 0.0))
+        if not math.isfinite(value) or value < minimum:
+            fail(f"{timing_field} must last at least {minimum} seconds.")
+
+    # ── controls must map onto URDF joints with matching types ───────────
+    joints = {joint.attrib["name"]: joint for joint in root.findall("joint")}
+    links = {link.attrib["name"]: link for link in root.findall("link")}
+    child_to_joint: Dict[str, object] = {}
+    control_child_links: Dict[str, str] = {}
+    joint_names: list[str] = []
+    for control_id in control_ids:
+        spec = controls[control_id]
+        if not isinstance(spec, dict):
+            fail(f"{control_id} configuration is not a mapping.")
+        control_type = str(spec.get("type", ""))
+        joint_name = str(spec.get("joint_name", ""))
+        expected_joint_type = TYPE_TO_JOINT.get(control_type)
+        if expected_joint_type is None:
+            fail(f"{control_id} has invalid type '{control_type}'.")
+        if control_type != "button":
+            required_offset = {
+                "knob": 0.020,
+                "switch": 0.012,
+                "door": 0.0145,
+            }[control_type]
+            configured_offset = float(
+                spec.get("grasp_outward_offset", grasp_offset)
+            )
+            if (
+                not math.isfinite(configured_offset)
+                or configured_offset < required_offset
+            ):
+                fail(
+                    f"{control_id} grasp offset does not clear its "
+                    "physical collision surface."
+                )
+        joint_names.append(joint_name)
+        joint = joints.get(joint_name)
+        if joint is None:
+            fail(f"{control_id} joint '{joint_name}' is absent from URDF.")
+        if joint.attrib.get("type") != expected_joint_type:
+            fail(
+                f"{control_id} expected {expected_joint_type}, got "
+                f"{joint.attrib.get('type')}."
+            )
+        child = joint.find("child")
+        child_name = child.attrib.get("link", "") if child is not None else ""
+        control_child_links[child_name] = control_id
+        link = links.get(child_name)
+        if link is None or link.find("inertial") is None:
+            fail(f"{control_id} dynamic child has no inertial element.")
+        if link.find("collision") is None:
+            fail(f"{control_id} dynamic child has no collision element.")
+    for joint in joints.values():
+        child = joint.find("child")
+        if child is not None:
+            child_to_joint[child.attrib.get("link", "")] = joint
+    if len(joint_names) != len(set(joint_names)):
+        fail("Cabinet control joint names must be non-empty and unique.")
+    for control_id in control_ids:
+        joint = joints[str(controls[control_id]["joint_name"])]
+        parent = joint.find("parent")
+        parent_link = (
+            parent.attrib.get("link", "") if parent is not None else ""
+        )
+        derived_parent = ""
+        visited = set()
+        while parent_link and parent_link not in visited:
+            visited.add(parent_link)
+            if parent_link in control_child_links:
+                derived_parent = control_child_links[parent_link]
+                break
+            parent_joint = child_to_joint.get(parent_link)
+            if parent_joint is None:
+                break
+            parent_element = parent_joint.find("parent")
+            parent_link = (
+                parent_element.attrib.get("link", "")
+                if parent_element is not None
+                else ""
+            )
+        configured_parent = str(
+            controls[control_id].get("parent_control_id", "")
+        )
+        if configured_parent != derived_parent:
+            fail(
+                f"{control_id} parent mismatch: config='{configured_parent}', "
+                f"URDF='{derived_parent}'."
+            )
+
+    # ── state plugin contract (instance-parametric) ──────────────────────
+    plugin = next(
+        (
+            candidate
+            for candidate in root.findall(".//plugin")
+            if candidate.attrib.get("filename") == "libxczs_cabinet_state.so"
+        ),
+        None,
+    )
+    if plugin is None:
+        fail("libxczs_cabinet_state.so is absent from expanded URDF.")
+    expected_plugin_name = f"xczs_{CABINET_NAME}_state"
+    if plugin.attrib.get("name") != expected_plugin_name:
+        fail(
+            "Cabinet state plugin name must include its instance name; "
+            f"expected '{expected_plugin_name}'."
+        )
+    plugin_namespace = plugin.find("./ros/namespace")
+    if plugin_namespace is None or (
+        plugin_namespace.text or ""
+    ).strip() != CABINET_NAMESPACE:
+        fail(
+            "Cabinet state-plugin ROS namespace must follow its instance "
+            f"(expected '{CABINET_NAMESPACE}')."
+        )
+    if not math.isclose(
+        float(text(plugin, "state_publish_rate")),
+        20.0,
+        rel_tol=0.0,
+        abs_tol=1.0e-9,
+    ):
+        fail("Cabinet physical state publication must remain at 20 Hz.")
+    if text(plugin, "grasp_active_topic") != f"{CABINET_NAMESPACE}/grasp_active":
+        fail("Cabinet grasp-active topic must use its canonical name.")
+    if text(plugin, "active_control_topic") != f"{CABINET_NAMESPACE}/active_control":
+        fail("Cabinet active-control topic must use its canonical name.")
+    if plugin.find("grasp_robot_base_link") is not None:
+        fail("Cabinet model must not embed a robot-specific base link.")
+    alternate_name = "cabinet_contract_peer"
+    if alternate_name != CABINET_NAME:
+        alternate_root = ElementTree.fromstring(
+            render_xacro(XACRO, f"cabinet_name:={alternate_name}")
+        )
+        alternate_plugin = next(
+            (
+                candidate
+                for candidate in alternate_root.findall(".//plugin")
+                if candidate.attrib.get("filename")
+                == "libxczs_cabinet_state.so"
+            ),
+            None,
+        )
+        if alternate_plugin is None:
+            fail("Alternate cabinet expansion has no state plugin.")
+        if (
+            alternate_plugin.attrib.get("name") != f"xczs_{alternate_name}_state"
+            or alternate_plugin.attrib.get("name") == plugin.attrib.get("name")
+        ):
+            fail("Cabinet instances must expand to unique state-plugin names.")
+        alternate_namespace = alternate_plugin.find("./ros/namespace")
+        if (
+            alternate_namespace is None
+            or (alternate_namespace.text or "").strip()
+            != f"/xczs/cabinet/{alternate_name}"
+        ):
+            fail("Cabinet state-plugin ROS namespace must follow its instance.")
+
+    plugin_controls = plugin.findall("control")
+    if len(plugin_controls) != len(control_ids):
+        fail(
+            f"Expected {len(control_ids)} plugin controls, got "
+            f"{len(plugin_controls)}."
+        )
+    plugin_ids: list[str] = []
+    state_topics: list[str] = []
+    joint_topics: list[str] = []
+    for entry in plugin_controls:
+        control_id = text(entry, "control_id")
+        if control_id not in controls:
+            fail(f"Plugin has unknown control ID '{control_id}'.")
+        plugin_ids.append(control_id)
+        spec = controls[control_id]
+        control_type = str(spec["type"])
+        defaults = parameters.get(f"{control_type}_defaults", {})
+        if not isinstance(defaults, dict):
+            defaults = {}
+        if text(entry, "control_type") != control_type:
+            fail(f"{control_id} plugin/config control types differ.")
+        if text(entry, "joint_name") != spec["joint_name"]:
+            fail(f"{control_id} plugin/config joint names differ.")
+        expected_prefix = f"{CABINET_NAMESPACE}/{control_id}"
+        state_topic = text(entry, "state_topic")
+        joint_topic = text(entry, "joint_state_topic")
+        pressed_topic = text(entry, "pressed_topic")
+        if state_topic != f"{expected_prefix}/state":
+            fail(f"{control_id} has a noncanonical state topic.")
+        if joint_topic != f"{expected_prefix}/joint_states":
+            fail(f"{control_id} has a noncanonical joint-state topic.")
+        if pressed_topic != f"{expected_prefix}/pressed":
+            fail(f"{control_id} has a noncanonical activation topic.")
+        state_topics.append(state_topic)
+        joint_topics.append(joint_topic)
+        expected_states = list(
+            spec.get("state_ids", defaults.get("state_ids", []))
+        )
+        plugin_states = text(entry, "state_ids").split()
+        if plugin_states != expected_states:
+            fail(f"{control_id} plugin/config state IDs differ.")
+        expected_positions = numbers(
+            spec.get(
+                "state_positions",
+                defaults.get("state_positions", []),
+            ),
+            f"{control_id}.state_positions",
+        )
+        reset_position = float(entry.findtext("reset_position", default="0.0"))
+        if not any(
+            math.isclose(
+                reset_position,
+                position,
+                rel_tol=0.0,
+                abs_tol=1.0e-6,
+            )
+            for position in expected_positions
+        ):
+            fail(f"{control_id} reset position is not a catalog state.")
+        graspable = entry.findtext("graspable", default="false").strip()
+        expected_graspable = control_type != "button"
+        if (graspable.lower() == "true") != expected_graspable:
+            fail(f"{control_id} has inconsistent graspability.")
+        if control_type == "button":
+            press_threshold = float(text(entry, "press_threshold"))
+            release_threshold = float(text(entry, "release_threshold"))
+            if not math.isclose(
+                press_threshold,
+                expected_positions[-1],
+                rel_tol=0.0,
+                abs_tol=1.0e-6,
+            ) or not 0.0 <= release_threshold < press_threshold:
+                fail(f"{control_id} has invalid press/release thresholds.")
+        else:
+            detents = numbers(
+                text(entry, "detents"),
+                f"{control_id}.detents",
+            )
+            if not close_lists(detents, expected_positions):
+                fail(f"{control_id} plugin/config detents differ.")
+    if set(plugin_ids) != set(control_ids):
+        fail("Plugin and catalog control IDs differ.")
+    if len(set(state_topics)) != len(control_ids) or len(set(joint_topics)) != len(
+        control_ids
+    ):
+        fail("Cabinet state or joint-state topics are not unique.")
+
+    # ── scene profile references existing controls ───────────────────────
+    door_scene = scene_parameters.get("door")
+    switch_scene = scene_parameters.get("switch")
+    collision_scene = scene_parameters.get("control_collision")
+    if not all(
+        isinstance(value, dict)
+        for value in (door_scene, switch_scene, collision_scene)
+    ):
+        fail("Scene profile is missing door, switch or control geometry.")
+    scene_selected_ids = [door_scene.get("control_id")]
+    if switch_scene.get("control_id"):
+        scene_selected_ids.append(switch_scene.get("control_id"))
+    if any(
+        not isinstance(value, str) or not value.strip()
+        for value in scene_selected_ids
+    ):
+        fail("Scene profile door/switch must select a named control.")
+    unknown_scene_ids = set(scene_selected_ids) - set(control_ids)
+    if unknown_scene_ids:
+        fail(
+            "Scene profile references unknown controls: "
+            + ", ".join(sorted(str(value) for value in unknown_scene_ids))
+            + "."
+        )
+    switch_parent = switch_scene.get("parent_control_id")
+    if switch_parent is not None and switch_parent not in control_ids:
+        fail(
+            "Scene profile switch parent references an unknown control: "
+            f"{switch_parent}."
+        )
+
+
 def main() -> int:
+    arguments = _parser().parse_args()
+    global CONFIG, SCENE_CONFIG, ROBOT_ADAPTER_CONFIG, XACRO  # noqa: PLW0603
+    global CABINET_NAME, CABINET_NAMESPACE  # noqa: PLW0603
+    CONFIG = Path(arguments.controls).expanduser()
+    SCENE_CONFIG = Path(arguments.scene).expanduser()
+    ROBOT_ADAPTER_CONFIG = Path(arguments.adapter).expanduser()
+    XACRO = Path(arguments.xacro).expanduser()
+    CABINET_NAME = arguments.cabinet_name
+    CABINET_NAMESPACE = f"/xczs/cabinet/{CABINET_NAME}"
+    asset_mode = arguments.asset
     try:
+        if asset_mode:
+            validate_cabinet_asset()
+            control_count = len(load_config()["control_ids"])
+            print(
+                f"Cabinet asset valid: {control_count} controls, "
+                "instance-parametric xacro, and a consistent "
+                "plugin/adapter/scene contract."
+            )
+            return 0
         parameters = load_config()
         scene_parameters = load_scene_config()
         robot_parameters = load_robot_adapter_config()
