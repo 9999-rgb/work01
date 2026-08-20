@@ -131,6 +131,8 @@
   <disable_collisions link1="r_arm_4" link2="r_arm_5" reason="Adjacent" />
   <disable_collisions link1="r_arm_5" link2="r_arm_6" reason="Adjacent" />
   <disable_collisions link1="r_arm_6" link2="r_camera" reason="Adjacent" />
+  <disable_collisions link1="r_arm_4" link2="r_arm_6" reason="Wrist folds beside forearm at the cabinet ready pose" />
+  <disable_collisions link1="l_arm_4" link2="l_arm_6" reason="Wrist folds beside forearm at the cabinet ready pose" />
   <disable_collisions link1="r_arm_6" link2="arm_camera_link" reason="Adjacent" />
 
   <!-- Tool mounts are fixed to their wrist, so their base links never move
@@ -156,4 +158,13 @@
   <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw1" reason="Adjacent" />
   <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw2" reason="Adjacent" />
   <disable_collisions link1="r_rotbtn_jaw1" link2="r_rotbtn_jaw2" reason="Default" />
+
+  <!-- Tucked fingers overlap their tool base at the retracted position (the
+       tool body's flat face presses cabinet buttons). -->
+  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger1" reason="Tucked finger inside tool body" />
+  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger2" reason="Tucked finger inside tool body" />
+  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger3" reason="Tucked finger inside tool body" />
+  <disable_collisions link1="r_three_cyl_finger2" link2="r_three_cyl_finger3" reason="Serial finger stages" />
+  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Tucked finger inside tool body" />
+  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Tucked finger inside tool body" />
 </robot>

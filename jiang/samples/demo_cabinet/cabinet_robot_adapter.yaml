@@ -463,8 +463,8 @@
       - box_10_knob
       - box_11_knob
     unreachable_control_reason: >-
-      双臂机器人四个末端工具的安装偏移与左右臂 home 位姿尚未物理标定，
-      逐控件可达性与完整操作闭环尚未通过验收。
+      双臂工具已按右臂肩关节对齐，逐控件 MoveIt 规划已通过；三电缸工具
+      无法物理触发小按钮，需窄探针工具。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

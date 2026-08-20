@@ -469,8 +469,11 @@
       - box_10_knob
       - box_11_knob
     unreachable_control_reason: >-
-      双臂机器人四个末端工具的安装偏移与左右臂 home 位姿尚未物理标定，
-      逐控件可达性与完整操作闭环尚未通过验收。
+      双臂工具已按右臂肩关节对齐（工位 +0.35、翻转挂载使腕部前指），
+      逐控件 MoveIt 运动学与碰撞规划已通过（box_10_button_1 完整操作
+      序列 path_fraction=1.0）。但三电缸三指工具（指尖半径 0.07 m）环绕
+      直径约 0.04 m 的按钮，物理按压时手指压到面板而无法触发按钮；
+      需更换窄探针式工具或重新设计按压头后才可移出本清单。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:
