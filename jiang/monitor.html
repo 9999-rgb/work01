@@ -3823,7 +3823,7 @@ function applyCabinetControls(payload) {
       state_positions: Array.isArray(control.state_positions)
         ? control.state_positions.map(Number)
         : [],
-      operable: control.operable !== false,
+      operable: control.operable === true,
       unavailable_reason: typeof control.unavailable_reason === 'string'
         ? control.unavailable_reason
         : '',
@@ -3926,7 +3926,7 @@ function renderCabinetTarget() {
     ? `已载入 ${cabinetControls.length} 个控制件；每个合法任务都会先导航，并由仿真后端给出实际执行或规划验证结果。`
     : '控制柜目录尚未到达，操作功能已禁用。';
   const unavailable = $('cabinetUnavailable');
-  unavailable.hidden = !control || control.operable !== false;
+  unavailable.hidden = !control || control.operable === true;
   unavailable.textContent = control && control.operable === false
     ? `该控件带有安全策略限制。提交后仍会导航并执行实时规划验证；配置依据：${
         control.unavailable_reason || '当前机器人尚未完成该控件的安全验证。'

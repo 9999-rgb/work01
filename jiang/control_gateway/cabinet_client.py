@@ -1223,7 +1223,9 @@ class CabinetClient(Node):
             "resolved_joint_state_topic": self._resolve_control_topic(joint_topic),
             "resolved_pressed_topic": self._resolve_control_topic(pressed_topic),
         }
-        operable = bool(getattr(entry, "operable", True))
+        # Capability is a positive allowlist.  Old or malformed catalogs that
+        # omit the field must never silently acquire physical-motion rights.
+        operable = bool(getattr(entry, "operable", False))
         if operable and not resolved_topics["resolved_state_topic"] and not (
             str(getattr(entry, "joint_name", "")).strip()
             and resolved_topics["resolved_joint_state_topic"]

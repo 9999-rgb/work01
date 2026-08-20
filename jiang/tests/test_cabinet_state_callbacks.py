@@ -651,6 +651,22 @@ class CabinetStateCallbackTest(unittest.TestCase):
         self.assertIn("generic", str(rejected.exception).lower())
         self.assertIsNone(node._cabinet_goal_handle)
 
+    def test_legacy_action_rejects_missing_operable_capability(self) -> None:
+        node = _make_node()
+        node._cabinet_controls["box_10_button_1"].pop("operable", None)
+        node._cabinet_goal_handle = None
+        node._cabinet_state["state"] = "idle"
+        node._navigation_state = {"state": "idle"}
+        node._navigation_mode_request = None
+        node._navigation_mode_desired = None
+        node._navigation_retirements = {}
+
+        with self.assertRaises(ControlRequestError) as rejected:
+            node.press_cabinet_button("box_10_button_1", False)
+
+        self.assertEqual(503, rejected.exception.status)
+        self.assertIsNone(node._cabinet_goal_handle)
+
     def test_generic_operation_validates_command_targets(self) -> None:
         node = _make_node()
         _add_knob(node)

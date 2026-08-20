@@ -457,6 +457,17 @@ class CabinetClientTest(unittest.TestCase):
             },
         )
 
+    def test_catalog_without_operable_flag_is_fail_closed(self) -> None:
+        client, _ = self._client("cabinet_a", [])
+        legacy_entry = _control()
+        del legacy_entry.operable
+
+        client._catalog_callback(SimpleNamespace(controls=[legacy_entry]))
+
+        controls = client.snapshot_controls()["controls"]
+        self.assertEqual(1, len(controls))
+        self.assertFalse(controls[0]["operable"])
+
     def test_force_goal_feedback_and_insufficient_force_result(self) -> None:
         events: List[Dict[str, Any]] = []
         client, action = self._client("cabinet_a", events)

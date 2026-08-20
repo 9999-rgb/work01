@@ -8,6 +8,7 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 import pytest
+import yaml
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
@@ -21,6 +22,13 @@ CABINET_XACROS = (
     / "samples"
     / "demo_cabinet"
     / "control_cabinet.urdf.xacro",
+)
+ROBOT_ADAPTERS = (
+    WORKSPACE
+    / "xczs_inspection_robot_control"
+    / "config"
+    / "cabinet_robot_adapter.yaml",
+    WORKSPACE / "jiang" / "samples" / "demo_cabinet" / "cabinet_robot_adapter.yaml",
 )
 
 
@@ -87,3 +95,56 @@ def test_every_knob_uses_compliant_twist_coupling(
             + friction
         )
         assert available_torque > resisting_torque, control_id
+
+
+def _operator_parameters(path: Path) -> dict[str, object]:
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    return document["/**/xczs_cabinet_button_operator"]["ros__parameters"]
+
+
+def test_box_5_knob_has_directional_tool_clearance_calibration() -> None:
+    builtin = _operator_parameters(ROBOT_ADAPTERS[0])
+    sample = _operator_parameters(ROBOT_ADAPTERS[1])
+    assert builtin == sample
+
+    controls = builtin["controls"]
+    assert isinstance(controls, dict)
+    calibration = controls["box_5_knob"]
+    assert calibration["navigation_station"]["local_anchor"] == [
+        0.717470,
+        1.115,
+        0.0,
+    ]
+    assert calibration["navigation_station"]["standoff"] == 0.400
+    assert calibration["detent_release_fraction"] == 0.58
+    assert calibration["ready_joint_seed"] == {
+        "joint_names": [f"r_arm_{index}_joint" for index in range(7)],
+        "positions": [
+            1.221067,
+            1.158552,
+            -1.448952,
+            -1.806018,
+            1.998380,
+            0.014786,
+            -1.656403,
+        ],
+    }
+
+    expected_rolls = [
+        0.0,
+        -0.872664625997,
+        0.0,
+        -1.1344640138,
+        0.0,
+        -1.57079632679,
+        0.0,
+        -1.83259571459,
+        0.0,
+    ]
+    assert calibration["tool_roll_offsets"] == expected_rolls
+    # Row-major left/center/right: every physically used adjacent transition
+    # has its own measured roll; direct left<->right entries remain unused.
+    assert all(
+        math.isfinite(calibration["tool_roll_offsets"][index])
+        for index in (1, 3, 5, 7)
+    )

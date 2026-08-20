@@ -393,6 +393,10 @@ if(BUILD_TESTING)
     cabinet_knob_grasp_contract_test
     test/test_cabinet_knob_grasp_contract.py
   )
+  ament_add_pytest_test(
+    operator_tf_buffer_contract_test
+    test/test_operator_tf_buffer_contract.py
+  )
 endif()
 
 ament_package()

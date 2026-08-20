@@ -338,6 +338,123 @@ class ProfileContractTest(unittest.TestCase):
         ):
             self._validate(documents)
 
+    def test_validates_per_transition_knob_tool_calibration(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        controls_document = documents["controls"]
+        scene_document = documents["scene"]
+        assert isinstance(adapter, dict)
+        assert isinstance(controls_document, dict)
+        assert isinstance(scene_document, dict)
+        controls_parameters = controls_document["/**"]["ros__parameters"]
+        controls_parameters["controls"]["start_button"]["type"] = "knob"
+        controls_parameters["knob_defaults"] = {
+            "state_ids": ["left", "center", "right"]
+        }
+        scene = scene_document["/**/xczs_cabinet_planning_scene"][
+            "ros__parameters"
+        ]
+        scene["control_collision"]["knob_size"] = [0.02, 0.01]
+        scene["control_collision"]["knob_center_offset"] = 0.005
+        override = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]["controls"]["start_button"]
+        override["tool_roll_offsets"] = [0.0] * 9
+        override["detent_release_fraction"] = 0.60
+
+        report = self._validate(documents)
+
+        self.assertEqual(1, report.knob_count)
+
+        override["tool_roll_offsets"] = [0.0] * 8
+        with self.assertRaisesRegex(ProfileContractError, "exactly 9"):
+            self._validate(documents)
+
+    def test_rejects_rotary_calibration_on_non_knob_or_invalid_fraction(
+        self,
+    ) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        override = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]["controls"]["start_button"]
+        override["detent_release_fraction"] = 0.60
+        with self.assertRaisesRegex(ProfileContractError, "only valid for knob"):
+            self._validate(documents)
+
+        documents = _documents()
+        adapter = documents["adapter"]
+        controls_document = documents["controls"]
+        scene_document = documents["scene"]
+        assert isinstance(adapter, dict)
+        assert isinstance(controls_document, dict)
+        assert isinstance(scene_document, dict)
+        controls_parameters = controls_document["/**"]["ros__parameters"]
+        controls_parameters["controls"]["start_button"]["type"] = "knob"
+        controls_parameters["knob_defaults"] = {
+            "state_ids": ["left", "center", "right"]
+        }
+        scene = scene_document["/**/xczs_cabinet_planning_scene"][
+            "ros__parameters"
+        ]
+        scene["control_collision"]["knob_size"] = [0.02, 0.01]
+        scene["control_collision"]["knob_center_offset"] = 0.005
+        override = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]["controls"]["start_button"]
+        override["detent_release_fraction"] = 0.5
+        with self.assertRaisesRegex(ProfileContractError, r"\(0.5, 1.0\]"):
+            self._validate(documents)
+
+    def test_validates_named_knob_ready_joint_seed(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        controls_document = documents["controls"]
+        scene_document = documents["scene"]
+        assert isinstance(adapter, dict)
+        assert isinstance(controls_document, dict)
+        assert isinstance(scene_document, dict)
+        robot_parameters = adapter["/**"]["ros__parameters"]
+        robot_parameters["manual_joint_group_names"] = ["arm"]
+        robot_parameters["manual_joint_groups"] = {
+            "arm": ["arm_joint"]
+        }
+        robot_parameters["controller_namespace"] = "/robot"
+        operator = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]
+        operator["tool_profiles"] = {"knob": {"move_group": "arm"}}
+        override = operator["controls"]["start_button"]
+        override["ready_joint_seed"] = {
+            "joint_names": ["arm_joint"],
+            "positions": [0.25],
+        }
+        controls_parameters = controls_document["/**"]["ros__parameters"]
+        controls_parameters["controls"]["start_button"]["type"] = "knob"
+        controls_parameters["knob_defaults"] = {
+            "state_ids": ["left", "center", "right"]
+        }
+        scene = scene_document["/**/xczs_cabinet_planning_scene"][
+            "ros__parameters"
+        ]
+        scene["control_collision"]["knob_size"] = [0.02, 0.01]
+        scene["control_collision"]["knob_center_offset"] = 0.005
+
+        report = self._validate(documents)
+        self.assertEqual(1, report.knob_count)
+
+        override["ready_joint_seed"]["joint_names"] = ["wrong_joint"]
+        with self.assertRaisesRegex(ProfileContractError, "every joint"):
+            self._validate(documents)
+
+        override["ready_joint_seed"] = {
+            "joint_names": ["arm_joint"],
+            "positions": [],
+        }
+        with self.assertRaisesRegex(ProfileContractError, "exactly 1"):
+            self._validate(documents)
+
     def test_rejects_unknown_or_explicit_empty_operable_sequence(self) -> None:
         documents = _documents()
         adapter = documents["adapter"]

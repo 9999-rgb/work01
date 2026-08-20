@@ -318,6 +318,54 @@ class MonitorWebContractTest(unittest.TestCase):
             assert.doesNotMatch(limited.textContent, /不可操作/);
         """))
 
+    def test_missing_operable_capability_is_fail_closed(self) -> None:
+        apply_controls = _source_block(
+            "function applyCabinetControls(payload)",
+            "\nfunction renderCabinetTarget()",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            class Element {{
+              constructor(tag) {{
+                this.tagName = tag;
+                this.children = [];
+                this.value = '';
+                this.textContent = '';
+                this.disabled = false;
+              }}
+              appendChild(child) {{ this.children.push(child); }}
+              replaceChildren(...children) {{ this.children = children; }}
+            }}
+            const document = {{createElement: tag => new Element(tag)}};
+            const cabinetTarget = new Element('select');
+            const cabinetControlTypeOrder = [0, 1, 2, 3];
+            const cabinetControlTypeLabels = {{0: '按钮', 1: '旋钮', 2: '总开关', 3: '柜门'}};
+            const cabinetCommandSupport = {{press: 1}};
+            let cabinetControls = [];
+            let cabinetCatalogReceived = false;
+            let cabinetAvailableFromHealth = false;
+            let cabinetOperationAvailable = false;
+            let cabinetResetAvailable = false;
+            let cabinetStatus = null;
+            function isCabinetOperationActive() {{ return false; }}
+            function renderCabinetTarget() {{}}
+            function selectedCabinetName() {{ return 'cabinet_a'; }}
+            {apply_controls}
+
+            assert.equal(applyCabinetControls({{
+              cabinet: 'cabinet_a',
+              catalog_received: true,
+              controls: [{{
+                control_id: 'legacy_button',
+                display_name: '旧目录按钮',
+                control_type: 0,
+                supported_commands: 1
+              }}]
+            }}), true);
+            assert.equal(cabinetControls.length, 1);
+            assert.equal(cabinetControls[0].operable, false);
+        """))
+
     def test_every_control_requires_navigation_and_action_backends(self) -> None:
         update_interlocks = _source_block(
             "function updateControlInterlocks()",

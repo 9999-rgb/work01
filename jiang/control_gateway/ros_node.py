@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import rclpy
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import PoseWithCovarianceStamped
-from geometry_msgs.msg import Quaternion
 from geometry_msgs.msg import Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import LoadMap
@@ -1016,7 +1015,7 @@ class RosControlNode(Node):
                     (
                         control_id
                         for control_id, control in self._cabinet_controls.items()
-                        if bool(control.get("operable", True))
+                        if bool(control.get("operable", False))
                     ),
                     next(iter(self._cabinet_controls), ""),
                 )
@@ -1259,7 +1258,7 @@ class RosControlNode(Node):
         with self._lock:
             self._validate_cabinet_button_locked(button_id)
             control = self._cabinet_controls[button_id]
-            if not bool(control.get("operable", True)):
+            if not bool(control.get("operable", False)):
                 raise ControlRequestError(
                     "The generic cabinet operation action is required for "
                     "live planning validation of an unverified button, but "
@@ -2939,7 +2938,9 @@ class RosControlNode(Node):
             pressed_topic = str(entry.pressed_topic).strip()
             state_topic = str(getattr(entry, "state_topic", "")).strip()
             control_type = int(entry.control_type)
-            operable = bool(getattr(entry, "operable", True))
+            # Missing capability metadata is unverified, never physically
+            # operable.  This keeps legacy/malformed catalogs fail-closed.
+            operable = bool(getattr(entry, "operable", False))
             if (
                 control_type not in self.CABINET_CONTROL_TYPES
                 or (

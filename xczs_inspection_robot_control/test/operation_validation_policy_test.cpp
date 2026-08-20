@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include "xczs_inspection_robot_control/operation_validation_policy.hpp"
+#include "xczs_inspection_robot_control/rotary_operation_policy.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -99,6 +100,35 @@ TEST(OperationValidationPolicy, EngagementFlagsConservativelyRequireRecovery)
 {
   EXPECT_TRUE(physical_recovery_is_required(false, true, false));
   EXPECT_TRUE(physical_recovery_is_required(false, false, true));
+}
+
+TEST(RotaryOperationPolicy, TransitionMatrixUsesSourceThenTarget)
+{
+  EXPECT_EQ(rotary_transition_matrix_index(0U, 1U, 3U), 1U);
+  EXPECT_EQ(rotary_transition_matrix_index(1U, 0U, 3U), 3U);
+  EXPECT_EQ(rotary_transition_matrix_index(2U, 1U, 3U), 7U);
+}
+
+TEST(RotaryOperationPolicy, ThreePositionKnobRejectsOnlySkippedDetent)
+{
+  EXPECT_TRUE(rotary_transition_is_adjacent(0U, 0U));
+  EXPECT_TRUE(rotary_transition_is_adjacent(0U, 1U));
+  EXPECT_TRUE(rotary_transition_is_adjacent(2U, 1U));
+  EXPECT_FALSE(rotary_transition_is_adjacent(0U, 2U));
+  EXPECT_FALSE(rotary_transition_is_adjacent(2U, 0U));
+}
+
+TEST(RotaryOperationPolicy, PartialReleaseCrossesAdjacentDetentMidpoint)
+{
+  constexpr double detent = 0.78539816339;
+  const double center_to_right = rotary_release_position(
+    0.0, detent, 0.60, 0.035);
+  const double right_to_center = rotary_release_position(
+    detent, 0.0, 0.60, 0.035);
+  EXPECT_GT(center_to_right, 0.5 * detent);
+  EXPECT_LT(right_to_center, 0.5 * detent);
+  EXPECT_DOUBLE_EQ(
+    rotary_release_position(detent, detent, 0.60, 0.035), detent);
 }
 
 }  // namespace xczs_inspection_robot_control

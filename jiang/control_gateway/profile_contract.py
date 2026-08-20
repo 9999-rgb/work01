@@ -258,8 +258,11 @@ def _validate_switch_geometry(
 
 def _validate_robot_control_overrides(
     adapter_document: Mapping[str, Any],
-    control_ids: set[str],
+    adapter_parameters: Mapping[str, Any],
+    controls: Mapping[str, Any],
+    controls_parameters: Mapping[str, Any],
 ) -> tuple[str, ...]:
+    control_ids = set(controls)
     operator = _parameters(
         adapter_document,
         "/**/xczs_cabinet_button_operator",
@@ -290,6 +293,114 @@ def _validate_robot_control_overrides(
                 override.get("unavailable_reason"),
                 f"robot adapter controls.{control_id}.unavailable_reason",
             )
+        has_roll_calibration = "tool_roll_offsets" in override
+        has_partial_release = "detent_release_fraction" in override
+        has_ready_joint_seed = "ready_joint_seed" in override
+        if (
+            has_roll_calibration
+            or has_partial_release
+            or has_ready_joint_seed
+        ):
+            control = controls[control_id]
+            assert isinstance(control, Mapping)
+            if control.get("type") != "knob":
+                raise ProfileContractError(
+                    f"robot adapter controls.{control_id} rotary tool "
+                    "calibration is only valid for knob controls."
+                )
+            defaults = controls_parameters.get("knob_defaults", {})
+            if not isinstance(defaults, Mapping):
+                defaults = {}
+            raw_state_ids = control.get(
+                "state_ids", defaults.get("state_ids")
+            )
+            state_ids = _unique_strings(
+                raw_state_ids,
+                f"controls.{control_id}.state_ids",
+            )
+            if not state_ids:
+                raise ProfileContractError(
+                    f"controls.{control_id}.state_ids must not be empty."
+                )
+            if has_roll_calibration:
+                field = (
+                    f"robot adapter controls.{control_id}.tool_roll_offsets"
+                )
+                roll_offsets = override.get("tool_roll_offsets")
+                _vector(roll_offsets, field, len(state_ids) ** 2)
+                assert isinstance(roll_offsets, Sequence)
+                if any(abs(float(value)) > math.pi for value in roll_offsets):
+                    raise ProfileContractError(
+                        f"{field} entries must be within [-pi, pi]."
+                    )
+            if has_partial_release:
+                field = (
+                    f"robot adapter controls.{control_id}."
+                    "detent_release_fraction"
+                )
+                fraction = override.get("detent_release_fraction")
+                if (
+                    isinstance(fraction, bool)
+                    or not isinstance(fraction, (int, float))
+                    or not math.isfinite(float(fraction))
+                    or float(fraction) <= 0.5
+                    or float(fraction) > 1.0
+                ):
+                    raise ProfileContractError(
+                        f"{field} must be a finite number in (0.5, 1.0]."
+                    )
+            if has_ready_joint_seed:
+                field = (
+                    f"robot adapter controls.{control_id}.ready_joint_seed"
+                )
+                seed = override.get("ready_joint_seed")
+                if not isinstance(seed, Mapping):
+                    raise ProfileContractError(f"{field} must be a mapping.")
+                unknown_seed_fields = set(seed) - {
+                    "joint_names",
+                    "positions",
+                }
+                if unknown_seed_fields:
+                    raise ProfileContractError(
+                        f"{field} contains unknown fields: "
+                        + ", ".join(sorted(str(v) for v in unknown_seed_fields))
+                    )
+                seed_names = _unique_strings(
+                    seed.get("joint_names"), f"{field}.joint_names"
+                )
+                seed_positions = seed.get("positions")
+                _vector(seed_positions, f"{field}.positions", len(seed_names))
+
+                tool_profiles = operator.get("tool_profiles", {})
+                manual_groups = adapter_parameters.get(
+                    "manual_joint_groups", {}
+                )
+                knob_profile = (
+                    tool_profiles.get("knob", {})
+                    if isinstance(tool_profiles, Mapping)
+                    else {}
+                )
+                move_group = (
+                    knob_profile.get("move_group")
+                    if isinstance(knob_profile, Mapping)
+                    else None
+                )
+                expected_names = (
+                    manual_groups.get(move_group)
+                    if isinstance(manual_groups, Mapping)
+                    and isinstance(move_group, str)
+                    else None
+                )
+                if (
+                    not isinstance(expected_names, Sequence)
+                    or isinstance(expected_names, (str, bytes))
+                    or set(seed_names) != set(expected_names)
+                    or len(seed_names) != len(expected_names)
+                ):
+                    raise ProfileContractError(
+                        f"{field}.joint_names must name every joint in the "
+                        "knob MoveIt group exactly once."
+                    )
 
     for legacy_field in (
         "unreachable_control_ids",
@@ -533,7 +644,7 @@ def validate_profile(
                 )
 
     operable_control_ids = _validate_robot_control_overrides(
-        adapter_document, set(ordered_ids)
+        adapter_document, adapter_global, controls, controls_parameters
     )
     counts = {
         control_type: sum(

@@ -23,6 +23,7 @@
 #include <utility>
 #include <vector>
 
+#include "Eigen/Geometry"
 #include "geometry_msgs/msg/pose.hpp"
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
@@ -56,6 +57,7 @@
 #include "xczs_inspection_robot_control/msg/cabinet_control_catalog.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_control/operation_validation_policy.hpp"
+#include "xczs_inspection_robot_control/rotary_operation_policy.hpp"
 #include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
 #include "xczs_inspection_robot_control/srv/manage_operation_lease.hpp"
@@ -208,7 +210,9 @@ struct ButtonSpec
   std::uint8_t supported_commands{0};
   bool requires_grasp{false};
   double grasp_outward_offset{0.0};
-  bool operable{true};
+  // Physical execution is granted only by the explicit robot-adapter
+  // operable_control_ids allowlist populated during configure_controls().
+  bool operable{false};
   std::string unavailable_reason;
   std::optional<ControlNavigationStation> navigation_station;
   std::string parent_control_id;
@@ -228,6 +232,18 @@ struct ButtonSpec
   std::vector<std::string> state_ids;
   std::vector<std::string> state_labels;
   std::vector<double> state_positions;
+  // Row-major [source detent][target detent] rotation about the contact
+  // tool's local +Z axis.  It reorients passive sibling tools in the cabinet
+  // plane without changing the calibrated contact direction.
+  std::vector<double> tool_roll_offsets;
+  // Over-center controls may be released after safely crossing the next
+  // detent midpoint so their physical spring finishes the motion.
+  double detent_release_fraction{1.0};
+  // Optional named MoveIt joint seed for the ready-pose IK.  A redundant arm
+  // can otherwise reach the same pose through a branch that cannot continue
+  // through the subsequent Cartesian manipulation.
+  std::vector<std::string> ready_joint_seed_names;
+  std::vector<double> ready_joint_seed_positions;
   std::shared_ptr<ButtonRuntime> runtime{std::make_shared<ButtonRuntime>()};
 };
 
@@ -591,7 +607,7 @@ public:
       operation_lease_client_callback_group_);
     manual_base_publisher_ = create_publisher<geometry_msgs::msg::Twist>(
       manual_cmd_vel_topic, 10);
-    transform_buffer_ = std::make_unique<tf2_ros::Buffer>(get_clock());
+    transform_buffer_ = std::make_shared<tf2_ros::Buffer>(get_clock());
     transform_listener_ =
       std::make_unique<tf2_ros::TransformListener>(*transform_buffer_);
     cabinet_pose_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
@@ -1133,6 +1149,75 @@ private:
         prefix + "state_positions",
         is_knob ? knob_default_state_positions :
         button_default_state_positions);
+      if (is_knob) {
+        if (button->state_ids.empty()) {
+          throw std::invalid_argument(
+                  "Knob '" + control_id +
+                  "' must define at least one detent before tool calibration.");
+        }
+        const std::size_t transition_count =
+          button->state_ids.size() * button->state_ids.size();
+        button->tool_roll_offsets = declare_parameter<std::vector<double>>(
+          prefix + "tool_roll_offsets",
+          std::vector<double>(transition_count, 0.0));
+        button->detent_release_fraction = declare_parameter<double>(
+          prefix + "detent_release_fraction", 1.0);
+        button->ready_joint_seed_names =
+          declare_parameter<std::vector<std::string>>(
+          prefix + "ready_joint_seed.joint_names",
+          std::vector<std::string>{});
+        button->ready_joint_seed_positions =
+          declare_parameter<std::vector<double>>(
+          prefix + "ready_joint_seed.positions",
+          std::vector<double>{});
+        if (button->tool_roll_offsets.size() != transition_count ||
+          std::any_of(
+            button->tool_roll_offsets.begin(),
+            button->tool_roll_offsets.end(),
+            [](double value) {
+              return !std::isfinite(value) ||
+              std::abs(value) > std::acos(-1.0);
+            }))
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' tool_roll_offsets must contain one finite [-pi, pi] "
+                  "entry for every source/target detent pair.");
+        }
+        if (!std::isfinite(button->detent_release_fraction) ||
+          button->detent_release_fraction <= 0.5 ||
+          button->detent_release_fraction > 1.0)
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' detent_release_fraction must be in (0.5, 1.0].");
+        }
+        const bool has_ready_joint_seed =
+          !button->ready_joint_seed_names.empty() ||
+          !button->ready_joint_seed_positions.empty();
+        std::unordered_set<std::string> unique_seed_names(
+          button->ready_joint_seed_names.begin(),
+          button->ready_joint_seed_names.end());
+        if (has_ready_joint_seed &&
+          (button->ready_joint_seed_names.empty() ||
+          button->ready_joint_seed_names.size() !=
+          button->ready_joint_seed_positions.size() ||
+          unique_seed_names.size() != button->ready_joint_seed_names.size() ||
+          std::any_of(
+            button->ready_joint_seed_names.begin(),
+            button->ready_joint_seed_names.end(),
+            [](const std::string & name) {return name.empty();}) ||
+          std::any_of(
+            button->ready_joint_seed_positions.begin(),
+            button->ready_joint_seed_positions.end(),
+            [](double value) {return !std::isfinite(value);})))
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' ready_joint_seed must contain equal-length unique "
+                  "joint_names and finite positions.");
+        }
+      }
       if (is_button) {
         button->spring_stiffness = declare_parameter<double>(
           prefix + "spring_stiffness", button_default_spring_stiffness);
@@ -1661,7 +1746,7 @@ private:
         shared_from_this(),
         MoveGroupInterface::Options(
           move_group_name_, "robot_description", move_group_namespace_),
-        std::shared_ptr<tf2_ros::Buffer>(),
+        transform_buffer_,
         rclcpp::Duration::from_seconds(system_wait_timeout_));
       check_cancel(goal_handle);
       {
@@ -1670,11 +1755,7 @@ private:
       }
       configure_move_group(*move_group);
       move_group_ready_for_motion = true;
-      if (!move_group->getCurrentState(system_wait_timeout_)) {
-        throw OperationError(
-                PressCabinetButton::Result::NOT_READY,
-                "MoveIt did not receive the current robot state.");
-      }
+      (void)synchronized_current_robot_state(*move_group);
 
       if (should_navigate_to_staging_pose) {
         publish_feedback(
@@ -1952,6 +2033,7 @@ private:
     bool request_success = false;
     DoorArcProgress door_arc_progress;
     double target_position = 0.0;
+    double rotary_tool_roll_offset = 0.0;
     double button_press_depth = 0.0;
     bool button_should_trigger = false;
     bool is_button = false;
@@ -2123,6 +2205,20 @@ private:
         *control, *goal_handle->get_goal(), initial_state);
       if (is_button) {
         target_position = button_press_depth;
+      } else if (control->control_type ==
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+      {
+        const auto source_index = control_state_index(*control, initial_state);
+        const auto target_index = control_state_index(*control, target_state);
+        if (!rotary_transition_is_adjacent(source_index, target_index)) {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::UNSUPPORTED_COMMAND,
+                  "旋钮 '" + control->id +
+                  "' 不支持一次跨越两个档位；请先切换到中档，再执行下一步。");
+        }
+        rotary_tool_roll_offset = control->tool_roll_offsets.at(
+          rotary_transition_matrix_index(
+            source_index, target_index, control->state_ids.size()));
       }
       latch_cabinet_transform();
 
@@ -2131,7 +2227,7 @@ private:
           *control, button_press_depth);
       } else {
         rotary_poses = calculate_rotary_operation_poses(
-          *control, initial_state.position);
+          *control, initial_state.position, rotary_tool_roll_offset);
       }
       if (control->navigation_station &&
         (preparation_policy.execute_embedded_navigation ||
@@ -2150,7 +2246,7 @@ private:
         shared_from_this(),
         MoveGroupInterface::Options(
           move_group_name_, "robot_description", move_group_namespace_),
-        std::shared_ptr<tf2_ros::Buffer>(),
+        transform_buffer_,
         rclcpp::Duration::from_seconds(system_wait_timeout_));
       {
         std::lock_guard<std::mutex> lock(motion_mutex_);
@@ -2158,12 +2254,7 @@ private:
       }
       configure_move_group(*move_group);
       const auto current_robot_state =
-        move_group->getCurrentState(system_wait_timeout_);
-      if (!current_robot_state) {
-        throw GenericOperationError(
-                OperateCabinetControl::Result::NOT_READY,
-                "MoveIt did not receive the current robot state.");
-      }
+        synchronized_current_robot_state(*move_group);
 
       if (validation_only) {
         result->operation_executed = false;
@@ -2171,7 +2262,7 @@ private:
         validate_inoperable_control_path(
           *move_group, goal_handle, *control, initial_state,
           target_position, button_poses, rotary_poses,
-          *current_robot_state, result);
+          rotary_tool_roll_offset, *current_robot_state, result);
         result->diagnostic_stage = "complete";
         result->path_fraction = 1.0;
         result->required_fraction = 1.0;
@@ -2225,7 +2316,7 @@ private:
             *control, button_press_depth);
         } else {
           rotary_poses = calculate_rotary_operation_poses(
-            *control, initial_state.position);
+            *control, initial_state.position, rotary_tool_roll_offset);
         }
         staging_poses = calculate_control_staging_poses(*control);
         interruptible_hold(goal_handle, planning_scene_settle_seconds_);
@@ -2368,7 +2459,7 @@ private:
           "Planning the probe to the control ready pose.");
         plan_and_execute_pose(
           *move_group, goal_handle, rotary_poses.ready_pose,
-          contact_tool_link_, &result->operation_executed);
+          contact_tool_link_, &result->operation_executed, control.get());
         should_attempt_retreat = true;
         result->diagnostic_stage = "approach";
         publish_operate_feedback(
@@ -2403,23 +2494,15 @@ private:
         // Let the transient grasp-active notification reach the planar
         // stabilizer before the arm starts driving the physical constraint.
         interruptible_hold(goal_handle, grasp_attach_settle_duration_);
-        double manipulation_position = target_position;
-        if (control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
-          std::abs(target_position - initial_state.position) >
-          target_tolerance_)
-        {
-          // The simulated door is an over-center, two-detent mechanism.  A
-          // full 90-degree tool arc exceeds the arm's continuous Cartesian
-          // workspace, while moving safely beyond the midpoint lets the
-          // physical detent spring complete the requested travel after
-          // release, just like a real cabinet door.
-          manipulation_position = initial_state.position +
-            door_release_fraction_ *
-            (target_position - initial_state.position);
-        }
+        // Doors and calibrated knobs are over-center mechanisms.  Moving
+        // safely beyond the next midpoint lets the physical detent spring
+        // finish the requested travel after release, without demanding an
+        // unreachable full-angle Cartesian wrist arc.
+        const double manipulation_position = rotary_manipulation_position(
+          *control, initial_state.position, target_position);
         const auto waypoints = calculate_rotation_waypoints(
-          *control, initial_state.position, manipulation_position);
+          *control, initial_state.position, manipulation_position,
+          rotary_tool_roll_offset);
         result->diagnostic_stage = "manipulation";
         publish_operate_feedback(
           goal_handle,
@@ -2466,6 +2549,23 @@ private:
             goal_handle, *control, initial_state.position,
             manipulation_position, std::chrono::steady_clock::now());
         }
+        const bool uses_partial_knob_release =
+          control->control_type ==
+          xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB &&
+          control->detent_release_fraction<1.0 &&
+            std::abs(target_position - initial_state.position)>
+          target_tolerance_;
+        if (uses_partial_knob_release) {
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING,
+            0.71F, target_position,
+            "Verifying that the physical knob latched the requested "
+            "adjacent detent.");
+          wait_for_knob_release_position(
+            goal_handle, *control, initial_state.position, target_position,
+            target_state, std::chrono::steady_clock::now());
+        }
         const auto release_hold_started = std::chrono::steady_clock::now();
         publish_operate_feedback(
           goal_handle,
@@ -2485,12 +2585,20 @@ private:
             goal_handle, *control, initial_state.position,
             manipulation_position, release_hold_started);
         }
+        if (uses_partial_knob_release) {
+          // Require a fresh target-side sample immediately before detach so a
+          // transient crossing cannot be mistaken for a latched detent.
+          wait_for_knob_release_position(
+            goal_handle, *control, initial_state.position, target_position,
+            target_state, release_hold_started);
+        }
         const bool is_door = control->control_type ==
           xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
         const double release_clearance = is_door ?
           door_release_clearance_ : prepress_distance_;
         const auto target_ready = calculate_rotary_tool_pose(
-          *control, manipulation_position, release_clearance, false);
+          *control, manipulation_position, release_clearance, false,
+          rotary_tool_roll_offset);
         std::chrono::steady_clock::time_point released_at;
         if (is_door) {
           // Compliant door grasping couples only tool rotation to the hinge.
@@ -2609,7 +2717,7 @@ private:
       } else {
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
-          grasp_attached, door_arc_progress,
+          grasp_attached, door_arc_progress, rotary_tool_roll_offset,
           is_operate_goal_canceling(goal_handle));
       }
     } catch (const OperationError & error) {
@@ -2621,7 +2729,7 @@ private:
       } else {
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
-          grasp_attached, door_arc_progress,
+          grasp_attached, door_arc_progress, rotary_tool_roll_offset,
           is_operate_goal_canceling(goal_handle));
       }
     } catch (const std::exception & error) {
@@ -2644,7 +2752,7 @@ private:
       } else {
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
-          grasp_attached, door_arc_progress,
+          grasp_attached, door_arc_progress, rotary_tool_roll_offset,
           is_operate_goal_canceling(goal_handle));
       }
     } catch (...) {
@@ -2663,7 +2771,7 @@ private:
       } else {
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
-          grasp_attached, door_arc_progress,
+          grasp_attached, door_arc_progress, rotary_tool_roll_offset,
           is_operate_goal_canceling(goal_handle));
       }
     }
@@ -2776,6 +2884,42 @@ private:
     throw GenericOperationError(
             OperateCabinetControl::Result::UNSUPPORTED_COMMAND,
             "The requested command is not supported by this control.");
+  }
+
+  std::size_t control_state_index(
+    const ButtonSpec & control,
+    const std::string & state_id) const
+  {
+    const auto iterator = std::find(
+      control.state_ids.begin(), control.state_ids.end(), state_id);
+    if (iterator == control.state_ids.end()) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::INTERNAL_ERROR,
+              "Control '" + control.id +
+              "' resolved an unknown target detent '" + state_id + "'.");
+    }
+    return static_cast<std::size_t>(
+      std::distance(control.state_ids.begin(), iterator));
+  }
+
+  std::size_t control_state_index(
+    const ButtonSpec & control,
+    const ButtonSnapshot & state) const
+  {
+    const auto iterator = std::find(
+      control.state_ids.begin(), control.state_ids.end(), state.state_id);
+    if (iterator != control.state_ids.end()) {
+      return static_cast<std::size_t>(
+        std::distance(control.state_ids.begin(), iterator));
+    }
+    return static_cast<std::size_t>(std::distance(
+             control.state_positions.begin(),
+             std::min_element(
+               control.state_positions.begin(), control.state_positions.end(),
+               [&state](double left, double right) {
+                 return std::abs(state.position - left) <
+                 std::abs(state.position - right);
+               })));
   }
 
   tf2::Transform lookup_cabinet_transform(
@@ -2965,7 +3109,8 @@ private:
     const ButtonSpec & control,
     double position,
     double outward_offset,
-    bool require_stable_parent = true)
+    bool require_stable_parent = true,
+    double tool_roll_offset = 0.0)
   {
     const tf2::Transform cabinet = resolve_cabinet_transform();
     const auto geometry = resolve_control_geometry(
@@ -2988,7 +3133,13 @@ private:
       world_rotation, outward_zero).normalized();
     const tf2::Quaternion tool_zero =
       tool_rotation_from_outward(outward_zero);
-    tf2::Quaternion tool_rotation = world_rotation * tool_zero;
+    tf2::Quaternion tool_roll;
+    tool_roll.setRotation(tf2::Vector3(0.0, 0.0, 1.0), tool_roll_offset);
+    tool_roll.normalize();
+    // Post-multiply so the calibration rotates around contact-tool local +Z.
+    // This moves passive sibling tools within the panel plane while preserving
+    // the tool's outward axis and the calibrated contact point.
+    tf2::Quaternion tool_rotation = world_rotation * tool_zero * tool_roll;
     tool_rotation.normalize();
 
     geometry_msgs::msg::Pose pose;
@@ -3088,23 +3239,27 @@ private:
 
   RotaryOperationPoses calculate_rotary_operation_poses(
     const ButtonSpec & control,
-    double position)
+    double position,
+    double tool_roll_offset = 0.0)
   {
     RotaryOperationPoses poses;
     poses.ready_pose = calculate_rotary_tool_pose(
-      control, position, prepress_distance_);
+      control, position, prepress_distance_, true, tool_roll_offset);
     poses.door_pregrasp_pose = calculate_rotary_tool_pose(
       control, position,
-      control.grasp_outward_offset + door_pregrasp_clearance_);
+      control.grasp_outward_offset + door_pregrasp_clearance_, true,
+      tool_roll_offset);
     poses.grasp_pose = calculate_rotary_tool_pose(
-      control, position, control.grasp_outward_offset);
+      control, position, control.grasp_outward_offset, true,
+      tool_roll_offset);
     return poses;
   }
 
   std::vector<geometry_msgs::msg::Pose> calculate_rotation_waypoints(
     const ButtonSpec & control,
     double initial_position,
-    double target_position)
+    double target_position,
+    double tool_roll_offset = 0.0)
   {
     const double travel = target_position - initial_position;
     const std::size_t count = std::max<std::size_t>(
@@ -3118,9 +3273,29 @@ private:
       waypoints.push_back(
         calculate_rotary_tool_pose(
           control, initial_position + travel * ratio,
-          control.grasp_outward_offset));
+          control.grasp_outward_offset, true, tool_roll_offset));
     }
     return waypoints;
+  }
+
+  double rotary_manipulation_position(
+    const ButtonSpec & control,
+    double initial_position,
+    double target_position) const
+  {
+    double release_fraction = 1.0;
+    if (control.control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+    {
+      release_fraction = door_release_fraction_;
+    } else if (control.control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+    {
+      release_fraction = control.detent_release_fraction;
+    }
+    return rotary_release_position(
+      initial_position, target_position, release_fraction,
+      target_tolerance_);
   }
 
   template<typename GoalHandleT>
@@ -3324,6 +3499,50 @@ private:
   }
 
   template<typename GoalHandleT>
+  void wait_for_knob_release_position(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    double initial_position,
+    double target_position,
+    const std::string & target_state,
+    std::chrono::steady_clock::time_point minimum_received_at)
+  {
+    const double direction = target_position - initial_position;
+    if (std::abs(direction) <= target_tolerance_) {
+      return;
+    }
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    const double safe_release_position =
+      0.5 * (initial_position + target_position) +
+      std::copysign(
+      door_detent_hysteresis_ + door_release_position_margin_, direction);
+    while (std::chrono::steady_clock::now() < deadline) {
+      check_cancel(goal_handle);
+      std::unique_lock<std::mutex> lock(control.runtime->mutex);
+      const auto now = std::chrono::steady_clock::now();
+      const auto & state = control.runtime->state;
+      const bool fresh = structured_control_state_is_usable(
+        state.structured_received, state.valid,
+        state.structured_received_at > minimum_received_at,
+        std::chrono::duration<double>(
+          now - state.structured_received_at).count() <=
+        button_state_timeout_);
+      const bool crossed_release_position = direction > 0.0 ?
+        state.position >= safe_release_position :
+        state.position <= safe_release_position;
+      if (fresh && crossed_release_position && state.state_id == target_state) {
+        return;
+      }
+      control.runtime->condition.wait_for(lock, 50ms);
+    }
+    throw GenericOperationError(
+            OperateCabinetControl::Result::TARGET_NOT_REACHED,
+            control.id + " did not physically latch the requested adjacent "
+            "detent while the grasp was attached.");
+  }
+
+  template<typename GoalHandleT>
   void wait_for_target_stable(
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const ButtonSpec & control,
@@ -3495,6 +3714,7 @@ private:
     bool should_attempt_retreat,
     bool grasp_attached,
     const DoorArcProgress & door_arc_progress,
+    double rotary_tool_roll_offset,
     bool canceled) noexcept
   {
     const bool physical_recovery_required = physical_recovery_is_required(
@@ -3532,7 +3752,8 @@ private:
         }
         const auto state = button_snapshot(*control);
         const auto retreat_pose = calculate_rotary_tool_pose(
-          *control, state.position, door_release_clearance_, false);
+          *control, state.position, door_release_clearance_, false,
+          rotary_tool_roll_offset);
         best_effort_retreat(
           *move_group, retreat_pose, &result->operation_executed);
       } catch (const std::exception & error) {
@@ -3559,7 +3780,8 @@ private:
           *control, press_depth_).prepress_pose :
           calculate_rotary_tool_pose(
           *control, state.position,
-          is_door ? door_release_clearance_ : prepress_distance_, false);
+          is_door ? door_release_clearance_ : prepress_distance_, false,
+          rotary_tool_roll_offset);
         best_effort_retreat(
           *move_group, retreat_pose, &result->operation_executed);
       } catch (const std::exception & error) {
@@ -3931,6 +4153,51 @@ private:
     move_group.allowReplanning(allow_replanning_);
   }
 
+  moveit::core::RobotStatePtr synchronized_current_robot_state(
+    MoveGroupInterface & move_group)
+  {
+    auto state = move_group.getCurrentState(system_wait_timeout_);
+    if (!state) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "MoveIt did not receive the current robot state.");
+    }
+
+    const auto robot_model = move_group.getRobotModel();
+    const auto * root_joint =
+      robot_model == nullptr ? nullptr : robot_model->getRootJoint();
+    if (root_joint == nullptr || root_joint->getVariableCount() == 0U) {
+      state->update();
+      return state;
+    }
+
+    try {
+      const auto transform = transform_buffer_->lookupTransform(
+        robot_model->getModelFrame(), robot_model->getRootLinkName(),
+        tf2::TimePointZero,
+        tf2::durationFromSec(system_wait_timeout_));
+      const auto & translation = transform.transform.translation;
+      const auto & rotation = transform.transform.rotation;
+      Eigen::Quaterniond quaternion(
+        rotation.w, rotation.x, rotation.y, rotation.z);
+      quaternion.normalize();
+      Eigen::Isometry3d root_transform = Eigen::Isometry3d::Identity();
+      root_transform.linear() = quaternion.toRotationMatrix();
+      root_transform.translation() = Eigen::Vector3d(
+        translation.x, translation.y, translation.z);
+      state->setJointPositions(root_joint, root_transform);
+      state->update();
+    } catch (const tf2::TransformException & error) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "MoveIt mobile-base transform '" +
+              robot_model->getModelFrame() + "' -> '" +
+              robot_model->getRootLinkName() +
+              "' is unavailable: " + error.what());
+    }
+    return state;
+  }
+
   static void update_validation_diagnostic(
     OperateCabinetControl::Result & result,
     const std::string & stage,
@@ -3983,6 +4250,68 @@ private:
     return trajectory.getLastWayPoint();
   }
 
+  bool set_pose_target_with_calibrated_ik_seed(
+    MoveGroupInterface & move_group,
+    const moveit::core::RobotState & start_state,
+    const geometry_msgs::msg::Pose & target,
+    const std::string & tool_link,
+    const ButtonSpec * control)
+  {
+    if (control == nullptr || control->ready_joint_seed_names.empty()) {
+      return move_group.setPoseTarget(target, tool_link);
+    }
+
+    const auto robot_model = move_group.getRobotModel();
+    const auto * joint_model_group =
+      robot_model == nullptr ? nullptr :
+      robot_model->getJointModelGroup(move_group_name_);
+    if (joint_model_group == nullptr) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              "MoveIt group '" + move_group_name_ +
+              "' is unavailable while applying the calibrated IK seed.");
+    }
+    const auto & group_variable_names =
+      joint_model_group->getVariableNames();
+    std::unordered_set<std::string> configured_names(
+      control->ready_joint_seed_names.begin(),
+      control->ready_joint_seed_names.end());
+    if (configured_names.size() != group_variable_names.size() ||
+      std::any_of(
+        group_variable_names.begin(), group_variable_names.end(),
+        [&configured_names](const std::string & name) {
+          return configured_names.count(name) == 0U;
+        }))
+    {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              "Control '" + control->id +
+              "' ready_joint_seed must name every variable of MoveIt group '" +
+              move_group_name_ + "' exactly once.");
+    }
+
+    moveit::core::RobotState seeded_goal(start_state);
+    seeded_goal.setVariablePositions(
+      control->ready_joint_seed_names,
+      control->ready_joint_seed_positions);
+    seeded_goal.update();
+    if (!seeded_goal.satisfiesBounds(joint_model_group)) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              "Control '" + control->id +
+              "' ready_joint_seed violates the configured joint limits.");
+    }
+    if (!seeded_goal.setFromIK(
+        joint_model_group, target, tool_link,
+        std::min(1.0, planning_time_)))
+    {
+      return false;
+    }
+    seeded_goal.update();
+    return seeded_goal.satisfiesBounds(joint_model_group) &&
+           move_group.setJointValueTarget(seeded_goal);
+  }
+
   moveit::core::RobotState validate_pose_plan_only(
     MoveGroupInterface & move_group,
     const std::shared_ptr<OperateGoalHandle> & goal_handle,
@@ -3990,13 +4319,24 @@ private:
     const geometry_msgs::msg::Pose & target,
     const std::string & tool_link,
     const std::string & stage,
-    const std::shared_ptr<OperateCabinetControl::Result> & result)
+    const std::shared_ptr<OperateCabinetControl::Result> & result,
+    const ButtonSpec * control = nullptr)
   {
     check_cancel(goal_handle);
     update_validation_diagnostic(
       *result, stage, 0.0, 1.0, 0);
+    RCLCPP_DEBUG(
+      get_logger(),
+      "Planning-only target [%s] link=%s frame=%s "
+      "position=(%.9f, %.9f, %.9f) orientation=(%.9f, %.9f, %.9f, %.9f)",
+      stage.c_str(), tool_link.c_str(), planning_frame_.c_str(),
+      target.position.x, target.position.y, target.position.z,
+      target.orientation.x, target.orientation.y,
+      target.orientation.z, target.orientation.w);
     move_group.setStartState(start_state);
-    if (!move_group.setPoseTarget(target, tool_link)) {
+    if (!set_pose_target_with_calibrated_ik_seed(
+        move_group, start_state, target, tool_link, control))
+    {
       update_validation_diagnostic(
         *result, stage, 0.0, 1.0,
         moveit_msgs::msg::MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS);
@@ -4214,6 +4554,7 @@ private:
     double target_position,
     const OperationPoses & button_poses,
     const RotaryOperationPoses & rotary_poses,
+    double rotary_tool_roll_offset,
     const moveit::core::RobotState & current_robot_state,
     const std::shared_ptr<OperateCabinetControl::Result> & result)
   {
@@ -4262,7 +4603,8 @@ private:
         "正在用实时 MoveIt 场景验证控件预备位姿（不会执行轨迹）。");
       virtual_state = validate_pose_plan_only(
         move_group, goal_handle, virtual_state,
-        rotary_poses.ready_pose, contact_tool_link_, "ready_pose", result);
+        rotary_poses.ready_pose, contact_tool_link_, "ready_pose", result,
+        &control);
       if (control.control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
       {
@@ -4279,18 +4621,13 @@ private:
         move_group, goal_handle, virtual_state,
         {rotary_poses.grasp_pose}, 0.99, "approach", result);
 
-      double manipulation_position = target_position;
       const bool is_door = control.control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
-      if (is_door &&
-        std::abs(target_position - initial_state.position) > target_tolerance_)
-      {
-        manipulation_position = initial_state.position +
-          door_release_fraction_ *
-          (target_position - initial_state.position);
-      }
+      const double manipulation_position = rotary_manipulation_position(
+        control, initial_state.position, target_position);
       const auto waypoints = calculate_rotation_waypoints(
-        control, initial_state.position, manipulation_position);
+        control, initial_state.position, manipulation_position,
+        rotary_tool_roll_offset);
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::MANIPULATING,
         0.62F, target_position,
@@ -4307,7 +4644,8 @@ private:
       const double release_clearance = is_door ?
         door_release_clearance_ : prepress_distance_;
       const auto target_ready = calculate_rotary_tool_pose(
-        control, manipulation_position, release_clearance, false);
+        control, manipulation_position, release_clearance, false,
+        rotary_tool_roll_offset);
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::RETREATING,
         0.84F, target_position,
@@ -4332,18 +4670,24 @@ private:
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const geometry_msgs::msg::Pose & target,
     const std::string & tool_link,
-    bool * operation_executed = nullptr)
+    bool * operation_executed = nullptr,
+    const ButtonSpec * control = nullptr)
   {
     check_cancel(goal_handle);
     MoveGroupInterface::Plan plan;
     bool planned = false;
     for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
       check_cancel(goal_handle);
-      move_group.setStartStateToCurrentState();
-      if (!move_group.setPoseTarget(target, tool_link)) {
+      const auto current_state =
+        synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
+      if (!set_pose_target_with_calibrated_ik_seed(
+          move_group, *current_state, target, tool_link, control))
+      {
         throw OperationError(
                 PressCabinetButton::Result::PLANNING_FAILED,
-                "MoveIt rejected the cabinet prepress pose target.");
+                "MoveIt rejected the cabinet pose target or its calibrated "
+                "IK seed did not converge.");
       }
       const auto planning_result = move_group.plan(plan);
       move_group.clearPoseTargets();
@@ -4401,7 +4745,9 @@ private:
     bool planned = false;
     for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
       check_stop();
-      move_group.setStartStateToCurrentState();
+      const auto current_state =
+        synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
       if (!move_group.setNamedTarget(target_name)) {
         throw OperationError(
                 PressCabinetButton::Result::PLANNING_FAILED,
@@ -4535,7 +4881,9 @@ private:
     double best_fraction = -1.0;
     for (int attempt = 0; attempt < cartesian_planning_attempts_; ++attempt) {
       check_cancel(goal_handle);
-      move_group.setStartStateToCurrentState();
+      const auto current_state =
+        synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
       moveit_msgs::msg::RobotTrajectory candidate;
       const double fraction = move_group.computeCartesianPath(
         waypoints,
@@ -4586,12 +4934,7 @@ private:
     double velocity_scale,
     double acceleration_scale)
   {
-    const auto current_state = move_group.getCurrentState(2.0);
-    if (!current_state) {
-      throw OperationError(
-              PressCabinetButton::Result::NOT_READY,
-              "MoveIt lost the current robot state while retiming the path.");
-    }
+    const auto current_state = synchronized_current_robot_state(move_group);
     robot_trajectory::RobotTrajectory trajectory(
       move_group.getRobotModel(), move_group_name_);
     trajectory.setRobotTrajectoryMsg(*current_state, trajectory_message);
@@ -4618,7 +4961,9 @@ private:
   {
     try {
       move_group.stop();
-      move_group.setStartStateToCurrentState();
+      const auto current_state =
+        synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
       moveit_msgs::msg::RobotTrajectory trajectory_message;
       const double fraction = move_group.computeCartesianPath(
         waypoints,
@@ -4744,7 +5089,9 @@ private:
   {
     try {
       move_group.stop();
-      move_group.setStartStateToCurrentState();
+      const auto current_state =
+        synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
       if (!move_group.setNamedTarget(transport_named_target_)) {
         RCLCPP_ERROR(
           get_logger(), "Safety target '%s' is not configured.",
@@ -5827,7 +6174,7 @@ private:
   std::vector<rclcpp::Subscription<
       xczs_inspection_robot_control::msg::CabinetControlState>::SharedPtr>
   control_state_subscriptions_;
-  std::unique_ptr<tf2_ros::Buffer> transform_buffer_;
+  std::shared_ptr<tf2_ros::Buffer> transform_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> transform_listener_;
 
   std::unordered_map<std::string, std::shared_ptr<ButtonSpec>> buttons_by_id_;
