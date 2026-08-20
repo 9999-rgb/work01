@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <!--
   Dual-arm semantic robot description.  Two 7-DOF manipulator groups (left_arm,
-  right_arm) plus four end-effector tool groups.  Each tool hangs from its arm
-  wrist (l_arm_6 / r_arm_6) through a fixed mount joint, matching the
-  robot_description produced by xczs_inspection_robot.urdf.xacro.
+  right_arm) plus four end-effector tool groups.  Each pair of tools hangs from
+  its arm wrist (l_arm_6 / r_arm_6) through a passive fixed carrier, matching
+  the robot_description produced by xczs_inspection_robot.urdf.xacro.
 -->
 <robot
   xmlns:xacro="http://www.ros.org/wiki/xacro"
@@ -42,26 +42,26 @@
     <joint name="r_rotbtn_jaw2_joint" />
   </group>
 
-  <!-- Neutral transport poses.  These are placeholders until the dual-arm
-       geometry is rendered and a collision-free home pose is calibrated. -->
+  <!-- Calibrated fortune-cat transport pose, identical to Gazebo spawn and
+       the manual/reset defaults exposed by the robot adapter. -->
   <group_state name="home" group="left_arm">
     <joint name="l_arm_0_joint" value="0" />
-    <joint name="l_arm_1_joint" value="0" />
+    <joint name="l_arm_1_joint" value="-1.4" />
     <joint name="l_arm_2_joint" value="0" />
-    <joint name="l_arm_3_joint" value="0" />
+    <joint name="l_arm_3_joint" value="-0.3" />
     <joint name="l_arm_4_joint" value="0" />
-    <joint name="l_arm_5_joint" value="0" />
-    <joint name="l_arm_6_joint" value="0" />
+    <joint name="l_arm_5_joint" value="0.7" />
+    <joint name="l_arm_6_joint" value="-0.85" />
   </group_state>
 
   <group_state name="home" group="right_arm">
     <joint name="r_arm_0_joint" value="0" />
-    <joint name="r_arm_1_joint" value="0" />
-    <joint name="r_arm_2_joint" value="0" />
+    <joint name="r_arm_1_joint" value="-1.6" />
+    <joint name="r_arm_2_joint" value="-0.4" />
     <joint name="r_arm_3_joint" value="0" />
     <joint name="r_arm_4_joint" value="0" />
-    <joint name="r_arm_5_joint" value="0" />
-    <joint name="r_arm_6_joint" value="0" />
+    <joint name="r_arm_5_joint" value="0.8" />
+    <joint name="r_arm_6_joint" value="0.1" />
   </group_state>
 
   <group_state name="open" group="three_cylinder">
@@ -131,16 +131,17 @@
   <disable_collisions link1="r_arm_4" link2="r_arm_5" reason="Adjacent" />
   <disable_collisions link1="r_arm_5" link2="r_arm_6" reason="Adjacent" />
   <disable_collisions link1="r_arm_6" link2="r_camera" reason="Adjacent" />
-  <disable_collisions link1="r_arm_4" link2="r_arm_6" reason="Wrist folds beside forearm at the cabinet ready pose" />
-  <disable_collisions link1="l_arm_4" link2="l_arm_6" reason="Wrist folds beside forearm at the cabinet ready pose" />
   <disable_collisions link1="r_arm_6" link2="arm_camera_link" reason="Adjacent" />
 
-  <!-- Tool mounts are fixed to their wrist, so their base links never move
-       relative to the wrist or to each other. -->
-  <disable_collisions link1="r_arm_6" link2="r_three_cyl_base" reason="Adjacent" />
-  <disable_collisions link1="r_arm_6" link2="r_rotbtn_body" reason="Adjacent" />
-  <disable_collisions link1="l_arm_6" link2="l_two_cyl_base" reason="Adjacent" />
-  <disable_collisions link1="l_arm_6" link2="l_rocker_body" reason="Adjacent" />
+  <!-- The carrier plates overlap the wrist shell and the four mounting
+       flanges by design.  Only those directly connected fixed pairs are
+       excluded; carrier/tool collisions with the forearms remain active. -->
+  <disable_collisions link1="r_arm_6" link2="r_tool_carrier" reason="Adjacent" />
+  <disable_collisions link1="l_arm_6" link2="l_tool_carrier" reason="Adjacent" />
+  <disable_collisions link1="r_tool_carrier" link2="r_three_cyl_base" reason="Adjacent" />
+  <disable_collisions link1="r_tool_carrier" link2="r_rotbtn_body" reason="Adjacent" />
+  <disable_collisions link1="l_tool_carrier" link2="l_two_cyl_base" reason="Adjacent" />
+  <disable_collisions link1="l_tool_carrier" link2="l_rocker_body" reason="Adjacent" />
   <disable_collisions link1="r_three_cyl_base" link2="r_rotbtn_body" reason="Default" />
   <disable_collisions link1="l_two_cyl_base" link2="l_rocker_body" reason="Default" />
 

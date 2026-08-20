@@ -85,19 +85,19 @@
     # 控制层不得再根据位置或关节名称猜测机械臂/工具限位。
     manual_joint_limits:
       l_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      l_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: -1.4}
       l_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      l_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: -0.3}
       l_arm_4_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      l_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      l_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.7}
+      l_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: -0.85}
       r_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      r_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      r_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: -1.6}
+      r_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: -0.4}
       r_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
       r_arm_4_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      r_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      r_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.8}
+      r_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.1}
       r_three_cyl_finger1_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
       r_three_cyl_finger2_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
       r_three_cyl_finger3_joint: {min_position: 0.0, max_position: 0.0254, default_position: 0.0}
@@ -424,47 +424,16 @@
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
-    # 双臂机器人的四个末端工具安装偏移与各臂 home 位姿尚未在仿真中完成
-    # 物理标定，逐控件可达性尚未通过完整闭环验收。所有控件仍显示并可
-    # 提交，但底层 Action 只执行实时 MoveIt 规划验证，不发任何机械臂轨迹、
-    # 抓取或柜体写入命令；标定并逐控件验收后按控件移除本清单即可。
-    unreachable_control_ids:
-      - cabinet_rear_door
-      - cabinet_main_switch
-      - box_1_button_1
-      - box_1_button_2
-      - box_2_button_1
-      - box_2_button_2
-      - box_3_button_1
-      - box_3_button_2
-      - box_4_button_1
-      - box_4_button_2
-      - box_5_button_1
-      - box_5_button_2
-      - box_6_button_1
-      - box_6_button_2
-      - box_7_button_1
-      - box_7_button_2
-      - box_8_button_1
-      - box_8_button_2
-      - box_10_button_1
-      - box_10_button_2
-      - box_11_button_1
-      - box_11_button_2
-      - box_1_knob
-      - box_2_knob
-      - box_3_knob
-      - box_4_knob
-      - box_5_knob
-      - box_6_knob
-      - box_7_knob
-      - box_8_knob
-      - box_9_knob
-      - box_10_knob
-      - box_11_knob
-    unreachable_control_reason: >-
-      双臂工具已按右臂肩关节对齐，逐控件 MoveIt 规划已通过；三电缸工具
-      无法物理触发小按钮，需窄探针工具。
+    # 物理执行能力采用正向清单，避免新增或漏列控件被默认开放。空清单在
+    # ROS 2 参数文件中无法可靠推断类型，因此零个通过项时省略
+    # operable_control_ids；每个完成可达、碰撞、接触、状态、无串扰和恢复
+    # 闭环验收的控件才可加入该清单，未列控件一律只做实时规划验证。
+    inoperable_control_reason: >-
+      当前四套固定末端工具与柜体工位尚未完成逐控件物理闭环验收；实测存在
+      按钮工具与面板干涉、部分目标无运动学或无碰撞路径，旋钮、总开关和后门
+      也未验证完整到档。为避免超出机器人现有硬件能力，所有控件仅保留状态
+      显示和实时规划验证，不下发机械臂、抓取或柜体写入命令；只有逐控件完成
+      全部闭环验收后，才能把具体 ID 加入 operable_control_ids。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

@@ -67,10 +67,8 @@ _ADAPTER_BLOCK = (
     "          base_yaw_offset: 0.0\n"
     "          frame_id: map\n"
 )
-# 适配器的 unreachable_control_ids 全不可达清单必须与控件目录保持一致；
-# 从 33 控件派生体删掉 box_9_knob 时，该清单也要同步删掉这一行，否则
-# 契约校验会报「覆盖不完整」的未知 ID。
-_UNREACHABLE_BOX9_LINE = "      - box_9_knob\n"
+# 物理能力采用正向 operable_control_ids 清单；当前样例没有把 box_9_knob
+# 列为已验收项，因此从 33 控件派生体删除它时只需同步删除导航工位。
 _GAZEBO_LINE = (
     '      <xacro:control_cabinet_knob_state control_id="box_9_knob" '
     'joint_name="box_9_box_9_knob" />\n'
@@ -92,9 +90,10 @@ def _derive_trimmed_cabinet(target: Path) -> Path:
     """Derive a 32-control cabinet from the sample by dropping box_9_knob.
 
     Removes the knob consistently across all four coupled sources: catalog
-    (control_ids + controls), robot adapter (reachability list), Gazebo
-    state plugin (``<control>`` block) and URDF module (joint + link).  The
-    scene profile only references the door / switch, which stay untouched.
+    (control_ids + controls), robot adapter (navigation station + capability
+    list), Gazebo state plugin (``<control>`` block) and URDF module (joint +
+    link).  The scene profile only references the door / switch, which stay
+    untouched.
     """
     shutil.copytree(SAMPLE_CABINET, target)
 
@@ -108,9 +107,7 @@ def _derive_trimmed_cabinet(target: Path) -> Path:
     adapter = target / "cabinet_robot_adapter.yaml"
     text = adapter.read_text(encoding="utf-8")
     assert _ADAPTER_BLOCK in text
-    assert _UNREACHABLE_BOX9_LINE in text
     text = text.replace(_ADAPTER_BLOCK, "")
-    text = text.replace(_UNREACHABLE_BOX9_LINE, "", 1)
     adapter.write_text(text, encoding="utf-8")
 
     gazebo = target / "control_cabinet" / "components" / "gazebo.xacro"

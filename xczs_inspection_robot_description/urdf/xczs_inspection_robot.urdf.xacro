@@ -10,6 +10,10 @@
   xmlns:xacro="http://www.ros.org/wiki/xacro"
   name="xczs_inspection_robot">
 
+  <xacro:arg
+    name="initial_positions_file"
+    default="$(find xczs_inspection_robot_description)/config/initial_positions.yaml" />
+
   <!-- Shared definitions. -->
   <xacro:include filename="components/properties.xacro" />
   <xacro:include filename="components/materials.xacro" />
@@ -28,6 +32,7 @@
   <xacro:xczs_dual_arm_cameras />
   <xacro:xczs_tools />
   <xacro:xczs_sensors />
-  <xacro:xczs_ros2_control />
+  <xacro:xczs_ros2_control
+    initial_positions_file="$(arg initial_positions_file)" />
   <xacro:xczs_gazebo />
 </robot>

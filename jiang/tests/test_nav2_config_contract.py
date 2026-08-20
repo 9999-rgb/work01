@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -31,6 +32,7 @@ ROBOT_ADAPTER = (
     / "cabinet_robot_adapter.yaml"
 )
 RUNNER_SOURCE = WORKSPACE / "jiang" / "control_gateway" / "runner.py"
+WEB_VALIDATOR = WORKSPACE / "scripts" / "validate_cabinet_web"
 
 
 def _numeric_constant(path: Path, name: str) -> float:
@@ -49,7 +51,26 @@ def _numeric_constant(path: Path, name: str) -> float:
     raise AssertionError(f"Missing numeric constant {name} in {path}")
 
 
+def _shell_numeric_assignment(path: Path, name: str) -> float:
+    source = path.read_text(encoding="utf-8")
+    match = re.search(
+        rf"(?m)^{re.escape(name)}=([0-9]+(?:\.[0-9]+)?)$",
+        source,
+    )
+    if match is None:
+        raise AssertionError(f"Missing numeric assignment {name} in {path}")
+    return float(match.group(1))
+
+
 class Nav2ConfigContractTest(unittest.TestCase):
+    def test_bt_navigator_allows_discovery_after_behavior_activation(
+        self,
+    ) -> None:
+        document = yaml.safe_load(NAV2_PARAMS.read_text(encoding="utf-8"))
+        navigator = document["bt_navigator"]["ros__parameters"]
+
+        self.assertGreaterEqual(navigator["wait_for_service_timeout"], 5000)
+
     def test_navigation_replans_only_for_new_or_invalid_path(self) -> None:
         document = yaml.safe_load(NAV2_PARAMS.read_text(encoding="utf-8"))
         navigator = document["bt_navigator"]["ros__parameters"]
@@ -124,6 +145,10 @@ class Nav2ConfigContractTest(unittest.TestCase):
         progress = controller["progress_checker"]
         goal = controller["general_goal_checker"]
 
+        self.assertFalse(
+            goal["stateful"],
+            "Nav2 must keep checking XY while the final yaw settles",
+        )
         self.assertEqual(
             "nav2_controller::PoseProgressChecker",
             progress["plugin"],
@@ -173,9 +198,17 @@ class Nav2ConfigContractTest(unittest.TestCase):
             RUNNER_SOURCE,
             "NAVIGATION_POSITION_TOLERANCE_M",
         )
+        validator_position_tolerance = _shell_numeric_assignment(
+            WEB_VALIDATOR,
+            "NAVIGATION_POSITION_TOLERANCE_M",
+        )
 
         self.assertLess(nav2_position_tolerance, task_position_tolerance)
         self.assertLessEqual(task_position_tolerance, takeover_distance)
+        self.assertEqual(
+            task_position_tolerance,
+            validator_position_tolerance,
+        )
 
 
 if __name__ == "__main__":

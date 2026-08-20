@@ -66,6 +66,7 @@ def _documents() -> dict[str, object]:
             "/**": {"ros__parameters": _robot_parameters()},
             "/**/xczs_cabinet_button_operator": {
                 "ros__parameters": {
+                    "inoperable_control_reason": "not physically validated",
                     "controls": {
                         "start_button": {
                             "navigation_station": {
@@ -76,7 +77,6 @@ def _documents() -> dict[str, object]:
                             }
                         }
                     },
-                    "unreachable_control_ids": [],
                 }
             },
         },
@@ -264,7 +264,7 @@ class ProfileContractTest(unittest.TestCase):
         with self.assertRaisesRegex(ProfileContractError, "must be true"):
             self._validate(documents)
 
-    def test_rejects_unknown_or_overlapping_robot_overrides(self) -> None:
+    def test_rejects_unknown_or_duplicate_availability_policies(self) -> None:
         documents = _documents()
         adapter = documents["adapter"]
         assert isinstance(adapter, dict)
@@ -292,12 +292,10 @@ class ProfileContractTest(unittest.TestCase):
                 "unavailable_reason": "not calibrated",
             }
         }
-        operator["unreachable_control_ids"] = ["start_button"]
-        operator["unreachable_control_reason"] = "outside workspace"
-        with self.assertRaisesRegex(ProfileContractError, "both"):
+        with self.assertRaisesRegex(ProfileContractError, "one authoritative"):
             self._validate(documents)
 
-    def test_allows_station_override_with_shared_unreachable_policy(self) -> None:
+    def test_allows_station_override_with_safe_default_policy(self) -> None:
         documents = _documents()
         adapter = documents["adapter"]
         assert isinstance(adapter, dict)
@@ -314,12 +312,62 @@ class ProfileContractTest(unittest.TestCase):
                 }
             }
         }
-        operator["unreachable_control_ids"] = ["start_button"]
-        operator["unreachable_control_reason"] = "outside workspace"
+        report = self._validate(documents)
+
+        self.assertEqual(1, report.control_count)
+        self.assertEqual((), report.operable_control_ids)
+
+    def test_allows_explicit_positive_capability(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "operable_control_ids"
+        ] = ["start_button"]
 
         report = self._validate(documents)
 
         self.assertEqual(1, report.control_count)
+        self.assertEqual(("start_button",), report.operable_control_ids)
+
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "inoperable_control_reason"
+        ] = ""
+        with self.assertRaisesRegex(
+            ProfileContractError, "inoperable_control_reason"
+        ):
+            self._validate(documents)
+
+    def test_rejects_unknown_or_explicit_empty_operable_sequence(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "operable_control_ids"
+        ] = []
+
+        with self.assertRaisesRegex(ProfileContractError, "must be omitted"):
+            self._validate(documents)
+
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "operable_control_ids"
+        ] = ["missing_button"]
+        with self.assertRaisesRegex(ProfileContractError, "unknown IDs"):
+            self._validate(documents)
+
+    def test_rejects_legacy_fail_open_denylist(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        adapter["/**/xczs_cabinet_button_operator"]["ros__parameters"][
+            "unreachable_control_ids"
+        ] = ["start_button"]
+
+        with self.assertRaisesRegex(ProfileContractError, "fail-open"):
+            self._validate(documents)
 
     def test_rejects_control_without_explicit_navigation_station(self) -> None:
         documents = _documents()
@@ -374,6 +422,7 @@ class ProfileContractTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ProfileContractError, "does not match"):
             self._validate(documents)
+
 
 if __name__ == "__main__":
     unittest.main()

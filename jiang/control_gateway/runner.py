@@ -115,6 +115,10 @@ NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.22
 NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.25
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
+# Reserve the first two percent for the joint-homing preflight.  Cabinet action
+# feedback is reported in its own 0..1 range and must be mapped above this band
+# or a legitimate initial 0.0 feedback sample makes task progress go backward.
+OPERATION_PREFLIGHT_PROGRESS = 0.02
 TASK_MONITOR_PERIOD_SEC = 0.10
 EXECUTOR_SPIN_PERIOD_SEC = 0.10
 # Must stay looser than the Nav2 goal checker (0.20 m) and tighter than the
@@ -2447,11 +2451,13 @@ class ControlServer:
             return {"status": "skipped", "reason": "cancel_requested"}
         try:
             return self._home_robot_joints(
-                context,
+                # The task is already on its failure path and can have reached
+                # any progress value.  Reporting recovery from zero would
+                # violate TaskManager's monotonic-progress contract and mask
+                # the original, actionable failure with an internal error.
+                None,
                 cabinet,
                 progress_stage="recovering_robot_joints",
-                progress_base=0.0,
-                progress_span=1.0,
             )
         except TaskExecutionError as error:
             return {
@@ -3776,7 +3782,7 @@ class ControlServer:
             context,
             cabinet,
             progress_base=0.0,
-            progress_span=0.02,
+            progress_span=OPERATION_PREFLIGHT_PROGRESS,
         )
         event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         with self._operation_bindings_lock:
@@ -3785,7 +3791,7 @@ class ControlServer:
         timeout_started_at: Optional[float] = None
         timeout_reported = False
         last_timeout_cancel_at = 0.0
-        last_progress = 0.0
+        last_progress = OPERATION_PREFLIGHT_PROGRESS
         # The cabinet action drives MoveIt/Gazebo under the ROS/sim clock, so
         # its deadline must be sim time too: a wall-only deadline false-trips
         # when Gazebo's real-time factor is below one.  Sample the sim baseline
@@ -3922,9 +3928,15 @@ class ControlServer:
                             progress = last_progress
                         if not math.isfinite(progress):
                             progress = last_progress
+                        backend_progress = min(1.0, max(0.0, progress))
                         progress = max(
                             last_progress,
-                            min(0.99, max(0.0, progress)),
+                            min(
+                                0.99,
+                                OPERATION_PREFLIGHT_PROGRESS
+                                + (0.99 - OPERATION_PREFLIGHT_PROGRESS)
+                                * backend_progress,
+                            ),
                         )
                         last_progress = progress
                         context.progress(

@@ -36,6 +36,7 @@
   <depend>trajectory_msgs</depend>
 
   <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>control_msgs</exec_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>joint_state_broadcaster</exec_depend>
   <exec_depend>joint_trajectory_controller</exec_depend>
@@ -46,13 +47,17 @@
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>nav_msgs</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>rclpy</exec_depend>
   <exec_depend>ros2bag</exec_depend>
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>xacro</exec_depend>
   <exec_depend>xczs_inspection_robot_description</exec_depend>
   <exec_depend>xczs_inspection_robot_moveit_config</exec_depend>
   <exec_depend>xczs_inspection_robot_nav2</exec_depend>
-  <exec_depend>xfce4-terminal</exec_depend>
+  <!-- Keyboard teleoperation optionally launches xfce4-terminal. Ubuntu
+       Jammy has no rosdep key for it, so start_xczs_bridge.sh checks the
+       executable only when teleop is requested instead of breaking rosdep
+       for every headless/Web deployment. -->
   <exec_depend>rosidl_default_runtime</exec_depend>
 
   <test_depend>ament_cmake_gtest</test_depend>

@@ -251,6 +251,7 @@ class _CabinetClient:
         self.reset_error: Optional[CabinetClientError] = None
         self.submit_error: Optional[Exception] = None
         self.submission_response: Optional[Dict[str, Any]] = None
+        self.feedback_progress = 0.4
         self.status = {
             "available": True,
             "active": False,
@@ -293,7 +294,7 @@ class _CabinetClient:
                 "timestamp": time.time(),
                 "phase": "approaching",
                 "phase_code": 4,
-                "progress": 0.4,
+                "progress": self.feedback_progress,
                 "current_position": 0.001,
                 "target_position": 0.00625,
                 "current_state": "released",
@@ -2387,6 +2388,45 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("success", task["status"])
         self.assertAlmostEqual(0.00625, task["result"]["actual_displacement"])
         self.assertTrue(task["result"]["button_triggered"])
+
+    def test_operation_progress_stays_monotonic_after_slow_homing(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        client.feedback_progress = 0.0
+        node.joint_positions["arm1_arm2"] = 0.0
+        node.joint_state_received_monotonic = time.monotonic()
+
+        original_snapshot = node.robot_joint_state_snapshot
+        snapshots_after_command = 0
+
+        def delayed_home_snapshot() -> Dict[str, Any]:
+            nonlocal snapshots_after_command
+            snapshot = original_snapshot()
+            if node.joint_targets:
+                snapshots_after_command += 1
+                if snapshots_after_command == 1:
+                    snapshot["available"] = False
+            return snapshot
+
+        node.robot_joint_state_snapshot = (  # type: ignore[method-assign]
+            delayed_home_snapshot
+        )
+        accepted = server.submit_operation_task(
+            "cabinet_a", "button_1", "press", None, None, 5.0
+        )
+        self.assertTrue(client.submit_event.wait(timeout=1.0))
+        client.finish("success")
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        events = server._task_manager.events.events_after(0)
+        task_progress = [
+            event["data"]["progress"]
+            for event in events
+            if event["data"].get("task_id") == accepted["task_id"]
+            and event["event"] == "task_progress"
+        ]
+        self.assertEqual(sorted(task_progress), task_progress)
 
     def test_synchronous_operation_failure_does_not_wait_for_listener(self) -> None:
         server, _node = _server()

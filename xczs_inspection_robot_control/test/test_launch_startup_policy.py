@@ -12,6 +12,7 @@ from launch.actions import IncludeLaunchDescription, OpaqueFunction
 from launch.actions import RegisterEventHandler
 from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
+from launch.event_handlers import OnShutdown
 from launch.events import Shutdown
 from launch_ros.actions import Node
 
@@ -262,6 +263,138 @@ def test_required_process_failure_logs_and_requests_shutdown():
     assert all(action not in result for action in downstream)
 
 
+def test_spawn_pose_is_verified_without_delayed_motion(tmp_path):
+    module = _load_launch_module()
+    with patch.object(
+        module,
+        "get_package_share_directory",
+        return_value=str(tmp_path),
+    ):
+        entities = list(module.generate_launch_description().entities)
+
+    controller_handler = next(
+        entity
+        for entity in entities
+        if isinstance(entity, RegisterEventHandler)
+        and isinstance(entity.event_handler, OnProcessExit)
+        and isinstance(_on_process_exit_target(entity), Node)
+        and _on_process_exit_target(entity).node_executable == "spawner"
+    )
+    downstream = _on_process_exit_callback(controller_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+
+    verifier = next(
+        action for action in downstream if isinstance(action, ExecuteProcess)
+    )
+    command_text = " ".join(
+        substitution.text
+        for part in verifier.cmd
+        for substitution in part
+        if hasattr(substitution, "text")
+    )
+    assert "verify_initial_pose.py" in command_text
+    assert "set_initial_pose.py" not in command_text
+
+    verifier_handler = next(
+        action
+        for action in downstream
+        if isinstance(action, RegisterEventHandler)
+        and _on_process_exit_target(action) is verifier
+    )
+    assert downstream.index(verifier_handler) < downstream.index(verifier)
+
+    failure_actions = _on_process_exit_callback(verifier_handler)(
+        SimpleNamespace(returncode=1),
+        None,
+    )
+    assert isinstance(failure_actions[1], EmitEvent)
+    assert isinstance(failure_actions[1].event, Shutdown)
+    assert "spawn-time fortune-cat pose verification" in failure_actions[1].event.reason
+    assert "code 1" in failure_actions[1].event.reason
+
+    verified_actions = _on_process_exit_callback(verifier_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+    assert "base_command_router" in _node_executables(verified_actions)
+    assert "legacy_trajectory_router" in _node_executables(verified_actions)
+    assert any(
+        isinstance(action, IncludeLaunchDescription)
+        for action in verified_actions
+    )
+
+
+def test_shutdown_handler_removes_all_generated_directories(tmp_path):
+    module = _load_launch_module()
+    with patch.object(
+        module,
+        "get_package_share_directory",
+        return_value=str(tmp_path),
+    ):
+        entities = list(module.generate_launch_description().entities)
+
+    cleanup_index, cleanup = next(
+        (index, entity)
+        for index, entity in enumerate(entities)
+        if isinstance(entity, RegisterEventHandler)
+        and isinstance(entity.event_handler, OnShutdown)
+    )
+    opaque_indexes = [
+        index
+        for index, entity in enumerate(entities)
+        if isinstance(entity, OpaqueFunction)
+    ]
+    assert opaque_indexes
+    assert cleanup_index < min(opaque_indexes)
+
+    generated = [
+        tmp_path / "xczs_cabinets_test",
+        tmp_path / "xczs_nav2_params_test",
+    ]
+    for directory in generated:
+        directory.mkdir()
+        (directory / "generated.file").write_text("test", encoding="utf-8")
+    module._GENERATED_DIRECTORIES.extend(generated)
+
+    launch_service = LaunchService()
+    launch_service.include_launch_description(
+        LaunchDescription(
+            [cleanup, EmitEvent(event=Shutdown(reason="test shutdown"))]
+        )
+    )
+    assert launch_service.run() == 0
+    assert not module._GENERATED_DIRECTORIES
+    assert all(not directory.exists() for directory in generated)
+
+
+def test_generated_directories_use_run_all_owned_runtime_root(
+    tmp_path, monkeypatch
+):
+    module = _load_launch_module()
+    runtime_root = tmp_path / "xczs_runtime_test"
+    runtime_root.mkdir()
+    monkeypatch.setenv(
+        "XCZS_LAUNCH_RUNTIME_DIRECTORY", str(runtime_root)
+    )
+
+    cabinet_directory = module._make_generated_directory("xczs_cabinets_")
+    nav2_directory = module._make_generated_directory("xczs_nav2_params_")
+
+    assert cabinet_directory.parent == runtime_root
+    assert nav2_directory.parent == runtime_root
+    assert module._GENERATED_DIRECTORIES == [
+        cabinet_directory,
+        nav2_directory,
+    ]
+
+    module._cleanup_generated_directories()
+    assert runtime_root.is_dir()
+    assert not cabinet_directory.exists()
+    assert not nav2_directory.exists()
+
+
 def test_required_process_handlers_are_registered_before_nodes(tmp_path):
     module = _load_launch_module()
     with patch.object(
@@ -337,6 +470,19 @@ def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
         and _on_process_exit_target(entity).node_executable == "spawner"
     )
     downstream = _on_process_exit_callback(controller_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+    verifier = next(
+        action for action in downstream if isinstance(action, ExecuteProcess)
+    )
+    verifier_handler = next(
+        action
+        for action in downstream
+        if isinstance(action, RegisterEventHandler)
+        and _on_process_exit_target(action) is verifier
+    )
+    downstream = _on_process_exit_callback(verifier_handler)(
         SimpleNamespace(returncode=0),
         None,
     )

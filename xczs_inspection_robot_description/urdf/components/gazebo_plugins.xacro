@@ -45,6 +45,10 @@
     <xacro:xczs_gazebo_link_properties link_name="r_arm_5" material="Gazebo/Orange" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_arm_6" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
 
+    <!-- Passive dual-tool carriers. -->
+    <xacro:xczs_gazebo_link_properties link_name="r_tool_carrier" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_tool_carrier" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+
     <!-- Right tools - three_cylinder + rotate_button. -->
     <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />

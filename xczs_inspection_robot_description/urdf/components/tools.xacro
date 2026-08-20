@@ -16,42 +16,33 @@
     The mounting transforms below are a BEST-EFFORT estimate - the exact pose of
     each tool base on the l_arm_6 / r_arm_6 flange is not exported by SolidWorks
     and must be confirmed/tuned in Gazebo.  Each pose is a single property so
-    tuning is a one-line change.
+    tuning is a one-line change.  A passive carrier plate spans both mount
+    origins on each wrist; without that plate the +/-0.20 m origins leave the
+    four otherwise-fixed tools visibly floating beside the wrist.
 
-    Orientation derivation (roll about the flange X axis, which points straight
-    up at the all-zero home pose).  At home the flange frame maps to the body as
-    X->up(+Z), Y->backward(-Y), Z->right(+X), and the robot's forward / cabinet
-    side is body +Y.  The cylinder-finger tools (three_cylinder, two_cylinder)
-    act along their -Z and the rocker / rotate-button tools act along their +Z,
-    so a -90deg roll turns the fingers forward and a +90deg roll turns the
-    rotor / jaws forward.  This yields
-      three_cylinder, two_cylinder -> roll -90deg (business end -Z -> +Y)
-      rocker, rotate_button         -> roll +90deg (business end +Z -> +Y)
-
-    Offsets separate the two tools on each wrist side-by-side (flange Z, i.e.
-    the robot's left/right) rather than inline along the approach direction.
+    The operator publishes every contact-link pose with +Z outward and applies
+    the calibrated business-point offset along link -Z.  All four fixed mounts
+    therefore retain the established R_y(pi) transform.  The +/-X offsets put
+    the two tools side-by-side on the rigid carrier rather than inline along
+    the approach direction.
   -->
 
   <!--
-    Per-tool mount pose (roll) and flange offsets (xyz).
+    Per-tool mount orientation and carrier offsets (xyz).
 
-    Roll keeps the design-orientation (business end of each tool toward the
-    cabinet).  The xyz offsets are tuned so the tool BODIES clear the forearm
+    R_y(pi) keeps the operator's business-point direction toward the cabinet.
+    The xyz offsets are tuned so the tool BODIES clear the forearm
     links (arm_4/arm_5) at the all-zero home pose: the right/left cylinder
     tools are lifted ABOVE the wrist (+X flange, world +Z) while the
     rotate-button / rocker tools hang BELOW it (-X flange).  Without this the
     tool bodies overlap the forearms by 2-16 mm at all-zero, which makes the
     MoveIt start state invalid and blocks every control plan.
   -->
-  <!-- 180° pitch mounts (R_y(pi)): the tool frame +Z maps to the wrist -Z, so
-       at the operator's ready pose (tool +Z = outward) the wrist +Z points
-       forward toward the control and the tool's operating feature (-Z, the
-       fingers/paddle) extends from the wrist toward it.  The previous ±90°
-       side mounts forced the wrist +Y outward, which the 7-DOF arm cannot
-       reach at the button/knob position (IK always failed); a plain yaw-only
-       mount pointed the wrist backward (-X) which was also unreachable.  The
-       rotate-button tool uses the same flip (its rotor faces away from the
-       knob; the knob grasp is abstract and does not depend on it). -->
+  <!-- R_y(pi) preserves the operator coordinate contract shared by all four
+       tools: contact-link +Z is outward and the calibrated business-point
+       offset runs along link -Z toward the cabinet.  Tool/forearm clearance
+       is a transport-pose constraint and must not be hidden by flipping a
+       tool away from its physical working direction. -->
   <xacro:property name="three_cyl_mount_rpy" value="0 3.14159265359 0" />
   <xacro:property name="two_cyl_mount_rpy" value="0 3.14159265359 0" />
   <xacro:property name="rocker_mount_rpy" value="0 3.14159265359 0" />
@@ -60,6 +51,64 @@
   <xacro:property name="rotate_button_mount_xyz" value="-0.20 0 0.00" />
   <xacro:property name="two_cyl_mount_xyz" value="0.20 0 0.00" />
   <xacro:property name="rocker_mount_xyz" value="-0.20 0 0.00" />
+
+  <!--
+    Rigid dual-tool carrier.  The 0.48 m span covers both +/-0.20 m tool
+    centres plus their 33.5 mm SolidWorks flange radius.  The 80 mm visual
+    width covers the complete flange diameter; each 68 mm collision wing
+    covers the exported 67 mm flange and the 30 mm plate thickness overlaps
+    its shoulder.  Its centre is embedded in the arm_6 wrist shell, so the
+    union of wrist and carrier geometry is continuous to both tool bases.
+    This is a fixed structural mount, not an actuator or an additional robot
+    degree of freedom.
+  -->
+  <xacro:macro name="xczs_tool_carrier" params="prefix parent">
+    <joint name="${prefix}_tool_carrier_mount" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="${parent}" />
+      <child link="${prefix}_tool_carrier" />
+    </joint>
+    <gazebo reference="${prefix}_tool_carrier_mount">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+
+    <link name="${prefix}_tool_carrier">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.35" />
+        <inertia
+          ixx="0.000212"
+          ixy="0"
+          ixz="0"
+          iyy="0.006746"
+          iyz="0"
+          izz="0.006907" />
+      </inertial>
+      <visual name="${prefix}_tool_carrier_visual">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <box size="0.48 0.08 0.03" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <!-- arm_6 already supplies the physical centre of the plate.  Splitting
+           the carrier collision into two wings avoids duplicating that solid
+           wrist volume (which otherwise falsely collides with adjacent
+           arm_5), while both wings overlap the measured arm_6 X envelope. -->
+      <collision name="${prefix}_tool_carrier_positive_collision">
+        <origin xyz="0.1575 0 0" rpy="0 0 0" />
+        <geometry>
+          <box size="0.165 0.068 0.03" />
+        </geometry>
+      </collision>
+      <collision name="${prefix}_tool_carrier_negative_collision">
+        <origin xyz="-0.1475 0 0" rpy="0 0 0" />
+        <geometry>
+          <box size="0.185 0.068 0.03" />
+        </geometry>
+      </collision>
+    </link>
+  </xacro:macro>
 
   <!--
     Three electric cylinders (right hand).  Three prismatic fingers; finger3 is
@@ -522,9 +571,11 @@
       left  arm -> two_cylinder    + rocker
   -->
   <xacro:macro name="xczs_tools" params="">
-    <xacro:xczs_three_cylinder prefix="r" parent="r_arm_6" />
-    <xacro:xczs_rotate_button prefix="r" parent="r_arm_6" />
-    <xacro:xczs_two_cylinder prefix="l" parent="l_arm_6" />
-    <xacro:xczs_rocker prefix="l" parent="l_arm_6" />
+    <xacro:xczs_tool_carrier prefix="r" parent="r_arm_6" />
+    <xacro:xczs_tool_carrier prefix="l" parent="l_arm_6" />
+    <xacro:xczs_three_cylinder prefix="r" parent="r_tool_carrier" />
+    <xacro:xczs_rotate_button prefix="r" parent="r_tool_carrier" />
+    <xacro:xczs_two_cylinder prefix="l" parent="l_tool_carrier" />
+    <xacro:xczs_rocker prefix="l" parent="l_tool_carrier" />
   </xacro:macro>
 </robot>

@@ -35,6 +35,7 @@ MANAGED_GUARD_TIMEOUT_SEC="${XCZS_MANAGED_GUARD_TIMEOUT_SEC:-5}"
 MANAGED_PIDS=()
 MANAGED_PGIDS=()
 MANAGED_LABELS=()
+LAUNCH_RUNTIME_DIRECTORY=""
 
 # ── 路径配置 ──────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -408,6 +409,45 @@ _wait_for_managed_groups() {
     done
 }
 
+_create_launch_runtime_directory() {
+    if [ -n "${LAUNCH_RUNTIME_DIRECTORY:-}" ]; then
+        echo "ERROR: 本次启动的临时目录已经创建。" >&2
+        return 1
+    fi
+    LAUNCH_RUNTIME_DIRECTORY="$(
+        mktemp -d /tmp/xczs_runtime_XXXXXXXX
+    )" || {
+        echo "ERROR: 无法创建本次启动的临时目录。" >&2
+        return 1
+    }
+    export XCZS_LAUNCH_RUNTIME_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY"
+}
+
+_cleanup_launch_runtime_directory() {
+    local runtime_directory="${LAUNCH_RUNTIME_DIRECTORY:-}"
+    [ -z "$runtime_directory" ] && return 0
+    # 该值只由上面的 mktemp 生成；再次约束绝对前缀，避免任何宽范围删除。
+    case "$runtime_directory" in
+        /tmp/xczs_runtime_*) ;;
+        *)
+            echo "ERROR: 拒绝清理异常临时目录: $runtime_directory" >&2
+            return 1
+            ;;
+    esac
+    if [ -e "$runtime_directory" ]; then
+        rm -rf -- "$runtime_directory" || {
+            echo "ERROR: 无法清理本次启动的临时目录: $runtime_directory" >&2
+            return 1
+        }
+    fi
+    if [ -e "$runtime_directory" ]; then
+        echo "ERROR: 本次启动的临时目录仍然存在: $runtime_directory" >&2
+        return 1
+    fi
+    LAUNCH_RUNTIME_DIRECTORY=""
+    unset XCZS_LAUNCH_RUNTIME_DIRECTORY
+}
+
 cleanup() {
     local exit_code="${1:-$?}"
     local all_closed="true"
@@ -450,6 +490,12 @@ cleanup() {
     for pid in "${MANAGED_PIDS[@]}"; do
         wait "$pid" 2>/dev/null || true
     done
+    if ! _cleanup_launch_runtime_directory; then
+        all_closed="false"
+        if [ "$exit_code" -eq 0 ]; then
+            exit_code=1
+        fi
+    fi
     if [ "${#MANAGED_PIDS[@]}" -gt 0 ]; then
         for process_group in "${MANAGED_PGIDS[@]}"; do
             if _process_group_is_running "$process_group"; then
@@ -500,7 +546,7 @@ if [ "$ZENOH_REQUIRED" = "true" ] && [ ! -x "$ZENOH_BRIDGE" ]; then
     echo "ERROR: zenoh-bridge-ros2dds 不存在或不可执行: $ZENOH_BRIDGE"
     exit 1
 fi
-for required_command in setsid ps tr; do
+for required_command in setsid ps tr mktemp rm; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         echo "ERROR: 启动脚本缺少系统命令: $required_command"
         exit 1
@@ -974,7 +1020,8 @@ if [ "$CONTROL_MODE" = "web" ] || [ "$CABINET_BRINGUP" = "true" ]; then
         --instances "$CABINET_INSTANCES_PATH" \
         --controls "$CABINET_CONTROLS_PATH" \
         --scene "$CABINET_SCENE_PATH" \
-        --pose "$CABINET_POSE_PATH"; then
+        --pose "$CABINET_POSE_PATH" \
+        --kinematics "$MOVEIT_KINEMATICS_PATH"; then
         echo "ERROR: 启动配置合同校验失败。"
         exit 1
     fi
@@ -1378,6 +1425,7 @@ LAUNCH_ARGS=(
 if [ -n "$NAV2_MAP_PATH" ]; then
     LAUNCH_ARGS+=("nav2_map:=$NAV2_MAP_PATH")
 fi
+_create_launch_runtime_directory
 _start_managed_process LAUNCH_PID "ROS 2 launch" \
     ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
     "${LAUNCH_ARGS[@]}"

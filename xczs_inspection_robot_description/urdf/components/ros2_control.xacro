@@ -23,29 +23,38 @@
     </joint>
   </xacro:macro>
 
-  <xacro:macro name="xczs_ros2_control" params="">
+  <xacro:macro name="xczs_ros2_control" params="initial_positions_file">
+    <!--
+      GazeboSystem applies these state-interface initial values directly to
+      both the Gazebo joints and its position-command buffers while the model
+      plugin is loading.  The robot therefore enters the world in this pose;
+      no post-spawn trajectory or transient zero-pose command is required.
+    -->
+    <xacro:property
+      name="initial_positions"
+      value="${xacro.load_yaml(initial_positions_file)['initial_positions']}" />
     <ros2_control name="XCZSGazeboSystem" type="system">
       <hardware>
         <plugin>gazebo_ros2_control/GazeboSystem</plugin>
       </hardware>
 
       <!-- Left arm - 7-DOF revolute chain. -->
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_0_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_1_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_2_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_3_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_4_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_5_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_arm_6_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_0_joint" initial_value="${initial_positions['l_arm_0_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_1_joint" initial_value="${initial_positions['l_arm_1_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_2_joint" initial_value="${initial_positions['l_arm_2_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_3_joint" initial_value="${initial_positions['l_arm_3_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_4_joint" initial_value="${initial_positions['l_arm_4_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_5_joint" initial_value="${initial_positions['l_arm_5_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_6_joint" initial_value="${initial_positions['l_arm_6_joint']}" />
 
       <!-- Right arm - 7-DOF revolute chain. -->
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_0_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_1_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_2_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_3_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_4_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_5_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_arm_6_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_0_joint" initial_value="${initial_positions['r_arm_0_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_1_joint" initial_value="${initial_positions['r_arm_1_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_2_joint" initial_value="${initial_positions['r_arm_2_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_3_joint" initial_value="${initial_positions['r_arm_3_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_4_joint" initial_value="${initial_positions['r_arm_4_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_5_joint" initial_value="${initial_positions['r_arm_5_joint']}" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_6_joint" initial_value="${initial_positions['r_arm_6_joint']}" />
 
       <!-- Right tools - three_cylinder (3) + rotate_button (2). -->
       <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />

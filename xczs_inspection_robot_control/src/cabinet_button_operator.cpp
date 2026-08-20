@@ -27,6 +27,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "geometry_msgs/msg/twist.hpp"
 #include "moveit/move_group_interface/move_group_interface.h"
+#include "moveit/robot_model/robot_model.h"
 #include "moveit/robot_trajectory/robot_trajectory.h"
 #include "moveit/trajectory_processing/time_optimal_trajectory_generation.h"
 #include "moveit/utils/moveit_error_code.h"
@@ -278,6 +279,54 @@ geometry_msgs::msg::Quaternion to_message(const tf2::Quaternion & quaternion)
 }
 
 }  // namespace
+
+std::optional<std::string> tool_profile_kinematics_validation_error(
+  const moveit::core::RobotModelConstPtr & robot_model,
+  std::vector<std::string> move_group_names)
+{
+  std::sort(move_group_names.begin(), move_group_names.end());
+  move_group_names.erase(
+    std::unique(move_group_names.begin(), move_group_names.end()),
+    move_group_names.end());
+
+  std::vector<std::string> errors;
+  errors.reserve(move_group_names.size());
+  for (const auto & move_group_name : move_group_names) {
+    if (!robot_model) {
+      errors.emplace_back(
+        "MoveIt RobotModel is unavailable while validating tool profile "
+        "JointModelGroup '" + move_group_name + "'.");
+      continue;
+    }
+
+    const auto * joint_model_group =
+      robot_model->getJointModelGroup(move_group_name);
+    if (!joint_model_group) {
+      errors.emplace_back(
+        "The robot adapter tool profile references missing MoveIt "
+        "JointModelGroup '" + move_group_name + "'.");
+      continue;
+    }
+    if (!joint_model_group->getSolverInstance()) {
+      errors.emplace_back(
+        "MoveIt JointModelGroup '" + move_group_name +
+        "' has no configured kinematics solver.");
+    }
+  }
+
+  if (errors.empty()) {
+    return std::nullopt;
+  }
+
+  std::ostringstream message;
+  for (std::size_t index = 0; index < errors.size(); ++index) {
+    if (index != 0U) {
+      message << ' ';
+    }
+    message << errors[index];
+  }
+  return message.str();
+}
 
 class CabinetButtonOperator final : public rclcpp::Node
 {
@@ -922,20 +971,21 @@ private:
       throw std::invalid_argument(
               "Parameter 'control_ids' must contain at least one control.");
     }
-    const auto unreachable_control_ids =
+    const auto operable_control_ids =
       declare_parameter<std::vector<std::string>>(
-      "unreachable_control_ids", std::vector<std::string>{});
-    const auto unreachable_control_reason = declare_parameter<std::string>(
-      "unreachable_control_reason",
-      "The control is outside this robot's configured workspace.");
-    const std::unordered_set<std::string> unreachable_controls(
-      unreachable_control_ids.begin(), unreachable_control_ids.end());
-    if (unreachable_controls.size() != unreachable_control_ids.size() ||
-      (!unreachable_controls.empty() && unreachable_control_reason.empty()))
+      "operable_control_ids", std::vector<std::string>{});
+    const auto inoperable_control_reason = declare_parameter<std::string>(
+      "inoperable_control_reason",
+      "The control has not passed this robot adapter's complete physical "
+      "operation and recovery validation.");
+    const std::unordered_set<std::string> operable_controls(
+      operable_control_ids.begin(), operable_control_ids.end());
+    if (operable_controls.size() != operable_control_ids.size() ||
+      inoperable_control_reason.empty())
     {
       throw std::invalid_argument(
-              "Robot reachability overrides must be unique and include a "
-              "non-empty reason.");
+              "Robot operable_control_ids must be unique and the shared "
+              "inoperable_control_reason must be non-empty.");
     }
 
     const auto button_default_axis = declare_parameter<std::vector<double>>(
@@ -1091,13 +1141,16 @@ private:
         button->default_force = declare_parameter<double>(
           prefix + "default_force", button_default_force);
       }
-      button->operable = declare_parameter<bool>(
-        prefix + "operable", true);
+      button->operable = operable_controls.count(control_id) != 0U;
       button->unavailable_reason = declare_parameter<std::string>(
         prefix + "unavailable_reason", "");
-      if (unreachable_controls.count(control_id) != 0U) {
-        button->operable = false;
-        button->unavailable_reason = unreachable_control_reason;
+      if (button->operable && !button->unavailable_reason.empty()) {
+        throw std::invalid_argument(
+                "Operable control '" + control_id +
+                "' must not declare an unavailable_reason.");
+      }
+      if (!button->operable && button->unavailable_reason.empty()) {
+        button->unavailable_reason = inoperable_control_reason;
       }
       const std::string station_prefix = prefix + "navigation_station.";
       const std::string station_anchor_parameter =
@@ -1283,11 +1336,11 @@ private:
         parent_id = parent->second->parent_control_id;
       }
     }
-    for (const auto & unreachable_control : unreachable_controls) {
-      if (buttons_by_id_.count(unreachable_control) == 0U) {
+    for (const auto & operable_control : operable_controls) {
+      if (buttons_by_id_.count(operable_control) == 0U) {
         throw std::invalid_argument(
-                "Unknown unreachable_control_ids entry '" +
-                unreachable_control + "'.");
+                "Unknown operable_control_ids entry '" +
+                operable_control + "'.");
       }
     }
   }
@@ -1553,6 +1606,7 @@ private:
     OperationPoses poses;
     ControlStagingPoses staging_poses;
     bool should_attempt_retreat = false;
+    bool move_group_ready_for_motion = false;
     bool request_success = false;
 
     if (!embedded_navigation_request_is_supported(
@@ -1615,6 +1669,7 @@ private:
         active_move_group_ = move_group;
       }
       configure_move_group(*move_group);
+      move_group_ready_for_motion = true;
       if (!move_group->getCurrentState(system_wait_timeout_)) {
         throw OperationError(
                 PressCabinetButton::Result::NOT_READY,
@@ -1778,7 +1833,9 @@ private:
       if (lease_available && should_attempt_retreat && move_group && rclcpp::ok()) {
         best_effort_retreat(*move_group, poses.prepress_pose);
       }
-      if (lease_available && move_group && rclcpp::ok()) {
+      if (lease_available && move_group_ready_for_motion && move_group &&
+        rclcpp::ok())
+      {
         best_effort_stow(*move_group);
       }
       result->success = false;
@@ -1801,7 +1858,9 @@ private:
       if (lease_available && should_attempt_retreat && move_group && rclcpp::ok()) {
         best_effort_retreat(*move_group, poses.prepress_pose);
       }
-      if (lease_available && move_group && rclcpp::ok()) {
+      if (lease_available && move_group_ready_for_motion && move_group &&
+        rclcpp::ok())
+      {
         best_effort_stow(*move_group);
       }
       result->success = false;
@@ -1823,7 +1882,9 @@ private:
       if (lease_available && should_attempt_retreat && move_group && rclcpp::ok()) {
         best_effort_retreat(*move_group, poses.prepress_pose);
       }
-      if (lease_available && move_group && rclcpp::ok()) {
+      if (lease_available && move_group_ready_for_motion && move_group &&
+        rclcpp::ok())
+      {
         best_effort_stow(*move_group);
       }
       result->success = false;
@@ -3823,13 +3884,25 @@ private:
   void configure_move_group(MoveGroupInterface & move_group)
   {
     const auto robot_model = move_group.getRobotModel();
-    if (!robot_model ||
-      !robot_model->getJointModelGroup(move_group_name_) ||
-      !robot_model->getLinkModel(contact_tool_link_))
-    {
+    std::vector<std::string> profile_move_groups;
+    profile_move_groups.reserve(tool_profiles_.size() + 1U);
+    profile_move_groups.push_back(move_group_name_);
+    for (const auto & entry : tool_profiles_) {
+      profile_move_groups.push_back(entry.second.move_group);
+    }
+    const auto kinematics_error = tool_profile_kinematics_validation_error(
+      robot_model, std::move(profile_move_groups));
+    if (kinematics_error) {
       throw OperationError(
               PressCabinetButton::Result::NOT_READY,
-              "The robot adapter references a missing MoveIt group or link.");
+              *kinematics_error);
+    }
+    if (!robot_model->getLinkModel(contact_tool_link_)) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "The robot adapter tool profile for MoveIt JointModelGroup '" +
+              move_group_name_ + "' references missing contact tool link '" +
+              contact_tool_link_ + "'.");
     }
     const auto named_targets = move_group.getNamedTargets();
     if (std::find(
@@ -5869,6 +5942,7 @@ private:
 
 }  // namespace xczs_inspection_robot_control
 
+#ifndef XCZS_CABINET_BUTTON_OPERATOR_NO_MAIN
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
@@ -5884,3 +5958,4 @@ int main(int argc, char * argv[])
   }
   return 0;
 }
+#endif

@@ -258,8 +258,10 @@ install(
 install(DIRECTORY include/ DESTINATION include)
 
 install(
-  DIRECTORY config launch
+  DIRECTORY config launch scripts
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "__pycache__" EXCLUDE
+  PATTERN "*.pyc" EXCLUDE
 )
 
 ament_export_include_directories(include)
@@ -336,9 +338,60 @@ if(BUILD_TESTING)
     cabinet_pose_frame_contract_test
     PRIVATE XCZS_CONTROL_CONFIG_DIR="${CMAKE_CURRENT_SOURCE_DIR}/config"
   )
+  ament_add_gtest(
+    cabinet_button_operator_kinematics_test
+    test/cabinet_button_operator_kinematics_test.cpp
+    src/cabinet_button_operator.cpp
+  )
+  target_compile_features(
+    cabinet_button_operator_kinematics_test PUBLIC cxx_std_17
+  )
+  target_compile_definitions(
+    cabinet_button_operator_kinematics_test
+    PRIVATE XCZS_CABINET_BUTTON_OPERATOR_NO_MAIN
+  )
+  target_include_directories(
+    cabinet_button_operator_kinematics_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
+  ament_target_dependencies(
+    cabinet_button_operator_kinematics_test
+    geometry_msgs
+    moveit_core
+    moveit_msgs
+    moveit_ros_planning_interface
+    nav2_msgs
+    rclcpp
+    rclcpp_action
+    sensor_msgs
+    std_msgs
+    std_srvs
+    tf2
+    tf2_geometry_msgs
+    tf2_ros
+  )
+  rosidl_get_typesupport_target(
+    cabinet_button_operator_kinematics_test_typesupport
+    ${PROJECT_NAME}
+    "rosidl_typesupport_cpp"
+  )
+  target_link_libraries(
+    cabinet_button_operator_kinematics_test
+    "${cabinet_button_operator_kinematics_test_typesupport}"
+  )
   ament_add_pytest_test(
     launch_startup_policy_test
     test/test_launch_startup_policy.py
+  )
+  ament_add_pytest_test(
+    verify_initial_pose_test
+    test/test_verify_initial_pose.py
+  )
+  ament_add_pytest_test(
+    cabinet_knob_grasp_contract_test
+    test/test_cabinet_knob_grasp_contract.py
   )
 endif()
 

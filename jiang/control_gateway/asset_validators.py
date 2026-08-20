@@ -62,13 +62,14 @@ def cabinet_validator(
 
     The parametrized cabinet checker validates the imported asset's structural
     self-consistency: controls <-> URDF <-> state plugin agreement, and the
-    per-cabinet robot-adapter reachability pairing (``operable`` /
-    ``unreachable_control_ids`` / per-control ``navigation_station``) against
-    the controls catalog.  It expands the asset Xacro under the asset name, so
+    per-cabinet robot-adapter capability allowlist
+    (``operable_control_ids`` / per-control ``navigation_station``) against
+    the controls catalog.  Unlisted controls remain planning-only.  It expands
+    the asset Xacro under the asset name, so
     ``xacro`` and the ROS workspace must be available (the launch/CLI run with
     them sourced).  It does *not* assert the built-in frozen physics or the
-    fixed robot stack — physical closure is declared by the asset's own
-    ``operable`` flags.
+    fixed robot stack — physical closure is declared by the asset's positive
+    capability allowlist.
     """
 
     checker = (

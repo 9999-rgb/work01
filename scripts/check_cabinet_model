@@ -74,6 +74,12 @@ ROS2_CONTROLLERS = (
     / "config"
     / "ros2_controllers.yaml"
 )
+INITIAL_POSITIONS = (
+    ROOT
+    / "xczs_inspection_robot_description"
+    / "config"
+    / "initial_positions.yaml"
+)
 MOVEIT_CONFIG = ROOT / "xczs_inspection_robot_moveit_config" / "config"
 MOVEIT_CONTROLLERS = MOVEIT_CONFIG / "moveit_controllers.yaml"
 JOINT_LIMITS = MOVEIT_CONFIG / "joint_limits.yaml"
@@ -108,8 +114,8 @@ LEGACY_TRAJECTORY_ROUTER = (
     / "src"
     / "legacy_trajectory_router.cpp"
 )
-# Dual-arm joint topology: two 7-DOF arms (l_/r_ prefixes) plus four fixed
-# end-effector tool groups.  Group names must match the adapter's
+# Dual-arm joint topology: two 7-DOF arms plus four end-effector tool groups.
+# Group names must match the adapter's
 # ``manual_joint_group_names`` and the ros2_control / MoveIt controller keys.
 LEFT_ARM_JOINTS = [f"l_arm_{index}_joint" for index in range(7)]
 RIGHT_ARM_JOINTS = [f"r_arm_{index}_joint" for index in range(7)]
@@ -373,9 +379,10 @@ def validate_cabinet_asset() -> None:
     Accepts an arbitrary control catalog (no frozen 33 / 20+13 counts, no
     built-in door geometry) and verifies that controls, URDF, state plugin and
     the per-cabinet robot-adapter reachability pairing agree with each other.
-    Physical closure is *not* asserted here: the asset's own adapter declares
-    which controls are ``operable`` (passed through runtime physical validation)
-    versus unavailable with a concrete reason.
+    Physical closure is *not* asserted here: the asset's own adapter lists
+    only controls that passed runtime physical validation in the positive
+    ``operable_control_ids`` capability list.  Every unlisted control is
+    unavailable with a concrete shared reason.
     """
     parameters = load_config()
     scene_parameters = load_scene_config()
@@ -393,20 +400,34 @@ def validate_cabinet_asset() -> None:
     if set(control_ids) != set(controls):
         fail("control_ids and controls keys differ.")
 
-    # ── adapter reachability pairing (fixed gripper x this cabinet) ──────
-    unreachable_control_ids = robot_parameters.get("unreachable_control_ids", [])
-    if not isinstance(unreachable_control_ids, list) or any(
-        not isinstance(control_id, str) or not control_id.strip()
-        for control_id in unreachable_control_ids
+    # ── positive robot capability contract (fixed gripper x cabinet) ──
+    for legacy_field in (
+        "unreachable_control_ids",
+        "unreachable_control_reason",
     ):
-        fail("Robot adapter unreachable_control_ids must be a string list.")
-    if len(unreachable_control_ids) != len(set(unreachable_control_ids)):
-        fail("Robot adapter unreachable_control_ids contains duplicates.")
+        if legacy_field in robot_parameters:
+            fail(
+                f"Robot adapter {legacy_field} is fail-open and no longer "
+                "supported; use operable_control_ids."
+            )
+    operable_control_ids = robot_parameters.get("operable_control_ids", [])
+    if "operable_control_ids" in robot_parameters and not operable_control_ids:
+        fail(
+            "Robot adapter must omit operable_control_ids when empty; ROS 2 "
+            "cannot infer an empty parameter sequence type."
+        )
+    if not isinstance(operable_control_ids, list) or any(
+        not isinstance(control_id, str) or not control_id.strip()
+        for control_id in operable_control_ids
+    ):
+        fail("Robot adapter operable_control_ids must be a string list.")
+    if len(operable_control_ids) != len(set(operable_control_ids)):
+        fail("Robot adapter operable_control_ids contains duplicates.")
     adapter_controls = robot_parameters.get("controls", {})
     if not isinstance(adapter_controls, dict):
         fail("Robot adapter controls must be a mapping.")
     unknown_adapter_ids = (
-        set(unreachable_control_ids) | set(adapter_controls)
+        set(operable_control_ids) | set(adapter_controls)
     ) - set(control_ids)
     if unknown_adapter_ids:
         fail(
@@ -415,22 +436,26 @@ def validate_cabinet_asset() -> None:
             + "."
         )
     navigation_frame = str(robot_parameters.get("navigation_frame", ""))
-    all_unreachable = list(unreachable_control_ids)
     for control_id, override in adapter_controls.items():
         if not isinstance(override, dict):
             fail(f"Robot adapter override for {control_id} must be a mapping.")
-        operable = override.get("operable", True)
-        if not isinstance(operable, bool):
-            fail(f"Robot adapter {control_id}.operable must be boolean.")
-        if not operable and not str(
-            override.get("unavailable_reason", "")
-        ).strip():
+        if "operable" in override:
             fail(
-                f"Robot adapter {control_id} requires a non-empty "
+                "Per-control operable flags are not supported; use the "
+                "single operable_control_ids allowlist."
+            )
+        if "unavailable_reason" in override and not str(
+            override["unavailable_reason"]
+        ).strip():
+            fail(f"Robot adapter {control_id}.unavailable_reason is empty.")
+        if (
+            control_id in operable_control_ids
+            and "unavailable_reason" in override
+        ):
+            fail(
+                f"Operable control {control_id} must not declare an "
                 "unavailable_reason."
             )
-        if not operable:
-            all_unreachable.append(control_id)
         station = override.get("navigation_station")
         if station is None:
             continue
@@ -504,12 +529,11 @@ def validate_cabinet_asset() -> None:
                 f"Robot adapter {control_id}.navigation_station frame "
                 "must match navigation_frame."
             )
-    if len(all_unreachable) != len(set(all_unreachable)):
-        fail("Robot adapter declares an unreachable control more than once.")
-    if unreachable_control_ids and not str(
-        robot_parameters.get("unreachable_control_reason", "")
-    ).strip():
-        fail("Robot adapter unreachable controls require a shared reason.")
+    if (
+        "inoperable_control_reason" in robot_parameters
+        or set(operable_control_ids) != set(control_ids)
+    ) and not str(robot_parameters.get("inoperable_control_reason", "")).strip():
+        fail("Robot adapter inoperable controls require a shared reason.")
     controls_without_station = sorted(
         control_id
         for control_id in control_ids
@@ -1201,21 +1225,35 @@ def main() -> int:
             fail(f"Expected 33 unique control_ids, got {len(control_ids)}.")
         if set(control_ids) != set(controls):
             fail("control_ids and controls keys differ.")
-        unreachable_control_ids = robot_parameters.get(
-            "unreachable_control_ids", []
-        )
-        if not isinstance(unreachable_control_ids, list) or any(
-            not isinstance(control_id, str) or not control_id.strip()
-            for control_id in unreachable_control_ids
+        for legacy_field in (
+            "unreachable_control_ids",
+            "unreachable_control_reason",
         ):
-            fail("Robot adapter unreachable_control_ids must be a string list.")
-        if len(unreachable_control_ids) != len(set(unreachable_control_ids)):
-            fail("Robot adapter unreachable_control_ids contains duplicates.")
+            if legacy_field in robot_parameters:
+                fail(
+                    f"Robot adapter {legacy_field} is fail-open and no "
+                    "longer supported; use operable_control_ids."
+                )
+        operable_control_ids = robot_parameters.get(
+            "operable_control_ids", []
+        )
+        if "operable_control_ids" in robot_parameters and not operable_control_ids:
+            fail(
+                "Robot adapter must omit operable_control_ids when empty; "
+                "ROS 2 cannot infer an empty parameter sequence type."
+            )
+        if not isinstance(operable_control_ids, list) or any(
+            not isinstance(control_id, str) or not control_id.strip()
+            for control_id in operable_control_ids
+        ):
+            fail("Robot adapter operable_control_ids must be a string list.")
+        if len(operable_control_ids) != len(set(operable_control_ids)):
+            fail("Robot adapter operable_control_ids contains duplicates.")
         adapter_controls = robot_parameters.get("controls", {})
         if not isinstance(adapter_controls, dict):
             fail("Robot adapter controls must be a mapping.")
         unknown_adapter_ids = (
-            set(unreachable_control_ids) | set(adapter_controls)
+            set(operable_control_ids) | set(adapter_controls)
         ) - set(control_ids)
         if unknown_adapter_ids:
             fail(
@@ -1223,7 +1261,6 @@ def main() -> int:
                 + ", ".join(sorted(unknown_adapter_ids))
                 + "."
             )
-        per_control_unreachable = []
         navigation_frame = str(robot_parameters.get("navigation_frame", ""))
         for control_id, override in adapter_controls.items():
             if not isinstance(override, dict):
@@ -1231,16 +1268,25 @@ def main() -> int:
                     f"Robot adapter override for {control_id} must be a "
                     "mapping."
                 )
-            operable = override.get("operable", True)
-            if not isinstance(operable, bool):
-                fail(f"Robot adapter {control_id}.operable must be boolean.")
-            if not operable:
-                per_control_unreachable.append(control_id)
-                if not str(override.get("unavailable_reason", "")).strip():
-                    fail(
-                        f"Robot adapter {control_id} requires a non-empty "
-                        "unavailable_reason."
-                    )
+            if "operable" in override:
+                fail(
+                    "Per-control operable flags are not supported; use the "
+                    "single operable_control_ids allowlist."
+                )
+            if "unavailable_reason" in override and not str(
+                override["unavailable_reason"]
+            ).strip():
+                fail(
+                    f"Robot adapter {control_id}.unavailable_reason is empty."
+                )
+            if (
+                control_id in operable_control_ids
+                and "unavailable_reason" in override
+            ):
+                fail(
+                    f"Operable control {control_id} must not declare an "
+                    "unavailable_reason."
+                )
             station = override.get("navigation_station")
             if station is None:
                 continue
@@ -1314,27 +1360,13 @@ def main() -> int:
                     f"Robot adapter {control_id}.navigation_station frame "
                     "must match navigation_frame."
                 )
-        all_unreachable = unreachable_control_ids + per_control_unreachable
-        if len(all_unreachable) != len(set(all_unreachable)):
-            fail("Robot adapter declares an unreachable control more than once.")
-        if unreachable_control_ids and not str(
-            robot_parameters.get("unreachable_control_reason", "")
+        if (
+            "inoperable_control_reason" in robot_parameters
+            or set(operable_control_ids) != set(control_ids)
+        ) and not str(
+            robot_parameters.get("inoperable_control_reason", "")
         ).strip():
-            fail("Robot adapter unreachable controls require a shared reason.")
-        # After swapping in the dual-arm robot, no control has yet passed
-        # per-control closed-loop validation with the new tool geometry.  Every
-        # control must therefore be either geometrically unreachable or marked
-        # ``operable=false`` so the operator only runs planning validation and
-        # never executes real motion.  Controls are whittled off this list one
-        # at a time as each is re-validated on the new robot.
-        operable_controls = set(control_ids) - set(all_unreachable)
-        if operable_controls:
-            fail(
-                "No control may be marked operable until the dual-arm robot "
-                "passes per-control closed-loop validation: "
-                + ", ".join(sorted(operable_controls))
-                + "."
-            )
+            fail("Robot adapter inoperable controls require a shared reason.")
         controls_without_explicit_station = sorted(
             control_id
             for control_id in control_ids
@@ -1376,10 +1408,7 @@ def main() -> int:
                 controls[control_id].get("local_position"),
                 f"controls.{control_id}.local_position",
             )
-            # 双臂机器人右臂肩关节在 body -x 0.35 m（机头 -90° 映射到世界
-            # +Y）；正面控件工位横向 anchor 取 local_position.x + 0.35 m，
-            # 使控件位于右臂工作空间内。旧的 -0.161 m 按单臂末端调校，无法
-            # 供右臂够到，已废止。
+            # The fixed tools retain the original right-shoulder calibration.
             expected_anchor = [
                 control_position[0] + 0.35,
                 1.115,
@@ -2197,6 +2226,281 @@ def main() -> int:
         robot_description = render_xacro(ROBOT_XACRO)
         validate_rcl_parameter_value(robot_description)
         robot_root = ElementTree.fromstring(robot_description)
+        robot_links = {
+            link.attrib.get("name", ""): link
+            for link in robot_root.findall("link")
+        }
+        robot_joints = {
+            joint.attrib.get("name", ""): joint
+            for joint in robot_root.findall("joint")
+        }
+        child_to_robot_joint = {
+            joint.find("child").attrib.get("link", ""): joint
+            for joint in robot_joints.values()
+            if joint.find("child") is not None
+        }
+
+        # Each wrist carries two legacy tools at +/-0.20 m.  Those fixed
+        # origins used to be separated from arm_6 by empty space.  Require a
+        # passive, fully physical carrier plate between the wrist and tools in
+        # both RViz (visual) and Gazebo/MoveIt (collision) descriptions.
+        carrier_size = [0.48, 0.08, 0.03]
+        carrier_collision_wings = {
+            "positive": ([0.1575, 0.0, 0.0], [0.165, 0.068, 0.03]),
+            "negative": ([-0.1475, 0.0, 0.0], [0.185, 0.068, 0.03]),
+        }
+        carrier_links = {
+            "r_tool_carrier": "r_arm_6",
+            "l_tool_carrier": "l_arm_6",
+        }
+        for carrier_name, wrist_name in carrier_links.items():
+            carrier = robot_links.get(carrier_name)
+            if carrier is None:
+                fail(f"Expanded robot is missing {carrier_name}.")
+            carrier_joint = child_to_robot_joint.get(carrier_name)
+            carrier_parent = (
+                ""
+                if carrier_joint is None
+                or carrier_joint.find("parent") is None
+                else carrier_joint.find("parent").attrib.get("link", "")
+            )
+            carrier_origin = (
+                None
+                if carrier_joint is None
+                else carrier_joint.find("origin")
+            )
+            if (
+                carrier_joint is None
+                or carrier_joint.attrib.get("type") != "fixed"
+                or carrier_parent != wrist_name
+                or carrier_origin is None
+                or not close_lists(
+                    numbers(
+                        carrier_origin.attrib.get("xyz"),
+                        f"{carrier_name} joint origin",
+                    ),
+                    [0.0, 0.0, 0.0],
+                )
+                or not close_lists(
+                    numbers(
+                        carrier_origin.attrib.get("rpy"),
+                        f"{carrier_name} joint orientation",
+                    ),
+                    [0.0, 0.0, 0.0],
+                )
+            ):
+                fail(
+                    f"{carrier_name} must remain fixed at the {wrist_name} "
+                    "flange origin."
+                )
+            visual_box = carrier.find("./visual/geometry/box")
+            visual_origin = carrier.find("./visual/origin")
+            if visual_box is None or visual_origin is None or not close_lists(
+                numbers(
+                    visual_box.attrib.get("size"),
+                    f"{carrier_name} visual size",
+                ),
+                carrier_size,
+            ) or not close_lists(
+                numbers(
+                    visual_origin.attrib.get("xyz"),
+                    f"{carrier_name} visual origin",
+                ),
+                [0.0, 0.0, 0.0],
+            ):
+                fail(
+                    f"{carrier_name} visual must continuously span both "
+                    "legacy tool flange centres."
+                )
+            carrier_collisions = {
+                collision.attrib.get("name", ""): collision
+                for collision in carrier.findall("collision")
+            }
+            parsed_collision_wings = {}
+            for wing, (expected_origin, expected_size) in (
+                carrier_collision_wings.items()
+            ):
+                collision = carrier_collisions.get(
+                    f"{carrier_name}_{wing}_collision"
+                )
+                box = (
+                    None
+                    if collision is None
+                    else collision.find("./geometry/box")
+                )
+                origin = (
+                    None if collision is None else collision.find("origin")
+                )
+                if (
+                    box is None
+                    or origin is None
+                    or not close_lists(
+                        numbers(
+                            box.attrib.get("size"),
+                            f"{carrier_name} {wing} collision size",
+                        ),
+                        expected_size,
+                    )
+                    or not close_lists(
+                        numbers(
+                            origin.attrib.get("xyz"),
+                            f"{carrier_name} {wing} collision origin",
+                        ),
+                        expected_origin,
+                    )
+                ):
+                    fail(
+                        f"{carrier_name} {wing} collision wing must bridge "
+                        "arm_6 to its legacy tool flange."
+                    )
+                parsed_collision_wings[wing] = (
+                    numbers(
+                        origin.attrib.get("xyz"),
+                        f"{carrier_name} {wing} collision origin",
+                    ),
+                    numbers(
+                        box.attrib.get("size"),
+                        f"{carrier_name} {wing} collision size",
+                    ),
+                )
+            positive_origin, positive_size = parsed_collision_wings[
+                "positive"
+            ]
+            negative_origin, negative_size = parsed_collision_wings[
+                "negative"
+            ]
+            positive_min_x = positive_origin[0] - positive_size[0] / 2.0
+            positive_max_x = positive_origin[0] + positive_size[0] / 2.0
+            negative_min_x = negative_origin[0] - negative_size[0] / 2.0
+            negative_max_x = negative_origin[0] + negative_size[0] / 2.0
+            # Bounds are the extrema of both exported arm_6 collision meshes.
+            # Each wing must overlap that shell, reach past the complete
+            # +/-0.20 m, r=33.5 mm tool flange, and cover its diameter in Y.
+            if (
+                positive_min_x > 0.08393 + 1.0e-6
+                or positive_max_x < 0.2335 - 1.0e-6
+                or negative_max_x < -0.06042 - 1.0e-6
+                or negative_min_x > -0.2335 + 1.0e-6
+                or positive_size[1] < 0.067 - 1.0e-6
+                or negative_size[1] < 0.067 - 1.0e-6
+            ):
+                fail(
+                    f"{carrier_name} collision wings do not physically join "
+                    "the arm_6 shell to both complete tool flanges."
+                )
+
+        # Tool profiles must describe the unchanged fixed hardware, including
+        # the measured/legacy flange-to-business-point offsets.  These values
+        # do not claim physical reachability; unreachable controls remain
+        # planning-only until a per-control closed-loop validation succeeds.
+        expected_tool_profiles = {
+            "button": ("right_arm", "r_three_cyl_base", 0.39),
+            "knob": ("right_arm", "r_rotbtn_body", 0.0),
+            "switch": ("left_arm", "l_rocker_body", 0.143),
+            "door": ("right_arm", "r_three_cyl_base", 0.39),
+        }
+        tool_profiles = robot_parameters.get("tool_profiles")
+        if not isinstance(tool_profiles, dict) or set(tool_profiles) != set(
+            expected_tool_profiles
+        ):
+            fail(
+                "Robot adapter tool_profiles must cover exactly button, knob, "
+                "switch and door."
+            )
+        for control_type, (move_group, contact_link, expected_offset) in (
+            expected_tool_profiles.items()
+        ):
+            profile = tool_profiles[control_type]
+            if not isinstance(profile, dict):
+                fail(f"Robot adapter tool_profiles.{control_type} is invalid.")
+            if profile.get("move_group") != move_group:
+                fail(
+                    f"Robot adapter {control_type} must use MoveIt group "
+                    f"{move_group}."
+                )
+            if profile.get("contact_tool_link") != contact_link:
+                fail(
+                    f"Robot adapter {control_type} must use the unchanged "
+                    f"hardware link {contact_link}."
+                )
+            tip_offset = profile.get("tool_tip_offset")
+            if (
+                isinstance(tip_offset, bool)
+                or not isinstance(tip_offset, (int, float))
+                or not math.isfinite(float(tip_offset))
+                or not math.isclose(
+                    float(tip_offset),
+                    expected_offset,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-12,
+                )
+            ):
+                fail(
+                    f"Robot adapter {control_type} must retain its calibrated "
+                    f"{expected_offset:.3f} m fixed-hardware tip offset."
+                )
+            if profile.get("transport_named_target") != "home":
+                fail(
+                    f"Robot adapter {control_type} transport target must be home."
+                )
+            if contact_link not in robot_links:
+                fail(f"Expanded robot is missing tool link {contact_link}.")
+            wrist = "r_arm_6" if contact_link.startswith("r_") else "l_arm_6"
+            expected_carrier = (
+                "r_tool_carrier"
+                if contact_link.startswith("r_")
+                else "l_tool_carrier"
+            )
+            mount_joint = child_to_robot_joint.get(contact_link)
+            mount_parent = (
+                ""
+                if mount_joint is None or mount_joint.find("parent") is None
+                else mount_joint.find("parent").attrib.get("link", "")
+            )
+            if (
+                mount_joint is None
+                or mount_joint.attrib.get("type") != "fixed"
+                or mount_parent != expected_carrier
+            ):
+                fail(
+                    f"Unchanged tool link {contact_link} must remain fixed to "
+                    f"{expected_carrier}."
+                )
+            mount_origin = mount_joint.find("origin")
+            if mount_origin is None:
+                fail(f"Tool mount {mount_joint.attrib.get('name')} has no origin.")
+            mount_xyz = numbers(
+                mount_origin.attrib.get("xyz"),
+                f"{contact_link} mount origin",
+            )
+            # The 480 x 80 mm plate covers both +/-200 mm tool centres plus
+            # each exported 33.5 mm flange radius.  It also crosses z=0, the
+            # common SolidWorks mounting plane, so no tool can float beside
+            # the wrist while still satisfying this contract.
+            flange_radius = 0.0335
+            if (
+                len(mount_xyz) != 3
+                or not math.isclose(
+                    abs(mount_xyz[0]),
+                    0.20,
+                    rel_tol=0.0,
+                    abs_tol=1.0e-6,
+                )
+                or not math.isclose(
+                    mount_xyz[1], 0.0, rel_tol=0.0, abs_tol=1.0e-6
+                )
+                or not math.isclose(
+                    mount_xyz[2], 0.0, rel_tol=0.0, abs_tol=1.0e-6
+                )
+                or abs(mount_xyz[0]) + flange_radius
+                > carrier_size[0] / 2.0 + 1.0e-9
+                or flange_radius > carrier_size[1] / 2.0 + 1.0e-9
+            ):
+                fail(
+                    f"{contact_link} flange is not fully supported by the "
+                    f"fixed {wrist} carrier plate."
+                )
+
         robot_sensors = {
             sensor.attrib.get("name", ""): sensor
             for sensor in robot_root.findall(".//sensor")
@@ -2381,6 +2685,54 @@ def main() -> int:
         }
         if forbidden_lift_joints & set(ros2_control_entries):
             fail("ros2_control still exposes a removed arm-lift joint.")
+        with INITIAL_POSITIONS.open("r", encoding="utf-8") as stream:
+            initial_position_document = yaml.safe_load(stream)
+        initial_positions = initial_position_document.get(
+            "initial_positions", {}
+        )
+        arm_joints = LEFT_ARM_JOINTS + RIGHT_ARM_JOINTS
+        if not isinstance(initial_positions, dict) or set(
+            initial_positions
+        ) != set(arm_joints):
+            fail(
+                "Robot initial_positions.yaml must contain exactly the "
+                "fourteen arm joints."
+            )
+        try:
+            initial_positions = {
+                joint: float(initial_positions[joint]) for joint in arm_joints
+            }
+        except (TypeError, ValueError) as error:
+            fail(f"Robot initial arm positions must be numeric: {error}")
+        if not all(math.isfinite(value) for value in initial_positions.values()):
+            fail("Robot initial arm positions must be finite.")
+        for joint_name, expected_position in initial_positions.items():
+            entry = ros2_control_entries.get(joint_name)
+            initial_value = (
+                None
+                if entry is None
+                else entry.find(
+                    "./state_interface[@name='position']/"
+                    "param[@name='initial_value']"
+                )
+            )
+            try:
+                configured_position = float(initial_value.text)
+            except (AttributeError, TypeError, ValueError):
+                fail(
+                    f"ros2_control {joint_name} must expose its spawn-time "
+                    "position initial_value."
+                )
+            if not math.isclose(
+                configured_position,
+                expected_position,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            ):
+                fail(
+                    f"ros2_control {joint_name} spawn position differs from "
+                    "initial_positions.yaml."
+                )
         hold_joints = {
             (entry.text or "").strip()
             for entry in robot_root.findall(".//plugin/hold_joint")
@@ -2620,12 +2972,39 @@ def main() -> int:
                 for entry in ([] if home is None else home.findall("joint"))
             }
             if set(home_joints) != set(JOINT_GROUPS[group_name]) or any(
-                not math.isclose(home_joints[joint], 0.0, abs_tol=1.0e-9)
+                not math.isclose(
+                    home_joints[joint],
+                    initial_positions[joint],
+                    rel_tol=0.0,
+                    abs_tol=1.0e-9,
+                )
                 for joint in JOINT_GROUPS[group_name]
             ):
                 fail(
-                    f"MoveIt {group_name} home state must be the neutral "
-                    "transport pose."
+                    f"MoveIt {group_name} home state must match the shared "
+                    "spawn/reset transport pose."
+                )
+        manual_joint_limits = robot_parameters.get("manual_joint_limits")
+        if not isinstance(manual_joint_limits, dict):
+            fail("Robot adapter manual_joint_limits must be a mapping.")
+        for joint_name, expected_position in initial_positions.items():
+            limit = manual_joint_limits.get(joint_name)
+            try:
+                reset_position = float(limit["default_position"])
+            except (KeyError, TypeError, ValueError):
+                fail(
+                    f"Robot adapter {joint_name} requires a numeric "
+                    "default_position."
+                )
+            if not math.isclose(
+                reset_position,
+                expected_position,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            ):
+                fail(
+                    f"Robot adapter {joint_name} reset position differs from "
+                    "initial_positions.yaml."
                 )
         disabled_pairs = {
             frozenset((entry.attrib.get("link1"), entry.attrib.get("link2")))
@@ -2633,6 +3012,51 @@ def main() -> int:
         }
         if any(forbidden_lift_links & pair for pair in disabled_pairs):
             fail("MoveIt SRDF still contains an arm-lift collision exemption.")
+        required_carrier_adjacencies = {
+            frozenset(("r_arm_6", "r_tool_carrier")),
+            frozenset(("l_arm_6", "l_tool_carrier")),
+            frozenset(("r_tool_carrier", "r_three_cyl_base")),
+            frozenset(("r_tool_carrier", "r_rotbtn_body")),
+            frozenset(("l_tool_carrier", "l_two_cyl_base")),
+            frozenset(("l_tool_carrier", "l_rocker_body")),
+        }
+        if not required_carrier_adjacencies.issubset(disabled_pairs):
+            fail(
+                "MoveIt SRDF must exempt only the directly connected, "
+                "overlapping wrist/carrier/tool flange pairs."
+            )
+        carrier_and_tool_bases = {
+            "r_tool_carrier",
+            "l_tool_carrier",
+            "r_three_cyl_base",
+            "r_rotbtn_body",
+            "l_two_cyl_base",
+            "l_rocker_body",
+        }
+        nonadjacent_forearms = {
+            f"{side}_arm_{index}"
+            for side in ("r", "l")
+            for index in (3, 4, 5)
+        }
+        if any(
+            pair & carrier_and_tool_bases
+            and pair & nonadjacent_forearms
+            for pair in disabled_pairs
+        ):
+            fail(
+                "MoveIt SRDF must not hide a carrier/tool collision with "
+                "arm_3, arm_4 or arm_5; calibrate a collision-free pose."
+            )
+        forbidden_wrist_exemptions = {
+            frozenset(("l_arm_4", "l_arm_6")),
+            frozenset(("r_arm_4", "r_arm_6")),
+        }
+        if forbidden_wrist_exemptions & disabled_pairs:
+            fail(
+                "MoveIt SRDF must not hide non-adjacent arm_4/arm_6 "
+                "self-collisions; calibrate a genuinely collision-free "
+                "spawn/home pose."
+            )
         for body_pair in (
             {"body", "l_arm_0"},
             {"body", "r_arm_0"},
@@ -2775,7 +3199,7 @@ def main() -> int:
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
             "topics and per-instance plugin names, a dual-arm MoveIt robot "
-            "with four fixed tool tips, and the "
+            "with four unchanged fixed hardware tools, and the "
             "low-friction supported wheels, 500/20 Hz planar, "
             "640x640@15 Hz camera, 360@20 Hz lidar simulation performance "
             "contract."

@@ -42,6 +42,7 @@ class ProfileContractReport:
     knob_count: int
     switch_count: int
     door_count: int
+    operable_control_ids: tuple[str, ...]
     joint_group_counts: tuple[tuple[str, int], ...]
     planning_frame: str
     navigation_frame: str
@@ -258,7 +259,7 @@ def _validate_switch_geometry(
 def _validate_robot_control_overrides(
     adapter_document: Mapping[str, Any],
     control_ids: set[str],
-) -> None:
+) -> tuple[str, ...]:
     operator = _parameters(
         adapter_document,
         "/**/xczs_cabinet_button_operator",
@@ -278,48 +279,57 @@ def _validate_robot_control_overrides(
             raise ProfileContractError(
                 f"robot adapter controls.{control_id} must be a mapping."
             )
-        if "operable" in override and not isinstance(
-            override["operable"], bool
-        ):
+        if "operable" in override:
             raise ProfileContractError(
-                f"robot adapter controls.{control_id}.operable must be boolean."
+                "Per-control operable flags are not supported; physical "
+                "capability has one authoritative operable_control_ids "
+                "allowlist."
             )
-        if override.get("operable") is False:
+        if "unavailable_reason" in override:
             _string(
                 override.get("unavailable_reason"),
                 f"robot adapter controls.{control_id}.unavailable_reason",
             )
 
-    unreachable = _unique_strings(
-        operator.get("unreachable_control_ids", ()),
+    for legacy_field in (
         "unreachable_control_ids",
-    )
-    unknown_unreachable = set(unreachable) - control_ids
-    if unknown_unreachable:
+        "unreachable_control_reason",
+    ):
+        if legacy_field in operator:
+            raise ProfileContractError(
+                f"{legacy_field} is fail-open and no longer supported; use "
+                "operable_control_ids with inoperable_control_reason."
+            )
+    raw_operable = operator.get("operable_control_ids", ())
+    if "operable_control_ids" in operator and raw_operable == []:
         raise ProfileContractError(
-            "unreachable_control_ids contains unknown IDs: "
-            + ", ".join(sorted(unknown_unreachable))
+            "operable_control_ids must be omitted when empty; ROS 2 "
+            "parameter files cannot infer the type of an empty sequence."
         )
-    # A shared unreachable policy and a per-control navigation station are
-    # orthogonal: every submitted control still needs a robot-visible station
-    # so the live planning-only validation can run.  Reject only a second
-    # availability policy for an ID already covered by the shared list.
-    policy_overlap = {
+    operable = _unique_strings(raw_operable, "operable_control_ids")
+    unknown_operable = set(operable) - control_ids
+    if unknown_operable:
+        raise ProfileContractError(
+            "operable_control_ids contains unknown IDs: "
+            + ", ".join(sorted(unknown_operable))
+        )
+    reason_overlap = {
         control_id
-        for control_id in set(unreachable) & set(overrides)
-        if "operable" in overrides[control_id]
-        or "unavailable_reason" in overrides[control_id]
+        for control_id in set(operable) & set(overrides)
+        if "unavailable_reason" in overrides[control_id]
     }
-    if policy_overlap:
+    if reason_overlap:
         raise ProfileContractError(
-            "Controls must not define availability in both per-control "
-            "overrides and unreachable_control_ids: "
-            + ", ".join(sorted(policy_overlap))
+            "Operable controls must not declare unavailable_reason: "
+            + ", ".join(sorted(reason_overlap))
         )
-    if unreachable:
+    if (
+        "inoperable_control_reason" in operator
+        or set(operable) != control_ids
+    ):
         _string(
-            operator.get("unreachable_control_reason"),
-            "unreachable_control_reason",
+            operator.get("inoperable_control_reason"),
+            "inoperable_control_reason",
         )
     station_ids = {
         str(control_id)
@@ -334,6 +344,7 @@ def _validate_robot_control_overrides(
             "navigation_station: "
             + ", ".join(sorted(missing_stations))
         )
+    return tuple(operable)
 
 
 def validate_profile(
@@ -521,7 +532,9 @@ def validate_profile(
                     f"expected '{adapter.navigation_frame}'."
                 )
 
-    _validate_robot_control_overrides(adapter_document, set(ordered_ids))
+    operable_control_ids = _validate_robot_control_overrides(
+        adapter_document, set(ordered_ids)
+    )
     counts = {
         control_type: sum(
             value == control_type for value in type_by_id.values()
@@ -535,6 +548,7 @@ def validate_profile(
         knob_count=counts["knob"],
         switch_count=counts["switch"],
         door_count=counts["door"],
+        operable_control_ids=operable_control_ids,
         joint_group_counts=tuple(
             (group.name, len(group.joint_names))
             for group in adapter.controller_groups

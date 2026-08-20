@@ -1,0 +1,17 @@
+# Robot spawn/home pose shared by Gazebo ros2_control and startup validation.
+# Values are radians and use only the original fourteen arm joints.
+initial_positions:
+  l_arm_0_joint: 0.0
+  l_arm_1_joint: -1.4
+  l_arm_2_joint: 0.0
+  l_arm_3_joint: -0.3
+  l_arm_4_joint: 0.0
+  l_arm_5_joint: 0.7
+  l_arm_6_joint: -0.85
+  r_arm_0_joint: 0.0
+  r_arm_1_joint: -1.6
+  r_arm_2_joint: -0.4
+  r_arm_3_joint: 0.0
+  r_arm_4_joint: 0.0
+  r_arm_5_joint: 0.8
+  r_arm_6_joint: 0.1

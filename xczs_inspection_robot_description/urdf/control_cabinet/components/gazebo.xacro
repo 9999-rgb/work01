@@ -50,6 +50,16 @@
       <state_ids>left center right</state_ids>
       <detent_stiffness>0.60</detent_stiffness>
       <spring_damping>0.08</spring_damping>
+      <!--
+        The robot arm uses Gazebo position control, so a cross-model fixed
+        joint would over-constrain ODE and transmit the wrist correction into
+        the cabinet assembly.  Couple only the measured wrist twist to this
+        knob's revolute joint.  The joint remains dynamic and its physical
+        detent still decides the reported state.
+      -->
+      <grasp_coupling_stiffness>1.0</grasp_coupling_stiffness>
+      <grasp_coupling_damping>0.02</grasp_coupling_damping>
+      <grasp_coupling_max_effort>0.5</grasp_coupling_max_effort>
       <motion_tolerance>0.025</motion_tolerance>
       <reset_position>0.0</reset_position>
       <graspable>true</graspable>

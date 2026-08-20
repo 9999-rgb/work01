@@ -50,6 +50,10 @@
       <state_ids>left center right</state_ids>
       <detent_stiffness>0.60</detent_stiffness>
       <spring_damping>0.08</spring_damping>
+      <!-- Keep position-controlled robot wrists out of a rigid ODE loop. -->
+      <grasp_coupling_stiffness>1.0</grasp_coupling_stiffness>
+      <grasp_coupling_damping>0.02</grasp_coupling_damping>
+      <grasp_coupling_max_effort>0.5</grasp_coupling_max_effort>
       <motion_tolerance>0.025</motion_tolerance>
       <reset_position>0.0</reset_position>
       <graspable>true</graspable>

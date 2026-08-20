@@ -1,7 +1,9 @@
 """Start the XCZS simulation with a configurable cabinet inventory."""
 
+import atexit
 from functools import partial
 import math
+import os
 from pathlib import Path
 import re
 import shutil
@@ -11,6 +13,7 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import EmitEvent
+from launch.actions import ExecuteProcess
 from launch.actions import IncludeLaunchDescription
 from launch.actions import LogInfo
 from launch.actions import OpaqueFunction
@@ -648,10 +651,7 @@ def _cabinet_nodes(context, *, cabinet_xacro):
     button_defaults = None
     button_profiles = {}
     if spawn_cabinet:
-        generated_directory = Path(
-            tempfile.mkdtemp(prefix="xczs_cabinets_")
-        )
-        _GENERATED_DIRECTORIES.append(generated_directory)
+        generated_directory = _make_generated_directory("xczs_cabinets_")
         button_defaults, button_profiles = _read_button_profiles(
             Path(controls_config).expanduser()
         )
@@ -950,8 +950,7 @@ def _nav2_params_for_scene(context):
         "yaw": spawn["yaw"],
     }
 
-    generated_directory = Path(tempfile.mkdtemp(prefix="xczs_nav2_params_"))
-    _GENERATED_DIRECTORIES.append(generated_directory)
+    generated_directory = _make_generated_directory("xczs_nav2_params_")
     out_path = generated_directory / "nav2_params.yaml"
     out_path.write_text(
         yaml.safe_dump(params, sort_keys=False, allow_unicode=True),
@@ -1035,10 +1034,44 @@ def _robot_spawn_node(context, *, controllers=None):
     ]
 
 
-def _cleanup_generated_files(_context):
+def _cleanup_generated_directories():
     while _GENERATED_DIRECTORIES:
         shutil.rmtree(_GENERATED_DIRECTORIES.pop(), ignore_errors=True)
+
+
+def _make_generated_directory(prefix):
+    """Create launch artifacts under run_all's owned runtime directory.
+
+    ``run_all.sh`` may have to terminate ``ros2 launch`` with SIGTERM, a path
+    on which Python/launch shutdown callbacks are not guaranteed to finish.
+    Nesting generated data below a parent owned by the shell lets its EXIT
+    trap provide the final cleanup.  Direct ``ros2 launch`` remains supported
+    and continues to use the system temporary directory plus OnShutdown and
+    ``atexit`` cleanup.
+    """
+    runtime_root = os.environ.get("XCZS_LAUNCH_RUNTIME_DIRECTORY", "").strip()
+    if runtime_root:
+        root = Path(runtime_root).expanduser()
+        if not root.is_absolute() or not root.is_dir():
+            raise RuntimeError(
+                "XCZS_LAUNCH_RUNTIME_DIRECTORY must be an existing absolute "
+                f"directory: {runtime_root}"
+            )
+        generated_directory = Path(
+            tempfile.mkdtemp(prefix=prefix, dir=str(root))
+        )
+    else:
+        generated_directory = Path(tempfile.mkdtemp(prefix=prefix))
+    _GENERATED_DIRECTORIES.append(generated_directory)
+    return generated_directory
+
+
+def _cleanup_generated_files(_context):
+    _cleanup_generated_directories()
     return []
+
+
+atexit.register(_cleanup_generated_directories)
 
 
 def generate_launch_description() -> LaunchDescription:
@@ -1377,12 +1410,33 @@ def generate_launch_description() -> LaunchDescription:
             "operation lease coordinator",
         ),
     ]
-    after_controllers = RegisterEventHandler(
+    # GazeboSystem applies the fortune-cat joint initial values while loading
+    # the model.  This required process only verifies the measured state and
+    # controller readiness; it sends no trajectory.  MoveIt and command
+    # routers are deliberately held back until the spawn state is confirmed.
+    initial_pose_verifier = ExecuteProcess(
+        cmd=[
+            "python3",
+            str(
+                Path(get_package_share_directory(CONTROL_PACKAGE))
+                / "scripts" / "verify_initial_pose.py"
+            ),
+            "--positions-file",
+            str(
+                Path(get_package_share_directory(DESCRIPTION_PACKAGE))
+                / "config" / "initial_positions.yaml"
+            ),
+            "--joint-state-topic",
+            LaunchConfiguration("adapter_joint_state_topic"),
+        ],
+        output="screen",
+    )
+    initial_pose_verifier_handler = RegisterEventHandler(
         OnProcessExit(
-            target_action=controllers,
+            target_action=initial_pose_verifier,
             on_exit=partial(
                 _continue_or_shutdown_required_process,
-                process_label="ros2_control controller spawner",
+                process_label="spawn-time fortune-cat pose verification",
                 success_actions=[
                     base_router,
                     trajectory_router,
@@ -1390,6 +1444,19 @@ def generate_launch_description() -> LaunchDescription:
                     control_gui,
                     move_group,
                     nav2,
+                ],
+            ),
+        )
+    )
+    after_controllers = RegisterEventHandler(
+        OnProcessExit(
+            target_action=controllers,
+            on_exit=partial(
+                _continue_or_shutdown_required_process,
+                process_label="ros2_control controller spawner",
+                success_actions=[
+                    initial_pose_verifier_handler,
+                    initial_pose_verifier,
                 ],
             ),
         )
@@ -1414,6 +1481,10 @@ def generate_launch_description() -> LaunchDescription:
     return LaunchDescription(
         arguments
         + [
+            # Register cleanup before any OpaqueFunction can create a temporary
+            # cabinet/Nav2 directory. atexit above is a second line of defence
+            # for normal interpreter exit before launch dispatches Shutdown.
+            cleanup,
             argument_validation,
             adapter_configuration,
             # Register the required-process handlers before either short-lived
@@ -1431,6 +1502,5 @@ def generate_launch_description() -> LaunchDescription:
             scene_floor,
             operation_lease_coordinator,
             cabinet_loader,
-            cleanup,
         ]
     )

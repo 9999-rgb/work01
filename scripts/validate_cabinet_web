@@ -15,6 +15,9 @@ RUN_CONTRACT_TESTS="false"
 EXPECTED_CONTROLS=33
 EXPECTED_COUNTS_DEFAULT="20 11 1 1"
 EXPECTED_COUNTS="$EXPECTED_COUNTS_DEFAULT"
+# This is the verified task-layer handoff envelope.  The cabinet operator's
+# closed-loop docking phase deliberately narrows it before moving either arm.
+NAVIGATION_POSITION_TOLERANCE_M=0.22
 RESPONSE_BODY=""
 TASK_BODY=""
 ACTIVE_TASK_ID=""
@@ -461,7 +464,8 @@ navigate_for_control() {
   )"
   navigation_task_id="$ACTIVE_TASK_ID"
   wait_for_task "$navigation_task_id" success
-  jq -e --arg cabinet "$CABINET" --arg control "$control_id" '
+  jq -e --arg cabinet "$CABINET" --arg control "$control_id" \
+    --argjson position_tolerance "$NAVIGATION_POSITION_TOLERANCE_M" '
     .request.cabinet == $cabinet and
     .request.control_id == $control and
     .request.station.cabinet == $cabinet and
@@ -470,7 +474,7 @@ navigate_for_control() {
     (.result.final_pose.x | numbers) and
     (.result.final_pose.y | numbers) and
     (.result.final_pose.yaw | numbers) and
-    .result.error.position_m <= 0.15 and
+    .result.error.position_m <= $position_tolerance and
     .result.error.yaw_rad <= 0.25 and
     (.result.duration_seconds >= 0)
   ' <<<"$TASK_BODY" >/dev/null || {
@@ -893,13 +897,14 @@ if [[ "$RUN_NAVIGATION" == "true" ]]; then
   )"
   NAVIGATION_TASK_ID="$ACTIVE_TASK_ID"
   wait_for_task "$NAVIGATION_TASK_ID" success
-  jq -e --arg cabinet "$CABINET" '
+  jq -e --arg cabinet "$CABINET" \
+    --argjson position_tolerance "$NAVIGATION_POSITION_TOLERANCE_M" '
     .request.cabinet == $cabinet and
     .result.cabinet == $cabinet and
     (.result.final_pose.x | numbers) and
     (.result.final_pose.y | numbers) and
     (.result.final_pose.yaw | numbers) and
-    .result.error.position_m <= 0.15 and
+    .result.error.position_m <= $position_tolerance and
     .result.error.yaw_rad <= 0.25 and
     (.result.duration_seconds >= 0)
   ' <<<"$TASK_BODY" >/dev/null || {

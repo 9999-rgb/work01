@@ -596,6 +596,46 @@ exit 0
         self.assertEqual(result.returncode, 1)
         self.assertIn("受管进程组 PGID=424242 仍未退出", result.stderr)
 
+    def test_cleanup_removes_shell_owned_launch_runtime_directory(self) -> None:
+        helpers_start = self.startup_source.index("_register_process() {")
+        helpers_end = self.startup_source.index("trap _cleanup_on_exit EXIT")
+        helpers = self.startup_source[helpers_start:helpers_end]
+        with tempfile.TemporaryDirectory(
+            prefix="xczs_runtime_contract_", dir="/tmp"
+        ) as runtime_directory:
+            marker = Path(runtime_directory) / "generated" / "artifact.yaml"
+            marker.parent.mkdir()
+            marker.write_text("generated", encoding="utf-8")
+            harness = f"""
+set -Eeo pipefail
+CLEANUP_DONE=false
+SHUTDOWN_TIMEOUT_SEC=1
+MANAGED_PIDS=()
+MANAGED_PGIDS=()
+MANAGED_LABELS=()
+LAUNCH_RUNTIME_DIRECTORY="$RUNTIME_DIRECTORY"
+export XCZS_LAUNCH_RUNTIME_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY"
+{helpers}
+expected_runtime="$LAUNCH_RUNTIME_DIRECTORY"
+cleanup
+[ ! -e "$expected_runtime" ]
+[ -z "${{XCZS_LAUNCH_RUNTIME_DIRECTORY+x}}" ]
+"""
+            result = subprocess.run(
+                ["bash"],
+                input=harness,
+                text=True,
+                capture_output=True,
+                timeout=5,
+                check=False,
+                env={**os.environ, "RUNTIME_DIRECTORY": runtime_directory},
+            )
+        self.assertEqual(
+            result.returncode,
+            0,
+            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
+        )
+
     def test_guardian_reaps_group_if_supervisor_is_killed(self) -> None:
         helpers_start = self.startup_source.index("_register_process() {")
         helpers_end = self.startup_source.index("trap _cleanup_on_exit EXIT")
