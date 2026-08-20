@@ -76,6 +76,11 @@ class Settings(BaseSettings):
     # ── 数据目录 ────────────────────────────────────────────────────
     recordings_root: Optional[str] = str(_WORKSPACE / "recordings")
 
+    # ── 任务记录保留 ────────────────────────────────────────────────
+    # task_records 保留上限（条数）；0 = 不限。任务终态写入时若超过上限，
+    # 删除最旧的超限记录及其进度明细（task_progress_events 级联清理）。
+    task_record_retention: int = 10000
+
     @property
     def allowed_origin_list(self) -> list[str]:
         """解析逗号分隔的 Origin 列表。"""

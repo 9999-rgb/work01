@@ -3,17 +3,24 @@
 The library is the on-disk home of imported scene/cabinet assets.  Import
 copies an asset directory into ``<root>/<kind>/<name>/``, normalizes
 self-contained references (relative ``nav2_map`` / ``model.file`` paths are
-rewritten to absolute paths inside the library), records the entry in
-``assets_catalog.yaml``, and — when a semantic validator is supplied — runs it
-before persisting.
+rewritten to absolute paths inside the library), records the entry in the
+catalog, and — when a semantic validator is supplied — runs it before
+persisting.
 
-Selection is the "what runs now" state persisted in ``selection.yaml``.  The
-selection layer never re-implements loading: :meth:`AssetLibrary.selection_to_env`
-maps the selected assets onto the existing ``CABINET_*_PATH`` / ``SCENES_CONFIG``
-/ ``SCENE`` environment pointers, which the launch and gateway already consume.
-Semantic validation of the files themselves stays in the existing checkers
+Selection is the "what runs now" state.  The selection layer never
+re-implements loading: :meth:`AssetLibrary.selection_to_env` maps the selected
+assets onto the existing ``CABINET_*_PATH`` / ``SCENES_CONFIG`` / ``SCENE``
+environment pointers, which the launch and gateway already consume.  Semantic
+validation of the files themselves stays in the existing checkers
 (``profile_contract`` / ``check_scene_config``), invoked through the injectable
 ``validate`` hook so tests and Web calls can substitute it.
+
+Catalog and selection are persisted through an injectable :class:`AssetStore`.
+The reference implementation is :class:`YamlAssetStore` (the original
+``assets_catalog.yaml`` / ``selection.yaml`` files, kept for the pure-library
+unit tests); production deployments inject a SQLite-backed store
+(``app.assets.store.SqlAssetStore``) that reuses the app's SQLAlchemy stack and
+stores the same records in ``assets`` / ``selection`` tables.
 """
 
 from __future__ import annotations
@@ -22,7 +29,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol
 
 import yaml
 
@@ -35,7 +42,7 @@ MANIFEST_FILENAME = "manifest.yaml"
 #: Directories never copied into the library.
 _SKIP_PARTS = frozenset({".git", ".svn", "__pycache__", ".hg"})
 _URI_PREFIXES = ("package://", "model://", "file://")
-_REFERENCE_FIELDS = ("cabinet", "gripper_variant")
+_REFERENCE_FIELDS = ("cabinet",)
 
 
 class AssetLibraryError(ValueError):
@@ -98,34 +105,65 @@ class AssetSelection:
 
     ``scene`` and ``cabinet`` name imported assets (by asset name).  For a scene
     asset the asset name equals the primary scene name inside its ``scenes.yaml``
-    (enforced at import).  ``gripper_variant`` names one of the fixed robot
-    gripper variants and is consumed by the launch layer.
+    (enforced at import).
     """
 
     scene: Optional[str] = None
     cabinet: Optional[str] = None
-    gripper_variant: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Optional[str]]:
         return {
             "scene": self.scene,
             "cabinet": self.cabinet,
-            "gripper_variant": self.gripper_variant,
         }
 
 
-class AssetLibrary:
-    """Filesystem-backed asset library with catalog and selection state."""
+class AssetStore(Protocol):
+    """Persistence contract for the asset catalog and run selection.
+
+    :class:`AssetLibrary` owns the filesystem side (copying/removing asset
+    directories, manifest loading, selection -> env mapping) and delegates the
+    catalog/selection *index* to this store.  ``put_asset`` replaces any
+    existing entry of the same ``kind`` + ``name`` (upsert).
+    """
+
+    def list_assets(self) -> List[AssetRecord]:
+        """Return all imported assets, oldest first."""
+
+    def get_asset(self, kind: str, name: str) -> AssetRecord:
+        """Return one entry, raising :class:`AssetNotFoundError` if absent."""
+
+    def put_asset(self, record: AssetRecord) -> None:
+        """Insert or replace the entry keyed by ``record.kind`` + ``record.name``."""
+
+    def delete_asset(self, kind: str, name: str) -> None:
+        """Remove the entry; no-op when absent."""
+
+    def load_selection(self) -> AssetSelection:
+        """Return the persisted selection (empty when unset)."""
+
+    def save_selection(self, selection: AssetSelection) -> None:
+        """Persist the selection."""
+
+
+class YamlAssetStore:
+    """Filesystem (YAML) catalog + selection store — reference implementation.
+
+    Keeps the original ``assets_catalog.yaml`` / ``selection.yaml`` shape so the
+    pure-library unit tests exercise the import/selection workflow without a
+    database.  Production paths inject ``app.assets.store.SqlAssetStore``.
+    """
 
     def __init__(self, root: str | Path) -> None:
         self.root = Path(root).expanduser()
 
-    # ── catalog ─────────────────────────────────────────────────────────
-
     def catalog_path(self) -> Path:
         return self.root / CATALOG_FILENAME
 
-    def load_catalog(self) -> List[AssetRecord]:
+    def selection_path(self) -> Path:
+        return self.root / SELECTION_FILENAME
+
+    def list_assets(self) -> List[AssetRecord]:
         """Return all imported assets, oldest first."""
         path = self.catalog_path()
         if not path.is_file():
@@ -157,17 +195,27 @@ class AssetLibrary:
                 ) from error
         return records
 
-    def find(self, kind: str, name: str) -> AssetRecord:
-        for record in self.load_catalog():
+    def get_asset(self, kind: str, name: str) -> AssetRecord:
+        for record in self.list_assets():
             if record.kind == kind and record.name == name:
                 return record
         raise AssetNotFoundError(kind, name)
 
-    def asset_root(self, record: AssetRecord) -> Path:
-        return self.root / record.path
+    def put_asset(self, record: AssetRecord) -> None:
+        remaining = [
+            entry
+            for entry in self.list_assets()
+            if not (entry.kind == record.kind and entry.name == record.name)
+        ]
+        self._save_catalog(remaining + [record])
 
-    def asset_manifest(self, record: AssetRecord) -> AssetManifest:
-        return load_manifest(self.asset_root(record) / MANIFEST_FILENAME)
+    def delete_asset(self, kind: str, name: str) -> None:
+        remaining = [
+            entry
+            for entry in self.list_assets()
+            if not (entry.kind == kind and entry.name == name)
+        ]
+        self._save_catalog(remaining)
 
     def _save_catalog(self, records: List[AssetRecord]) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
@@ -180,6 +228,67 @@ class AssetLibrary:
             ),
             encoding="utf-8",
         )
+
+    def load_selection(self) -> AssetSelection:
+        path = self.selection_path()
+        if not path.is_file():
+            return AssetSelection()
+        try:
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError) as error:
+            raise AssetLibraryError(
+                f"Cannot read selection {path}: {error}"
+            ) from error
+        if document is None:
+            return AssetSelection()
+        if not isinstance(document, Mapping):
+            raise AssetLibraryError(
+                f"Selection {path} must contain a mapping at its root."
+            )
+        return AssetSelection(
+            scene=_optional_selection_name(document.get("scene"), "scene", path),
+            cabinet=_optional_selection_name(
+                document.get("cabinet"), "cabinet", path
+            ),
+        )
+
+    def save_selection(self, selection: AssetSelection) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        path = self.selection_path()
+        path.write_text(
+            yaml.safe_dump(
+                selection.to_dict(), sort_keys=False, allow_unicode=True
+            ),
+            encoding="utf-8",
+        )
+
+
+class AssetLibrary:
+    """Filesystem-backed asset library with pluggable catalog/selection store.
+
+    The asset directories always live under ``root/<kind>/<name>/``; the
+    catalog and selection index is delegated to ``store`` (defaulting to
+    :class:`YamlAssetStore`, overridden in production by a SQLite store).
+    """
+
+    def __init__(self, root: str | Path, store: Optional[AssetStore] = None) -> None:
+        self.root = Path(root).expanduser()
+        self._store: AssetStore = store if store is not None else YamlAssetStore(self.root)
+
+    # ── catalog (delegated to the store) ────────────────────────────────
+
+    def load_catalog(self) -> List[AssetRecord]:
+        """Return all imported assets, oldest first."""
+        return self._store.list_assets()
+
+    def find(self, kind: str, name: str) -> AssetRecord:
+        return self._store.get_asset(kind, name)
+
+    def asset_root(self, record: AssetRecord) -> Path:
+        return self.root / record.path
+
+    def asset_manifest(self, record: AssetRecord) -> AssetManifest:
+        return load_manifest(self.asset_root(record) / MANIFEST_FILENAME)
 
     # ── import ──────────────────────────────────────────────────────────
 
@@ -244,11 +353,7 @@ class AssetLibrary:
             imported_at=_utc_now(),
             validated=validated,
         )
-        remaining = [
-            entry for entry in self.load_catalog()
-            if not (entry.kind == record.kind and entry.name == record.name)
-        ]
-        self._save_catalog(remaining + [record])
+        self._store.put_asset(record)
         return record
 
     def remove_asset(self, kind: str, name: str) -> AssetRecord:
@@ -261,11 +366,7 @@ class AssetLibrary:
         """
         record = self.find(kind, name)
         shutil.rmtree(self.asset_root(record), ignore_errors=True)
-        remaining = [
-            entry for entry in self.load_catalog()
-            if not (entry.kind == kind and entry.name == name)
-        ]
-        self._save_catalog(remaining)
+        self._store.delete_asset(kind, name)
 
         selection = self.load_selection()
         changed = False
@@ -273,60 +374,25 @@ class AssetLibrary:
             selection = AssetSelection(
                 scene=None,
                 cabinet=selection.cabinet,
-                gripper_variant=selection.gripper_variant,
             )
             changed = True
         elif kind == "cabinet" and selection.cabinet == name:
             selection = AssetSelection(
                 scene=selection.scene,
                 cabinet=None,
-                gripper_variant=selection.gripper_variant,
             )
             changed = True
         if changed:
             self.save_selection(selection)
         return record
 
-    # ── selection ───────────────────────────────────────────────────────
-
-    def selection_path(self) -> Path:
-        return self.root / SELECTION_FILENAME
+    # ── selection (delegated to the store) ──────────────────────────────
 
     def load_selection(self) -> AssetSelection:
-        path = self.selection_path()
-        if not path.is_file():
-            return AssetSelection()
-        try:
-            document = yaml.safe_load(path.read_text(encoding="utf-8"))
-        except (OSError, yaml.YAMLError) as error:
-            raise AssetLibraryError(
-                f"Cannot read selection {path}: {error}"
-            ) from error
-        if document is None:
-            return AssetSelection()
-        if not isinstance(document, Mapping):
-            raise AssetLibraryError(
-                f"Selection {path} must contain a mapping at its root."
-            )
-        return AssetSelection(
-            scene=_optional_selection_name(document.get("scene"), "scene", path),
-            cabinet=_optional_selection_name(
-                document.get("cabinet"), "cabinet", path
-            ),
-            gripper_variant=_optional_selection_name(
-                document.get("gripper_variant"), "gripper_variant", path
-            ),
-        )
+        return self._store.load_selection()
 
     def save_selection(self, selection: AssetSelection) -> None:
-        self.root.mkdir(parents=True, exist_ok=True)
-        path = self.selection_path()
-        path.write_text(
-            yaml.safe_dump(
-                selection.to_dict(), sort_keys=False, allow_unicode=True
-            ),
-            encoding="utf-8",
-        )
+        self._store.save_selection(selection)
 
     def selection_to_env(
         self, selection: Optional[AssetSelection] = None
@@ -343,8 +409,6 @@ class AssetLibrary:
             env.update(self._scene_env(selection.scene))
         if selection.cabinet:
             env.update(self._cabinet_env(selection.cabinet))
-        if selection.gripper_variant:
-            env["GRIPPER_VARIANT"] = selection.gripper_variant
         return env
 
     def _scene_env(self, name: str) -> Dict[str, str]:

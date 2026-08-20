@@ -65,6 +65,7 @@ from .task_manager import TaskManager
 from .task_manager import TaskManagerClosedError
 from .task_manager import TaskManagerError
 from .task_manager import TaskNotFoundError
+from .task_record_sink import TaskRecordSink
 from .task_replay import TaskReplayConflictError
 from .task_replay import TaskReplayError
 from .task_replay import TaskReplayOrchestrator
@@ -178,6 +179,7 @@ class ControlServer:
         robot_entity_name: str = "xczs_inspection_robot",
         initial_scene: Optional[str] = None,
         fatal_callback: Optional[ExecutorFatalCallback] = None,
+        task_record_sink: Optional[TaskRecordSink] = None,
     ) -> None:
         if (
             isinstance(port, bool)
@@ -386,6 +388,9 @@ class ControlServer:
             self._executor.add_node(client)
 
         self._task_manager = TaskManager()
+        # 可选的任务记录 sink（navigate/operate → SQLite）。未注入时控制网关
+        # 照常运行，只是不落库。由应用入口注入 ``app.tasks.store.TaskRecordStore``。
+        self._task_record_sink = task_record_sink
         self._replay_internal = threading.local()
         self._recording_manager = RecordingManager(
             recordings_path,
@@ -1058,8 +1063,14 @@ class ControlServer:
                     "joint_trajectory": self._joint_trajectory_topic,
                 },
                 "joint_count": len(joints),
-                "arm_joint_count": len(adapter.arm_joint_names),
-                "gripper_joint_count": len(adapter.gripper_joint_names),
+                "joint_groups": [
+                    {
+                        "name": group.name,
+                        "joint_count": len(group.joint_names),
+                        "joints": list(group.joint_names),
+                    }
+                    for group in adapter.controller_groups
+                ],
                 "manual_joints": joints,
             }
 
@@ -4320,6 +4331,18 @@ class ControlServer:
                     try:
                         self._node.get_logger().warning(
                             "Failed to append the recording task timeline: "
+                            f"{error}"
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            task_record_sink = getattr(self, "_task_record_sink", None)
+            if task_record_sink is not None:
+                try:
+                    task_record_sink.record_event(event)
+                except Exception as error:  # noqa: BLE001
+                    try:
+                        self._node.get_logger().warning(
+                            "Failed to record the task to the database: "
                             f"{error}"
                         )
                     except Exception:  # noqa: BLE001

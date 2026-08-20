@@ -185,43 +185,13 @@ def create_app(
     app.include_router(sensor_router)
     app.include_router(sse_router)
 
-    # 只暴露监控页本身。禁止把 jiang/ 整个目录挂载到 Web 根路径，
+    # 只暴露单文件静态页本身。禁止把 jiang/ 整个目录挂载到 Web 根路径，
     # 避免泄露源码、配置、数据库与录制元数据。
     if static_dir is not None:
-        monitor_path = (Path(static_dir) / "monitor.html").resolve()
-        if not monitor_path.is_file():
-            raise RuntimeError(f"监控页不存在：{monitor_path}")
-
-        def _monitor_response() -> FileResponse:
-            return FileResponse(
-                monitor_path,
-                media_type="text/html",
-                headers={
-                    "Cache-Control": "no-store",
-                    "Content-Security-Policy": (
-                        "frame-ancestors 'none'; base-uri 'none'; "
-                        "object-src 'none'"
-                    ),
-                    "Referrer-Policy": "no-referrer",
-                    "X-Frame-Options": "DENY",
-                    "X-Content-Type-Options": "nosniff",
-                },
-            )
-
-        app.add_api_route(
-            "/",
-            _monitor_response,
-            methods=["GET"],
-            include_in_schema=False,
-            name="monitor-root",
+        _add_static_page(
+            app, static_dir, "monitor.html", route_name="monitor", root=True
         )
-        app.add_api_route(
-            "/monitor.html",
-            _monitor_response,
-            methods=["GET"],
-            include_in_schema=False,
-            name="monitor-page",
-        )
+        _add_static_page(app, static_dir, "history.html", route_name="history")
 
     _attach_lifespan(
         app,
@@ -231,6 +201,51 @@ def create_app(
         enable_db=enable_db,
     )
     return app
+
+
+def _add_static_page(
+    app: FastAPI,
+    static_dir: str | Path,
+    filename: str,
+    *,
+    route_name: str,
+    root: bool = False,
+) -> None:
+    """注册单个静态页（只读、统一安全头）；``root=True`` 时同时挂到 ``/``。"""
+    page_path = (Path(static_dir) / filename).resolve()
+    if not page_path.is_file():
+        raise RuntimeError(f"静态页不存在：{page_path}")
+
+    def _page_response() -> FileResponse:
+        return FileResponse(
+            page_path,
+            media_type="text/html",
+            headers={
+                "Cache-Control": "no-store",
+                "Content-Security-Policy": (
+                    "frame-ancestors 'none'; base-uri 'none'; object-src 'none'"
+                ),
+                "Referrer-Policy": "no-referrer",
+                "X-Frame-Options": "DENY",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    app.add_api_route(
+        f"/{filename}",
+        _page_response,
+        methods=["GET"],
+        include_in_schema=False,
+        name=f"{route_name}-page",
+    )
+    if root:
+        app.add_api_route(
+            "/",
+            _page_response,
+            methods=["GET"],
+            include_in_schema=False,
+            name=f"{route_name}-root",
+        )
 
 
 def _normalize_allowed_origins(origins: Iterable[str]) -> list[str]:

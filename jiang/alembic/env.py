@@ -19,6 +19,8 @@ from app.database.base import Base
 
 # 导入所有模型，注册到 metadata。
 from app.auth.models import User  # noqa: F401
+from app.assets.models import Asset, Selection  # noqa: F401
+from app.tasks.models import TaskProgressEvent, TaskRecord  # noqa: F401
 
 config = context.config
 

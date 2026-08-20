@@ -1,0 +1,312 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    Dual-arm manipulator converted from the LinkForge export
+    model/双臂机器人/双臂机器人urdf.urdf.  Each arm is a 7-DOF revolute chain
+    (arm_0 .. arm_6); the two arms are mirror images that share every link and
+    internal joint origin, differing only in the body-side mounting joint and
+    the wrist (arm_6) link origin, hence the single parameterized macro below.
+
+    Joint effort/velocity/damping follow the legacy xczs_manipulator so the
+    existing controller YAML, MoveIt limits and planar-stabilizer tuning stay
+    meaningful.  LinkForge exported placeholder inertials (mass=1, box inertia
+    0.166667) for every arm link; they are valid positive-definite values but
+    MUST be replaced with measured values before field use.
+  -->
+
+  <xacro:macro
+    name="xczs_arm"
+    params="prefix arm0_xyz arm0_rpy arm6_rpy arm6_inertial_xyz arm6_visual_xyz">
+
+    <link name="${prefix}_arm_0">
+      <inertial>
+        <origin xyz="-0.000118 0.000078 -0.133372" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="-0.000004 0.000048 -0.133262" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_0_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="-0.000118 0.000078 -0.133372" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_0_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_0_joint" type="revolute">
+      <origin xyz="${arm0_xyz}" rpy="${arm0_rpy}" />
+      <parent link="body" />
+      <child link="${prefix}_arm_0" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_arm_1">
+      <inertial>
+        <origin xyz="0.000233 -0.046058 -0.034064" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="0 -0.046173 -0.034034" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_1_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="0.000233 -0.046058 -0.034064" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_1_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_1_joint" type="revolute">
+      <origin xyz="-0.000004 0.046447 -0.186762" rpy="0 0 0" />
+      <parent link="${prefix}_arm_0" />
+      <child link="${prefix}_arm_1" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_arm_2">
+      <inertial>
+        <origin xyz="0.000237 0.000099 -0.137353" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="0.000028 0.000072 -0.13729" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_2_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="0.000237 0.000099 -0.137353" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_2_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_2_joint" type="revolute">
+      <origin xyz="-0.000027 -0.046495 -0.149211" rpy="0 0 0" />
+      <parent link="${prefix}_arm_1" />
+      <child link="${prefix}_arm_2" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_arm_3">
+      <inertial>
+        <origin xyz="-0.000061 0.00028 -0.021179" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="-0.000061 0.000282 -0.021179" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_3_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="-0.000061 0.00028 -0.021179" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_3_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_3_joint" type="revolute">
+      <origin xyz="0.000167 -0.000274 -0.209639" rpy="0 0 0" />
+      <parent link="${prefix}_arm_2" />
+      <child link="${prefix}_arm_3" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_arm_4">
+      <inertial>
+        <origin xyz="-0.000096 0.000007 -0.141098" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 -0.141006" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_4_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="-0.000096 0.000007 -0.141098" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_4_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_4_joint" type="revolute">
+      <origin xyz="-0.000139 0.000346 -0.109231" rpy="0 0 0" />
+      <parent link="${prefix}_arm_3" />
+      <child link="${prefix}_arm_4" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_arm_5">
+      <inertial>
+        <origin xyz="-0.003592 -0.000659 -0.000149" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="-0.00375 -0.000614 -0.000002" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_5_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+      <collision>
+        <origin xyz="-0.003592 -0.000659 -0.000149" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_5_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_5_joint" type="revolute">
+      <origin xyz="0 0.00062 -0.242595" rpy="0 0 0" />
+      <parent link="${prefix}_arm_4" />
+      <child link="${prefix}_arm_5" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_arm_6">
+      <inertial>
+        <origin xyz="${arm6_inertial_xyz}" rpy="0 0 0" />
+        <mass value="1" />
+        <inertia ixx="0.166667" ixy="0" ixz="0" iyy="0.166667" iyz="0" izz="0.166667" />
+      </inertial>
+      <visual>
+        <origin xyz="${arm6_visual_xyz}" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_6_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="${arm6_inertial_xyz}" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${prefix}_arm_6_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_arm_6_joint" type="revolute">
+      <origin xyz="-0.004013 -0.00058 0" rpy="${arm6_rpy}" />
+      <parent link="${prefix}_arm_5" />
+      <child link="${prefix}_arm_6" />
+      <axis xyz="1 0 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+      <dynamics damping="20.0" friction="100.0" />
+      <safety_controller soft_lower_limit="-3.141593" soft_upper_limit="3.141593" k_position="1" k_velocity="1" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="xczs_dual_arm_manipulator" params="">
+    <xacro:xczs_arm
+      prefix="l"
+      arm0_xyz="0.353879 -0.003608 0.588076"
+      arm0_rpy="0 -1.570796 0"
+      arm6_rpy="3.141593 0 0"
+      arm6_inertial_xyz="0.011808 0.059005 0.084811"
+      arm6_visual_xyz="0.011866 0.058917 0.084696" />
+    <xacro:xczs_arm
+      prefix="r"
+      arm0_xyz="-0.350618 -0.003596 0.588076"
+      arm0_rpy="-3.141593 -1.570796 0"
+      arm6_rpy="0 0 0"
+      arm6_inertial_xyz="0.011755 0.058875 -0.084762"
+      arm6_visual_xyz="0.011866 0.058802 -0.084696" />
+  </xacro:macro>
+
+  <!--
+    Arm-mounted depth-camera housings (visual only).  The functional RGB camera
+    for the Web feed is xczs_arm_camera in sensors.xacro.
+  -->
+  <xacro:macro name="xczs_dual_arm_cameras" params="">
+    <link name="l_camera">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.01" />
+        <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001" />
+      </inertial>
+      <visual>
+        <origin xyz="-0.000001 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/l_camera_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/l_camera_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="l_camera_joint" type="fixed">
+      <origin xyz="0.004026 0.156793 0.17894" rpy="-3.13956 1.570795 0" />
+      <parent link="l_arm_6" />
+      <child link="l_camera" />
+    </joint>
+    <gazebo reference="l_camera_joint">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+
+    <link name="r_camera">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.01" />
+        <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/r_camera_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/r_camera_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="r_camera_joint" type="fixed">
+      <origin xyz="0.004026 0.156678 -0.17894" rpy="-3.13956 1.570795 0" />
+      <parent link="r_arm_6" />
+      <child link="r_camera" />
+    </joint>
+    <gazebo reference="r_camera_joint">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+  </xacro:macro>
+</robot>

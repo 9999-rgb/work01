@@ -306,9 +306,8 @@ class SceneSwitchRequest(BaseModel):
 class AssetSelectionRequest(BaseModel):
     """POST /assets/selection 请求体。
 
-    三个字段均可选；``null`` 或空串表示该维度不选择（保持现状）。
-    名称将在后端再次校验：scene / cabinet 必须已在资产库 catalog 中，
-    gripper_variant 必须是固定变体之一。
+    两个字段均可选；``null`` 或空串表示该维度不选择（保持现状）。
+    名称将在后端再次校验：scene / cabinet 必须已在资产库 catalog 中。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -319,11 +318,8 @@ class AssetSelectionRequest(BaseModel):
     cabinet: str | None = Field(
         default=None, description="柜体资产名；null 表示不选择柜体"
     )
-    gripper_variant: str | None = Field(
-        default=None, description="夹爪变体名；null 表示不选择夹爪变体"
-    )
 
-    @field_validator("scene", "cabinet", "gripper_variant")
+    @field_validator("scene", "cabinet")
     @classmethod
     def _name(cls, value: str | None) -> str | None:
         if value is None:

@@ -220,8 +220,6 @@ class _FakeControlServer:
                 "joint_trajectory": "/robot/joint_trajectory",
             },
             "joint_count": 3,
-            "arm_joint_count": 2,
-            "gripper_joint_count": 1,
             "manual_joints": [
                 {
                     "name": "shoulder",

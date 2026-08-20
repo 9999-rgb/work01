@@ -267,8 +267,34 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("odom", adapter.planning_frame)
         self.assertEqual("map", adapter.navigation_frame)
         self.assertEqual("y", adapter.manual_linear_axis)
-        self.assertEqual(6, len(adapter.arm_joint_names))
-        self.assertEqual(2, len(adapter.gripper_joint_names))
+        self.assertEqual(
+            (
+                "left_arm",
+                "right_arm",
+                "three_cylinder",
+                "two_cylinder",
+                "rocker",
+                "rotate_button",
+            ),
+            adapter.joint_group_names,
+        )
+        self.assertEqual(6, len(adapter.controller_groups))
+        self.assertEqual(22, len(adapter.manual_joints))
+        self.assertEqual(
+            "/xczs/left_arm_controller/joint_trajectory",
+            adapter.controller_topic_for_group("left_arm"),
+        )
+        self.assertEqual(
+            "/xczs/rotate_button_controller/follow_joint_trajectory/"
+            "_action/status",
+            adapter.status_topic_for_group("rotate_button"),
+        )
+        self.assertEqual(7, len(adapter.joint_names_for_group("left_arm")))
+        self.assertEqual(7, len(adapter.joint_names_for_group("right_arm")))
+        self.assertEqual(3, len(adapter.joint_names_for_group("three_cylinder")))
+        self.assertEqual(2, len(adapter.joint_names_for_group("two_cylinder")))
+        self.assertEqual(1, len(adapter.joint_names_for_group("rocker")))
+        self.assertEqual(2, len(adapter.joint_names_for_group("rotate_button")))
         self.assertEqual("map", adapter.reset_base_pose.frame_id)
         self.assertEqual(0.0, adapter.reset_base_pose.x)
         self.assertEqual(0.0, adapter.reset_base_pose.y)
@@ -279,7 +305,8 @@ class RobotAdapterTest(unittest.TestCase):
         defaults = {
             joint.name: joint.default_position for joint in adapter.manual_joints
         }
-        self.assertAlmostEqual(-pi / 2.0, defaults["arm1_arm2"])
+        self.assertEqual(0.0, defaults["r_three_cyl_finger3_joint"])
+        self.assertEqual(0.0, defaults["l_rocker_rotor_joint"])
         stations = dict(adapter.control_navigation_stations)
         self.assertEqual(33, len(stations))
         self.assertEqual(
@@ -352,9 +379,8 @@ class RobotAdapterTest(unittest.TestCase):
             {"/**": {"ros__parameters": parameters}}
         )
 
-        self.assertEqual((), adapter.gripper_joint_names)
-        self.assertIsNone(adapter.gripper_controller_topic)
-        self.assertIsNone(adapter.gripper_controller_status_topic)
+        self.assertIsNone(adapter.controller_topic_for_group("gripper"))
+        self.assertIsNone(adapter.status_topic_for_group("gripper"))
 
         parameters = _parameters()
         parameters.pop("gripper_controller_topic")
@@ -412,8 +438,6 @@ class RobotAdapterTest(unittest.TestCase):
         )
         self.assertEqual("/xczs/manual_cmd_vel", adapter.manual_cmd_vel_topic)
         self.assertEqual(8, len(adapter.manual_joint_names))
-        self.assertEqual(6, len(adapter.arm_joint_names))
-        self.assertEqual(2, len(adapter.gripper_joint_names))
         self.assertEqual("y", adapter.manual_linear_axis)
         self.assertEqual("map", adapter.reset_base_pose.frame_id)
         self.assertAlmostEqual(pi / 2.0, adapter.reset_base_pose.yaw)

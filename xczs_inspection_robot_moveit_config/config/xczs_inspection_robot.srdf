@@ -1,71 +1,159 @@
 <?xml version="1.0"?>
-<robot name="xczs_inspection_robot">
+<!--
+  Dual-arm semantic robot description.  Two 7-DOF manipulator groups (left_arm,
+  right_arm) plus four end-effector tool groups.  Each tool hangs from its arm
+  wrist (l_arm_6 / r_arm_6) through a fixed mount joint, matching the
+  robot_description produced by xczs_inspection_robot.urdf.xacro.
+-->
+<robot
+  xmlns:xacro="http://www.ros.org/wiki/xacro"
+  name="xczs_inspection_robot">
   <virtual_joint
     name="odom_joint"
     type="floating"
     parent_frame="odom"
     child_link="body" />
 
-  <group name="manipulator">
-    <chain base_link="body" tip_link="end" />
+  <group name="left_arm">
+    <chain base_link="body" tip_link="l_arm_6" />
   </group>
 
-  <group name="gripper">
-    <joint name="end_worklink1" />
-    <joint name="end_worklink2" />
+  <group name="right_arm">
+    <chain base_link="body" tip_link="r_arm_6" />
   </group>
 
-  <group name="manipulator_with_gripper">
-    <group name="manipulator" />
-    <group name="gripper" />
+  <group name="three_cylinder">
+    <joint name="r_three_cyl_finger1_joint" />
+    <joint name="r_three_cyl_finger2_joint" />
+    <joint name="r_three_cyl_finger3_joint" />
   </group>
 
-  <group_state name="home" group="manipulator">
-    <joint name="body_arm1" value="0" />
-    <!-- Raise the long planar links vertically so the transport pose stays
-         inside the Nav2 base footprint instead of sweeping front controls. -->
-    <joint name="arm1_arm2" value="-1.5707963267948966" />
-    <joint name="arm2_arm3" value="0" />
-    <joint name="arm3_arm4" value="0" />
-    <joint name="arm4_arm5" value="0" />
-    <joint name="arm5_end" value="0" />
+  <group name="two_cylinder">
+    <joint name="l_two_cyl_finger1_joint" />
+    <joint name="l_two_cyl_finger2_joint" />
+  </group>
+
+  <group name="rocker">
+    <joint name="l_rocker_rotor_joint" />
+  </group>
+
+  <group name="rotate_button">
+    <joint name="r_rotbtn_jaw1_joint" />
+    <joint name="r_rotbtn_jaw2_joint" />
+  </group>
+
+  <!-- Neutral transport poses.  These are placeholders until the dual-arm
+       geometry is rendered and a collision-free home pose is calibrated. -->
+  <group_state name="home" group="left_arm">
+    <joint name="l_arm_0_joint" value="0" />
+    <joint name="l_arm_1_joint" value="0" />
+    <joint name="l_arm_2_joint" value="0" />
+    <joint name="l_arm_3_joint" value="0" />
+    <joint name="l_arm_4_joint" value="0" />
+    <joint name="l_arm_5_joint" value="0" />
+    <joint name="l_arm_6_joint" value="0" />
   </group_state>
 
-  <group_state name="open" group="gripper">
-    <joint name="end_worklink1" value="0.35" />
-    <joint name="end_worklink2" value="-0.35" />
+  <group_state name="home" group="right_arm">
+    <joint name="r_arm_0_joint" value="0" />
+    <joint name="r_arm_1_joint" value="0" />
+    <joint name="r_arm_2_joint" value="0" />
+    <joint name="r_arm_3_joint" value="0" />
+    <joint name="r_arm_4_joint" value="0" />
+    <joint name="r_arm_5_joint" value="0" />
+    <joint name="r_arm_6_joint" value="0" />
   </group_state>
 
-  <group_state name="closed" group="gripper">
-    <joint name="end_worklink1" value="0" />
-    <joint name="end_worklink2" value="0" />
+  <group_state name="open" group="three_cylinder">
+    <joint name="r_three_cyl_finger1_joint" value="0" />
+    <joint name="r_three_cyl_finger2_joint" value="0" />
+    <joint name="r_three_cyl_finger3_joint" value="0" />
+  </group_state>
+
+  <group_state name="open" group="two_cylinder">
+    <joint name="l_two_cyl_finger1_joint" value="0" />
+    <joint name="l_two_cyl_finger2_joint" value="0" />
+  </group_state>
+
+  <group_state name="center" group="rocker">
+    <joint name="l_rocker_rotor_joint" value="0" />
+  </group_state>
+
+  <group_state name="open" group="rotate_button">
+    <joint name="r_rotbtn_jaw1_joint" value="0" />
+    <joint name="r_rotbtn_jaw2_joint" value="0" />
   </group_state>
 
   <end_effector
-    name="inspection_gripper"
-    parent_link="end"
-    group="gripper"
-    parent_group="manipulator" />
+    name="three_cylinder"
+    parent_link="r_arm_6"
+    group="three_cylinder"
+    parent_group="right_arm" />
+  <end_effector
+    name="two_cylinder"
+    parent_link="l_arm_6"
+    group="two_cylinder"
+    parent_group="left_arm" />
+  <end_effector
+    name="rocker"
+    parent_link="l_arm_6"
+    group="rocker"
+    parent_group="left_arm" />
+  <end_effector
+    name="rotate_button"
+    parent_link="r_arm_6"
+    group="rotate_button"
+    parent_group="right_arm" />
 
-  <disable_collisions link1="body" link2="arm1" reason="Adjacent" />
-  <disable_collisions link1="body" link2="arm2" reason="Default" />
-  <disable_collisions link1="body" link2="front_right_wheel" reason="Adjacent" />
-  <disable_collisions link1="body" link2="front_left_wheel" reason="Adjacent" />
-  <disable_collisions link1="body" link2="back_right_wheel" reason="Adjacent" />
-  <disable_collisions link1="body" link2="back_left_wheel" reason="Adjacent" />
+  <!-- Adjacent / never-moving link pairs whose collision checks are skipped. -->
+  <disable_collisions link1="body" link2="l_arm_0" reason="Adjacent" />
+  <disable_collisions link1="body" link2="r_arm_0" reason="Adjacent" />
+  <disable_collisions link1="body" link2="l_wheel_0" reason="Adjacent" />
+  <disable_collisions link1="body" link2="l_wheel_1" reason="Adjacent" />
+  <disable_collisions link1="body" link2="r_wheel_0" reason="Adjacent" />
+  <disable_collisions link1="body" link2="r_wheel_1" reason="Adjacent" />
   <disable_collisions link1="body" link2="body_lidar_link" reason="Adjacent" />
-  <disable_collisions link1="arm1" link2="arm2" reason="Adjacent" />
-  <disable_collisions link1="arm2" link2="arm3" reason="Adjacent" />
-  <disable_collisions link1="arm3" link2="arm4" reason="Adjacent" />
-  <disable_collisions link1="arm3" link2="arm5" reason="Default" />
-  <disable_collisions link1="arm4" link2="arm5" reason="Adjacent" />
-  <disable_collisions link1="arm5" link2="end" reason="Adjacent" />
-  <disable_collisions link1="end" link2="arm_camera_link" reason="Adjacent" />
-  <disable_collisions link1="arm_camera_link" link2="arm_camera_optical_frame" reason="Adjacent" />
-  <disable_collisions link1="end" link2="worklink1" reason="Adjacent" />
-  <disable_collisions link1="end" link2="worklink2" reason="Adjacent" />
-  <disable_collisions link1="worklink1" link2="worklink2" reason="Default" />
-  <disable_collisions link1="end" link2="button_press_tip" reason="Adjacent" />
-  <disable_collisions link1="worklink1" link2="button_press_tip" reason="Default" />
-  <disable_collisions link1="worklink2" link2="button_press_tip" reason="Default" />
+  <disable_collisions link1="body" link2="l_laser" reason="Adjacent" />
+  <disable_collisions link1="body" link2="r_laser" reason="Adjacent" />
+
+  <disable_collisions link1="l_arm_0" link2="l_arm_1" reason="Adjacent" />
+  <disable_collisions link1="l_arm_1" link2="l_arm_2" reason="Adjacent" />
+  <disable_collisions link1="l_arm_2" link2="l_arm_3" reason="Adjacent" />
+  <disable_collisions link1="l_arm_3" link2="l_arm_4" reason="Adjacent" />
+  <disable_collisions link1="l_arm_4" link2="l_arm_5" reason="Adjacent" />
+  <disable_collisions link1="l_arm_5" link2="l_arm_6" reason="Adjacent" />
+  <disable_collisions link1="l_arm_6" link2="l_camera" reason="Adjacent" />
+
+  <disable_collisions link1="r_arm_0" link2="r_arm_1" reason="Adjacent" />
+  <disable_collisions link1="r_arm_1" link2="r_arm_2" reason="Adjacent" />
+  <disable_collisions link1="r_arm_2" link2="r_arm_3" reason="Adjacent" />
+  <disable_collisions link1="r_arm_3" link2="r_arm_4" reason="Adjacent" />
+  <disable_collisions link1="r_arm_4" link2="r_arm_5" reason="Adjacent" />
+  <disable_collisions link1="r_arm_5" link2="r_arm_6" reason="Adjacent" />
+  <disable_collisions link1="r_arm_6" link2="r_camera" reason="Adjacent" />
+  <disable_collisions link1="r_arm_6" link2="arm_camera_link" reason="Adjacent" />
+
+  <!-- Tool mounts are fixed to their wrist, so their base links never move
+       relative to the wrist or to each other. -->
+  <disable_collisions link1="r_arm_6" link2="r_three_cyl_base" reason="Adjacent" />
+  <disable_collisions link1="r_arm_6" link2="r_rotbtn_body" reason="Adjacent" />
+  <disable_collisions link1="l_arm_6" link2="l_two_cyl_base" reason="Adjacent" />
+  <disable_collisions link1="l_arm_6" link2="l_rocker_body" reason="Adjacent" />
+  <disable_collisions link1="r_three_cyl_base" link2="r_rotbtn_body" reason="Default" />
+  <disable_collisions link1="l_two_cyl_base" link2="l_rocker_body" reason="Default" />
+
+  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger1" reason="Adjacent" />
+  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger2" reason="Adjacent" />
+  <disable_collisions link1="r_three_cyl_finger2" link2="r_three_cyl_finger3" reason="Adjacent" />
+  <disable_collisions link1="r_three_cyl_finger1" link2="r_three_cyl_finger2" reason="Default" />
+
+  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Adjacent" />
+  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Adjacent" />
+  <disable_collisions link1="l_two_cyl_finger1" link2="l_two_cyl_finger2" reason="Default" />
+
+  <disable_collisions link1="l_rocker_body" link2="l_rocker_rotor" reason="Adjacent" />
+
+  <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw1" reason="Adjacent" />
+  <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw2" reason="Adjacent" />
+  <disable_collisions link1="r_rotbtn_jaw1" link2="r_rotbtn_jaw2" reason="Default" />
 </robot>

@@ -272,7 +272,7 @@ class AssetLibraryTest(unittest.TestCase):
     # ── selection ───────────────────────────────────────────────────────
 
     def test_selection_roundtrip(self) -> None:
-        selection = AssetSelection(scene="scene_a", gripper_variant="button_press_tip")
+        selection = AssetSelection(scene="scene_a")
         self.library.save_selection(selection)
         loaded = self.library.load_selection()
         self.assertEqual(selection, loaded)
@@ -321,16 +321,13 @@ class AssetLibraryTest(unittest.TestCase):
             str(root / "control_cabinet.urdf.xacro"), env["CABINET_XACRO_PATH"]
         )
 
-    def test_selection_to_env_maps_gripper_and_reads_persisted(self) -> None:
+    def test_selection_to_env_reads_persisted(self) -> None:
         source = _write_scene_asset(self.directory / "source")
         self.library.import_asset(source)
-        self.library.save_selection(
-            AssetSelection(scene="scene_a", gripper_variant="worklink")
-        )
+        self.library.save_selection(AssetSelection(scene="scene_a"))
 
         env = self.library.selection_to_env()
 
-        self.assertEqual("worklink", env["GRIPPER_VARIANT"])
         self.assertEqual("scene_a", env["SCENE"])
 
     def test_selection_to_env_unknown_asset_raises(self) -> None:

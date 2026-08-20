@@ -16,7 +16,6 @@ version: 1.0.0
 description: 内置控制柜的物理孪生样例（33 控件，可直接导入并通过操作闭环）
 references:
   cabinet: null
-  gripper_variant: null
 files:
   controls: cabinet_controls.yaml
   scene: cabinet_scene.yaml

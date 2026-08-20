@@ -53,23 +53,22 @@ WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 
 # ── 资产库选择 → 现有环境指针 ──────────────────────────────────────
-# 若资产库存在 selection.yaml（Web/CLI 中选中的场景/柜体/夹爪变体），把选中
-# 结果映射到现有的 CABINET_*_PATH / SCENES_CONFIG / SCENE 环境变量，由下方
-# 默认值块与 launch/Web 消费。仅当用户没有显式设置对应变量时生效——显式
-# 环境变量优先于资产库选择。无 selection.yaml 时本块为空操作。
+# 选择持久化在 SQLite（``selection`` 表，与 auth 用户同库）。这里通过 CLI 的
+# ``--print-env`` 把选中的场景/柜体/夹爪变体映射到现有的 CABINET_*_PATH /
+# SCENES_CONFIG / SCENE 环境变量，由下方默认值块与 launch/Web 消费。仅当用户
+# 没有显式设置对应变量时生效——显式环境变量优先于资产库选择。无选择（空表 /
+# 首次启动）或依赖缺失时本块静默退化为空操作。
 XCZS_ASSETS_DIR="${XCZS_ASSETS_DIR:-$WORK_DIR/jiang/data/assets}"
-if [ -f "$XCZS_ASSETS_DIR/selection.yaml" ]; then
-    ASSET_SELECTION_LINES="$(
-        "$PYTHON_BIN" "$WORK_DIR/scripts/xczs_import_asset" \
-            --assets-dir "$XCZS_ASSETS_DIR" --print-env 2>/dev/null || true
-    )"
-    while IFS='=' read -r _asset_key _asset_value; do
-        [ -z "$_asset_key" ] && continue
-        if [ -z "${!_asset_key:-}" ]; then
-            export "$_asset_key=$_asset_value"
-        fi
-    done <<< "$ASSET_SELECTION_LINES"
-fi
+ASSET_SELECTION_LINES="$(
+    "$PYTHON_BIN" "$WORK_DIR/scripts/xczs_import_asset" \
+        --assets-dir "$XCZS_ASSETS_DIR" --print-env 2>/dev/null || true
+)"
+while IFS='=' read -r _asset_key _asset_value; do
+    [ -z "$_asset_key" ] && continue
+    if [ -z "${!_asset_key:-}" ]; then
+        export "$_asset_key=$_asset_value"
+    fi
+done <<< "$ASSET_SELECTION_LINES"
 
 CABINET_INSTANCES_PATH="${CABINET_INSTANCES_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_instances.yaml}"
 CABINET_CONTROLS_PATH="${CABINET_CONTROLS_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_controls.yaml}"

@@ -85,8 +85,6 @@ class FakeServer:
             "topics": {},
             "manual_joints": [],
             "joint_count": 8,
-            "arm_joint_count": 6,
-            "gripper_joint_count": 2,
         }
 
     def navigation_status(self) -> Dict[str, Any]:

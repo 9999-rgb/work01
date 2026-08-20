@@ -166,8 +166,6 @@ class ProfileContractTest(unittest.TestCase):
         self.assertEqual(1, report.cabinet_count)
         self.assertEqual(1, report.button_count)
         self.assertEqual(0, report.door_count)
-        self.assertEqual(1, report.arm_joint_count)
-        self.assertEqual(0, report.gripper_joint_count)
 
     def test_project_profile_passes_generic_contract(self) -> None:
         config = WORKSPACE / "xczs_inspection_robot_control" / "config"
@@ -376,7 +374,6 @@ class ProfileContractTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ProfileContractError, "does not match"):
             self._validate(documents)
-
 
 if __name__ == "__main__":
     unittest.main()

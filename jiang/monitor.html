@@ -361,18 +361,6 @@
   font-size: 10px; width: 48px; color: var(--text);
 }
 
-/* ── Gripper Controls ─────────────────────── */
-.gripper-btns { display: flex; gap: 8px; margin-top: 10px; }
-.gripper-btns .btn { flex: 1; text-align: center; }
-.gripper-joint-specs { display: flex; flex-direction: column; gap: 4px; }
-.gripper-joint-spec {
-  display: grid; grid-template-columns: minmax(90px, 1fr) 2fr;
-  gap: 8px; font-size: 10px; color: var(--text-dim);
-}
-.gripper-joint-spec strong {
-  color: var(--text); font-family: 'SF Mono', 'Fira Code', monospace;
-}
-
 /* ── Control Connect Bar ──────────────────── */
 .ctrl-connect {
   display: flex; align-items: center; gap: 8px;
@@ -730,14 +718,6 @@
     <div style="display:flex; gap:8px; margin-top:10px">
       <button class="btn btn-outline" id="btnArmZero" style="flex:1">复位机械臂关节</button>
     </div>
-    <div id="gripperControlSection">
-      <h4 style="margin-top:14px">🤖 夹爪控制</h4>
-      <div class="gripper-joint-specs" id="gripperJointSpecs"></div>
-      <div class="gripper-btns">
-        <button class="btn btn-primary" id="btnGripperOpen">打开夹爪</button>
-        <button class="btn btn-danger" id="btnGripperClose">复位夹爪</button>
-      </div>
-    </div>
   </div>
 
   <!-- Control Connection -->
@@ -1044,12 +1024,6 @@
                 <option value="">（保持默认）</option>
               </select>
             </div>
-            <div class="form-field">
-              <label for="assetGripperSelect">末端夹爪变体</label>
-              <select id="assetGripperSelect" disabled>
-                <option value="">（保持默认）</option>
-              </select>
-            </div>
           </div>
           <div class="command-row">
             <button class="btn btn-primary" id="btnAssetApply" disabled>保存选择</button>
@@ -1242,7 +1216,6 @@ const assetUpload = $('assetUpload');
 const assetSkipValidate = $('assetSkipValidate');
 const assetSceneSelect = $('assetSceneSelect');
 const assetCabinetSelect = $('assetCabinetSelect');
-const assetGripperSelect = $('assetGripperSelect');
 const btnAssetImport = $('btnAssetImport');
 const btnAssetRefresh = $('btnAssetRefresh');
 const btnAssetDelete = $('btnAssetDelete');
@@ -1862,12 +1835,11 @@ function updateJointBars(data) {
     if (fill) fill.style.width = pct + '%';
     if (lbl)  lbl.textContent = val.toFixed(2);
     const manualIndex = manualJointSpecs.findIndex(joint => joint.name === name);
-    if (manualIndex >= 0) manualPositions[manualIndex] = val;
-    const controlIndex = armJointSpecs.findIndex(joint => joint.name === name);
-    if (controlIndex >= 0) {
-      const slider = document.getElementById('armSlider' + controlIndex);
+    if (manualIndex >= 0) {
+      manualPositions[manualIndex] = val;
+      const slider = document.getElementById('jointSlider' + manualIndex);
       const sliderValue = document.getElementById(
-        'armSliderVal' + controlIndex
+        'jointSliderVal' + manualIndex
       );
       if (slider && document.activeElement !== slider) {
         slider.value = String(val);
@@ -1979,8 +1951,7 @@ $('btnLogin').addEventListener('click', doLogin);
 let robotCapabilities = null;
 let manualLinearAxis = '?';
 let manualJointSpecs = [];
-let armJointSpecs = [];
-let gripperJointSpecs = [];
+let manualGroupOrder = [];
 let manualPositions = [];
 let jointStateMonitorTopic = 'xczs/joint_states/json';
 let jointTrajectoryMonitorTopic = 'xczs/joint_trajectory/json';
@@ -2023,7 +1994,7 @@ function normalizedRobotCapabilities(capabilities) {
       throw new Error(`manual_joints[${index}] 名称为空或重复`);
     }
     names.add(name);
-    if (!['arm', 'gripper'].includes(raw.group)) {
+    if (typeof raw.group !== 'string' || !raw.group.trim()) {
       throw new Error(`manual_joints[${index}] 分组无效`);
     }
     const minimum = raw.min_position;
@@ -2056,10 +2027,14 @@ function applyRobotCapabilities(capabilities) {
   robotCapabilities = normalizedRobotCapabilities(capabilities);
   manualLinearAxis = robotCapabilities.manual_linear_axis;
   manualJointSpecs = robotCapabilities.manual_joints;
-  armJointSpecs = manualJointSpecs.filter(joint => joint.group === 'arm');
-  gripperJointSpecs = manualJointSpecs.filter(
-    joint => joint.group === 'gripper'
-  );
+  const seenGroups = new Set();
+  manualGroupOrder = manualJointSpecs
+    .map(joint => joint.group)
+    .filter(group => {
+      if (seenGroups.has(group)) return false;
+      seenGroups.add(group);
+      return true;
+    });
   jointNames = manualJointSpecs.map(joint => joint.name);
   manualPositions = manualJointSpecs.map(joint => joint.default_position);
 
@@ -2085,8 +2060,7 @@ function applyRobotCapabilities(capabilities) {
     trajectoryPreset.dataset.topic = jointTrajectoryMonitorTopic;
   }
 
-  buildJointSliders();
-  buildGripperControls();
+  buildManualJointGroups();
   jointBarsBuilt = false;
   buildJointBars();
   jointBarsBuilt = true;
@@ -3310,7 +3284,7 @@ const cabinetGenericPhaseLabels = {
   resetting: '场景归零',
   resetting_robot_quiescence: '停止手动指令',
   resetting_cabinet: '复位所选柜体',
-  resetting_robot_joints: '机械臂与夹爪归零',
+  resetting_robot_joints: '机械臂与末端工具归零',
   resetting_robot_base: '底盘返回初始位姿'
 };
 const cabinetLegacyPhaseLabels = {
@@ -3539,8 +3513,7 @@ async function switchScene() {
 
 // ─── 资产库（导入 / 选择，重启生效） ─────────────────────────────
 let assetCatalog = [];
-let assetSelectionSnapshot = {scene: null, cabinet: null, gripper_variant: null};
-let assetGripperVariants = [];
+let assetSelectionSnapshot = {scene: null, cabinet: null};
 let assetImportInFlight = false;
 
 function assetIsAdmin() {
@@ -3598,7 +3571,6 @@ function updateAssetControlState() {
   btnAssetApply.disabled = !enabled || assetImportInFlight;
   assetSceneSelect.disabled = !enabled;
   assetCabinetSelect.disabled = !enabled;
-  assetGripperSelect.disabled = !enabled;
 }
 
 function applyAssets(payload) {
@@ -3606,9 +3578,6 @@ function applyAssets(payload) {
   assetSelectionSnapshot = payload && payload.selection
     ? payload.selection
     : assetSelectionSnapshot;
-  assetGripperVariants = Array.isArray(payload && payload.gripper_variants)
-    ? payload.gripper_variants
-    : [];
   if (payload && payload.library_root) {
     assetLibraryRoot.textContent = `资产库目录：${payload.library_root}`;
   }
@@ -3632,7 +3601,6 @@ function applyAssets(payload) {
 
   fillAssetSelect(assetSceneSelect, scenes, assetSelectionSnapshot.scene);
   fillAssetSelect(assetCabinetSelect, cabinets, assetSelectionSnapshot.cabinet);
-  fillAssetSelect(assetGripperSelect, assetGripperVariants, assetSelectionSnapshot.gripper_variant);
 
   const count = assetCatalog.length;
   setAutonomyState(assetState, `${count} 项`, count ? 'ok' : '');
@@ -3686,8 +3654,7 @@ async function importAssetFile() {
 async function saveAssetSelection() {
   const payload = {
     scene: assetSceneSelect.value || null,
-    cabinet: assetCabinetSelect.value || null,
-    gripper_variant: assetGripperSelect.value || null
+    cabinet: assetCabinetSelect.value || null
   };
   setAutonomyState(assetState, '保存中 ...', 'busy');
   try {
@@ -4629,7 +4596,7 @@ function renderCabinetStatus() {
     cabinetDetail.textContent = [
       cabinetStatus.message || '',
       `归零场景: ${cabinetStatus.cabinet || '-'}`,
-      '范围: 底盘初始位姿、机械臂/夹爪默认关节、所选柜体控件',
+      '范围: 底盘初始位姿、机械臂/末端工具默认关节、所选柜体控件',
       reservationActive
         ? '任务资源占用: 等待归零后端确认停止'
         : '',
@@ -4754,15 +4721,8 @@ function updateControlInterlocks() {
     input.disabled = !ctrlConnected || cabinetActive || replayLocked;
   });
   $('btnArmZero').disabled =
-    !ctrlConnected || cabinetActive || replayLocked || armJointSpecs.length === 0;
-  $('btnGripperOpen').disabled =
-    !ctrlConnected ||
-    cabinetActive ||
-    replayLocked ||
-    gripperJointSpecs.length === 0 ||
-    gripperJointSpecs.every(spec => spec.open_position === null);
-  $('btnGripperClose').disabled =
-    !ctrlConnected || cabinetActive || replayLocked || gripperJointSpecs.length === 0;
+    !ctrlConnected || cabinetActive || replayLocked ||
+    manualJointSpecs.length === 0;
 
   $('btnCabinetPress').disabled =
     !ctrlConnected ||
@@ -5773,62 +5733,72 @@ stopButton.addEventListener('click', event => {
   if (event.detail === 0) requestStopAndManualTakeover(false);
 });
 
-// ─── Arm Joint Sliders ──────────────────────────────────────
-function buildJointSliders() {
+// ─── Manual Joint Groups ─────────────────────────────────────
+function buildManualJointGroups() {
   const ct = $('jointSliders'); if (!ct) return;
-  if (armJointSpecs.length === 0) {
+  if (manualJointSpecs.length === 0) {
     const waiting = textElement('div', '', '等待 /robot/capabilities…');
     waiting.style.cssText = 'color:var(--text-dim);font-size:11px';
     ct.replaceChildren(waiting);
     return;
   }
-  const rows = armJointSpecs.map((spec, i) => {
-    const manualIndex = manualJointSpecs.findIndex(
-      joint => joint.name === spec.name
-    );
-    const value = manualPositions[manualIndex] ?? spec.default_position;
-    const row = document.createElement('div');
-    row.className = 'joint-slider-row';
-    row.appendChild(textElement('span', 'joint-slider-label', spec.name));
-    const input = document.createElement('input');
-    input.type = 'range';
-    input.id = `armSlider${i}`;
-    input.min = String(spec.min_position);
-    input.max = String(spec.max_position);
-    input.value = String(value);
-    input.step = String(jointStep(spec));
-    input.title = `范围 [${spec.min_position}, ${spec.max_position}] · ` +
-      `复位 ${spec.default_position}`;
-    input.addEventListener('input', () => onArmSlider(i, input.value));
-    row.appendChild(input);
-    const valueElement = textElement(
-      'span',
-      'joint-slider-val',
-      value.toFixed(2)
-    );
-    valueElement.id = `armSliderVal${i}`;
-    row.appendChild(valueElement);
-    return row;
-  });
-  ct.replaceChildren(...rows);
+  const blocks = [];
+  for (const group of manualGroupOrder) {
+    const header = textElement('div', 'joint-slider-group-label', group);
+    header.style.cssText =
+      'font-size:11px;color:var(--text-dim);margin-top:8px;' +
+      'text-transform:uppercase;letter-spacing:0.04em';
+    blocks.push(header);
+    manualJointSpecs
+      .filter(joint => joint.group === group)
+      .forEach(spec => {
+        const manualIndex = manualJointSpecs.findIndex(
+          joint => joint.name === spec.name
+        );
+        blocks.push(buildJointSliderRow(spec, manualIndex));
+      });
+  }
+  ct.replaceChildren(...blocks);
 }
 
-function onArmSlider(idx, val) {
-  if (replayControlReadOnly || isCabinetOperationActive()) return;
-  const spec = armJointSpecs[idx];
-  if (!spec) return;
-  const manualIndex = manualJointSpecs.findIndex(
-    joint => joint.name === spec.name
+function buildJointSliderRow(spec, manualIndex) {
+  const value = manualPositions[manualIndex] ?? spec.default_position;
+  const row = document.createElement('div');
+  row.className = 'joint-slider-row';
+  row.appendChild(textElement('span', 'joint-slider-label', spec.name));
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.id = `jointSlider${manualIndex}`;
+  input.min = String(spec.min_position);
+  input.max = String(spec.max_position);
+  input.value = String(value);
+  input.step = String(jointStep(spec));
+  input.title = `范围 [${spec.min_position}, ${spec.max_position}] · ` +
+    `复位 ${spec.default_position}`;
+  input.addEventListener('input', () => onJointSlider(manualIndex, input.value));
+  row.appendChild(input);
+  const valueElement = textElement(
+    'span',
+    'joint-slider-val',
+    value.toFixed(2)
   );
+  valueElement.id = `jointSliderVal${manualIndex}`;
+  row.appendChild(valueElement);
+  return row;
+}
+
+function onJointSlider(manualIndex, val) {
+  if (replayControlReadOnly || isCabinetOperationActive()) return;
+  if (manualIndex < 0 || manualIndex >= manualJointSpecs.length) return;
   const parsed = Number.parseFloat(val);
-  if (!Number.isFinite(parsed) || manualIndex < 0) return;
+  if (!Number.isFinite(parsed)) return;
   manualPositions[manualIndex] = parsed;
-  const ve = document.getElementById('armSliderVal' + idx);
+  const ve = document.getElementById('jointSliderVal' + manualIndex);
   if (ve) ve.textContent = parsed.toFixed(2);
   postJointTrajectory([...manualPositions]);
 }
 
-function resetArmToDefaults() {
+function resetJointsToDefaults() {
   if (replayControlReadOnly) {
     toast('回放只读模式中，机械臂命令已禁止', 'err');
     return;
@@ -5837,79 +5807,19 @@ function resetArmToDefaults() {
     toast('控制柜操作进行中，手动关节控制已锁定', 'err');
     return;
   }
-  armJointSpecs.forEach((spec, i) => {
-    const manualIndex = manualJointSpecs.findIndex(
-      joint => joint.name === spec.name
-    );
-    if (manualIndex >= 0) {
-      manualPositions[manualIndex] = spec.default_position;
-    }
-    const s = document.getElementById('armSlider' + i);
-    const v = document.getElementById('armSliderVal' + i);
+  manualJointSpecs.forEach((spec, manualIndex) => {
+    manualPositions[manualIndex] = spec.default_position;
+    const s = document.getElementById('jointSlider' + manualIndex);
+    const v = document.getElementById('jointSliderVal' + manualIndex);
     if (s) s.value = String(spec.default_position);
     if (v) v.textContent = spec.default_position.toFixed(2);
   });
   postJointTrajectory([...manualPositions]);
 }
 
-// ─── Gripper Control ────────────────────────────────────────
-function buildGripperControls() {
-  const section = $('gripperControlSection');
-  const specs = $('gripperJointSpecs');
-  if (!section || !specs) return;
-  section.style.display = gripperJointSpecs.length ? '' : 'none';
-  const rows = gripperJointSpecs.map(spec => {
-    const openText = spec.open_position === null
-      ? '未配置'
-      : spec.open_position.toFixed(3);
-    const row = document.createElement('div');
-    row.className = 'gripper-joint-spec';
-    row.appendChild(textElement('strong', '', spec.name));
-    row.appendChild(textElement(
-      'span',
-      '',
-      `范围 [${spec.min_position.toFixed(3)}, ` +
-        `${spec.max_position.toFixed(3)}] · 复位 ` +
-        `${spec.default_position.toFixed(3)} · 打开 ${openText}`
-    ));
-    return row;
-  });
-  specs.replaceChildren(...rows);
-  $('btnGripperOpen').disabled = gripperJointSpecs.every(
-    spec => spec.open_position === null
-  );
-}
-
-function openGripper() {
-  if (replayControlReadOnly || isCabinetOperationActive()) return;
-  gripperJointSpecs.forEach(spec => {
-    const manualIndex = manualJointSpecs.findIndex(
-      joint => joint.name === spec.name
-    );
-    if (manualIndex >= 0) {
-      manualPositions[manualIndex] = spec.open_position ?? spec.default_position;
-    }
-  });
-  postJointTrajectory([...manualPositions]);
-}
-function closeGripper() {
-  if (replayControlReadOnly || isCabinetOperationActive()) return;
-  gripperJointSpecs.forEach(spec => {
-    const manualIndex = manualJointSpecs.findIndex(
-      joint => joint.name === spec.name
-    );
-    if (manualIndex >= 0) {
-      manualPositions[manualIndex] = spec.default_position;
-    }
-  });
-  postJointTrajectory([...manualPositions]);
-}
-
 // ─── Control Init ───────────────────────────────────────────
 $('btnCtrlTest').addEventListener('click', testControlConnection);
-$('btnArmZero').addEventListener('click', resetArmToDefaults);
-$('btnGripperOpen').addEventListener('click', openGripper);
-$('btnGripperClose').addEventListener('click', closeGripper);
+$('btnArmZero').addEventListener('click', resetJointsToDefaults);
 $('btnManualMode').addEventListener('click', switchToManualMode);
 $('btnNavSend').addEventListener('click', sendNavigationGoal);
 $('btnNavCancel').addEventListener('click', cancelNavigation);
@@ -6000,8 +5910,7 @@ $('spdAngular').addEventListener('input', function() {
 });
 
 // Joint controls stay disabled until the adapter capability contract loads.
-buildJointSliders();
-buildGripperControls();
+buildManualJointGroups();
 renderCabinetTarget();
 renderCabinetStatus();
 renderReplayStatus();

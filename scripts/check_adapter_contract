@@ -62,12 +62,16 @@ def main() -> int:
     except ProfileContractError as error:
         print(f"FAIL: {error}", file=sys.stderr)
         return 1
+    group_summary = ", ".join(
+        f"{name}={count}"
+        for name, count in report.joint_group_counts
+    )
     print(
         "PASS: adapter contract; "
         f"cabinets={report.cabinet_count}, controls={report.control_count} "
         f"(buttons={report.button_count}, knobs={report.knob_count}, "
         f"switches={report.switch_count}, doors={report.door_count}), "
-        f"joints={report.arm_joint_count}+{report.gripper_joint_count}, "
+        f"joint_groups=[{group_summary}], "
         f"frames={report.planning_frame}/{report.navigation_frame}"
     )
     return 0

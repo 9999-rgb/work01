@@ -1,27 +1,33 @@
 <?xml version="1.0"?>
-<!-- Model geometry originated from a SolidWorks URDF export and was
-     subsequently modularized for ROS 2 and Gazebo. -->
+<!--
+  Dual-arm inspection robot - the original single-arm SolidWorks model has been
+  replaced by the LinkForge dual-arm export (model/双臂机器人) plus four
+  SolidWorks end-effector tools (model/urdf20260817), all converted to xacro.
+  The chassis, planar navigation, sensor pipeline and ros2_control conventions
+  are reused unchanged.
+-->
 <robot
   xmlns:xacro="http://www.ros.org/wiki/xacro"
   name="xczs_inspection_robot">
+
   <!-- Shared definitions. -->
   <xacro:include filename="components/properties.xacro" />
   <xacro:include filename="components/materials.xacro" />
 
   <!-- Robot components. -->
-  <xacro:include filename="components/mobile_base.xacro" />
-  <xacro:include filename="components/manipulator.xacro" />
-  <xacro:include filename="components/gripper.xacro" />
+  <xacro:include filename="components/dual_arm_body.xacro" />
+  <xacro:include filename="components/dual_arm_manipulator.xacro" />
+  <xacro:include filename="components/tools.xacro" />
   <xacro:include filename="components/sensors.xacro" />
   <xacro:include filename="components/ros2_control.xacro" />
   <xacro:include filename="components/gazebo_plugins.xacro" />
 
-  <!-- Keep component order aligned with the original exported model. -->
-  <xacro:xczs_base_body />
-  <xacro:xczs_manipulator />
-  <xacro:xczs_gripper />
+  <!-- Component order - body first, then arms, tools, sensors, control, gazebo. -->
+  <xacro:xczs_dual_arm_body />
+  <xacro:xczs_dual_arm_manipulator />
+  <xacro:xczs_dual_arm_cameras />
+  <xacro:xczs_tools />
   <xacro:xczs_sensors />
-  <xacro:xczs_wheels />
   <xacro:xczs_ros2_control />
   <xacro:xczs_gazebo />
 </robot>

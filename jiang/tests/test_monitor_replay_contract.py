@@ -216,8 +216,7 @@ class MonitorReplayContractTest(unittest.TestCase):
             const navigationStatus = {{available: true, mode: false}};
             const cabinetStatus = null;
             const cabinetInstances = [{{name: 'cabinet_a'}}];
-            const armJointSpecs = [{{name: 'joint_1'}}];
-            const gripperJointSpecs = [{{open_position: 0.1}}];
+            const manualJointSpecs = [{{name: 'joint_1'}}];
             function selectedCabinetControl() {{
               return {{control_id: 'box_10_button_1', control_type: 0, operable: true}};
             }}
@@ -235,7 +234,7 @@ class MonitorReplayContractTest(unittest.TestCase):
             updateControlInterlocks();
             [
               'btnNavSend', 'btnNavCancel', 'btnManualMode',
-              'btnArmZero', 'btnGripperOpen', 'btnGripperClose',
+              'btnArmZero',
               'btnCabinetPress', 'btnCabinetCancel', 'btnCabinetReset',
               'spdLinear', 'spdAngular', 'cabinetTargetState',
               'cabinetTargetPosition', 'cabinetForce'

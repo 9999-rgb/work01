@@ -149,6 +149,24 @@ struct ControlStagingPoses
   geometry_msgs::msg::PoseStamped planning_pose;
 };
 
+// One control type's robot-side tool binding.  Every cabinet control type is
+// operated by exactly one arm (MoveIt group) whose contact link
+// presses/grasps/rocks the control; ``transport_named_target`` is that arm's
+// safe retreat pose in the SRDF.
+struct ToolProfile
+{
+  std::string move_group;
+  std::string contact_tool_link;
+  std::string transport_named_target;
+  // Distance (m) from the contact tool link origin to the tool's operating
+  // tip along tool -Z (toward the control).  The wrist flange carries the
+  // tool body, whose fingers/jaws/paddle protrude beyond the link origin, so
+  // every ready/prepress/contact/grasp pose must hold the arm that much
+  // farther back for the tip to actually reach the control.  This is the
+  // "tool tip offset" the adapter comment calls out as uncalibrated.
+  double tool_tip_offset{0.0};
+};
+
 struct ButtonSnapshot
 {
   bool received{false};
@@ -273,15 +291,9 @@ public:
       "navigation_frame", "map");
     robot_model_name_ = required_string_parameter(
       "robot_model_name", "");
-    move_group_name_ = required_string_parameter("move_group", "");
     move_group_namespace_ = declare_parameter<std::string>(
       "move_group_namespace", "/");
-    planning_tip_link_ = required_string_parameter(
-      "planning_tip_link", "");
-    contact_tool_link_ = required_string_parameter(
-      "contact_tool_link", "");
-    transport_named_target_ = required_string_parameter(
-      "transport_named_target", "");
+    load_tool_profiles();
     planning_time_ = positive_parameter("planning_time", 10.0);
     planning_attempts_ = declare_parameter<int>("planning_attempts", 10);
     if (planning_attempts_ < 1 || planning_attempts_ > 100) {
@@ -351,7 +363,6 @@ public:
               "than the lease duration.");
     }
 
-    staging_distance_ = positive_parameter("staging_distance", 0.930);
     prepress_distance_ = positive_parameter("prepress_distance", 0.060);
     grasp_outward_offset_ = positive_parameter(
       "grasp_outward_offset", 0.020);
@@ -627,6 +638,73 @@ private:
       throw std::invalid_argument("Parameter '" + name + "' must not be empty.");
     }
     return value;
+  }
+
+  ToolProfile read_tool_profile(const std::string & type_name)
+  {
+    const std::string prefix = "tool_profiles." + type_name + ".";
+    ToolProfile profile;
+    profile.move_group = declare_parameter<std::string>(
+      prefix + "move_group", "");
+    profile.contact_tool_link = declare_parameter<std::string>(
+      prefix + "contact_tool_link", "");
+    profile.transport_named_target = declare_parameter<std::string>(
+      prefix + "transport_named_target", "");
+    profile.tool_tip_offset = declare_parameter<double>(
+      prefix + "tool_tip_offset", 0.0);
+    return profile;
+  }
+
+  void load_tool_profiles()
+  {
+    using Control = xczs_inspection_robot_control::msg::CabinetControl;
+    tool_profiles_[Control::TYPE_BUTTON] = read_tool_profile("button");
+    tool_profiles_[Control::TYPE_KNOB] = read_tool_profile("knob");
+    tool_profiles_[Control::TYPE_SWITCH] = read_tool_profile("switch");
+    tool_profiles_[Control::TYPE_DOOR] = read_tool_profile("door");
+
+    // A legacy single-arm adapter declares one scalar move_group / tip link /
+    // contact tool link / transport target; apply it to every control type so
+    // historical adapter files keep loading unchanged.
+    if (tool_profiles_[Control::TYPE_BUTTON].move_group.empty()) {
+      ToolProfile legacy;
+      legacy.move_group = required_string_parameter("move_group", "");
+      legacy.contact_tool_link =
+        required_string_parameter("contact_tool_link", "");
+      legacy.transport_named_target =
+        required_string_parameter("transport_named_target", "");
+      for (auto & entry : tool_profiles_) {
+        entry.second = legacy;
+      }
+    } else {
+      for (const auto & entry : tool_profiles_) {
+        const auto & profile = entry.second;
+        if (profile.move_group.empty() ||
+          profile.contact_tool_link.empty() ||
+          profile.transport_named_target.empty())
+        {
+          throw std::invalid_argument(
+                  "Every tool_profiles entry must declare move_group, "
+                  "contact_tool_link and transport_named_target.");
+        }
+      }
+    }
+    apply_tool_profile(Control::TYPE_BUTTON);
+  }
+
+  void apply_tool_profile(std::uint8_t control_type)
+  {
+    const auto iterator = tool_profiles_.find(control_type);
+    if (iterator == tool_profiles_.end()) {
+      throw std::invalid_argument(
+              "No tool profile is configured for control type " +
+              std::to_string(static_cast<int>(control_type)) + ".");
+    }
+    const auto & profile = iterator->second;
+    move_group_name_ = profile.move_group;
+    contact_tool_link_ = profile.contact_tool_link;
+    transport_named_target_ = profile.transport_named_target;
+    tool_tip_offset_ = profile.tool_tip_offset;
   }
 
   void require_absolute_ros_name(
@@ -1494,6 +1572,10 @@ private:
     }
 
     try {
+      // Bind the button operation's arm group, tip link, contact tool link and
+      // transport target to the button type before any MoveIt planning.
+      apply_tool_profile(
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON);
       if (!button) {
         throw OperationError(
                 PressCabinetButton::Result::INTERNAL_ERROR,
@@ -1841,6 +1923,9 @@ private:
                 OperateCabinetControl::Result::INVALID_CONTROL,
                 "The accepted cabinet control is no longer configured.");
       }
+      // Bind this operation's arm group, tip link, contact tool link and
+      // transport target to the control's type before any MoveIt planning.
+      apply_tool_profile(control->control_type);
       if (validation_only) {
         result->policy_reason = control->unavailable_reason.empty() ?
           "The selected control has not passed this robot adapter's complete "
@@ -2846,7 +2931,11 @@ private:
     tool_rotation.normalize();
 
     geometry_msgs::msg::Pose pose;
-    const tf2::Vector3 position_world = grasp + outward * outward_offset;
+    // The contact link origin is anchored at the tool's flange, whose
+    // operating tip protrudes tool_tip_offset_ toward the control.  Offset the
+    // arm farther back so the tip lands on the grasp point.
+    const tf2::Vector3 position_world = grasp +
+      outward * (outward_offset + tool_tip_offset_);
     pose.position.x = position_world.x();
     pose.position.y = position_world.y();
     pose.position.z = position_world.z();
@@ -3711,8 +3800,10 @@ private:
     tool_rotation.normalize();
     const auto make_tool_pose =
       [&](double tip_offset) -> geometry_msgs::msg::Pose {
+        // Hold the arm tool_tip_offset_ farther back so the tool's operating
+        // tip (not the flange-anchored body origin) reaches the target.
         const tf2::Vector3 tip_position = button_face +
-          inward * tip_offset;
+          inward * (tip_offset - tool_tip_offset_);
         geometry_msgs::msg::Pose pose;
         pose.position.x = tip_position.x();
         pose.position.y = tip_position.y();
@@ -3734,7 +3825,6 @@ private:
     const auto robot_model = move_group.getRobotModel();
     if (!robot_model ||
       !robot_model->getJointModelGroup(move_group_name_) ||
-      !robot_model->getLinkModel(planning_tip_link_) ||
       !robot_model->getLinkModel(contact_tool_link_))
     {
       throw OperationError(
@@ -5707,9 +5797,10 @@ private:
   std::string robot_model_name_;
   std::string move_group_name_;
   std::string move_group_namespace_;
-  std::string planning_tip_link_;
   std::string contact_tool_link_;
   std::string transport_named_target_;
+  double tool_tip_offset_{0.0};
+  std::unordered_map<std::uint8_t, ToolProfile> tool_profiles_;
   double planning_time_{10.0};
   int planning_attempts_{10};
   double planning_velocity_scale_{0.20};
@@ -5728,7 +5819,6 @@ private:
   double operation_lease_duration_{3.0};
   double operation_lease_renew_period_{0.75};
   double operation_lease_request_timeout_{0.50};
-  double staging_distance_{0.930};
   double prepress_distance_{0.060};
   double grasp_outward_offset_{0.020};
   double contact_clearance_{0.001};

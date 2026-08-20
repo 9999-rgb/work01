@@ -39,57 +39,81 @@
     reset_joint_tolerance: 0.02
     reset_joint_timeout_sec: 15.0
     reset_joint_duration_sec: 5.0
-    arm_controller_topic: /xczs/arm_controller/joint_trajectory
-    arm_controller_status_topic: /xczs/arm_controller/follow_joint_trajectory/_action/status
-    gripper_controller_topic: /xczs/gripper_controller/joint_trajectory
-    gripper_controller_status_topic: /xczs/gripper_controller/follow_joint_trajectory/_action/status
-    arm_joint_names:
-      - body_arm1
-      - arm1_arm2
-      - arm2_arm3
-      - arm3_arm4
-      - arm4_arm5
-      - arm5_end
-    gripper_joint_names:
-      - end_worklink1
-      - end_worklink2
+    # 双臂机器人共有 6 个 JointTrajectoryController：左/右七轴机械臂，
+    # 以及四个末端工具。控制器输入/状态话题按 ros2_control 约定由
+    # <controller_namespace>/<group>_controller 统一推导，无需逐组重复。
+    controller_namespace: /xczs
+    # 有序的分组名决定 Web 手动关节载荷与 reset 轨迹的展平顺序，必须与
+    # 下方 manual_joint_groups 的键一一对应。
+    manual_joint_group_names:
+      - left_arm
+      - right_arm
+      - three_cylinder
+      - two_cylinder
+      - rocker
+      - rotate_button
+    manual_joint_groups:
+      left_arm:
+        - l_arm_0_joint
+        - l_arm_1_joint
+        - l_arm_2_joint
+        - l_arm_3_joint
+        - l_arm_4_joint
+        - l_arm_5_joint
+        - l_arm_6_joint
+      right_arm:
+        - r_arm_0_joint
+        - r_arm_1_joint
+        - r_arm_2_joint
+        - r_arm_3_joint
+        - r_arm_4_joint
+        - r_arm_5_joint
+        - r_arm_6_joint
+      three_cylinder:
+        - r_three_cyl_finger1_joint
+        - r_three_cyl_finger2_joint
+        - r_three_cyl_finger3_joint
+      two_cylinder:
+        - l_two_cyl_finger1_joint
+        - l_two_cyl_finger2_joint
+      rocker:
+        - l_rocker_rotor_joint
+      rotate_button:
+        - r_rotbtn_jaw1_joint
+        - r_rotbtn_jaw2_joint
     # Web 手动关节命令按上方顺序传递；每个范围都是适配器合同的一部分，
-    # 控制层不得再根据位置或关节名称猜测机械臂/夹爪限位。
+    # 控制层不得再根据位置或关节名称猜测机械臂/工具限位。
     manual_joint_limits:
-      body_arm1:
-        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      arm1_arm2:
-        min_position: -2.8
-        max_position: 2.8
-        default_position: -1.5707963267948966
-      arm2_arm3:
-        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      arm3_arm4:
-        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      arm4_arm5:
-        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      arm5_end:
-        {min_position: -2.8, max_position: 2.8, default_position: 0.0}
-      end_worklink1:
-        min_position: 0.0
-        max_position: 0.35
-        default_position: 0.0
-        open_position: 0.35
-      end_worklink2:
-        min_position: -0.35
-        max_position: 0.0
-        default_position: 0.0
-        open_position: -0.35
+      l_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_4_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_4_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_three_cyl_finger1_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      r_three_cyl_finger2_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      r_three_cyl_finger3_joint: {min_position: 0.0, max_position: 0.0254, default_position: 0.0}
+      l_two_cyl_finger1_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      l_two_cyl_finger2_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      l_rocker_rotor_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
+      r_rotbtn_jaw1_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
+      r_rotbtn_jaw2_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
 
 /**/xczs_cabinet_button_operator:
   ros__parameters:
-    # 机器人适配层：更换机器人时只替换这些 MoveIt/Nav2/工具参数。
+    # 机器人适配层：更换机器人时只替换 tool_profiles（每种控件类型对应
+    # 的 MoveIt 组、接触工具链接与安全运输目标），其余 MoveIt/Nav2/
+    # 工具参数保持不变。
     robot_model_name: xczs_inspection_robot
-    move_group: manipulator
     move_group_namespace: /
-    planning_tip_link: end
-    contact_tool_link: button_press_tip
-    transport_named_target: home
     planning_time: 10.0
     planning_attempts: 10
     # 自由空间的预按位与 home 轨迹使用碰撞感知规划，可在完整关节限速下
@@ -102,6 +126,35 @@
     allow_replanning: true
     docking_base_frame: body
     grasp_brake_link: body
+    # 每种控件类型复用同一套「单臂 + 单一工具」运动闭环：按钮由右臂
+    # 三电缸按压、旋钮由右臂旋转按钮夹持后随腕部旋转、开关由左臂摇入
+    # 摇出、柜门由右臂三电缸抓取后沿铰链弧线拉动。contact_tool_link 即
+    # Gazebo 抓取附加链接与 MoveIt 末端执行器链接。
+    # contact_tool_link 指向工具的固定基座/本体链接（腕部法兰经固定关节
+    # 直连），而非可动的手指/夹爪/转子链接——这样 MoveIt 才能在只包含
+    # 机械臂链的规划组内把该链接用作末端执行器。手指/夹爪实际伸出量属于
+    # 尚未标定的工具尖端偏移，后续在校准 prepress/接触距离时一并吸收。
+    tool_profiles:
+      button:
+        move_group: right_arm
+        contact_tool_link: r_three_cyl_base
+        transport_named_target: home
+        tool_tip_offset: 0.39
+      knob:
+        move_group: right_arm
+        contact_tool_link: r_rotbtn_body
+        transport_named_target: home
+        tool_tip_offset: 0.0
+      switch:
+        move_group: left_arm
+        contact_tool_link: l_rocker_body
+        transport_named_target: home
+        tool_tip_offset: 0.143
+      door:
+        move_group: right_arm
+        contact_tool_link: r_three_cyl_base
+        transport_named_target: home
+        tool_tip_offset: 0.39
     # Loosest position layer of the navigation->docking handoff.  Must be >=
     # NAVIGATION_POSITION_TOLERANCE_M (0.22) — see test_nav2_config_contract.py.
     # 0.22 m absorbs the open-scene AMCL longitudinal drift; the docking
@@ -116,7 +169,7 @@
     docking_max_angular_speed: 0.45
     docking_linear_gain: 0.8
     docking_angular_gain: 1.2
-    # 多柜体共用同一机械臂和底盘；任何实际运动前必须取得全局短租约。
+    # 多柜体共用同一套双臂和底盘；任何实际运动前必须取得全局短租约。
     operation_lease_service: /xczs/operation_lease
     operation_lease_duration: 3.0
     operation_lease_renew_period: 0.75
@@ -133,8 +186,8 @@
     # 逐控件工位属于机器人适配能力，不写入共用的设备几何参数。Web 会
     # 先导航到所有可提交控件的显式工位，再发送操作或只规划验证任务。
     # 正面工位沿控件局部 +Z 法向退让，横向 anchor 按按压/抓取点
-    # local_position.x - 0.161 m 对齐本机器人末端；standoff 优先复用
-    # 同模块已验证按钮工位，其余使用 0.930 m 标准正面距离。
+    # local_position.x + 0.35 m 对齐右臂肩关节；双臂机器人的工具安装
+    # 偏移与 home 位姿尚未物理标定，该 anchor 值待后续校准修正。
     controls:
       cabinet_rear_door:
         navigation_station:
@@ -143,11 +196,6 @@
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          柜后精确工位可完成抓取并把门打开到 90°，但当前六轴机械臂的
-          开门后安全脱离路径仅完成 65.8%，关门预抓取也无法无碰撞规划；
-          在开关门完整闭环通过前不发送会留下半完成状态的实际动作。
       # 总开关安装在后门上；必须与后门共用柜后工位，不得从正面隔柜规划。
       cabinet_main_switch:
         navigation_station:
@@ -158,270 +206,231 @@
           frame_id: map
       box_1_button_1:
         navigation_station:
-          local_anchor: [-0.041, 1.115, 0.0]
+          local_anchor: [0.470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_1_button_2:
         navigation_station:
-          local_anchor: [0.009, 1.115, 0.0]
+          local_anchor: [0.520, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_button_1:
         navigation_station:
-          local_anchor: [0.288, 1.115, 0.0]
+          local_anchor: [0.799, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_button_2:
         navigation_station:
-          local_anchor: [0.338, 1.115, 0.0]
+          local_anchor: [0.849, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_button_1:
         navigation_station:
-          local_anchor: [-0.041, 1.115, 0.0]
+          local_anchor: [0.470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_button_2:
         navigation_station:
-          local_anchor: [0.009, 1.115, 0.0]
+          local_anchor: [0.520, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_4_button_1:
         navigation_station:
-          local_anchor: [0.288, 1.115, 0.0]
+          local_anchor: [0.799, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_4_button_2:
         navigation_station:
-          local_anchor: [0.338, 1.115, 0.0]
+          local_anchor: [0.849, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_5_button_1:
         navigation_station:
-          local_anchor: [-0.041, 1.115, 0.0]
+          local_anchor: [0.470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          逐控件导航工位已验证可到达，但当前六轴机械臂只能完成 62.1%
-          的无碰撞接触路径，低于 99% 安全门槛。
       box_5_button_2:
         navigation_station:
-          local_anchor: [0.009, 1.115, 0.0]
+          local_anchor: [0.520, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          逐控件导航工位已验证可到达，但当前六轴机械臂只能完成 66.7%
-          的无碰撞接触路径，低于 99% 安全门槛。
       box_6_button_1:
         navigation_station:
-          local_anchor: [0.288, 1.115, 0.0]
+          local_anchor: [0.799, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          逐控件导航工位已验证可到达，但当前六轴机械臂只能完成 66.7%
-          的无碰撞接触路径，低于 99% 安全门槛。
       box_6_button_2:
         navigation_station:
-          local_anchor: [0.338, 1.115, 0.0]
+          local_anchor: [0.849, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          逐控件导航工位已验证可到达，但当前六轴机械臂只能完成 65.6%
-          的无碰撞接触路径，低于 99% 安全门槛。
       box_7_button_1:
         navigation_station:
-          local_anchor: [-0.041, 1.115, 0.0]
+          local_anchor: [0.470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          逐控件导航工位及精确底盘位姿已验证，但当前六轴机械臂只能完成
-          69.7% 的无碰撞接触路径，低于 99% 安全门槛。
       box_7_button_2:
         navigation_station:
-          local_anchor: [0.009, 1.115, 0.0]
+          local_anchor: [0.520, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          逐控件导航工位已验证可到达，但当前六轴机械臂只能完成 78.1%
-          的无碰撞接触路径，低于 99% 安全门槛。
       box_8_button_1:
         navigation_station:
-          local_anchor: [0.288, 1.115, 0.0]
+          local_anchor: [0.799, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_8_button_2:
         navigation_station:
-          local_anchor: [0.338, 1.115, 0.0]
+          local_anchor: [0.849, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_10_button_1:
         navigation_station:
-          local_anchor: [0.331, 1.115, 0.0]
+          local_anchor: [0.842, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_10_button_2:
         navigation_station:
-          local_anchor: [0.366, 1.115, 0.0]
+          local_anchor: [0.877, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_11_button_1:
         navigation_station:
-          local_anchor: [0.331, 1.115, 0.0]
+          local_anchor: [0.842, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
       box_11_button_2:
         navigation_station:
-          local_anchor: [0.366, 1.115, 0.0]
+          local_anchor: [0.877, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
       box_1_knob:
         navigation_station:
-          local_anchor: [0.00647, 1.115, 0.0]
+          local_anchor: [0.517, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_knob:
         navigation_station:
-          local_anchor: [0.33547, 1.115, 0.0]
+          local_anchor: [0.846, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_knob:
         navigation_station:
-          local_anchor: [0.00647, 1.115, 0.0]
+          local_anchor: [0.517, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_4_knob:
         navigation_station:
-          local_anchor: [0.33547, 1.115, 0.0]
+          local_anchor: [0.846, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_5_knob:
         navigation_station:
-          local_anchor: [0.00647, 1.115, 0.0]
+          local_anchor: [0.517, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       box_6_knob:
         navigation_station:
-          local_anchor: [0.33547, 1.115, 0.0]
+          local_anchor: [0.846, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       # 7～11 号旋钮在几何上可达，但当前 Gazebo 位置控制后端的
-      # 刚性跨模型抓取会带动非目标控件。柔顺隔离方案虽消除了
-      # 误触，但尚未通过目标档位到达验证，因此在机器人适配层禁用。
+      # 刚性跨模型抓取会带动非目标控件。双臂机器人的旋转按钮夹持方式
+      # 尚未通过目标档位到达验证，因此继续在机器人适配层禁用。
       box_7_knob:
         navigation_station:
-          local_anchor: [0.00647, 1.115, 0.0]
+          local_anchor: [0.517, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
-          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
       box_8_knob:
         navigation_station:
-          local_anchor: [0.33547, 1.115, 0.0]
+          local_anchor: [0.846, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
-          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
       box_9_knob:
         navigation_station:
-          local_anchor: [-0.02256, 1.115, 0.0]
+          local_anchor: [0.488, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
-          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
       box_10_knob:
         navigation_station:
-          local_anchor: [-0.02553, 1.115, 0.0]
+          local_anchor: [0.485, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
-          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
       box_11_knob:
         navigation_station:
-          local_anchor: [-0.02553, 1.115, 0.0]
+          local_anchor: [0.485, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
-        operable: false
-        unavailable_reason: >-
-          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；
-          隔离碰撞的柔顺执行方案尚未通过目标档位验证。
-    # 移除升降轴后的当前六轴机械臂能力边界。更换机器人时仅需覆盖本清单。
+    # 双臂机器人的四个末端工具安装偏移与各臂 home 位姿尚未在仿真中完成
+    # 物理标定，逐控件可达性尚未通过完整闭环验收。所有控件仍显示并可
+    # 提交，但底层 Action 只执行实时 MoveIt 规划验证，不发任何机械臂轨迹、
+    # 抓取或柜体写入命令；标定并逐控件验收后按控件移除本清单即可。
     unreachable_control_ids:
+      - cabinet_rear_door
+      - cabinet_main_switch
       - box_1_button_1
       - box_1_button_2
       - box_2_button_1
@@ -430,15 +439,32 @@
       - box_3_button_2
       - box_4_button_1
       - box_4_button_2
+      - box_5_button_1
+      - box_5_button_2
+      - box_6_button_1
+      - box_6_button_2
+      - box_7_button_1
+      - box_7_button_2
+      - box_8_button_1
+      - box_8_button_2
+      - box_10_button_1
+      - box_10_button_2
+      - box_11_button_1
+      - box_11_button_2
       - box_1_knob
       - box_2_knob
       - box_3_knob
       - box_4_knob
       - box_5_knob
       - box_6_knob
-      - cabinet_main_switch
+      - box_7_knob
+      - box_8_knob
+      - box_9_knob
+      - box_10_knob
+      - box_11_knob
     unreachable_control_reason: >-
-      移除升降轴后，该控件超出当前六轴机械臂在标准工位的运动学工作空间。
+      双臂机器人四个末端工具的安装偏移与左右臂 home 位姿尚未物理标定，
+      逐控件可达性与完整操作闭环尚未通过验收。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

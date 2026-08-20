@@ -351,8 +351,7 @@ class MonitorWebContractTest(unittest.TestCase):
             const navigationStatus = {{available: false}};
             const cabinetStatus = null;
             const cabinetInstances = [{{name: 'cabinet_a'}}];
-            const armJointSpecs = [];
-            const gripperJointSpecs = [];
+            const manualJointSpecs = [];
             function selectedCabinetControl() {{ return selected; }}
             function selectedCabinetName() {{ return 'cabinet_a'; }}
             function isCabinetAvailable() {{ return cabinetAvailable; }}

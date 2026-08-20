@@ -220,6 +220,14 @@ def main() -> None:
 
     from control_gateway import ControlServer
 
+    # 任务记录 sink：navigate / operate 任务落 SQLite（与资产库同库）。
+    # control_names 从活动控件目录解析控件中文名；缺失时回退 control_id。
+    from app.tasks.labels import load_control_display_names
+    from app.tasks.store import TaskRecordStore
+
+    control_names = load_control_display_names(args.cabinet_controls)
+    task_record_store = TaskRecordStore(control_names=control_names)
+
     server = ControlServer(
         host=args.host,
         port=args.port,
@@ -239,6 +247,7 @@ def main() -> None:
         initial_scene=args.initial_scene,
         allowed_origins=allowed_origins,
         fatal_callback=fatal_callback,
+        task_record_sink=task_record_store,
     )
 
     sensor_state = None

@@ -12,27 +12,6 @@
     translation or in-place rotation like the exported rubber value did.
   -->
   <xacro:property name="planar_wheel_surface_friction" value="0.10" />
-  <xacro:property name="front_wheel_collision_radius" value="0.050" />
-  <xacro:property name="front_wheel_collision_length" value="0.0496" />
-  <xacro:property name="back_wheel_collision_radius" value="0.090" />
-  <xacro:property name="back_wheel_collision_length" value="0.184" />
-  <!--
-    Stable convex base collisions instead of the exported triangle mesh.
-    The lower front volume follows the lidar deck height so the sensor mounted
-    above that deck does not detect the robot's own collision geometry.
-  -->
-  <xacro:property
-    name="base_rear_collision_origin"
-    value="0 -0.205 -0.105" />
-  <xacro:property
-    name="base_rear_collision_size"
-    value="0.680 0.620 0.700" />
-  <xacro:property
-    name="base_front_collision_origin"
-    value="0 0.240 -0.3075" />
-  <xacro:property
-    name="base_front_collision_size"
-    value="0.680 0.270 0.295" />
   <xacro:property name="contact_kp" value="1000000" />
   <xacro:property name="contact_kd" value="100" />
   <xacro:property name="contact_max_velocity" value="0.2" />

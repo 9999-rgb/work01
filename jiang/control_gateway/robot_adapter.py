@@ -18,6 +18,7 @@ _ABSOLUTE_ROS_NAME = re.compile(
     r"^/(?:[A-Za-z_][A-Za-z0-9_]*)(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
 )
 _DEFAULT_NAVIGATION_FRAME = "map"
+_DEFAULT_CONTROLLER_NAMESPACE = "/xczs"
 _LEGACY_DEFAULTS = {
     "planning_frame": "odom",
     "manual_linear_axis": "y",
@@ -96,6 +97,23 @@ class ManualJointConfig:
 
 
 @dataclass(frozen=True)
+class ControllerGroupConfig:
+    """One ros2_control joint-trajectory controller and its joints.
+
+    The Web manual payload and the reset path list every manually-controlled
+    joint in flattened order; this group describes how to split that flattened
+    trajectory back into per-controller sub-trajectories (one group per
+    JointTrajectoryController).  ``controller_topic`` / ``status_topic`` are
+    the controller's input topic and its action status topic.
+    """
+
+    name: str
+    joint_names: Tuple[str, ...]
+    controller_topic: Union[str, None]
+    status_topic: Union[str, None]
+
+
+@dataclass(frozen=True)
 class ResetBasePoseConfig:
     """Validated navigation-frame pose used for a robot reset."""
 
@@ -130,10 +148,7 @@ class RobotAdapterConfig:
     reset_joint_tolerance: float
     reset_joint_timeout_sec: float
     reset_joint_duration_sec: float
-    arm_controller_topic: str
-    arm_controller_status_topic: str
-    gripper_controller_topic: Union[str, None]
-    gripper_controller_status_topic: Union[str, None]
+    controller_groups: Tuple[ControllerGroupConfig, ...]
     manual_joints: Tuple[ManualJointConfig, ...]
     control_navigation_stations: Tuple[
         Tuple[str, NavigationStationSpec], ...
@@ -145,20 +160,30 @@ class RobotAdapterConfig:
         return tuple(joint.name for joint in self.manual_joints)
 
     @property
-    def arm_joint_names(self) -> Tuple[str, ...]:
-        """Return ordered manual joints owned by the arm controller."""
-        return tuple(
-            joint.name for joint in self.manual_joints if joint.group == "arm"
-        )
+    def joint_group_names(self) -> Tuple[str, ...]:
+        """Return the ordered controller-group names."""
+        return tuple(group.name for group in self.controller_groups)
 
-    @property
-    def gripper_joint_names(self) -> Tuple[str, ...]:
-        """Return ordered manual joints owned by the gripper controller."""
-        return tuple(
-            joint.name
-            for joint in self.manual_joints
-            if joint.group == "gripper"
-        )
+    def joint_names_for_group(self, name: str) -> Tuple[str, ...]:
+        """Return the ordered joints owned by one controller group."""
+        for group in self.controller_groups:
+            if group.name == name:
+                return group.joint_names
+        return ()
+
+    def controller_topic_for_group(self, name: str) -> Union[str, None]:
+        """Return one controller group's input topic, if it has one."""
+        for group in self.controller_groups:
+            if group.name == name:
+                return group.controller_topic
+        return None
+
+    def status_topic_for_group(self, name: str) -> Union[str, None]:
+        """Return one controller group's action status topic, if any."""
+        for group in self.controller_groups:
+            if group.name == name:
+                return group.status_topic
+        return None
 
     def control_navigation_station(
         self,
@@ -272,26 +297,176 @@ def _reset_base_pose(
     )
 
 
-def _manual_joints(
-    arm_names_value: Any,
-    gripper_names_value: Any,
-    limits_value: Any,
-) -> Tuple[ManualJointConfig, ...]:
+def _derived_controller_topics(
+    namespace: str,
+    name: str,
+) -> Tuple[str, str]:
+    """Derive a controller's input/status topics from its group name.
+
+    ros2_control's JointTrajectoryController subscribes to
+    ``<namespace>/<group>_controller/joint_trajectory`` and publishes its
+    action status under ``<namespace>/<group>_controller/``
+    ``follow_joint_trajectory/_action/status``.  This convention is shared by
+    every controller in ``config/ros2_controllers.yaml``, so topics need not
+    be repeated per group.
+    """
+    base = f"{namespace.rstrip('/')}/{name}_controller"
+    return (
+        f"{base}/joint_trajectory",
+        f"{base}/follow_joint_trajectory/_action/status",
+    )
+
+
+def _controller_groups(
+    parameters: Mapping[str, Any],
+    legacy: bool,
+) -> Tuple[ControllerGroupConfig, ...]:
+    """Build the ordered controller-group list from either schema.
+
+    The new schema declares an ordered ``manual_joint_group_names`` list plus a
+    ``manual_joint_groups`` mapping of group name -> joint list, with topics
+    derived from ``controller_namespace``.  The legacy two-group schema falls
+    back to ``arm_joint_names`` / ``gripper_joint_names`` and the explicit
+    ``*_controller_topic`` fields, so historical adapters keep loading.
+    """
+    group_names_value = parameters.get("manual_joint_group_names")
+    groups_value = parameters.get("manual_joint_groups")
+    if group_names_value is not None or groups_value is not None:
+        if group_names_value is None or groups_value is None:
+            raise RobotAdapterError(
+                "manual_joint_group_names and manual_joint_groups must be "
+                "declared together."
+            )
+        names = _joint_names(
+            group_names_value,
+            "manual_joint_group_names",
+            allow_empty=False,
+        )
+        if not isinstance(groups_value, Mapping):
+            raise RobotAdapterError("manual_joint_groups must be a mapping.")
+        if any(not isinstance(name, str) for name in groups_value):
+            raise RobotAdapterError(
+                "manual_joint_groups keys must be strings."
+            )
+        configured = set(groups_value)
+        if configured != set(names):
+            missing = sorted(set(names) - configured)
+            extra = sorted(configured - set(names))
+            details = []
+            if missing:
+                details.append("missing " + ", ".join(missing))
+            if extra:
+                details.append("unknown " + ", ".join(extra))
+            raise RobotAdapterError(
+                "manual_joint_group_names and manual_joint_groups keys must "
+                "match exactly (" + "; ".join(details) + ")."
+            )
+        namespace = _absolute_ros_name(
+            parameters.get("controller_namespace", _DEFAULT_CONTROLLER_NAMESPACE),
+            "controller_namespace",
+        )
+        groups = []
+        all_joints = []
+        for name in names:
+            joints = _joint_names(
+                groups_value[name],
+                f"manual_joint_groups.{name}",
+                allow_empty=False,
+            )
+            all_joints.extend(joints)
+            topic, status = _derived_controller_topics(namespace, name)
+            groups.append(
+                ControllerGroupConfig(
+                    name=name,
+                    joint_names=joints,
+                    controller_topic=topic,
+                    status_topic=status,
+                )
+            )
+        if len(set(all_joints)) != len(all_joints):
+            raise RobotAdapterError(
+                "manual_joint_groups joints must be unique across groups."
+            )
+        return tuple(groups)
+
+    # Legacy two-group schema: "arm" (always present) and optional "gripper".
     arm_names = _joint_names(
-        arm_names_value,
+        _required(parameters, "arm_joint_names", legacy=legacy),
         "arm_joint_names",
         allow_empty=False,
     )
     gripper_names = _joint_names(
-        gripper_names_value,
+        _required(parameters, "gripper_joint_names", legacy=legacy),
         "gripper_joint_names",
         allow_empty=True,
     )
-    names = arm_names + gripper_names
-    if len(set(names)) != len(names):
+    if len(set(arm_names) & set(gripper_names)) != 0:
         raise RobotAdapterError(
             "arm_joint_names and gripper_joint_names must not overlap."
         )
+    groups = [
+        ControllerGroupConfig(
+            name="arm",
+            joint_names=arm_names,
+            controller_topic=_absolute_ros_name(
+                _required(parameters, "arm_controller_topic", legacy=legacy),
+                "arm_controller_topic",
+            ),
+            status_topic=_absolute_ros_name(
+                _required(
+                    parameters,
+                    "arm_controller_status_topic",
+                    legacy=legacy,
+                ),
+                "arm_controller_status_topic",
+            ),
+        )
+    ]
+    if gripper_names:
+        gripper_topic = parameters.get("gripper_controller_topic")
+        gripper_status_topic = parameters.get(
+            "gripper_controller_status_topic"
+        )
+        if legacy:
+            gripper_topic = (
+                gripper_topic or _LEGACY_DEFAULTS["gripper_controller_topic"]
+            )
+            gripper_status_topic = (
+                gripper_status_topic
+                or _LEGACY_DEFAULTS["gripper_controller_status_topic"]
+            )
+        if gripper_topic is None:
+            raise RobotAdapterError(
+                "Missing required robot adapter field: gripper_controller_topic."
+            )
+        if gripper_status_topic is None:
+            raise RobotAdapterError(
+                "Missing required robot adapter field: "
+                "gripper_controller_status_topic."
+            )
+        groups.append(
+            ControllerGroupConfig(
+                name="gripper",
+                joint_names=gripper_names,
+                controller_topic=_absolute_ros_name(
+                    gripper_topic, "gripper_controller_topic"
+                ),
+                status_topic=_absolute_ros_name(
+                    gripper_status_topic,
+                    "gripper_controller_status_topic",
+                ),
+            )
+        )
+    return tuple(groups)
+
+
+def _manual_joints(
+    groups: Tuple[ControllerGroupConfig, ...],
+    limits_value: Any,
+) -> Tuple[ManualJointConfig, ...]:
+    names = tuple(
+        name for group in groups for name in group.joint_names
+    )
     if not isinstance(limits_value, Mapping):
         raise RobotAdapterError("manual_joint_limits must be a mapping.")
     if any(not isinstance(name, str) for name in limits_value):
@@ -309,72 +484,65 @@ def _manual_joints(
         if extra:
             details.append("unknown " + ", ".join(extra))
         raise RobotAdapterError(
-            "manual_joint_limits must match arm_joint_names plus "
-            "gripper_joint_names exactly ("
-            + "; ".join(details)
-            + ")."
+            "manual_joint_limits must match every controller-group joint "
+            "exactly (" + "; ".join(details) + ")."
         )
 
     joints = []
-    for name in names:
-        limits = limits_value[name]
-        if not isinstance(limits, Mapping):
-            raise RobotAdapterError(
-                f"manual_joint_limits.{name} must be a mapping."
-            )
-        if "min_position" not in limits or "max_position" not in limits:
-            raise RobotAdapterError(
-                f"manual_joint_limits.{name} requires min_position and "
-                "max_position."
-            )
-        minimum = _finite_number(
-            limits["min_position"],
-            f"manual_joint_limits.{name}.min_position",
-        )
-        maximum = _finite_number(
-            limits["max_position"],
-            f"manual_joint_limits.{name}.max_position",
-        )
-        if minimum > maximum:
-            raise RobotAdapterError(
-                f"manual_joint_limits.{name} minimum exceeds maximum."
-            )
-        default = _finite_number(
-            limits.get("default_position", 0.0),
-            f"manual_joint_limits.{name}.default_position",
-        )
-        if default < minimum or default > maximum:
-            raise RobotAdapterError(
-                f"manual_joint_limits.{name}.default_position is outside "
-                "its configured range."
-            )
-        open_position = None
-        if "open_position" in limits:
-            open_position = _finite_number(
-                limits["open_position"],
-                f"manual_joint_limits.{name}.open_position",
-            )
-            if open_position < minimum or open_position > maximum:
+    for group in groups:
+        for name in group.joint_names:
+            limits = limits_value[name]
+            if not isinstance(limits, Mapping):
                 raise RobotAdapterError(
-                    f"manual_joint_limits.{name}.open_position is outside "
+                    f"manual_joint_limits.{name} must be a mapping."
+                )
+            if "min_position" not in limits or "max_position" not in limits:
+                raise RobotAdapterError(
+                    f"manual_joint_limits.{name} requires min_position and "
+                    "max_position."
+                )
+            minimum = _finite_number(
+                limits["min_position"],
+                f"manual_joint_limits.{name}.min_position",
+            )
+            maximum = _finite_number(
+                limits["max_position"],
+                f"manual_joint_limits.{name}.max_position",
+            )
+            if minimum > maximum:
+                raise RobotAdapterError(
+                    f"manual_joint_limits.{name} minimum exceeds maximum."
+                )
+            default = _finite_number(
+                limits.get("default_position", 0.0),
+                f"manual_joint_limits.{name}.default_position",
+            )
+            if default < minimum or default > maximum:
+                raise RobotAdapterError(
+                    f"manual_joint_limits.{name}.default_position is outside "
                     "its configured range."
                 )
-        group = "arm" if name in arm_names else "gripper"
-        if group == "arm" and open_position is not None:
-            raise RobotAdapterError(
-                f"manual_joint_limits.{name}.open_position is only valid "
-                "for gripper joints."
+            open_position = None
+            if "open_position" in limits:
+                open_position = _finite_number(
+                    limits["open_position"],
+                    f"manual_joint_limits.{name}.open_position",
+                )
+                if open_position < minimum or open_position > maximum:
+                    raise RobotAdapterError(
+                        f"manual_joint_limits.{name}.open_position is outside "
+                        "its configured range."
+                    )
+            joints.append(
+                ManualJointConfig(
+                    name=name,
+                    group=group.name,
+                    min_position=minimum,
+                    max_position=maximum,
+                    default_position=default,
+                    open_position=open_position,
+                )
             )
-        joints.append(
-            ManualJointConfig(
-                name=name,
-                group=group,
-                min_position=minimum,
-                max_position=maximum,
-                default_position=default,
-                open_position=open_position,
-            )
-        )
     return tuple(joints)
 
 
@@ -524,8 +692,8 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
     parameters, legacy = _parameters(document, path)
     if not legacy and "manual_joint_names" in parameters:
         raise RobotAdapterError(
-            "manual_joint_names is deprecated; use arm_joint_names and "
-            "gripper_joint_names as the single ordered source."
+            "manual_joint_names is deprecated; use manual_joint_group_names "
+            "and manual_joint_groups as the single ordered source."
         )
     planning_frame = _relative_name(
         _required(parameters, "planning_frame", legacy=legacy),
@@ -541,9 +709,9 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
     )
     if manual_linear_axis_value not in {"x", "y"}:
         raise RobotAdapterError("manual_linear_axis must be either x or y.")
+    controller_groups = _controller_groups(parameters, legacy)
     manual_joints = _manual_joints(
-        _required(parameters, "arm_joint_names", legacy=legacy),
-        _required(parameters, "gripper_joint_names", legacy=legacy),
+        controller_groups,
         _required(parameters, "manual_joint_limits", legacy=legacy),
     )
     reset_base_pose = _reset_base_pose(
@@ -566,34 +734,6 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         raise RobotAdapterError(
             "reset_joint_duration_sec must not exceed "
             "reset_joint_timeout_sec."
-        )
-    has_gripper = any(joint.group == "gripper" for joint in manual_joints)
-    gripper_topic = parameters.get("gripper_controller_topic")
-    gripper_status_topic = parameters.get("gripper_controller_status_topic")
-    if legacy:
-        gripper_topic = gripper_topic or _LEGACY_DEFAULTS[
-            "gripper_controller_topic"
-        ]
-        gripper_status_topic = gripper_status_topic or _LEGACY_DEFAULTS[
-            "gripper_controller_status_topic"
-        ]
-    if has_gripper and gripper_topic is None:
-        raise RobotAdapterError(
-            "Missing required robot adapter field: gripper_controller_topic."
-        )
-    if has_gripper and gripper_status_topic is None:
-        raise RobotAdapterError(
-            "Missing required robot adapter field: "
-            "gripper_controller_status_topic."
-        )
-    if gripper_topic is not None:
-        gripper_topic = _absolute_ros_name(
-            gripper_topic, "gripper_controller_topic"
-        )
-    if gripper_status_topic is not None:
-        gripper_status_topic = _absolute_ros_name(
-            gripper_status_topic,
-            "gripper_controller_status_topic",
         )
     pose_parent_frame_raw = parameters.get("pose_parent_frame")
     pose_parent_frame = (
@@ -675,20 +815,7 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         reset_joint_tolerance=reset_joint_tolerance,
         reset_joint_timeout_sec=reset_joint_timeout_sec,
         reset_joint_duration_sec=reset_joint_duration_sec,
-        arm_controller_topic=_absolute_ros_name(
-            _required(parameters, "arm_controller_topic", legacy=legacy),
-            "arm_controller_topic",
-        ),
-        arm_controller_status_topic=_absolute_ros_name(
-            _required(
-                parameters,
-                "arm_controller_status_topic",
-                legacy=legacy,
-            ),
-            "arm_controller_status_topic",
-        ),
-        gripper_controller_topic=gripper_topic,
-        gripper_controller_status_topic=gripper_status_topic,
+        controller_groups=controller_groups,
         manual_joints=manual_joints,
         control_navigation_stations=_control_navigation_stations(
             document,

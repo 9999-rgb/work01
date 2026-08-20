@@ -17,9 +17,10 @@
   <xacro:property name="body_lidar_max_range" value="30.0" />
   <xacro:property name="body_lidar_range_resolution" value="0.01" />
   <!--
-    The visible lidar housing is already part of body.STL. Place the virtual
-    scan frame just above its center and face the 180-degree fan away from the
-    body to prevent the chassis from masking the measurements.
+    The visible lidar housings (l_laser / r_laser) are separate visual links on
+    the body.  Place the virtual scan frame above the front deck and face the
+    180-degree fan away from the body to prevent the chassis from masking the
+    measurements.
   -->
   <xacro:property name="body_lidar_mount_xyz" value="0 0.259 -0.100" />
   <xacro:property
@@ -68,13 +69,16 @@
     </link>
     <joint name="wrist_camera_mount" type="fixed">
       <!--
-        Mount the camera above the centerline of the end link that carries the
-        gripper. Its positive X axis points along the tool's negative Z axis.
+        Mount the camera above the right wrist (r_arm_6), which carries the
+        three-cylinder / rotate-button tools.  Its positive X axis points along
+        the tool's negative Z axis.  Offset is a placeholder mirroring the
+        legacy single-arm mount and should be re-calibrated against the real
+        dual-arm flange.
       -->
       <origin
         xyz="0.075 0 -0.190"
         rpy="0 1.57079632679 0" />
-      <parent link="end" />
+      <parent link="r_arm_6" />
       <child link="arm_camera_link" />
     </joint>
     <gazebo reference="wrist_camera_mount">

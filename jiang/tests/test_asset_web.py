@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import io
 import os
+import sqlite3
 import sys
 import tempfile
 import types
@@ -144,8 +145,14 @@ class _AssetWebTestCase(unittest.TestCase):
         self._temporary_directory = tempfile.TemporaryDirectory()
         self.scratch = Path(self._temporary_directory.name)
         self.assets_dir = self.scratch / "assets"
+        # 目录 / 选择现在持久化到 SQLite（``SqlAssetStore``）。资产路由按
+        # ``os.environ["XCZS_DATABASE_URL"]`` 解析 store，逐用例指向独立 DB，
+        # 复现旧 YAML 时代的每用例隔离；auth 仍走 conftest 的会话级异步引擎。
+        self.db_path = self.scratch / "assets.db"
         self._previous_env = os.environ.get("XCZS_ASSETS_DIR")
+        self._previous_db_url = os.environ.get("XCZS_DATABASE_URL")
         os.environ["XCZS_ASSETS_DIR"] = str(self.assets_dir)
+        os.environ["XCZS_DATABASE_URL"] = f"sqlite+aiosqlite:///{self.db_path}"
 
     def tearDown(self) -> None:
         if self._client_entered:
@@ -154,7 +161,28 @@ class _AssetWebTestCase(unittest.TestCase):
             os.environ.pop("XCZS_ASSETS_DIR", None)
         else:
             os.environ["XCZS_ASSETS_DIR"] = self._previous_env
+        if self._previous_db_url is None:
+            os.environ.pop("XCZS_DATABASE_URL", None)
+        else:
+            os.environ["XCZS_DATABASE_URL"] = self._previous_db_url
         self._temporary_directory.cleanup()
+
+    # ── SQLite 目录 / 选择断言辅助 ───────────────────────────────────
+    def _db_assets(self) -> list[tuple[str, str, str, bool]]:
+        """返回 (kind, name, version, validated)，按导入顺序。"""
+        with sqlite3.connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT kind, name, version, validated FROM assets ORDER BY id"
+            ).fetchall()
+        return [(str(k), str(n), str(v), bool(ok)) for k, n, v, ok in rows]
+
+    def _db_selection(self) -> tuple[str | None, str | None]:
+        """返回当前选择 (scene, cabinet) 或全 None。"""
+        with sqlite3.connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT scene, cabinet FROM selection WHERE id=1"
+            ).fetchone()
+        return (None, None) if row is None else tuple(row)
 
 
 class AssetWebReadContractTest(_AssetWebTestCase):
@@ -181,30 +209,24 @@ class AssetWebReadContractTest(_AssetWebTestCase):
         data = response.json()
         self.assertEqual([], data["assets"])
         self.assertEqual(
-            {"scene": None, "cabinet": None, "gripper_variant": None},
+            {"scene": None, "cabinet": None},
             data["selection"],
         )
-        self.assertEqual(["default"], data["gripper_variants"])
         self.assertEqual(str(self.assets_dir), data["library_root"])
 
     def test_get_selection_initial(self) -> None:
         response = self.client.get("/assets/selection")
         self.assertEqual(200, response.status_code)
         self.assertEqual(
-            {"scene": None, "cabinet": None, "gripper_variant": None},
+            {"scene": None, "cabinet": None},
             response.json(),
         )
 
-    def test_selection_rejects_unknown_asset_and_variant(self) -> None:
+    def test_selection_rejects_unknown_asset(self) -> None:
         unknown = self.client.post(
             "/assets/selection", json={"scene": "missing_scene"}
         )
         self.assertEqual(404, unknown.status_code, unknown.text)
-
-        bad_gripper = self.client.post(
-            "/assets/selection", json={"gripper_variant": "claw_9000"}
-        )
-        self.assertEqual(400, bad_gripper.status_code, bad_gripper.text)
 
     def test_selection_roundtrip(self) -> None:
         # Valid scene selection persists and clears other fields.
@@ -259,11 +281,10 @@ class AssetWebImportContractTest(_AssetWebTestCase):
         self.assertEqual("1.0.0", record["version"])
         self.assertTrue(record["path"].startswith("scene/"))
 
-        # Catalog persisted on disk inside the scratch library.
-        catalog = yaml.safe_load(
-            (self.assets_dir / "assets_catalog.yaml").read_text(encoding="utf-8")
+        # Catalog persisted in SQLite (assets table), not a YAML file.
+        self.assertEqual(
+            [("scene", "web_scene", "1.0.0", False)], self._db_assets()
         )
-        self.assertEqual("web_scene", catalog["assets"][0]["name"])
 
         # Listed back by GET /assets.
         listing = self.client.get(
@@ -329,7 +350,7 @@ class AssetWebImportContractTest(_AssetWebTestCase):
         self.assertEqual(400, response.status_code, response.text)
         self.assertIn("error", response.json())
         self.assertFalse((self.assets_dir / "scene" / name).exists())
-        self.assertFalse((self.assets_dir / "assets_catalog.yaml").exists())
+        self.assertEqual([], self._db_assets())
 
     def test_duplicate_import_conflicts_then_force_replaces(self) -> None:
         self._import_scene()
@@ -411,10 +432,7 @@ class AssetWebImportContractTest(_AssetWebTestCase):
         )
         self.assertEqual(200, saved.status_code, saved.text)
         self.assertEqual(record["name"], saved.json()["scene"])
-        selection = yaml.safe_load(
-            (self.assets_dir / "selection.yaml").read_text(encoding="utf-8")
-        )
-        self.assertEqual(record["name"], selection["scene"])
+        self.assertEqual(record["name"], self._db_selection()[0])
 
         # GET /assets reflects the selection.
         listing = self.client.get(

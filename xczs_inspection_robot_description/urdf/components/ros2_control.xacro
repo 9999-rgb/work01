@@ -29,23 +29,42 @@
         <plugin>gazebo_ros2_control/GazeboSystem</plugin>
       </hardware>
 
-      <xacro:xczs_position_controlled_joint joint_name="body_arm1" />
-      <xacro:xczs_position_controlled_joint
-        joint_name="arm1_arm2"
-        initial_value="-1.5707963267948966" />
-      <xacro:xczs_position_controlled_joint joint_name="arm2_arm3" />
-      <xacro:xczs_position_controlled_joint joint_name="arm3_arm4" />
-      <xacro:xczs_position_controlled_joint joint_name="arm4_arm5" />
-      <xacro:xczs_position_controlled_joint joint_name="arm5_end" />
-      <xacro:xczs_position_controlled_joint joint_name="end_worklink1" />
-      <xacro:xczs_position_controlled_joint joint_name="end_worklink2" />
+      <!-- Left arm - 7-DOF revolute chain. -->
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_0_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_1_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_2_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_3_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_4_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_5_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_arm_6_joint" />
+
+      <!-- Right arm - 7-DOF revolute chain. -->
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_0_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_1_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_2_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_3_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_4_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_5_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_arm_6_joint" />
+
+      <!-- Right tools - three_cylinder (3) + rotate_button (2). -->
+      <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger2_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger3_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
+
+      <!-- Left tools - two_cylinder (2) + rocker (1). -->
+      <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger1_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger2_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="l_rocker_rotor_joint" />
 
       <!-- The planar Gazebo plugin moves the base. ros2_control only exposes
            wheel state so robot_state_publisher keeps the complete TF tree. -->
-      <xacro:xczs_state_only_joint joint_name="body_frw" />
-      <xacro:xczs_state_only_joint joint_name="body_flw" />
-      <xacro:xczs_state_only_joint joint_name="body_brw" />
-      <xacro:xczs_state_only_joint joint_name="body_blw" />
+      <xacro:xczs_state_only_joint joint_name="l_wheel_0_joint" />
+      <xacro:xczs_state_only_joint joint_name="l_wheel_1_joint" />
+      <xacro:xczs_state_only_joint joint_name="r_wheel_0_joint" />
+      <xacro:xczs_state_only_joint joint_name="r_wheel_1_joint" />
     </ros2_control>
 
     <gazebo>

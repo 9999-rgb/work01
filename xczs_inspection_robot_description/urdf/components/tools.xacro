@@ -1,0 +1,521 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    End-effector tools for the dual-arm robot, converted verbatim from the
+    SolidWorks URDF exports in model/urdf20260817/.  Link and joint names are
+    prefixed with the owning arm (l_ / r_) so the four tools, which share the
+    generic SolidWorks names endbody/endlink, remain globally unique inside
+    one robot_description.
+
+    Tool -> arm -> cabinet-control mapping
+      three_cylinder (right) - extend a cylinder to press a cabinet button
+      two_cylinder    (left)  - extend two cylinders to grasp + pull a drawer
+      rocker          (left)  - rock the rotor to toggle a switch
+      rotate_button   (right) - clamp a round knob while the wrist rotates it
+
+    The mounting transforms below are a BEST-EFFORT estimate - the exact pose of
+    each tool base on the l_arm_6 / r_arm_6 flange is not exported by SolidWorks
+    and must be confirmed/tuned in Gazebo.  Each pose is a single property so
+    tuning is a one-line change.
+
+    Orientation derivation (roll about the flange X axis, which points straight
+    up at the all-zero home pose).  At home the flange frame maps to the body as
+    X->up(+Z), Y->backward(-Y), Z->right(+X), and the robot's forward / cabinet
+    side is body +Y.  The cylinder-finger tools (three_cylinder, two_cylinder)
+    act along their -Z and the rocker / rotate-button tools act along their +Z,
+    so a -90deg roll turns the fingers forward and a +90deg roll turns the
+    rotor / jaws forward.  This yields
+      three_cylinder, two_cylinder -> roll -90deg (business end -Z -> +Y)
+      rocker, rotate_button         -> roll +90deg (business end +Z -> +Y)
+
+    Offsets separate the two tools on each wrist side-by-side (flange Z, i.e.
+    the robot's left/right) rather than inline along the approach direction.
+  -->
+
+  <!--
+    Per-tool mount pose (roll) and flange offsets (xyz).
+
+    Roll keeps the design-orientation (business end of each tool toward the
+    cabinet).  The xyz offsets are tuned so the tool BODIES clear the forearm
+    links (arm_4/arm_5) at the all-zero home pose: the right/left cylinder
+    tools are lifted ABOVE the wrist (+X flange, world +Z) while the
+    rotate-button / rocker tools hang BELOW it (-X flange).  Without this the
+    tool bodies overlap the forearms by 2-16 mm at all-zero, which makes the
+    MoveIt start state invalid and blocks every control plan.
+  -->
+  <xacro:property name="three_cyl_mount_rpy" value="-1.570796 0 0" />
+  <xacro:property name="two_cyl_mount_rpy" value="-1.570796 0 0" />
+  <xacro:property name="rocker_mount_rpy" value="1.570796 0 0" />
+  <xacro:property name="rotate_button_mount_rpy" value="1.570796 0 0" />
+  <xacro:property name="three_cyl_mount_xyz" value="0.20 0 0.05" />
+  <xacro:property name="rotate_button_mount_xyz" value="-0.20 0 -0.05" />
+  <xacro:property name="two_cyl_mount_xyz" value="0.20 0 0.05" />
+  <xacro:property name="rocker_mount_xyz" value="-0.20 0 -0.05" />
+
+  <!--
+    Three electric cylinders (right hand).  Three prismatic fingers; finger3 is
+    a second, shorter stage stacked on finger2, so it is a serial child joint.
+  -->
+  <xacro:macro name="xczs_three_cylinder" params="prefix parent">
+    <joint name="${prefix}_three_cyl_mount" type="fixed">
+      <origin xyz="${three_cyl_mount_xyz}" rpy="${three_cyl_mount_rpy}" />
+      <parent link="${parent}" />
+      <child link="${prefix}_three_cyl_base" />
+    </joint>
+    <!-- Preserve the fixed base link through URDF->SDF conversion.  It is the
+         MoveIt end-effector / Gazebo grasp link (contact_tool_link) and must
+         stay addressable by name instead of being lumped into the wrist. -->
+    <gazebo reference="${prefix}_three_cyl_mount">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+
+    <link name="${prefix}_three_cyl_base">
+      <inertial>
+        <origin xyz="-2.749E-05 -0.047586 -0.15922" rpy="0 0 0" />
+        <mass value="1.8714" />
+        <inertia
+          ixx="0.0031433"
+          ixy="-4.2863E-06"
+          ixz="1.1463E-07"
+          iyy="0.0028455"
+          iyz="-2.1303E-06"
+          izz="0.0012283" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endbody3.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endbody3.STL" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}_three_cyl_finger1">
+      <inertial>
+        <origin xyz="-0.0005181 2.0477E-10 0.0022188" rpy="0 0 0" />
+        <mass value="0.11476" />
+        <inertia
+          ixx="7.3931E-05"
+          ixy="-1.1531E-10"
+          ixz="-8.0168E-07"
+          iyy="7.3625E-05"
+          iyz="1.171E-12"
+          izz="1.3185E-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink1.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink1.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_three_cyl_finger1_joint" type="prismatic">
+      <origin xyz="0.034 -0.061735 -0.2985" rpy="0 0 0" />
+      <parent link="${prefix}_three_cyl_base" />
+      <child link="${prefix}_three_cyl_finger1" />
+      <axis xyz="0 0 1" />
+      <limit lower="0" upper="0.12" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_three_cyl_finger2">
+      <inertial>
+        <origin xyz="-0.0073918 0.044164 -0.031571" rpy="0 0 0" />
+        <mass value="0.045641" />
+        <inertia
+          ixx="3.8647E-05"
+          ixy="6.6552E-06"
+          ixz="1.0732E-06"
+          iyy="1.4357E-05"
+          iyz="-1.1067E-06"
+          izz="3.4869E-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink2.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink2.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_three_cyl_finger2_joint" type="prismatic">
+      <origin xyz="-0.034 -0.061735 -0.2935" rpy="0 0 0" />
+      <parent link="${prefix}_three_cyl_base" />
+      <child link="${prefix}_three_cyl_finger2" />
+      <axis xyz="0 0 1" />
+      <limit lower="0" upper="0.12" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_three_cyl_finger3">
+      <inertial>
+        <origin xyz="-2.3655E-07 0.00029683 -0.0041007" rpy="0 0 0" />
+        <mass value="0.001962" />
+        <inertia
+          ixx="5.992E-08"
+          ixy="7.7782E-13"
+          ixz="1.417E-13"
+          iyy="5.4141E-08"
+          iyz="3.0527E-10"
+          izz="4.3864E-08" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink3.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink3.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_three_cyl_finger3_joint" type="prismatic">
+      <origin xyz="-0.012 0.082 -0.05245" rpy="0 0 0" />
+      <parent link="${prefix}_three_cyl_finger2" />
+      <child link="${prefix}_three_cyl_finger3" />
+      <axis xyz="0 0 -1" />
+      <limit lower="0" upper="0.0254" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="0" soft_upper_limit="0.0254" k_position="1" k_velocity="1" />
+    </joint>
+  </xacro:macro>
+
+  <!-- Two electric cylinders (left hand) - a two-finger drawer grasp. -->
+  <xacro:macro name="xczs_two_cylinder" params="prefix parent">
+    <joint name="${prefix}_two_cyl_mount" type="fixed">
+      <origin xyz="${two_cyl_mount_xyz}" rpy="${two_cyl_mount_rpy}" />
+      <parent link="${parent}" />
+      <child link="${prefix}_two_cyl_base" />
+    </joint>
+    <gazebo reference="${prefix}_two_cyl_mount">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+
+    <link name="${prefix}_two_cyl_base">
+      <inertial>
+        <origin xyz="-5.5021E-05 -0.047926 -0.15922" rpy="0 0 0" />
+        <mass value="1.8714" />
+        <inertia
+          ixx="0.0031433"
+          ixy="-1.6051E-06"
+          ixz="3.5399E-07"
+          iyy="0.0028455"
+          iyz="-2.1303E-06"
+          izz="0.0012282" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endBody4.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endBody4.STL" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}_two_cyl_finger1">
+      <inertial>
+        <origin xyz="0.00019307 0.00639 0.024544" rpy="0 0 0" />
+        <mass value="0.070322" />
+        <inertia
+          ixx="7.0736E-05"
+          ixy="-1.1531E-10"
+          ixz="-1.1462E-12"
+          iyy="6.3227E-05"
+          iyz="2.1893E-06"
+          izz="1.1317E-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink1.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink1.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_two_cyl_finger1_joint" type="prismatic">
+      <origin xyz="0.034 -0.061735 -0.2935" rpy="0 0 0" />
+      <parent link="${prefix}_two_cyl_base" />
+      <child link="${prefix}_two_cyl_finger1" />
+      <axis xyz="0 0 1" />
+      <limit lower="0" upper="0.12" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_two_cyl_finger2">
+      <inertial>
+        <origin xyz="0.0005181 -2.0477E-10 -0.0027812" rpy="0 0 0" />
+        <mass value="0.11476" />
+        <inertia
+          ixx="7.3931E-05"
+          ixy="-1.1531E-10"
+          ixz="8.0168E-07"
+          iyy="7.3625E-05"
+          iyz="-1.171E-12"
+          izz="1.3185E-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink2.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink2.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_two_cyl_finger2_joint" type="prismatic">
+      <origin xyz="-0.034 -0.061735 -0.2935" rpy="0 0 0" />
+      <parent link="${prefix}_two_cyl_base" />
+      <child link="${prefix}_two_cyl_finger2" />
+      <axis xyz="0 0 1" />
+      <limit lower="0" upper="0.12" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
+    </joint>
+  </xacro:macro>
+
+  <!-- Rock-in / rock-out mechanism (left hand) - a single rocking rotor. -->
+  <xacro:macro name="xczs_rocker" params="prefix parent">
+    <joint name="${prefix}_rocker_mount" type="fixed">
+      <origin xyz="${rocker_mount_xyz}" rpy="${rocker_mount_rpy}" />
+      <parent link="${parent}" />
+      <child link="${prefix}_rocker_body" />
+    </joint>
+    <gazebo reference="${prefix}_rocker_mount">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+
+    <link name="${prefix}_rocker_body">
+      <inertial>
+        <origin xyz="-0.0027407 -0.042059 0.072703" rpy="0 0 0" />
+        <mass value="0.45189" />
+        <inertia
+          ixx="0.00039369"
+          ixy="4.162E-06"
+          ixz="-3.6991E-06"
+          iyy="0.00030531"
+          iyz="-4.2375E-09"
+          izz="0.0003897" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endbody2.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endbody2.STL" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}_rocker_rotor">
+      <inertial>
+        <origin xyz="-1.0757E-05 -6.0061E-06 -0.086156" rpy="0 0 0" />
+        <mass value="0.051985" />
+        <inertia
+          ixx="1.2277E-05"
+          ixy="-6.5213E-09"
+          ixz="-1.9512E-10"
+          iyy="1.235E-05"
+          iyz="-1.8084E-09"
+          izz="5.3078E-06" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endrotatelink.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endrotatelink.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_rocker_rotor_joint" type="revolute">
+      <origin xyz="-0.01 -0.07 0.2611" rpy="0 0 0" />
+      <parent link="${prefix}_rocker_body" />
+      <child link="${prefix}_rocker_rotor" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="-3.14" soft_upper_limit="3.14" k_position="1" k_velocity="1" />
+    </joint>
+  </xacro:macro>
+
+  <!--
+    Rotate-button mechanism (right hand) - two opposing jaws clamp a round knob
+    while the arm wrist rotates.  NOTE - the SolidWorks export declares these two
+    joints as prismatic with +/-3.14 limits; physically a small clamp travel is
+    expected, so verify these limits against the real mechanism before tuning.
+  -->
+  <xacro:macro name="xczs_rotate_button" params="prefix parent">
+    <joint name="${prefix}_rotbtn_mount" type="fixed">
+      <origin xyz="${rotate_button_mount_xyz}" rpy="${rotate_button_mount_rpy}" />
+      <parent link="${parent}" />
+      <child link="${prefix}_rotbtn_body" />
+    </joint>
+    <gazebo reference="${prefix}_rotbtn_mount">
+      <preserveFixedJoint>true</preserveFixedJoint>
+    </gazebo>
+
+    <link name="${prefix}_rotbtn_body">
+      <inertial>
+        <origin xyz="-0.049092 0.0051357 0.092115" rpy="0 0 0" />
+        <mass value="0.58892" />
+        <inertia
+          ixx="0.00061308"
+          ixy="3.0822E-07"
+          ixz="6.8548E-05"
+          iyy="0.00055869"
+          iyz="7.511E-07"
+          izz="0.00032867" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endbody.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endbody.STL" />
+        </geometry>
+      </collision>
+    </link>
+
+    <link name="${prefix}_rotbtn_jaw1">
+      <inertial>
+        <origin xyz="-0.0077993 0.024306 0.013004" rpy="0 0 0" />
+        <mass value="0.0030345" />
+        <inertia
+          ixx="2.7125E-07"
+          ixy="3.7141E-08"
+          ixz="4.2906E-08"
+          iyy="2.3896E-07"
+          iyz="-6.4061E-08"
+          izz="2.0758E-07" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink1.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink1.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_rotbtn_jaw1_joint" type="prismatic">
+      <origin xyz="-0.05068 -0.0095 0.1885" rpy="0 0 0" />
+      <parent link="${prefix}_rotbtn_body" />
+      <child link="${prefix}_rotbtn_jaw1" />
+      <axis xyz="0 -1 0" />
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="-3.14" soft_upper_limit="3.14" k_position="1" k_velocity="1" />
+    </joint>
+
+    <link name="${prefix}_rotbtn_jaw2">
+      <inertial>
+        <origin xyz="0.0077993 -0.024306 0.013004" rpy="0 0 0" />
+        <mass value="0.0030345" />
+        <inertia
+          ixx="2.7125E-07"
+          ixy="3.7141E-08"
+          ixz="-4.2906E-08"
+          iyy="2.3896E-07"
+          iyz="6.4061E-08"
+          izz="2.0758E-07" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink2.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink2.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_rotbtn_jaw2_joint" type="prismatic">
+      <origin xyz="-0.07188 -0.0025 0.1885" rpy="0 0 0" />
+      <parent link="${prefix}_rotbtn_body" />
+      <child link="${prefix}_rotbtn_jaw2" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="-3.14" soft_upper_limit="3.14" k_position="1" k_velocity="1" />
+    </joint>
+  </xacro:macro>
+
+  <!--
+    Compose all four tools onto their owning arm flanges.
+      right arm -> three_cylinder + rotate_button
+      left  arm -> two_cylinder    + rocker
+  -->
+  <xacro:macro name="xczs_tools" params="">
+    <xacro:xczs_three_cylinder prefix="r" parent="r_arm_6" />
+    <xacro:xczs_rotate_button prefix="r" parent="r_arm_6" />
+    <xacro:xczs_two_cylinder prefix="l" parent="l_arm_6" />
+    <xacro:xczs_rocker prefix="l" parent="l_arm_6" />
+  </xacro:macro>
+</robot>

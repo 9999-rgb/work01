@@ -1,0 +1,146 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!--
+    Body + base_link + mecanum-style wheel set + body-mounted lidar housings,
+    converted from the LinkForge export model/双臂机器人/双臂机器人urdf.urdf.
+
+    The chassis coordinate frame matches the legacy robot - SolidWorks +Y is the
+    physical forward direction, so base_link (Nav2 REP-105 frame) is attached to
+    body with the same +90-degree yaw used by the original mobile_base.  Wheels
+    are continuous joints and remain state-only in ros2_control; the
+    gazebo_ros_planar_move plugin provides planar holonomic motion, so the exact
+    wheel axis convention only affects visuals, not navigation.
+
+    Body and wheel inertials are LinkForge placeholders (mass=1-per-arm / box
+    0.166667 and wheel 0.083333).  They load and are positive-definite but must
+    be replaced with measured values before field use.
+  -->
+
+  <xacro:macro name="xczs_wheel" params="name joint_name origin rpy axis">
+    <link name="${name}">
+      <inertial>
+        <origin xyz="0.000896 0.00093 0.000102" rpy="0 0 0" />
+        <mass value="0.5" />
+        <inertia ixx="0.083333" ixy="0" ixz="0" iyy="0.083333" iyz="0" izz="0.083333" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${name}_visual.stl" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+      <collision>
+        <origin xyz="0.000896 0.00093 0.000102" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${name}_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${joint_name}" type="continuous">
+      <origin xyz="${origin}" rpy="${rpy}" />
+      <parent link="body" />
+      <child link="${name}" />
+      <axis xyz="${axis}" />
+      <limit effort="${wheel_joint_effort}" velocity="${wheel_joint_velocity}" />
+      <dynamics damping="${wheel_joint_damping}" friction="${wheel_joint_friction}" />
+    </joint>
+  </xacro:macro>
+
+  <!-- A passive body-mounted lidar housing (visual only; the functional 2D
+       lidar is added by xczs_body_lidar in sensors.xacro). -->
+  <xacro:macro name="xczs_body_laser" params="name joint_name origin rpy">
+    <link name="${name}">
+      <inertial>
+        <origin xyz="-0.001672 -0.000542 0.003292" rpy="0 0 0" />
+        <mass value="0.2" />
+        <inertia ixx="0.033333" ixy="0" ixz="0" iyy="0.033333" iyz="0" izz="0.033333" />
+      </inertial>
+      <visual>
+        <origin xyz="-0.001516 0.000086 0.003263" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${name}_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="-0.001672 -0.000542 0.003292" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/${name}_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${joint_name}" type="fixed">
+      <origin xyz="${origin}" rpy="${rpy}" />
+      <parent link="body" />
+      <child link="${name}" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="xczs_dual_arm_body" params="">
+    <link name="body">
+      <inertial>
+        <origin xyz="0.001633 -0.0001 0.228446" rpy="0 0 0" />
+        <mass value="100" />
+        <inertia ixx="16.666667" ixy="0" ixz="0" iyy="16.666667" iyz="0" izz="16.666667" />
+      </inertial>
+      <visual>
+        <origin xyz="0.001631 -0.000036 0.228708" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/body_visual.stl" />
+        </geometry>
+        <material name="industrial_navy" />
+      </visual>
+      <collision>
+        <origin xyz="0.001633 -0.0001 0.228446" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/dual_arm/body_collision.stl" />
+        </geometry>
+      </collision>
+    </link>
+
+    <!-- Nav2 base frame, same REP-105 yaw convention as the legacy chassis. -->
+    <link name="base_link" />
+    <joint name="body_base_link" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 1.57079632679" />
+      <parent link="body" />
+      <child link="base_link" />
+    </joint>
+
+    <xacro:xczs_wheel
+      name="l_wheel_0"
+      joint_name="l_wheel_0_joint"
+      origin="0.171631 -0.248602 -0.501391"
+      rpy="0 0 1.570796"
+      axis="0 1 0" />
+    <xacro:xczs_wheel
+      name="l_wheel_1"
+      joint_name="l_wheel_1_joint"
+      origin="0.171631 0.241398 -0.501391"
+      rpy="0 0 1.570796"
+      axis="0 1 0" />
+    <xacro:xczs_wheel
+      name="r_wheel_0"
+      joint_name="r_wheel_0_joint"
+      origin="-0.168369 -0.248602 -0.501391"
+      rpy="0 0 -1.570796"
+      axis="0 1 0" />
+    <xacro:xczs_wheel
+      name="r_wheel_1"
+      joint_name="r_wheel_1_joint"
+      origin="-0.168369 0.241398 -0.501391"
+      rpy="0 0 -1.570796"
+      axis="0 1 0" />
+
+    <xacro:xczs_body_laser
+      name="l_laser"
+      joint_name="l_laser_joint"
+      origin="0.245498 -0.357591 -0.293528"
+      rpy="0 -3.141593 -0.785398" />
+    <xacro:xczs_body_laser
+      name="r_laser"
+      joint_name="r_laser_joint"
+      origin="-0.242237 0.350388 -0.293528"
+      rpy="0 0 0" />
+  </xacro:macro>
+</robot>

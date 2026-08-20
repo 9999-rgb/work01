@@ -145,8 +145,6 @@ class _FakeControlServer:
             "frames": {"planning": "odom", "navigation": "map"},
             "topics": {},
             "joint_count": 3,
-            "arm_joint_count": 2,
-            "gripper_joint_count": 1,
             "manual_joints": [],
         }
 
@@ -485,6 +483,10 @@ class FastAPIAppContractTest(unittest.TestCase):
                 "<!doctype html><title>monitor</title>",
                 encoding="utf-8",
             )
+            (static_dir / "history.html").write_text(
+                "<!doctype html><title>history</title>",
+                encoding="utf-8",
+            )
             (static_dir / "private.py").write_text(
                 "SECRET = 'must-not-be-served'",
                 encoding="utf-8",
@@ -499,6 +501,7 @@ class FastAPIAppContractTest(unittest.TestCase):
             self.assertEqual(client.get("/").status_code, 200)
             monitor = client.get("/monitor.html")
             self.assertEqual(monitor.status_code, 200)
+            self.assertEqual(client.get("/history.html").status_code, 200)
             self.assertEqual(monitor.headers["cache-control"], "no-store")
             self.assertEqual(monitor.headers["x-frame-options"], "DENY")
             self.assertIn(

@@ -26,63 +26,68 @@
       material="Gazebo/Blue"
       gravity="true"
       friction="0.8" />
+
+    <!-- Left arm links. -->
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_0" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_1" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_2" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_3" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_4" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_5" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_arm_6" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+
+    <!-- Right arm links. -->
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_0" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_1" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_2" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_3" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_4" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_5" material="Gazebo/Orange" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_arm_6" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+
+    <!-- Right tools - three_cylinder + rotate_button. -->
+    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger3" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+
+    <!-- Left tools - two_cylinder + rocker. -->
+    <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_rocker_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="l_rocker_rotor" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+
+    <!-- Passive visual sensor housings.  The body-mounted laser housings
+         (l_laser / r_laser) are fixed to body and get lumped into it during
+         URDF-to-SDF conversion, so they intentionally carry no gazebo block
+         here: a per-link gravity would surface as a second <gravity> on the
+         body link and break the single gravity=1 chassis contract. -->
+    <xacro:xczs_gazebo_link_properties link_name="l_camera" material="Gazebo/Black" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_camera" material="Gazebo/Black" gravity="false" friction="0.8" />
+
+    <!-- Wheels - vertical support with low surface friction so the planar mover
+         can translate holonomically. -->
     <xacro:xczs_gazebo_link_properties
-      link_name="arm1"
-      material="Gazebo/Orange"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="arm2"
-      material="Gazebo/Orange"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="arm3"
-      material="Gazebo/Orange"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="arm4"
-      material="Gazebo/Orange"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="arm5"
-      material="Gazebo/Orange"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="end"
-      material="Gazebo/DarkGrey"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="worklink1"
-      material="Gazebo/DarkGrey"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="worklink2"
-      material="Gazebo/DarkGrey"
-      gravity="false"
-      friction="0.8" />
-    <xacro:xczs_gazebo_link_properties
-      link_name="front_right_wheel"
+      link_name="l_wheel_0"
       material="Gazebo/Black"
       gravity="true"
       friction="${planar_wheel_surface_friction}" />
     <xacro:xczs_gazebo_link_properties
-      link_name="front_left_wheel"
+      link_name="l_wheel_1"
       material="Gazebo/Black"
       gravity="true"
       friction="${planar_wheel_surface_friction}" />
     <xacro:xczs_gazebo_link_properties
-      link_name="back_right_wheel"
+      link_name="r_wheel_0"
       material="Gazebo/Black"
       gravity="true"
       friction="${planar_wheel_surface_friction}" />
     <xacro:xczs_gazebo_link_properties
-      link_name="back_left_wheel"
+      link_name="r_wheel_1"
       material="Gazebo/Black"
       gravity="true"
       friction="${planar_wheel_surface_friction}" />
@@ -115,14 +120,28 @@
         <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
         <cmd_vel_topic>/xczs/cmd_vel</cmd_vel_topic>
         <settling_duration>1.5</settling_duration>
-        <hold_joint>body_arm1</hold_joint>
-        <hold_joint>arm1_arm2</hold_joint>
-        <hold_joint>arm2_arm3</hold_joint>
-        <hold_joint>arm3_arm4</hold_joint>
-        <hold_joint>arm4_arm5</hold_joint>
-        <hold_joint>arm5_end</hold_joint>
-        <hold_joint>end_worklink1</hold_joint>
-        <hold_joint>end_worklink2</hold_joint>
+        <hold_joint>l_arm_0_joint</hold_joint>
+        <hold_joint>l_arm_1_joint</hold_joint>
+        <hold_joint>l_arm_2_joint</hold_joint>
+        <hold_joint>l_arm_3_joint</hold_joint>
+        <hold_joint>l_arm_4_joint</hold_joint>
+        <hold_joint>l_arm_5_joint</hold_joint>
+        <hold_joint>l_arm_6_joint</hold_joint>
+        <hold_joint>r_arm_0_joint</hold_joint>
+        <hold_joint>r_arm_1_joint</hold_joint>
+        <hold_joint>r_arm_2_joint</hold_joint>
+        <hold_joint>r_arm_3_joint</hold_joint>
+        <hold_joint>r_arm_4_joint</hold_joint>
+        <hold_joint>r_arm_5_joint</hold_joint>
+        <hold_joint>r_arm_6_joint</hold_joint>
+        <hold_joint>r_three_cyl_finger1_joint</hold_joint>
+        <hold_joint>r_three_cyl_finger2_joint</hold_joint>
+        <hold_joint>r_three_cyl_finger3_joint</hold_joint>
+        <hold_joint>r_rotbtn_jaw1_joint</hold_joint>
+        <hold_joint>r_rotbtn_jaw2_joint</hold_joint>
+        <hold_joint>l_two_cyl_finger1_joint</hold_joint>
+        <hold_joint>l_two_cyl_finger2_joint</hold_joint>
+        <hold_joint>l_rocker_rotor_joint</hold_joint>
       </plugin>
     </gazebo>
   </xacro:macro>

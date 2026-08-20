@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="旋转按钮机构组件">
+  <link
+    name="endbody">
+    <inertial>
+      <origin
+        xyz="-0.049092 0.0051357 0.092115"
+        rpy="0 0 0" />
+      <mass
+        value="0.58892" />
+      <inertia
+        ixx="0.00061308"
+        ixy="3.0822E-07"
+        ixz="6.8548E-05"
+        iyy="0.00055869"
+        iyz="7.511E-07"
+        izz="0.00032867" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件/meshes/endbody.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件/meshes/endbody.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="endlink1">
+    <inertial>
+      <origin
+        xyz="-0.0077993 0.024306 0.013004"
+        rpy="0 0 0" />
+      <mass
+        value="0.0030345" />
+      <inertia
+        ixx="2.7125E-07"
+        ixy="3.7141E-08"
+        ixz="4.2906E-08"
+        iyy="2.3896E-07"
+        iyz="-6.4061E-08"
+        izz="2.0758E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件/meshes/endlink1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件/meshes/endlink1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endbody_endlink1"
+    type="prismatic">
+    <origin
+      xyz="-0.05068 -0.0095 0.1885"
+      rpy="0 0 0" />
+    <parent
+      link="endbody" />
+    <child
+      link="endlink1" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="endlink2">
+    <inertial>
+      <origin
+        xyz="0.0077993 -0.024306 0.013004"
+        rpy="0 0 0" />
+      <mass
+        value="0.0030345" />
+      <inertia
+        ixx="2.7125E-07"
+        ixy="3.7141E-08"
+        ixz="-4.2906E-08"
+        iyy="2.3896E-07"
+        iyz="6.4061E-08"
+        izz="2.0758E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件/meshes/endlink2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件/meshes/endlink2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endbody_endlink2"
+    type="prismatic">
+    <origin
+      xyz="-0.07188 -0.0025 0.1885"
+      rpy="0 0 0" />
+    <parent
+      link="endbody" />
+    <child
+      link="endlink2" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+</robot>

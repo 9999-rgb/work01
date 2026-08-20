@@ -16,6 +16,7 @@ from app.api import (
     robot,
     scene,
     task,
+    task_history,
 )
 
 api_router = APIRouter()
@@ -33,3 +34,4 @@ api_router.include_router(replay.router)
 api_router.include_router(robot.router)
 api_router.include_router(scene.router)
 api_router.include_router(task.router)
+api_router.include_router(task_history.router)

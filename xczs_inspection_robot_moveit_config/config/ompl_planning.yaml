@@ -9,22 +9,42 @@ request_adapters: >-
   default_planner_request_adapters/FixStartStateCollision
   default_planner_request_adapters/FixStartStatePathConstraints
 
-manipulator:
+left_arm:
   planner_configs:
     - RRTConnect
     - RRTstar
     - PRMstar
-  projection_evaluator: joints(body_arm1,arm1_arm2)
+  projection_evaluator: joints(l_arm_0_joint,l_arm_1_joint)
   longest_valid_segment_fraction: 0.005
 
-gripper:
+right_arm:
   planner_configs:
     - RRTConnect
-  projection_evaluator: joints(end_worklink1,end_worklink2)
+    - RRTstar
+    - PRMstar
+  projection_evaluator: joints(r_arm_0_joint,r_arm_1_joint)
+  longest_valid_segment_fraction: 0.005
+
+three_cylinder:
+  planner_configs:
+    - RRTConnect
+  projection_evaluator: joints(r_three_cyl_finger1_joint,r_three_cyl_finger2_joint)
   longest_valid_segment_fraction: 0.01
 
-manipulator_with_gripper:
+two_cylinder:
   planner_configs:
     - RRTConnect
-  projection_evaluator: joints(body_arm1,arm1_arm2)
-  longest_valid_segment_fraction: 0.005
+  projection_evaluator: joints(l_two_cyl_finger1_joint,l_two_cyl_finger2_joint)
+  longest_valid_segment_fraction: 0.01
+
+rocker:
+  planner_configs:
+    - RRTConnect
+  projection_evaluator: joints(l_rocker_rotor_joint)
+  longest_valid_segment_fraction: 0.01
+
+rotate_button:
+  planner_configs:
+    - RRTConnect
+  projection_evaluator: joints(r_rotbtn_jaw1_joint,r_rotbtn_jaw2_joint)
+  longest_valid_segment_fraction: 0.01

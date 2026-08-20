@@ -1,8 +1,9 @@
 """资产导入 / 选择 API（阶段2）。
 
 上传 zip、校验 manifest、导入资产库、列出目录、选择当前运行组合。
-选择结果只持久化到 ``selection.yaml``；启动时 ``start_xczs_bridge.sh`` 读入并
-映射到现有环境指针 —— 本路由不做任何运行时切换（启动时导入，重启生效）。
+目录与选择持久化到 SQLite（``assets`` / ``selection`` 表，经
+:class:`app.assets.store.SqlAssetStore`）；启动时 ``start_xczs_bridge.sh`` 读入
+并映射到现有环境指针 —— 本路由不做任何运行时切换（启动时导入，重启生效）。
 
 校验器与 CLI（``scripts/xczs_import_asset``）共用
 :mod:`control_gateway.asset_validators`，保证 Web 与脚本两条入口行为一致。
@@ -10,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import shutil
@@ -21,6 +23,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 
 from app.api.schemas import AssetSelectionRequest
+from app.assets.store import SqlAssetStore
 from app.auth.deps import require_admin
 from app.auth.models import User
 
@@ -37,18 +40,17 @@ from control_gateway.asset_validators import kind_validator
 
 router = APIRouter(tags=["资产"])
 
-#: 机器人内置的固定夹爪变体集。阶段4 将由机器人模型导出真实变体集；
-#: 在此之前只有一个变体「当前夹爪」。
-BUILTIN_GRIPPER_VARIANTS = ("default",)
-
-#: 可导入的资产类型（夹爪不导入，是机器人内的选择项）。
+#: 可导入的资产类型。
 _ASSET_KINDS = ("scene", "cabinet")
 
 
 def _library() -> AssetLibrary:
-    """构建资产库实例；根目录可用 ``XCZS_ASSETS_DIR`` 覆盖（与启动脚本一致）。"""
+    """构建资产库实例；根目录可用 ``XCZS_ASSETS_DIR`` 覆盖（与启动脚本一致）。
+
+    目录 / 选择持久化到 SQLite（``SqlAssetStore``），与 CLI 和启动脚本共用。
+    """
     root = os.environ.get("XCZS_ASSETS_DIR") or default_library_root()
-    return AssetLibrary(root)
+    return AssetLibrary(root, store=SqlAssetStore())
 
 
 def _selection_from_request(
@@ -59,26 +61,24 @@ def _selection_from_request(
         library.find("scene", body.scene)  # raises AssetNotFoundError
     if body.cabinet is not None:
         library.find("cabinet", body.cabinet)
-    if body.gripper_variant is not None and body.gripper_variant not in BUILTIN_GRIPPER_VARIANTS:
-        raise AssetLibraryError(f"Unknown gripper_variant: {body.gripper_variant}")
     return AssetSelection(
         scene=body.scene,
         cabinet=body.cabinet,
-        gripper_variant=body.gripper_variant,
     )
 
 
 @router.get(
     "/assets",
     summary="资产目录与当前选择",
-    description="返回已导入资产、当前选择、可用夹爪变体与资产库根目录。",
+    description="返回已导入资产、当前选择与资产库根目录。",
 )
 async def list_assets() -> dict[str, Any]:
     library = _library()
+    assets = await asyncio.to_thread(library.load_catalog)
+    selection = await asyncio.to_thread(library.load_selection)
     return {
-        "assets": [record.to_dict() for record in library.load_catalog()],
-        "selection": library.load_selection().to_dict(),
-        "gripper_variants": list(BUILTIN_GRIPPER_VARIANTS),
+        "assets": [record.to_dict() for record in assets],
+        "selection": selection.to_dict(),
         "library_root": str(library.root),
     }
 
@@ -86,10 +86,12 @@ async def list_assets() -> dict[str, Any]:
 @router.get(
     "/assets/selection",
     summary="当前资产选择",
-    description="返回当前选择的场景 / 柜体 / 夹爪变体（可为 null）。",
+    description="返回当前选择的场景 / 柜体（可为 null）。",
 )
 async def get_selection() -> dict[str, Any]:
-    return _library().load_selection().to_dict()
+    library = _library()
+    selection = await asyncio.to_thread(library.load_selection)
+    return selection.to_dict()
 
 
 @router.post(
@@ -99,18 +101,22 @@ async def get_selection() -> dict[str, Any]:
 )
 async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
     library = _library()
-    try:
-        selection = _selection_from_request(body, library)
-    except AssetNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
-        ) from None
-    except AssetLibraryError as error:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
-        ) from None
-    library.save_selection(selection)
-    return library.load_selection().to_dict()
+
+    def _run() -> dict[str, Any]:
+        try:
+            selection = _selection_from_request(body, library)
+        except AssetNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+            ) from None
+        except AssetLibraryError as error:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+            ) from None
+        library.save_selection(selection)
+        return library.load_selection().to_dict()
+
+    return await asyncio.to_thread(_run)
 
 
 @router.post(
@@ -136,28 +142,31 @@ async def import_asset(
     finally:
         await file.close()
 
-    with tempfile.TemporaryDirectory(prefix="xczs_asset_") as temp_dir:
-        extract_root = _extract_zip_upload(data, Path(temp_dir))
-        try:
-            manifest = load_manifest(extract_root / "manifest.yaml")
-        except ManifestError as error:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
-            ) from None
-        validate = None if skip_validate else kind_validator(manifest.kind)
-        try:
-            record = library.import_asset(
-                extract_root, validate=validate, force=force
-            )
-        except AssetExistsError as error:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT, detail=str(error)
-            ) from None
-        except AssetLibraryError as error:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
-            ) from None
-    return {"asset": record.to_dict()}
+    def _run() -> dict[str, Any]:
+        with tempfile.TemporaryDirectory(prefix="xczs_asset_") as temp_dir:
+            extract_root = _extract_zip_upload(data, Path(temp_dir))
+            try:
+                manifest = load_manifest(extract_root / "manifest.yaml")
+            except ManifestError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+                ) from None
+            validate = None if skip_validate else kind_validator(manifest.kind)
+            try:
+                record = library.import_asset(
+                    extract_root, validate=validate, force=force
+                )
+            except AssetExistsError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT, detail=str(error)
+                ) from None
+            except AssetLibraryError as error:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
+                ) from None
+        return {"asset": record.to_dict()}
+
+    return await asyncio.to_thread(_run)
 
 
 @router.delete(
@@ -176,16 +185,20 @@ async def delete_asset(
             detail=f"不支持的资产类型：{kind}（仅 scene / cabinet）。",
         )
     library = _library()
-    try:
-        record = library.remove_asset(kind, name)
-    except AssetNotFoundError as error:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
-        ) from None
-    return {
-        "removed": record.to_dict(),
-        "selection": library.load_selection().to_dict(),
-    }
+
+    def _run() -> dict[str, Any]:
+        try:
+            record = library.remove_asset(kind, name)
+        except AssetNotFoundError as error:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
+            ) from None
+        return {
+            "removed": record.to_dict(),
+            "selection": library.load_selection().to_dict(),
+        }
+
+    return await asyncio.to_thread(_run)
 
 
 # ── zip 解压（zip-slip 安全） ───────────────────────────────────────────────

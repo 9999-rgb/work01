@@ -42,8 +42,7 @@ class ProfileContractReport:
     knob_count: int
     switch_count: int
     door_count: int
-    arm_joint_count: int
-    gripper_joint_count: int
+    joint_group_counts: tuple[tuple[str, int], ...]
     planning_frame: str
     navigation_frame: str
 
@@ -536,8 +535,10 @@ def validate_profile(
         knob_count=counts["knob"],
         switch_count=counts["switch"],
         door_count=counts["door"],
-        arm_joint_count=len(adapter.arm_joint_names),
-        gripper_joint_count=len(adapter.gripper_joint_names),
+        joint_group_counts=tuple(
+            (group.name, len(group.joint_names))
+            for group in adapter.controller_groups
+        ),
         planning_frame=adapter.planning_frame,
         navigation_frame=adapter.navigation_frame,
     )

@@ -93,7 +93,6 @@ class AssetManifestTest(unittest.TestCase):
         self.assertEqual("A test scene asset.", manifest.description)
         self.assertEqual({"scenes": "scenes.yaml"}, dict(manifest.files))
         self.assertIsNone(manifest.references.cabinet)
-        self.assertIsNone(manifest.references.gripper_variant)
         self.assertEqual(
             self.directory / "scenes.yaml", manifest.file_path(self.directory, "scenes")
         )
@@ -110,11 +109,11 @@ class AssetManifestTest(unittest.TestCase):
                     "adapter": "cabinet_robot_adapter.yaml",
                     "xacro": "control_cabinet.urdf.xacro",
                 },
-                references={"cabinet": None, "gripper_variant": "button_press_tip"},
+                references={"cabinet": None},
             )
         )
         self.assertEqual("cabinet", manifest.kind)
-        self.assertEqual("button_press_tip", manifest.references.gripper_variant)
+        self.assertIsNone(manifest.references.cabinet)
         self.assertEqual(5, len(manifest.files))
 
     def test_scene_asset_may_declare_instances(self) -> None:
@@ -183,7 +182,7 @@ class AssetManifestTest(unittest.TestCase):
         for references in (
             {"gadget": "x"},
             {"cabinet": "Bad-Case"},
-            {"gripper_variant": ""},
+            {"cabinet": ""},
             "not-a-mapping",
         ):
             with self.subTest(references=references):

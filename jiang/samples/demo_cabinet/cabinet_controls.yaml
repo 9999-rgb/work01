@@ -260,7 +260,6 @@
 
     # 操作与闭环容差。
     cabinet_frame: control_cabinet_frame
-    staging_distance: 0.930
     grasp_outward_offset: 0.020
     state_timeout: 1.0
     target_tolerance: 0.035

@@ -12,4 +12,3 @@ files:
   instances: cabinet_instances.yaml
 references:
   cabinet: null
-  gripper_variant: null

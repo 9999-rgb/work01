@@ -6,7 +6,7 @@ files it declares.  Import copies the directory into the library, normalizes
 self-contained scene references (relative ``nav2_map`` / ``model.file`` paths
 become absolute inside the library), runs the matching semantic checker
 (``check_scene_config`` for scenes; the adapter contract for cabinets is wired
-in 阶段3) and records the entry in ``assets_catalog.yaml``.
+in 阶段3) and records the entry in the SQLite catalog (``assets`` table).
 
 Examples::
 
@@ -46,6 +46,7 @@ from control_gateway.asset_library import (  # noqa: E402
 from control_gateway.asset_manifest import ManifestError  # noqa: E402
 from control_gateway.asset_manifest import load_manifest  # noqa: E402
 from control_gateway.asset_validators import kind_validator  # noqa: E402
+from app.assets.store import SqlAssetStore  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -84,7 +85,9 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = _parser().parse_args()
-    library = AssetLibrary(arguments.assets_dir or default_library_root())
+    library = AssetLibrary(
+        arguments.assets_dir or default_library_root(), store=SqlAssetStore()
+    )
 
     if arguments.list:
         records = library.load_catalog()

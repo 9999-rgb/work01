@@ -20,7 +20,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -28,8 +30,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import yaml
-
+from app.assets.store import SqlAssetStore
 from control_gateway.asset_manifest import load_manifest
 from control_gateway.asset_validators import cabinet_validator
 
@@ -65,11 +66,11 @@ _ADAPTER_BLOCK = (
     "          standoff: 0.930\n"
     "          base_yaw_offset: 0.0\n"
     "          frame_id: map\n"
-    "        operable: false\n"
-    "        unavailable_reason: >-\n"
-    "          当前 Gazebo 位置控制后端的刚性跨模型抓取会误触非目标控件；\n"
-    "          隔离碰撞的柔顺执行方案尚未通过目标档位验证。\n"
 )
+# 适配器的 unreachable_control_ids 全不可达清单必须与控件目录保持一致；
+# 从 33 控件派生体删掉 box_9_knob 时，该清单也要同步删掉这一行，否则
+# 契约校验会报「覆盖不完整」的未知 ID。
+_UNREACHABLE_BOX9_LINE = "      - box_9_knob\n"
 _GAZEBO_LINE = (
     '      <xacro:control_cabinet_knob_state control_id="box_9_knob" '
     'joint_name="box_9_box_9_knob" />\n'
@@ -91,7 +92,7 @@ def _derive_trimmed_cabinet(target: Path) -> Path:
     """Derive a 32-control cabinet from the sample by dropping box_9_knob.
 
     Removes the knob consistently across all four coupled sources: catalog
-    (control_ids + controls), robot adapter (per-control override), Gazebo
+    (control_ids + controls), robot adapter (reachability list), Gazebo
     state plugin (``<control>`` block) and URDF module (joint + link).  The
     scene profile only references the door / switch, which stay untouched.
     """
@@ -107,7 +108,9 @@ def _derive_trimmed_cabinet(target: Path) -> Path:
     adapter = target / "cabinet_robot_adapter.yaml"
     text = adapter.read_text(encoding="utf-8")
     assert _ADAPTER_BLOCK in text
+    assert _UNREACHABLE_BOX9_LINE in text
     text = text.replace(_ADAPTER_BLOCK, "")
+    text = text.replace(_UNREACHABLE_BOX9_LINE, "", 1)
     adapter.write_text(text, encoding="utf-8")
 
     gazebo = target / "control_cabinet" / "components" / "gazebo.xacro"
@@ -143,6 +146,8 @@ class CabinetAssetImportE2ETest(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
         self.directory = Path(self._temporary_directory.name)
+        # CLI 与库 API 现在把目录 / 选择写入 SQLite；逐用例注入独立 DB。
+        self.db_url = f"sqlite+aiosqlite:///{self.directory / 'assets.db'}"
 
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
@@ -153,7 +158,15 @@ class CabinetAssetImportE2ETest(unittest.TestCase):
             capture_output=True,
             text=True,
             cwd=str(WORKSPACE),
+            env={**os.environ, "XCZS_DATABASE_URL": self.db_url},
         )
+
+    def _db_assets(self) -> list[tuple[str, str, str, bool]]:
+        with sqlite3.connect(self.directory / "assets.db") as connection:
+            rows = connection.execute(
+                "SELECT kind, name, version, validated FROM assets ORDER BY id"
+            ).fetchall()
+        return [(str(k), str(n), str(v), bool(ok)) for k, n, v, ok in rows]
 
     def test_sample_import_validates_end_to_end(self) -> None:
         assets = self.directory / "assets"
@@ -163,11 +176,9 @@ class CabinetAssetImportE2ETest(unittest.TestCase):
         self.assertIn(
             "imported cabinet/demo_cabinet v1.0.0 (validated)", result.stdout
         )
-        catalog = yaml.safe_load((assets / "assets_catalog.yaml").read_text())
-        record = catalog["assets"][0]
-        self.assertEqual("cabinet", record["kind"])
-        self.assertEqual("demo_cabinet", record["name"])
-        self.assertTrue(record["validated"])
+        self.assertEqual(
+            [("cabinet", "demo_cabinet", "1.0.0", True)], self._db_assets()
+        )
         # 样例整树（含 control_cabinet/components/）应随资产拷贝。
         self.assertTrue(
             (assets / "cabinet" / "demo_cabinet"
@@ -181,7 +192,7 @@ class CabinetAssetImportE2ETest(unittest.TestCase):
         # CLI 的 --select 只对 scene 生效；柜体选择走库 API 持久化。
         from control_gateway.asset_library import AssetLibrary, AssetSelection
 
-        library = AssetLibrary(assets)
+        library = AssetLibrary(assets, store=SqlAssetStore(self.db_url))
         library.save_selection(AssetSelection(cabinet="demo_cabinet"))
 
         result = self._run_cli("--print-env", "--assets-dir", str(assets))

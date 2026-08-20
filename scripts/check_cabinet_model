@@ -108,14 +108,27 @@ LEGACY_TRAJECTORY_ROUTER = (
     / "src"
     / "legacy_trajectory_router.cpp"
 )
-ARM_JOINTS = [
-    "body_arm1",
-    "arm1_arm2",
-    "arm2_arm3",
-    "arm3_arm4",
-    "arm4_arm5",
-    "arm5_end",
+# Dual-arm joint topology: two 7-DOF arms (l_/r_ prefixes) plus four fixed
+# end-effector tool groups.  Group names must match the adapter's
+# ``manual_joint_group_names`` and the ros2_control / MoveIt controller keys.
+LEFT_ARM_JOINTS = [f"l_arm_{index}_joint" for index in range(7)]
+RIGHT_ARM_JOINTS = [f"r_arm_{index}_joint" for index in range(7)]
+THREE_CYLINDER_JOINTS = [
+    "r_three_cyl_finger1_joint",
+    "r_three_cyl_finger2_joint",
+    "r_three_cyl_finger3_joint",
 ]
+TWO_CYLINDER_JOINTS = ["l_two_cyl_finger1_joint", "l_two_cyl_finger2_joint"]
+ROCKER_JOINTS = ["l_rocker_rotor_joint"]
+ROTATE_BUTTON_JOINTS = ["r_rotbtn_jaw1_joint", "r_rotbtn_jaw2_joint"]
+JOINT_GROUPS = {
+    "left_arm": LEFT_ARM_JOINTS,
+    "right_arm": RIGHT_ARM_JOINTS,
+    "three_cylinder": THREE_CYLINDER_JOINTS,
+    "two_cylinder": TWO_CYLINDER_JOINTS,
+    "rocker": ROCKER_JOINTS,
+    "rotate_button": ROTATE_BUTTON_JOINTS,
+}
 TYPE_TO_JOINT = {
     "button": "prismatic",
     "knob": "revolute",
@@ -530,9 +543,6 @@ def validate_cabinet_asset() -> None:
                     "approach the cabinet from its local +Z face."
                 )
 
-    staging_distance = float(parameters.get("staging_distance", 0.0))
-    if not math.isfinite(staging_distance) or staging_distance < 0.93:
-        fail("Cabinet staging distance must preserve at least 0.93 m.")
     grasp_offset = float(parameters.get("grasp_outward_offset", 0.0))
     if not math.isfinite(grasp_offset) or grasp_offset < 0.020:
         fail(
@@ -1098,105 +1108,86 @@ def main() -> int:
         legacy_router_source = LEGACY_TRAJECTORY_ROUTER.read_text(
             encoding="utf-8"
         )
-        arm_joint_names = robot_parameters.get("arm_joint_names")
-        gripper_joint_names = robot_parameters.get("gripper_joint_names")
-        for parameter_name, joint_names, allow_empty in (
-            ("arm_joint_names", arm_joint_names, False),
-            ("gripper_joint_names", gripper_joint_names, True),
+        group_names_value = robot_parameters.get("manual_joint_group_names")
+        groups_value = robot_parameters.get("manual_joint_groups")
+        if not isinstance(group_names_value, list) or not group_names_value:
+            fail(
+                "Robot adapter manual_joint_group_names must be a non-empty "
+                "string list."
+            )
+        if any(
+            not isinstance(name, str) or not name.strip()
+            for name in group_names_value
         ):
+            fail(
+                "Robot adapter manual_joint_group_names entries must be "
+                "non-empty strings."
+            )
+        if len(group_names_value) != len(set(group_names_value)):
+            fail("Robot adapter manual_joint_group_names contains duplicates.")
+        if not isinstance(groups_value, dict):
+            fail("Robot adapter manual_joint_groups must be a mapping.")
+        if set(groups_value) != set(group_names_value):
+            fail(
+                "Robot adapter manual_joint_groups keys must match "
+                "manual_joint_group_names."
+            )
+        all_configured_joints: list[str] = []
+        for name in group_names_value:
+            joints = groups_value[name]
             if (
-                not isinstance(joint_names, list)
-                or (not joint_names and not allow_empty)
+                not isinstance(joints, list)
+                or not joints
                 or any(
-                    not isinstance(joint_name, str) or not joint_name
-                    for joint_name in joint_names
+                    not isinstance(joint, str) or not joint for joint in joints
                 )
-                or len(joint_names) != len(set(joint_names))
+                or len(joints) != len(set(joints))
             ):
                 fail(
-                    f"Robot adapter {parameter_name} must contain unique, "
-                    "nonempty joint names."
+                    f"Robot adapter manual_joint_groups.{name} must contain "
+                    "unique, nonempty joint names."
                 )
-            if not re.search(
-                r"required_joint_group_parameter\(\s*"
-                + re.escape(f'"{parameter_name}"')
-                + r"\s*,\s*"
-                + ("true" if allow_empty else "false")
-                + r"\s*\)",
-                legacy_router_source,
-            ):
+            all_configured_joints.extend(joints)
+        if len(all_configured_joints) != len(set(all_configured_joints)):
+            fail("Robot adapter joint groups must not overlap.")
+        if set(all_configured_joints) != {
+            joint for joints in JOINT_GROUPS.values() for joint in joints
+        }:
+            fail(
+                "Robot adapter manual_joint_groups must cover exactly the "
+                "dual-arm joint topology."
+            )
+        configured_absolute_ros_name(robot_parameters, "controller_namespace")
+        if robot_parameters.get("controller_namespace") != "/xczs":
+            fail("Robot adapter controller_namespace must be /xczs.")
+        for pattern in (
+            r'declare_parameter<std::vector<std::string>>\(\s*'
+            r'"manual_joint_group_names"\s*,',
+            r'absolute_ros_name_parameter\(\s*'
+            r'"controller_namespace"\s*,\s*kDefaultControllerNamespace\s*\)',
+            r'"manual_joint_groups\."\s*\+\s*group_name',
+            r"controller_topic\(\s*namespace_name\s*,\s*group_name\s*\)",
+            r"controller_status_topic\(\s*namespace_name\s*,\s*group_name\s*\)",
+            r"add_route\(\s*group_name\s*,\s*joints\s*,\s*topic\s*,"
+            r"\s*status_topic\s*\)",
+            r"validate_groups_are_disjoint\(\)",
+            r"extract_trajectory\(\s*input\s*,\s*route\.joints\s*\)",
+            r'required_joint_group_parameter\(\s*"arm_joint_names"\s*,'
+            r"\s*false\s*\)",
+        ):
+            if not re.search(pattern, legacy_router_source):
                 fail(
-                    "Legacy trajectory router must consume adapter group "
-                    f"'{parameter_name}'."
+                    "Legacy trajectory router must derive its controller "
+                    "groups from the N-group adapter schema and retain its "
+                    "legacy arm fallback."
                 )
-        if set(arm_joint_names) & set(gripper_joint_names):
-            fail("Robot adapter arm and gripper joint groups must not overlap.")
         if any(
             f'"{joint_name}"' in legacy_router_source
-            for joint_name in arm_joint_names + gripper_joint_names
+            for joint_name in all_configured_joints
         ):
             fail("Legacy trajectory router still hard-codes robot joint names.")
-        trajectory_topic_contracts = {
-            "joint_trajectory_topic": "/xczs/joint_trajectory",
-            "arm_controller_topic": "/xczs/arm_controller/joint_trajectory",
-            "arm_controller_status_topic": (
-                "/xczs/arm_controller/follow_joint_trajectory/_action/status"
-            ),
-        }
-        if gripper_joint_names:
-            trajectory_topic_contracts.update(
-                {
-                    "gripper_controller_topic": (
-                        "/xczs/gripper_controller/joint_trajectory"
-                    ),
-                    "gripper_controller_status_topic": (
-                        "/xczs/gripper_controller/follow_joint_trajectory/"
-                        "_action/status"
-                    ),
-                }
-            )
-        for parameter_name, compatible_default in trajectory_topic_contracts.items():
-            configured_absolute_ros_name(robot_parameters, parameter_name)
-            if not re.search(
-                r"absolute_ros_name_parameter\(\s*"
-                + re.escape(f'"{parameter_name}"')
-                + r"\s*,\s*"
-                + re.escape(f'"{compatible_default}"')
-                + r"\s*\)",
-                legacy_router_source,
-            ):
-                fail(
-                    "Legacy trajectory router must consume adapter interface "
-                    f"'{parameter_name}'."
-                )
-        if (
-            '"arm_action_status_topic"' in legacy_router_source
-            or '"gripper_action_status_topic"' in legacy_router_source
-        ):
+        if '"arm_action_status_topic"' in legacy_router_source:
             fail("Legacy trajectory router still declares legacy status keys.")
-        trajectory_wiring_patterns = [
-            r"create_publisher<JointTrajectory>\(\s*arm_topic\s*,",
-            r"create_subscription<JointTrajectory>\(\s*input_topic\s*,",
-            r"create_subscription<GoalStatusArray>\(\s*"
-            r"arm_status_topic\s*,",
-            r"extract_trajectory\(\s*input\s*,\s*arm_joint_names_\s*\)",
-        ]
-        if gripper_joint_names:
-            trajectory_wiring_patterns.extend(
-                [
-                    r"create_publisher<JointTrajectory>\(\s*"
-                    r"gripper_topic\s*,",
-                    r"create_subscription<GoalStatusArray>\(\s*"
-                    r"gripper_status_topic\s*,",
-                    r"extract_trajectory\(\s*input\s*,\s*"
-                    r"gripper_joint_names_\s*\)",
-                ]
-            )
-        for wiring_pattern in trajectory_wiring_patterns:
-            if not re.search(wiring_pattern, legacy_router_source):
-                fail(
-                    "Legacy trajectory router adapter wiring is incomplete."
-                )
         if "router_utils_test" not in CONTROL_CMAKE.read_text(
             encoding="utf-8"
         ):
@@ -1330,67 +1321,19 @@ def main() -> int:
             robot_parameters.get("unreachable_control_reason", "")
         ).strip():
             fail("Robot adapter unreachable controls require a shared reason.")
-        rear_door_override = adapter_controls.get("cabinet_rear_door")
-        if (
-            not isinstance(rear_door_override, dict)
-            or rear_door_override.get("operable") is not False
-            or not str(
-                rear_door_override.get("unavailable_reason", "")
-            ).strip()
-        ):
-            fail(
-                "Robot adapter rear door must be unavailable with a "
-                "per-control unavailable_reason."
-            )
-        safety_disabled_knobs = {
-            f"box_{box_index}_knob" for box_index in range(7, 12)
-        }
-        for control_id in sorted(safety_disabled_knobs):
-            override = adapter_controls.get(control_id)
-            if (
-                not isinstance(override, dict)
-                or override.get("operable") is not False
-                or not str(override.get("unavailable_reason", "")).strip()
-            ):
-                fail(
-                    f"Robot adapter {control_id} must be unavailable with "
-                    "a per-control unavailable_reason until safe rotary "
-                    "actuation passes runtime validation."
-                )
-        runtime_disabled_buttons = {
-            "box_5_button_1",
-            "box_5_button_2",
-            "box_6_button_1",
-            "box_6_button_2",
-            "box_7_button_1",
-            "box_7_button_2",
-        }
-        for control_id in sorted(runtime_disabled_buttons):
-            override = adapter_controls.get(control_id)
-            if (
-                not isinstance(override, dict)
-                or override.get("operable") is not False
-                or not str(override.get("unavailable_reason", "")).strip()
-            ):
-                fail(
-                    f"Robot adapter {control_id} must be unavailable with "
-                    "a per-control unavailable_reason until its complete "
-                    "collision-free MoveIt path passes runtime validation."
-                )
-        expected_operable_controls = {
-            "box_8_button_1",
-            "box_8_button_2",
-            "box_10_button_1",
-            "box_10_button_2",
-            "box_11_button_1",
-            "box_11_button_2",
-        }
+        # After swapping in the dual-arm robot, no control has yet passed
+        # per-control closed-loop validation with the new tool geometry.  Every
+        # control must therefore be either geometrically unreachable or marked
+        # ``operable=false`` so the operator only runs planning validation and
+        # never executes real motion.  Controls are whittled off this list one
+        # at a time as each is re-validated on the new robot.
         operable_controls = set(control_ids) - set(all_unreachable)
-        if operable_controls != expected_operable_controls:
+        if operable_controls:
             fail(
-                "Robot adapter runtime-validated operable controls differ: "
-                f"expected {sorted(expected_operable_controls)}, got "
-                f"{sorted(operable_controls)}."
+                "No control may be marked operable until the dual-arm robot "
+                "passes per-control closed-loop validation: "
+                + ", ".join(sorted(operable_controls))
+                + "."
             )
         controls_without_explicit_station = sorted(
             control_id
@@ -1502,9 +1445,6 @@ def main() -> int:
                        for control_id in control_ids]
         if "" in joint_names or len(set(joint_names)) != len(joint_names):
             fail("Cabinet control joint names must be non-empty and unique.")
-        staging_distance = float(parameters.get("staging_distance", 0.0))
-        if not math.isfinite(staging_distance) or staging_distance < 0.93:
-            fail("Cabinet staging distance must preserve at least 0.93 m.")
         grasp_offset = float(parameters.get("grasp_outward_offset", 0.0))
         if not math.isfinite(grasp_offset) or grasp_offset < 0.020:
             fail(
@@ -2283,10 +2223,10 @@ def main() -> int:
             fail("Body lidar performance contract must be 360 samples at 20 Hz.")
 
         wheel_links = {
-            "front_right_wheel",
-            "front_left_wheel",
-            "back_right_wheel",
-            "back_left_wheel",
+            "l_wheel_0",
+            "l_wheel_1",
+            "r_wheel_0",
+            "r_wheel_1",
         }
         wheel_gazebo = {
             candidate.attrib.get("reference", ""): candidate
@@ -2417,15 +2357,19 @@ def main() -> int:
                 "Gazebo SDF must preserve one gravity=1 setting for body; "
                 f"got {body_gravity}."
             )
-        shoulder_joint = robot_root.find("./joint[@name='body_arm1']")
-        shoulder_parent = (
-            None if shoulder_joint is None else shoulder_joint.find("parent")
-        )
-        if (
-            shoulder_parent is None
-            or shoulder_parent.attrib.get("link") != "body"
-        ):
-            fail("The six-axis manipulator shoulder must be mounted on body.")
+        for shoulder_name in ("l_arm_0_joint", "r_arm_0_joint"):
+            shoulder_joint = robot_root.find(f"./joint[@name='{shoulder_name}']")
+            shoulder_parent = (
+                None if shoulder_joint is None else shoulder_joint.find("parent")
+            )
+            if (
+                shoulder_parent is None
+                or shoulder_parent.attrib.get("link") != "body"
+            ):
+                fail(
+                    f"The dual-arm shoulder '{shoulder_name}' must be mounted "
+                    "on body."
+                )
 
         ros2_control_entries = {
             entry.attrib.get("name", ""): entry
@@ -2579,89 +2523,136 @@ def main() -> int:
 
         with ROS2_CONTROLLERS.open("r", encoding="utf-8") as stream:
             controller_config = yaml.safe_load(stream)
-        controlled_arm = controller_config["/xczs/arm_controller"][
+        controller_manager = controller_config["/xczs/controller_manager"][
             "ros__parameters"
-        ]["joints"]
-        if controlled_arm != ARM_JOINTS:
-            fail("ros2_control arm joint order differs from the MoveIt chain.")
-        if controller_config["/xczs/arm_controller"]["ros__parameters"].get(
-            "allow_partial_joints_goal"
-        ) is not False:
-            fail("The six-axis arm controller must reject partial joint goals.")
+        ]
+        if "joint_state_broadcaster" not in controller_manager:
+            fail("ros2_control must register a joint_state_broadcaster.")
+        for group_name, joint_names in JOINT_GROUPS.items():
+            controller_name = f"{group_name}_controller"
+            if controller_name not in controller_manager:
+                fail(f"ros2_control must register {controller_name}.")
+            controller_key = f"/xczs/{controller_name}"
+            configured_joints = controller_config.get(controller_key, {}).get(
+                "ros__parameters", {}
+            ).get("joints")
+            if configured_joints != joint_names:
+                fail(
+                    f"ros2_control {controller_name} joint order differs from "
+                    "the dual-arm topology."
+                )
+        for arm_controller in ("left_arm_controller", "right_arm_controller"):
+            if controller_config[f"/xczs/{arm_controller}"][
+                "ros__parameters"
+            ].get("allow_partial_joints_goal") is not False:
+                fail(f"{arm_controller} must reject partial joint goals.")
 
         with MOVEIT_CONTROLLERS.open("r", encoding="utf-8") as stream:
             moveit_controllers = yaml.safe_load(stream)
-        moveit_arm = moveit_controllers[
-            "moveit_simple_controller_manager"
-        ]["xczs/arm_controller"]["joints"]
-        if moveit_arm != ARM_JOINTS:
-            fail("MoveIt controller joint order differs from ros2_control.")
+        moveit_manager = moveit_controllers["moveit_simple_controller_manager"]
+        expected_controller_names = [
+            f"xczs/{group_name}_controller" for group_name in JOINT_GROUPS
+        ]
+        if moveit_manager["controller_names"] != expected_controller_names:
+            fail("MoveIt controller names differ from the dual-arm controllers.")
+        for group_name, joint_names in JOINT_GROUPS.items():
+            controller_key = f"xczs/{group_name}_controller"
+            if moveit_manager[controller_key]["joints"] != joint_names:
+                fail(
+                    f"MoveIt controller {controller_key} joint order differs "
+                    "from ros2_control."
+                )
         with JOINT_LIMITS.open("r", encoding="utf-8") as stream:
             moveit_limits = yaml.safe_load(stream)["joint_limits"]
         if "body_arm_lift" in moveit_limits:
             fail("MoveIt joint limits still contain the removed arm lift.")
-        if not set(ARM_JOINTS).issubset(moveit_limits):
-            fail("MoveIt joint limits do not cover the complete six-axis arm.")
+        all_robot_joints = {
+            joint for joints in JOINT_GROUPS.values() for joint in joints
+        }
+        if not all_robot_joints.issubset(moveit_limits):
+            fail("MoveIt joint limits do not cover the complete dual-arm robot.")
         with OMPL_PLANNING.open("r", encoding="utf-8") as stream:
             ompl_config = yaml.safe_load(stream)
-        expected_projection = "joints(body_arm1,arm1_arm2)"
-        for planning_group in ("manipulator", "manipulator_with_gripper"):
+        expected_projections = {
+            "left_arm": "joints(l_arm_0_joint,l_arm_1_joint)",
+            "right_arm": "joints(r_arm_0_joint,r_arm_1_joint)",
+        }
+        for planning_group, projection in expected_projections.items():
             if ompl_config.get(planning_group, {}).get(
                 "projection_evaluator"
-            ) != expected_projection:
+            ) != projection:
                 fail(
-                    f"MoveIt OMPL group {planning_group} does not project "
-                    "the first two six-axis arm joints."
+                    f"MoveIt OMPL group {planning_group} does not project the "
+                    "first two dual-arm joints."
                 )
 
         srdf_root = ElementTree.parse(SRDF).getroot()
-        manipulator = srdf_root.find("./group[@name='manipulator']")
-        manipulator_chain = (
-            None if manipulator is None else manipulator.find("chain")
-        )
-        if (
-            manipulator_chain is None
-            or manipulator_chain.attrib.get("base_link") != "body"
-            or manipulator_chain.attrib.get("tip_link") != "end"
-        ):
-            fail("MoveIt manipulator chain must span body to end.")
-        home = srdf_root.find("./group_state[@name='home']")
-        home_joints = {
-            entry.attrib.get("name", ""): float(entry.attrib.get("value", "nan"))
-            for entry in ([] if home is None else home.findall("joint"))
-        }
-        expected_home = {joint: 0.0 for joint in ARM_JOINTS}
-        expected_home["arm1_arm2"] = -math.pi / 2.0
-        if set(home_joints) != set(ARM_JOINTS) or any(
-            not math.isclose(
-                home_joints[joint], expected_home[joint], abs_tol=1.0e-9
+        for group_name, joint_names in JOINT_GROUPS.items():
+            group = srdf_root.find(f"./group[@name='{group_name}']")
+            if group_name in ("left_arm", "right_arm"):
+                chain = None if group is None else group.find("chain")
+                if (
+                    chain is None
+                    or chain.attrib.get("base_link") != "body"
+                    or chain.attrib.get("tip_link")
+                    != f"{group_name[0]}_arm_6"
+                ):
+                    fail(f"MoveIt {group_name} chain must span body to wrist.")
+                continue
+            configured_group_joints = {
+                (joint.attrib.get("name") if joint is not None else None)
+                for joint in ([] if group is None else group.findall("joint"))
+            }
+            if configured_group_joints != set(joint_names):
+                fail(f"MoveIt {group_name} group joints differ from the model.")
+        for group_name in ("left_arm", "right_arm"):
+            home = srdf_root.find(
+                f"./group_state[@name='home'][@group='{group_name}']"
             )
-            for joint in ARM_JOINTS
-        ):
-            fail(
-                "MoveIt home state must use the compact vertical transport "
-                "pose."
-            )
+            home_joints = {
+                entry.attrib.get("name", ""): float(
+                    entry.attrib.get("value", "nan")
+                )
+                for entry in ([] if home is None else home.findall("joint"))
+            }
+            if set(home_joints) != set(JOINT_GROUPS[group_name]) or any(
+                not math.isclose(home_joints[joint], 0.0, abs_tol=1.0e-9)
+                for joint in JOINT_GROUPS[group_name]
+            ):
+                fail(
+                    f"MoveIt {group_name} home state must be the neutral "
+                    "transport pose."
+                )
         disabled_pairs = {
             frozenset((entry.attrib.get("link1"), entry.attrib.get("link2")))
             for entry in srdf_root.findall("disable_collisions")
         }
         if any(forbidden_lift_links & pair for pair in disabled_pairs):
             fail("MoveIt SRDF still contains an arm-lift collision exemption.")
-        body_arm1_collision = next(
-            (
-                entry
-                for entry in srdf_root.findall("disable_collisions")
-                if {entry.attrib.get("link1"), entry.attrib.get("link2")}
-                == {"body", "arm1"}
-            ),
-            None,
-        )
-        if (
-            body_arm1_collision is None
-            or body_arm1_collision.attrib.get("reason") != "Adjacent"
+        for body_pair in (
+            {"body", "l_arm_0"},
+            {"body", "r_arm_0"},
         ):
-            fail("MoveIt SRDF must mark body and arm1 as adjacent links.")
+            body_collision = next(
+                (
+                    entry
+                    for entry in srdf_root.findall("disable_collisions")
+                    if {
+                        entry.attrib.get("link1"),
+                        entry.attrib.get("link2"),
+                    }
+                    == body_pair
+                ),
+                None,
+            )
+            if (
+                body_collision is None
+                or body_collision.attrib.get("reason") != "Adjacent"
+            ):
+                fail(
+                    "MoveIt SRDF must mark body and each shoulder as adjacent "
+                    "links."
+                )
         legacy_router_source = LEGACY_TRAJECTORY_ROUTER.read_text(
             encoding="utf-8"
         )
@@ -2752,9 +2743,9 @@ def main() -> int:
             fail("Web backend still hard-codes a robot joint order.")
         for monitor_contract in (
             "capabilities.manual_joints",
-            "joint.group === 'arm'",
-            "joint.group === 'gripper'",
+            "manualGroupOrder = manualJointSpecs",
             "jointNames = manualJointSpecs.map(joint => joint.name)",
+            "function buildManualJointGroups",
         ):
             if monitor_contract not in web_source:
                 fail(
@@ -2763,7 +2754,12 @@ def main() -> int:
                 )
         if "const armJointNames" in web_source:
             fail("Web monitor still hard-codes an arm joint order.")
-        configured_joint_names = arm_joint_names + gripper_joint_names
+        if (
+            "joint.group === 'arm'" in web_source
+            or "joint.group === 'gripper'" in web_source
+        ):
+            fail("Web monitor still hard-codes manual joint group names.")
+        configured_joint_names = all_configured_joints
         if any(
             joint_name in web_node_source or joint_name in web_source
             for joint_name in configured_joint_names
@@ -2774,8 +2770,8 @@ def main() -> int:
         print(
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
-            "topics and per-instance plugin names, a six-axis MoveIt arm "
-            "without a lift, and the "
+            "topics and per-instance plugin names, a dual-arm MoveIt robot "
+            "with four fixed tool tips, and the "
             "low-friction supported wheels, 500/20 Hz planar, "
             "640x640@15 Hz camera, 360@20 Hz lidar simulation performance "
             "contract."

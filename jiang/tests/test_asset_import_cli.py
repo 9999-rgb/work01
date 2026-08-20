@@ -10,6 +10,8 @@ launch script consumes.  No ROS workspace is required — the sample's
 
 from __future__ import annotations
 
+import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -83,6 +85,9 @@ class AssetImportCliTest(unittest.TestCase):
         self._temporary_directory = tempfile.TemporaryDirectory()
         self.directory = Path(self._temporary_directory.name)
         self.assets_dir = self.directory / "assets"
+        # CLI 现在把目录 / 选择写入 SQLite；逐用例注入独立 DB，隔离于 conftest
+        # 的会话级 DB 与其他用例。
+        self.db_path = self.directory / "assets.db"
 
     def tearDown(self) -> None:
         self._temporary_directory.cleanup()
@@ -93,7 +98,22 @@ class AssetImportCliTest(unittest.TestCase):
             capture_output=True,
             text=True,
             cwd=str(WORKSPACE),
+            env={**os.environ, "XCZS_DATABASE_URL": f"sqlite+aiosqlite:///{self.db_path}"},
         )
+
+    def _db_assets(self) -> list[tuple[str, str, str, bool]]:
+        with sqlite3.connect(self.db_path) as connection:
+            rows = connection.execute(
+                "SELECT kind, name, version, validated FROM assets ORDER BY id"
+            ).fetchall()
+        return [(str(k), str(n), str(v), bool(ok)) for k, n, v, ok in rows]
+
+    def _db_selection(self) -> tuple[str | None, str | None]:
+        with sqlite3.connect(self.db_path) as connection:
+            row = connection.execute(
+                "SELECT scene, cabinet FROM selection WHERE id=1"
+            ).fetchone()
+        return (None, None) if row is None else tuple(row)
 
     def test_import_select_print_env_end_to_end(self) -> None:
         source = _write_scene_asset(self.directory / "source")
@@ -109,16 +129,11 @@ class AssetImportCliTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn("imported scene/cli_scene v1.0.0 (validated)", result.stdout)
 
-        # Catalog and selection persisted inside the scratch library.
-        catalog = yaml.safe_load(
-            (self.assets_dir / "assets_catalog.yaml").read_text()
+        # Catalog and selection persisted in SQLite (not YAML).
+        self.assertEqual(
+            [("scene", "cli_scene", "1.0.0", True)], self._db_assets()
         )
-        self.assertEqual("cli_scene", catalog["assets"][0]["name"])
-        self.assertTrue(catalog["assets"][0]["validated"])
-        selection = yaml.safe_load(
-            (self.assets_dir / "selection.yaml").read_text()
-        )
-        self.assertEqual("cli_scene", selection["scene"])
+        self.assertEqual("cli_scene", self._db_selection()[0])
 
         # Env mapping points at the imported, normalized files.
         root = self.assets_dir / "scene" / "cli_scene"
@@ -189,7 +204,7 @@ class AssetImportCliTest(unittest.TestCase):
         self.assertIn("FAIL", result.stderr)
         # A failed import leaves no trace in the library.
         self.assertFalse((self.assets_dir / "scene" / "cli_scene").exists())
-        self.assertFalse((self.assets_dir / "assets_catalog.yaml").exists())
+        self.assertEqual([], self._db_assets())
 
 
 if __name__ == "__main__":

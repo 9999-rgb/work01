@@ -989,7 +989,7 @@ def _robot_spawn_node(context, *, controllers=None):
 
     ``spawn_entity`` places the root ``body`` link, whose +Y is the physical
     forward direction.  ``base_link`` is a fixed +pi/2 child of ``body`` (see
-    ``mobile_base.xacro``), so to point ``base_link`` at ``robot_spawn.yaw`` in
+    ``dual_arm_body.xacro``), so to point ``base_link`` at ``robot_spawn.yaw`` in
     the map frame the body must be rotated back by pi/2 -- the same convention
     used by ``runner._teleport_robot`` on scene switch.
 
@@ -1265,7 +1265,13 @@ def generate_launch_description() -> LaunchDescription:
         name="xczs_controller_spawner",
         output="screen",
         arguments=[
-            "joint_state_broadcaster", "arm_controller", "gripper_controller",
+            "joint_state_broadcaster",
+            "left_arm_controller",
+            "right_arm_controller",
+            "three_cylinder_controller",
+            "two_cylinder_controller",
+            "rocker_controller",
+            "rotate_button_controller",
             "--controller-manager", "/xczs/controller_manager",
             "--controller-manager-timeout", "30",
             "--switch-timeout", "30",

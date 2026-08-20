@@ -46,7 +46,7 @@ _REQUIRED_ROLES_BY_KIND: Dict[str, frozenset] = {
     "cabinet": frozenset({"controls", "scene", "pose", "adapter", "xacro"}),
 }
 
-_REFERENCE_FIELDS = frozenset({"cabinet", "gripper_variant"})
+_REFERENCE_FIELDS = frozenset({"cabinet"})
 
 
 class ManifestError(ValueError):
@@ -57,21 +57,16 @@ class ManifestError(ValueError):
 class AssetReferences:
     """Asset-level composition references.
 
-    ``cabinet`` and ``gripper_variant`` are both optional.  A scene asset may
-    pin the cabinet asset and gripper variant it was calibrated for; when a
-    reference is absent the selection layer falls back to the built-in robot /
-    cabinet / default gripper variant, so a scene-only deployment does not need
-    to name them.
+    ``cabinet`` is optional.  A scene asset may pin the cabinet asset it was
+    calibrated for; when the reference is absent the selection layer falls back
+    to the built-in cabinet, so a scene-only deployment does not need to name
+    it.
     """
 
     cabinet: Optional[str] = None
-    gripper_variant: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Optional[str]]:
-        return {
-            "cabinet": self.cabinet,
-            "gripper_variant": self.gripper_variant,
-        }
+        return {"cabinet": self.cabinet}
 
 
 @dataclass(frozen=True)
@@ -219,10 +214,7 @@ def _parse_references(value: Any, path: Path) -> AssetReferences:
             + ", ".join(sorted(str(field) for field in unknown))
         )
     cabinet = _optional_name(value.get("cabinet"), "references.cabinet", path)
-    gripper = _optional_name(
-        value.get("gripper_variant"), "references.gripper_variant", path
-    )
-    return AssetReferences(cabinet=cabinet, gripper_variant=gripper)
+    return AssetReferences(cabinet=cabinet)
 
 
 def _optional_name(value: Any, label: str, path: Path) -> Optional[str]:
