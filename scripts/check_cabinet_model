@@ -1376,15 +1376,19 @@ def main() -> int:
                 controls[control_id].get("local_position"),
                 f"controls.{control_id}.local_position",
             )
+            # 双臂机器人右臂肩关节在 body -x 0.35 m（机头 -90° 映射到世界
+            # +Y）；正面控件工位横向 anchor 取 local_position.x + 0.35 m，
+            # 使控件位于右臂工作空间内。旧的 -0.161 m 按单臂末端调校，无法
+            # 供右臂够到，已废止。
             expected_anchor = [
-                control_position[0] - 0.161,
+                control_position[0] + 0.35,
                 1.115,
                 0.0,
             ]
             if not close_lists(anchor, expected_anchor):
                 fail(
                     f"Front control {control_id} navigation anchor must align "
-                    "local_position.x minus the calibrated 0.161 m tool "
+                    "local_position.x plus the calibrated 0.35 m right-shoulder "
                     "offset and retain the common [y, z] anchor."
                 )
         rear_door_station = adapter_controls["cabinet_rear_door"][

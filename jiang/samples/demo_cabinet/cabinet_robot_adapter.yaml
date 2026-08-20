@@ -206,182 +206,182 @@
           frame_id: map
       box_1_button_1:
         navigation_station:
-          local_anchor: [0.470, 1.115, 0.000]
+          local_anchor: [0.470000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_1_button_2:
         navigation_station:
-          local_anchor: [0.520, 1.115, 0.000]
+          local_anchor: [0.520000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_button_1:
         navigation_station:
-          local_anchor: [0.799, 1.115, 0.000]
+          local_anchor: [0.799000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_button_2:
         navigation_station:
-          local_anchor: [0.849, 1.115, 0.000]
+          local_anchor: [0.849000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_button_1:
         navigation_station:
-          local_anchor: [0.470, 1.115, 0.000]
+          local_anchor: [0.470000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_button_2:
         navigation_station:
-          local_anchor: [0.520, 1.115, 0.000]
+          local_anchor: [0.520000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_4_button_1:
         navigation_station:
-          local_anchor: [0.799, 1.115, 0.000]
+          local_anchor: [0.799000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_4_button_2:
         navigation_station:
-          local_anchor: [0.849, 1.115, 0.000]
+          local_anchor: [0.849000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_5_button_1:
         navigation_station:
-          local_anchor: [0.470, 1.115, 0.000]
+          local_anchor: [0.470000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       box_5_button_2:
         navigation_station:
-          local_anchor: [0.520, 1.115, 0.000]
+          local_anchor: [0.520000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       box_6_button_1:
         navigation_station:
-          local_anchor: [0.799, 1.115, 0.000]
+          local_anchor: [0.799000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       box_6_button_2:
         navigation_station:
-          local_anchor: [0.849, 1.115, 0.000]
+          local_anchor: [0.849000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       box_7_button_1:
         navigation_station:
-          local_anchor: [0.470, 1.115, 0.000]
+          local_anchor: [0.470000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_7_button_2:
         navigation_station:
-          local_anchor: [0.520, 1.115, 0.000]
+          local_anchor: [0.520000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_8_button_1:
         navigation_station:
-          local_anchor: [0.799, 1.115, 0.000]
+          local_anchor: [0.799000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_8_button_2:
         navigation_station:
-          local_anchor: [0.849, 1.115, 0.000]
+          local_anchor: [0.849000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_10_button_1:
         navigation_station:
-          local_anchor: [0.842, 1.115, 0.000]
+          local_anchor: [0.842000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_10_button_2:
         navigation_station:
-          local_anchor: [0.877, 1.115, 0.000]
+          local_anchor: [0.877000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_11_button_1:
         navigation_station:
-          local_anchor: [0.842, 1.115, 0.000]
+          local_anchor: [0.842000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
       box_11_button_2:
         navigation_station:
-          local_anchor: [0.877, 1.115, 0.000]
+          local_anchor: [0.877000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
       box_1_knob:
         navigation_station:
-          local_anchor: [0.517, 1.115, 0.000]
+          local_anchor: [0.517470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_knob:
         navigation_station:
-          local_anchor: [0.846, 1.115, 0.000]
+          local_anchor: [0.846470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_knob:
         navigation_station:
-          local_anchor: [0.517, 1.115, 0.000]
+          local_anchor: [0.517470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_4_knob:
         navigation_station:
-          local_anchor: [0.846, 1.115, 0.000]
+          local_anchor: [0.846470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_5_knob:
         navigation_station:
-          local_anchor: [0.517, 1.115, 0.000]
+          local_anchor: [0.517470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
       box_6_knob:
         navigation_station:
-          local_anchor: [0.846, 1.115, 0.000]
+          local_anchor: [0.846470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
@@ -391,35 +391,35 @@
       # 尚未通过目标档位到达验证，因此继续在机器人适配层禁用。
       box_7_knob:
         navigation_station:
-          local_anchor: [0.517, 1.115, 0.000]
+          local_anchor: [0.517470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_8_knob:
         navigation_station:
-          local_anchor: [0.846, 1.115, 0.000]
+          local_anchor: [0.846470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_9_knob:
         navigation_station:
-          local_anchor: [0.488, 1.115, 0.000]
+          local_anchor: [0.488440, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_10_knob:
         navigation_station:
-          local_anchor: [0.485, 1.115, 0.000]
+          local_anchor: [0.485470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_11_knob:
         navigation_station:
-          local_anchor: [0.485, 1.115, 0.000]
+          local_anchor: [0.485470, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0

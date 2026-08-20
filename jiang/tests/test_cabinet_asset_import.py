@@ -61,7 +61,7 @@ _CONTROLS_BLOCK = (
 _ADAPTER_BLOCK = (
     "      box_9_knob:\n"
     "        navigation_station:\n"
-    "          local_anchor: [-0.02256, 1.115, 0.0]\n"
+    "          local_anchor: [0.488440, 1.115, 0.000]\n"
     "          outward_axis: [0.0, 0.0, 1.0]\n"
     "          standoff: 0.930\n"
     "          base_yaw_offset: 0.0\n"
