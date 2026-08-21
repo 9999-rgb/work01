@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="旋转按钮机构组件1">
+  <link
+    name="endbody">
+    <inertial>
+      <origin
+        xyz="-0.0487621819510984 0.00543674529854938 0.0897504195685772"
+        rpy="0 0 0" />
+      <mass
+        value="0.573415517602799" />
+      <inertia
+        ixx="0.000611208586170127"
+        ixy="3.08089212291482E-07"
+        ixz="6.85479147616365E-05"
+        iyy="0.0005572532565278"
+        iyz="7.51116788121215E-07"
+        izz="0.000325912449254219" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/endbody.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/endbody.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="rotate">
+    <inertial>
+      <origin
+        xyz="6.47520736456447E-07 -1.0997631554252E-06 0.00660439607769858"
+        rpy="0 0 0" />
+      <mass
+        value="0.0115977344154224" />
+      <inertia
+        ixx="1.66115837186494E-06"
+        ixy="1.33385765189472E-10"
+        ixz="5.84593845045676E-12"
+        iyy="1.36259488970366E-06"
+        iyz="-1.68911687861355E-11"
+        izz="2.57566223582392E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/rotate.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/rotate.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endbody_rotate"
+    type="revolute">
+    <origin
+      xyz="-0.06128 -0.006 0.1725"
+      rpy="0 0 0" />
+    <parent
+      link="endbody" />
+    <child
+      link="rotate" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="endlink1">
+    <inertial>
+      <origin
+        xyz="-0.0058217 0.019764 0.0055009"
+        rpy="0 0 0" />
+      <mass
+        value="0.00481" />
+      <inertia
+        ixx="3.7186E-07"
+        ixy="3.7141E-08"
+        ixz="4.2433E-08"
+        iyy="2.6869E-07"
+        iyz="-6.4061E-08"
+        izz="2.9875E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/endlink1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/endlink1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rotate_endlink1"
+    type="prismatic">
+    <origin
+      xyz="0.0106 -0.0035 0.016"
+      rpy="0 0 0" />
+    <parent
+      link="rotate" />
+    <child
+      link="endlink1" />
+    <axis
+      xyz="0 -1 0" />
+    <limit
+      lower="0"
+      upper="0.018"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="endlink2">
+    <inertial>
+      <origin
+        xyz="0.0058217 -0.019764 0.0055009"
+        rpy="0 0 0" />
+      <mass
+        value="0.00481" />
+      <inertia
+        ixx="3.7186E-07"
+        ixy="3.7141E-08"
+        ixz="-4.2433E-08"
+        iyy="2.6869E-07"
+        iyz="6.4061E-08"
+        izz="2.9875E-07" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/endlink2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://旋转按钮机构组件1/meshes/endlink2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rotate_endlink2"
+    type="prismatic">
+    <origin
+      xyz="-0.0106 0.0035 0.016"
+      rpy="0 0 0" />
+    <parent
+      link="rotate" />
+    <child
+      link="endlink2" />
+    <axis
+      xyz="0 1 0" />
+    <limit
+      lower="0"
+      upper="0.018"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+</robot>

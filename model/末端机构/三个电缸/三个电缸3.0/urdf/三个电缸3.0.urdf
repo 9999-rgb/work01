@@ -1,0 +1,245 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="三个电缸3.0">
+  <link
+    name="endbody3">
+    <inertial>
+      <origin
+        xyz="-2.74902041876302E-05 -0.0475858888201008 -0.159216595046989"
+        rpy="0 0 0" />
+      <mass
+        value="1.87144507427306" />
+      <inertia
+        ixx="0.00314331785295318"
+        ixy="-4.28630092871515E-06"
+        ixz="1.14632851506261E-07"
+        iyy="0.00284546097481062"
+        iyz="-2.13029349188977E-06"
+        izz="0.00122825976530677" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endbody3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endbody3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="endllink1">
+    <inertial>
+      <origin
+        xyz="-0.000518102204362936 2.04771928580261E-10 0.0022188072225735"
+        rpy="0 0 0" />
+      <mass
+        value="0.114762678057593" />
+      <inertia
+        ixx="7.39308769431195E-05"
+        ixy="-1.15313679948325E-10"
+        ixz="-8.01678799602948E-07"
+        iyy="7.36250373143943E-05"
+        iyz="1.17099466890531E-12"
+        izz="1.3184593237836E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endllink1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endllink1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endbody3_endllink1"
+    type="prismatic">
+    <origin
+      xyz="0.034 -0.061735 -0.2985"
+      rpy="0 0 0" />
+    <parent
+      link="endbody3" />
+    <child
+      link="endllink1" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.12"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="endllink2">
+    <inertial>
+      <origin
+        xyz="-0.00370041804012161 0.0221088662302949 0.0142134391423585"
+        rpy="0 0 0" />
+      <mass
+        value="0.0911704347799893" />
+      <inertia
+        ixx="9.44656444343186E-05"
+        ixy="6.65509743460592E-06"
+        ixz="1.07320291259071E-06"
+        iyy="7.01807043425792E-05"
+        iyz="-1.1067116998024E-06"
+        izz="3.76193230334756E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endllink2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endllink2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endbody3_endllink2"
+    type="prismatic">
+    <origin
+      xyz="-0.034 -0.061735 -0.2935"
+      rpy="0 0 0" />
+    <parent
+      link="endbody3" />
+    <child
+      link="endllink2" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.12"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="endllink3">
+    <inertial>
+      <origin
+        xyz="-2.36545842691172E-07 0.000296825914262562 -0.00410066946871906"
+        rpy="0 0 0" />
+      <mass
+        value="0.00196195665581239" />
+      <inertia
+        ixx="5.99195057023392E-08"
+        ixy="7.77821851571024E-13"
+        ixz="1.4169845935253E-13"
+        iyy="5.41405335996216E-08"
+        iyz="3.05267285608798E-10"
+        izz="4.38635567081511E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endllink3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://三个电缸3.0/meshes/endllink3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endllink2_endllink3"
+    type="prismatic">
+    <origin
+      xyz="-0.012 0.082 -0.05245"
+      rpy="0 0 0" />
+    <parent
+      link="endllink2" />
+    <child
+      link="endllink3" />
+    <axis
+      xyz="0 0 -1" />
+    <limit
+      lower="0"
+      upper="0.0254"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+</robot>

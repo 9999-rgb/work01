@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="摇入摇出机构">
+  <link
+    name="endbody2">
+    <inertial>
+      <origin
+        xyz="-0.0027407 -0.042059 0.072703"
+        rpy="0 0 0" />
+      <mass
+        value="0.45189" />
+      <inertia
+        ixx="0.00039369"
+        ixy="4.162E-06"
+        ixz="-3.6991E-06"
+        iyy="0.00030531"
+        iyz="-4.2375E-09"
+        izz="0.0003897" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://摇入摇出机构/meshes/endbody2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://摇入摇出机构/meshes/endbody2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="endrotatelink">
+    <inertial>
+      <origin
+        xyz="-1.0757E-05 -6.0061E-06 -0.086156"
+        rpy="0 0 0" />
+      <mass
+        value="0.051985" />
+      <inertia
+        ixx="1.2277E-05"
+        ixy="-6.5213E-09"
+        ixz="-1.9512E-10"
+        iyy="1.235E-05"
+        iyz="-1.8084E-09"
+        izz="5.3078E-06" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://摇入摇出机构/meshes/endrotatelink.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://摇入摇出机构/meshes/endrotatelink.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="endbody2_endrotatelink"
+    type="continuous">
+    <origin
+      xyz="-0.01 -0.07 0.2611"
+      rpy="0 0 0" />
+    <parent
+      link="endbody2" />
+    <child
+      link="endrotatelink" />
+    <axis
+      xyz="0 0 1" />
+    <limit
+      lower="-3.14"
+      upper="3.14"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+</robot>
