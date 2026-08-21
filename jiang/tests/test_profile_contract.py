@@ -67,6 +67,19 @@ def _documents() -> dict[str, object]:
             "/**/xczs_cabinet_button_operator": {
                 "ros__parameters": {
                     "inoperable_control_reason": "not physically validated",
+                    "docking_base_footprint": [
+                        0.2,
+                        0.2,
+                        0.2,
+                        -0.2,
+                        -0.2,
+                        -0.2,
+                        -0.2,
+                        0.2,
+                    ],
+                    "docking_base_footprint_padding": 0.03,
+                    "docking_position_tolerance": 0.01,
+                    "docking_yaw_tolerance": 0.1,
                     "controls": {
                         "start_button": {
                             "navigation_station": {
@@ -336,6 +349,64 @@ class ProfileContractTest(unittest.TestCase):
         with self.assertRaisesRegex(
             ProfileContractError, "inoperable_control_reason"
         ):
+            self._validate(documents)
+
+    def test_rejects_operable_station_inside_full_footprint_envelope(
+        self,
+    ) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        operator = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]
+        operator["operable_control_ids"] = ["start_button"]
+        operator["controls"]["start_button"]["navigation_station"][
+            "standoff"
+        ] = 0.22
+
+        with self.assertRaisesRegex(ProfileContractError, "safety envelope"):
+            self._validate(documents)
+
+        operator["controls"]["start_button"]["navigation_station"][
+            "standoff"
+        ] = 0.30
+        report = self._validate(documents)
+        self.assertEqual(("start_button",), report.operable_control_ids)
+
+    def test_validates_button_tool_roll_offset(self) -> None:
+        documents = _documents()
+        adapter = documents["adapter"]
+        assert isinstance(adapter, dict)
+        override = adapter["/**/xczs_cabinet_button_operator"][
+            "ros__parameters"
+        ]["controls"]["start_button"]
+        override["tool_roll_offset"] = -0.75
+
+        report = self._validate(documents)
+        self.assertEqual(1, report.button_count)
+
+        override["tool_roll_offset"] = 4.0
+        with self.assertRaisesRegex(ProfileContractError, r"\[-pi, pi\]"):
+            self._validate(documents)
+
+        controls = documents["controls"]
+        assert isinstance(controls, dict)
+        controls["/**"]["ros__parameters"]["controls"]["start_button"][
+            "type"
+        ] = "knob"
+        controls["/**"]["ros__parameters"]["knob_defaults"] = {
+            "state_ids": ["left", "center", "right"]
+        }
+        scene = documents["scene"]
+        assert isinstance(scene, dict)
+        collision = scene["/**/xczs_cabinet_planning_scene"][
+            "ros__parameters"
+        ]["control_collision"]
+        collision["knob_size"] = [0.02, 0.01]
+        collision["knob_center_offset"] = 0.005
+        override["tool_roll_offset"] = 0.0
+        with self.assertRaisesRegex(ProfileContractError, "only valid for button"):
             self._validate(documents)
 
     def test_validates_per_transition_knob_tool_calibration(self) -> None:

@@ -134,6 +134,110 @@ def _vector(value: Any, field: str, size: int) -> None:
             )
 
 
+def _finite_number(value: Any, field: str, *, allow_zero: bool) -> float:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(float(value))
+        or (float(value) < 0.0 if allow_zero else float(value) <= 0.0)
+    ):
+        qualifier = "non-negative" if allow_zero else "positive"
+        raise ProfileContractError(f"{field} must be a finite {qualifier} number.")
+    return float(value)
+
+
+def _worst_footprint_extent(
+    points: Sequence[tuple[float, float]],
+    yaw_offset: float,
+    yaw_tolerance: float,
+) -> float:
+    extent = -math.inf
+    for x_value, y_value in points:
+        projection = lambda angle: (  # noqa: E731
+            x_value * math.cos(angle) - y_value * math.sin(angle)
+        )
+        extent = max(
+            extent,
+            projection(yaw_offset - yaw_tolerance),
+            projection(yaw_offset + yaw_tolerance),
+        )
+        radius = math.hypot(x_value, y_value)
+        if yaw_tolerance >= math.pi:
+            extent = max(extent, radius)
+            continue
+        maximizing_angle = math.atan2(-y_value, x_value)
+        angle_from_center = math.atan2(
+            math.sin(maximizing_angle - yaw_offset),
+            math.cos(maximizing_angle - yaw_offset),
+        )
+        if abs(angle_from_center) <= yaw_tolerance + 1e-12:
+            extent = max(extent, radius)
+    return extent
+
+
+def _validate_operable_station_clearance(
+    operator: Mapping[str, Any],
+    overrides: Mapping[str, Any],
+    operable: tuple[str, ...],
+) -> None:
+    if not operable:
+        return
+    raw_footprint = operator.get("docking_base_footprint")
+    if (
+        not isinstance(raw_footprint, Sequence)
+        or isinstance(raw_footprint, (str, bytes, bytearray))
+        or len(raw_footprint) < 6
+        or len(raw_footprint) % 2 != 0
+    ):
+        raise ProfileContractError(
+            "docking_base_footprint must contain at least three flat [x, y] "
+            "points when any control is operable."
+        )
+    _vector(raw_footprint, "docking_base_footprint", len(raw_footprint))
+    footprint = tuple(
+        (float(raw_footprint[index]), float(raw_footprint[index + 1]))
+        for index in range(0, len(raw_footprint), 2)
+    )
+    padding = _finite_number(
+        operator.get("docking_base_footprint_padding", 0.03),
+        "docking_base_footprint_padding",
+        allow_zero=False,
+    )
+    position_tolerance = _finite_number(
+        operator.get("docking_position_tolerance", 0.015),
+        "docking_position_tolerance",
+        allow_zero=False,
+    )
+    yaw_tolerance = _finite_number(
+        operator.get("docking_yaw_tolerance", 0.10),
+        "docking_yaw_tolerance",
+        allow_zero=False,
+    )
+    for control_id in operable:
+        station = overrides[control_id]["navigation_station"]
+        yaw_offset = station.get("base_yaw_offset", 0.0)
+        if (
+            isinstance(yaw_offset, bool)
+            or not isinstance(yaw_offset, (int, float))
+            or not math.isfinite(float(yaw_offset))
+        ):
+            raise ProfileContractError(
+                f"controls.{control_id}.navigation_station.base_yaw_offset "
+                "must be finite."
+            )
+        extent = _worst_footprint_extent(
+            footprint, float(yaw_offset), yaw_tolerance
+        )
+        minimum_standoff = extent + padding + position_tolerance
+        standoff = float(station["standoff"])
+        if extent <= 0.0 or standoff + 1e-12 < minimum_standoff:
+            raise ProfileContractError(
+                f"Operable control '{control_id}' station standoff "
+                f"{standoff:.6f} m is below the full docking footprint "
+                f"safety envelope {minimum_standoff:.6f} m."
+            )
+
+
 def _validate_frame_geometry(scene: Mapping[str, Any]) -> None:
     part_ids = _unique_strings(scene.get("frame_part_ids"), "frame_part_ids")
     if not part_ids:
@@ -293,6 +397,24 @@ def _validate_robot_control_overrides(
                 override.get("unavailable_reason"),
                 f"robot adapter controls.{control_id}.unavailable_reason",
             )
+        control = controls[control_id]
+        assert isinstance(control, Mapping)
+        if "tool_roll_offset" in override:
+            field = f"robot adapter controls.{control_id}.tool_roll_offset"
+            roll_offset = override.get("tool_roll_offset")
+            if control.get("type") != "button":
+                raise ProfileContractError(
+                    f"{field} is only valid for button controls."
+                )
+            if (
+                isinstance(roll_offset, bool)
+                or not isinstance(roll_offset, (int, float))
+                or not math.isfinite(float(roll_offset))
+                or abs(float(roll_offset)) > math.pi
+            ):
+                raise ProfileContractError(
+                    f"{field} must be finite and within [-pi, pi]."
+                )
         has_roll_calibration = "tool_roll_offsets" in override
         has_partial_release = "detent_release_fraction" in override
         has_ready_joint_seed = "ready_joint_seed" in override
@@ -301,8 +423,6 @@ def _validate_robot_control_overrides(
             or has_partial_release
             or has_ready_joint_seed
         ):
-            control = controls[control_id]
-            assert isinstance(control, Mapping)
             if control.get("type") != "knob":
                 raise ProfileContractError(
                     f"robot adapter controls.{control_id} rotary tool "
@@ -455,6 +575,7 @@ def _validate_robot_control_overrides(
             "navigation_station: "
             + ", ".join(sorted(missing_stations))
         )
+    _validate_operable_station_clearance(operator, overrides, tuple(operable))
     return tuple(operable)
 
 

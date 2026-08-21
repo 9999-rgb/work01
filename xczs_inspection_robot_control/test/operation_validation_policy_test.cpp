@@ -1,10 +1,15 @@
 // Copyright 2026
 // SPDX-License-Identifier: BSD-3-Clause
 
+#include <cmath>
+#include <limits>
+#include <vector>
+
 #include <gtest/gtest.h>
 
 #include "xczs_inspection_robot_control/operation_validation_policy.hpp"
 #include "xczs_inspection_robot_control/rotary_operation_policy.hpp"
+#include "xczs_inspection_robot_control/staging_safety_policy.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -100,6 +105,85 @@ TEST(OperationValidationPolicy, EngagementFlagsConservativelyRequireRecovery)
 {
   EXPECT_TRUE(physical_recovery_is_required(false, true, false));
   EXPECT_TRUE(physical_recovery_is_required(false, false, true));
+}
+
+TEST(StagingSafetyPolicy, UsesAsymmetricFootprintInCabinetDirection)
+{
+  const std::vector<PlanarFootprintPoint> footprint{
+    {0.42, 0.42}, {0.42, -0.42}, {-0.55, -0.42}, {-0.55, 0.42}};
+
+  EXPECT_NEAR(cabinet_facing_footprint_extent(footprint, 0.0), 0.42, 1.0e-12);
+  EXPECT_NEAR(
+    cabinet_facing_footprint_extent(footprint, std::acos(-1.0)),
+    0.55, 1.0e-12);
+  EXPECT_NEAR(
+    cabinet_facing_footprint_extent(footprint, 0.5 * std::acos(-1.0)),
+    0.42, 1.0e-12);
+}
+
+TEST(StagingSafetyPolicy, IncludesPaddingAndWorstDockingError)
+{
+  const std::vector<PlanarFootprintPoint> footprint{
+    {0.42, 0.42}, {0.42, -0.42}, {-0.55, -0.42}, {-0.55, 0.42}};
+  constexpr double yaw_tolerance = 0.07;
+  const double expected_rotated_extent =
+    0.42 * (std::cos(yaw_tolerance) + std::sin(yaw_tolerance));
+  EXPECT_NEAR(
+    worst_cabinet_facing_footprint_extent(
+      footprint, 0.0, yaw_tolerance),
+    expected_rotated_extent, 1.0e-12);
+  const double minimum_standoff = expected_rotated_extent + 0.03 + 0.008;
+  EXPECT_NEAR(
+    minimum_safe_station_standoff(
+      footprint, 0.03, 0.008, yaw_tolerance, 0.0),
+    minimum_standoff, 1.0e-12);
+  EXPECT_FALSE(
+    station_standoff_is_safe(
+      0.400, footprint, 0.03, 0.008, yaw_tolerance, 0.0));
+  EXPECT_FALSE(
+    station_standoff_is_safe(
+      0.458, footprint, 0.03, 0.008, yaw_tolerance, 0.0));
+  EXPECT_TRUE(
+    station_standoff_is_safe(
+      minimum_standoff, footprint, 0.03, 0.008, yaw_tolerance, 0.0));
+}
+
+TEST(StagingSafetyPolicy, InvalidFootprintFailsClosed)
+{
+  EXPECT_FALSE(
+    station_standoff_is_safe(
+      1.0, {{0.2, 0.2}, {0.2, -0.2}}, 0.03, 0.01, 0.05, 0.0));
+  EXPECT_FALSE(
+    station_standoff_is_safe(
+      1.0,
+      {{0.2, 0.2}, {0.2, -0.2},
+        {std::numeric_limits<double>::quiet_NaN(), 0.2}},
+      0.03, 0.01, 0.05, 0.0));
+}
+
+TEST(StagingSafetyPolicy, WideYawIntervalUsesEachVertexRadialExtent)
+{
+  const std::vector<PlanarFootprintPoint> footprint{
+    {0.3, 0.4}, {0.3, -0.4}, {-0.3, -0.4}, {-0.3, 0.4}};
+  const double first_vertex_maximum = std::atan2(-0.4, 0.3);
+  EXPECT_NEAR(
+    worst_cabinet_facing_footprint_extent(
+      footprint, first_vertex_maximum, 0.01),
+    0.5, 1.0e-12);
+  EXPECT_NEAR(
+    worst_cabinet_facing_footprint_extent(
+      footprint, 0.0, std::acos(-1.0)),
+    0.5, 1.0e-12);
+}
+
+TEST(StagingSafetyPolicy, RequiresBothStoppedPoseErrorsWithinTolerance)
+{
+  EXPECT_TRUE(staging_pose_error_is_safe(0.008, -0.07, 0.008, 0.07));
+  EXPECT_FALSE(staging_pose_error_is_safe(0.0081, 0.0, 0.008, 0.07));
+  EXPECT_FALSE(staging_pose_error_is_safe(0.0, -0.071, 0.008, 0.07));
+  EXPECT_FALSE(
+    staging_pose_error_is_safe(
+      std::numeric_limits<double>::quiet_NaN(), 0.0, 0.008, 0.07));
 }
 
 TEST(RotaryOperationPolicy, TransitionMatrixUsesSourceThenTarget)

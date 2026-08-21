@@ -36,6 +36,7 @@
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
+#include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_control/srv/set_cabinet_grasp.hpp"
@@ -311,6 +312,12 @@ public:
         ServiceCallbackLease lease(callback_lifetime);
         std::lock_guard<std::mutex> lock(owner->active_control_mutex_);
         owner->active_control_received_ = true;
+        if (owner->active_operation_control_ != message->data) {
+          owner->pregrasp_disturbance_detected_ = false;
+          owner->pregrasp_disturbance_control_.clear();
+          owner->pregrasp_max_position_error_ = 0.0;
+          owner->pregrasp_max_velocity_ = 0.0;
+        }
         owner->active_operation_control_ = message->data;
       });
     reset_service_ = ros_node_->create_service<std_srvs::srv::Trigger>(
@@ -785,6 +792,8 @@ private:
       const double velocity = control.joint->GetVelocity(0);
       const bool control_is_being_grasped = grasp_is_active() &&
         active_grasp_control_ == control.id;
+      record_pregrasp_disturbance(
+        control, raw_position, velocity, control_is_being_grasped);
       double target = 0.0;
       if (control.kind != ControlKind::kButton) {
         const auto previous_detent_target_index =
@@ -926,6 +935,51 @@ private:
   {
     std::lock_guard<std::mutex> lock(active_control_mutex_);
     return active_control_received_ && active_operation_control_.empty();
+  }
+
+  void record_pregrasp_disturbance(
+    const Control & control,
+    double position,
+    double velocity,
+    bool control_is_being_grasped)
+  {
+    if (control.kind == ControlKind::kButton || control_is_being_grasped ||
+      control.detent_target_index >= control.detents.size())
+    {
+      return;
+    }
+    const double detent_position =
+      control.detents[control.detent_target_index];
+    if (!pregrasp_detent_is_disturbed(
+        position, velocity, detent_position,
+        control.motion_tolerance, control.motion_tolerance))
+    {
+      return;
+    }
+
+    bool first_disturbance = false;
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      if (!active_control_received_ ||
+        active_operation_control_ != control.id)
+      {
+        return;
+      }
+      first_disturbance = !pregrasp_disturbance_detected_;
+      pregrasp_disturbance_detected_ = true;
+      pregrasp_disturbance_control_ = control.id;
+      pregrasp_max_position_error_ = std::max(
+        pregrasp_max_position_error_, std::abs(position - detent_position));
+      pregrasp_max_velocity_ = std::max(
+        pregrasp_max_velocity_, std::abs(velocity));
+    }
+    if (first_disturbance) {
+      RCLCPP_ERROR(
+        ros_node_->get_logger(),
+        "Unsafe pre-grasp movement detected for cabinet control '%s': "
+        "position %.6f rad, latched detent %.6f rad, velocity %.6f rad/s.",
+        control.id.c_str(), position, detent_position, velocity);
+    }
   }
 
   void update_control_state(Control & control, bool count_transition)
@@ -1153,6 +1207,13 @@ private:
         std::numeric_limits<double>::quiet_NaN()};
     }
     restore_all_actuation_collisions();
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      pregrasp_disturbance_detected_ = false;
+      pregrasp_disturbance_control_.clear();
+      pregrasp_max_position_error_ = 0.0;
+      pregrasp_max_velocity_ = 0.0;
+    }
     for (auto & control : controls_) {
       control.joint->SetForce(0, 0.0);
       control.joint->SetVelocity(0, 0.0);
@@ -1343,6 +1404,38 @@ private:
     {
       return {false,
         "robot_model, robot_link and robot_base_link are required for attach.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    const double raw_position = control.joint->Position(0);
+    const double raw_velocity = control.joint->GetVelocity(0);
+    const double latched_detent =
+      control.detents.at(control.detent_target_index);
+    bool approach_disturbed = pregrasp_detent_is_disturbed(
+      raw_position, raw_velocity, latched_detent,
+      control.motion_tolerance, control.motion_tolerance);
+    double maximum_position_error = std::abs(
+      raw_position - latched_detent);
+    double maximum_velocity = std::abs(raw_velocity);
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      if (pregrasp_disturbance_detected_ &&
+        pregrasp_disturbance_control_ == control.id)
+      {
+        approach_disturbed = true;
+        maximum_position_error = std::max(
+          maximum_position_error, pregrasp_max_position_error_);
+        maximum_velocity = std::max(
+          maximum_velocity, pregrasp_max_velocity_);
+      }
+    }
+    if (approach_disturbed) {
+      return {false,
+        "Unsafe pre-grasp movement was detected for cabinet control '" +
+        control.id + "' (maximum detent error " +
+        std::to_string(maximum_position_error) +
+        " rad, maximum velocity " + std::to_string(maximum_velocity) +
+        " rad/s). The ready/approach path may have contacted the control.",
         std::numeric_limits<double>::quiet_NaN()};
     }
     const auto robot_model = world_->ModelByName(request.robot_model);
@@ -1561,6 +1654,10 @@ private:
   mutable std::mutex active_control_mutex_;
   bool active_control_received_{false};
   std::string active_operation_control_;
+  bool pregrasp_disturbance_detected_{false};
+  std::string pregrasp_disturbance_control_;
+  double pregrasp_max_position_error_{0.0};
+  double pregrasp_max_velocity_{0.0};
 
   gazebo::physics::JointPtr grasp_joint_;
   bool compliant_grasp_active_{false};

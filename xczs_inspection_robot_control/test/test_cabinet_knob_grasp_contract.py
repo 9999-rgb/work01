@@ -102,7 +102,7 @@ def _operator_parameters(path: Path) -> dict[str, object]:
     return document["/**/xczs_cabinet_button_operator"]["ros__parameters"]
 
 
-def test_box_5_knob_has_directional_tool_clearance_calibration() -> None:
+def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
     builtin = _operator_parameters(ROBOT_ADAPTERS[0])
     sample = _operator_parameters(ROBOT_ADAPTERS[1])
     assert builtin == sample
@@ -115,7 +115,10 @@ def test_box_5_knob_has_directional_tool_clearance_calibration() -> None:
         1.115,
         0.0,
     ]
-    assert calibration["navigation_station"]["standoff"] == 0.400
+    # The chassis half-extent along the cabinet normal is about 0.426 m.
+    # Never trade base/cabinet clearance for an otherwise reachable arm IK.
+    assert calibration["navigation_station"]["standoff"] == 0.769
+    assert calibration["navigation_station"]["standoff"] > 0.426
     assert calibration["detent_release_fraction"] == 0.58
     assert calibration["ready_joint_seed"] == {
         "joint_names": [f"r_arm_{index}_joint" for index in range(7)],

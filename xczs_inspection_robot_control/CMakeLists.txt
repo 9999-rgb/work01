@@ -215,6 +215,12 @@ ament_target_dependencies(
 )
 
 target_compile_features(xczs_cabinet_state PUBLIC cxx_std_17)
+target_include_directories(
+  xczs_cabinet_state
+  PUBLIC
+    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+    "$<INSTALL_INTERFACE:include>"
+)
 ament_target_dependencies(
   xczs_cabinet_state
   gazebo_dev
@@ -396,6 +402,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     operator_tf_buffer_contract_test
     test/test_operator_tf_buffer_contract.py
+  )
+  ament_add_pytest_test(
+    tool_business_point_contract_test
+    test/test_tool_business_point_contract.py
   )
 endif()
 

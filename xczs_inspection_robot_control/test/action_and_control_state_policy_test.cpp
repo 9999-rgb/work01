@@ -5,6 +5,7 @@
 
 #include "gtest/gtest.h"
 #include "xczs_inspection_robot_control/action_terminal_policy.hpp"
+#include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
 
 namespace xczs_inspection_robot_control
@@ -117,6 +118,27 @@ TEST(StructuredControlStatePolicy, JointTrafficCannotKeepStructuredStateAlive)
   EXPECT_FALSE(structured_control_state_is_usable(true, true, false, true));
   EXPECT_FALSE(structured_control_state_is_usable(true, true, true, false));
   EXPECT_TRUE(structured_control_state_is_usable(true, true, true, true));
+}
+
+TEST(CabinetGraspSafetyPolicy, AcceptsOnlySettledPregraspDetent)
+{
+  EXPECT_FALSE(pregrasp_detent_is_disturbed(0.0, 0.0, 0.0, 0.025, 0.025));
+  EXPECT_FALSE(
+    pregrasp_detent_is_disturbed(0.025, -0.025, 0.0, 0.025, 0.025));
+  EXPECT_TRUE(
+    pregrasp_detent_is_disturbed(0.026, 0.0, 0.0, 0.025, 0.025));
+  EXPECT_TRUE(
+    pregrasp_detent_is_disturbed(0.0, -0.026, 0.0, 0.025, 0.025));
+}
+
+TEST(CabinetGraspSafetyPolicy, FailsClosedForInvalidMeasurementsOrLimits)
+{
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_TRUE(pregrasp_detent_is_disturbed(nan, 0.0, 0.0, 0.025, 0.025));
+  EXPECT_TRUE(pregrasp_detent_is_disturbed(0.0, nan, 0.0, 0.025, 0.025));
+  EXPECT_TRUE(pregrasp_detent_is_disturbed(0.0, 0.0, nan, 0.025, 0.025));
+  EXPECT_TRUE(pregrasp_detent_is_disturbed(0.0, 0.0, 0.0, 0.0, 0.025));
+  EXPECT_TRUE(pregrasp_detent_is_disturbed(0.0, 0.0, 0.0, 0.025, -1.0));
 }
 
 }  // namespace xczs_inspection_robot_control

@@ -59,6 +59,7 @@
 #include "xczs_inspection_robot_control/operation_validation_policy.hpp"
 #include "xczs_inspection_robot_control/rotary_operation_policy.hpp"
 #include "xczs_inspection_robot_control/router_utils.hpp"
+#include "xczs_inspection_robot_control/staging_safety_policy.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
 #include "xczs_inspection_robot_control/srv/manage_operation_lease.hpp"
 #include "xczs_inspection_robot_control/srv/set_cabinet_grasp.hpp"
@@ -161,13 +162,15 @@ struct ToolProfile
   std::string move_group;
   std::string contact_tool_link;
   std::string transport_named_target;
-  // Distance (m) from the contact tool link origin to the tool's operating
-  // tip along tool -Z (toward the control).  The wrist flange carries the
-  // tool body, whose fingers/jaws/paddle protrude beyond the link origin, so
-  // every ready/prepress/contact/grasp pose must hold the arm that much
-  // farther back for the tip to actually reach the control.  This is the
-  // "tool tip offset" the adapter comment calls out as uncalibrated.
-  double tool_tip_offset{0.0};
+  // Full 3-D position of the physical business point in contact_tool_link.
+  // A scalar axial offset cannot represent an off-axis finger and can align
+  // the empty tool centre with a button while a real finger hits the panel.
+  tf2::Vector3 tool_tip_position{0.0, 0.0, 0.0};
+  // A business point on a movable tool link is valid only at its calibrated
+  // tool-joint state.  Reject operation instead of silently using a stale
+  // geometric offset after manual tool motion.
+  std::vector<std::string> calibration_joint_names;
+  std::vector<double> calibration_joint_positions;
 };
 
 struct ButtonSnapshot
@@ -232,6 +235,10 @@ struct ButtonSpec
   std::vector<std::string> state_ids;
   std::vector<std::string> state_labels;
   std::vector<double> state_positions;
+  // Optional fixed roll about the contact tool's local +Z axis.  Buttons can
+  // use it to keep the passive sibling tool and forearm away from the panel
+  // while the measured off-axis finger remains exactly on the target.
+  double tool_roll_offset{0.0};
   // Row-major [source detent][target detent] rotation about the contact
   // tool's local +Z axis.  It reorients passive sibling tools in the cabinet
   // plane without changing the calibrated contact direction.
@@ -359,6 +366,8 @@ public:
     move_group_namespace_ = declare_parameter<std::string>(
       "move_group_namespace", "/");
     load_tool_profiles();
+    tool_tip_calibration_joint_tolerance_ = positive_parameter(
+      "tool_tip_calibration_joint_tolerance", 0.001);
     planning_time_ = positive_parameter("planning_time", 10.0);
     planning_attempts_ = declare_parameter<int>("planning_attempts", 10);
     if (planning_attempts_ < 1 || planning_attempts_ > 100) {
@@ -448,6 +457,30 @@ public:
       "docking_position_tolerance", 0.015);
     docking_yaw_tolerance_ = positive_parameter(
       "docking_yaw_tolerance", 0.10);
+    const auto flat_docking_base_footprint =
+      declare_parameter<std::vector<double>>(
+      "docking_base_footprint", std::vector<double>{});
+    if ((!flat_docking_base_footprint.empty() &&
+      flat_docking_base_footprint.size() < 6U) ||
+      flat_docking_base_footprint.size() % 2U != 0U ||
+      std::any_of(
+        flat_docking_base_footprint.begin(),
+        flat_docking_base_footprint.end(),
+        [](double value) {return !std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "Parameter 'docking_base_footprint' must contain at least "
+              "three finite [x, y] points in the navigation-base frame.");
+    }
+    for (std::size_t index = 0U;
+      index < flat_docking_base_footprint.size(); index += 2U)
+    {
+      docking_base_footprint_.push_back(
+        {flat_docking_base_footprint[index],
+          flat_docking_base_footprint[index + 1U]});
+    }
+    docking_base_footprint_padding_ = positive_parameter(
+      "docking_base_footprint_padding", 0.03);
     docking_max_linear_speed_ = positive_parameter(
       "docking_max_linear_speed", 0.15);
     docking_max_angular_speed_ = positive_parameter(
@@ -715,8 +748,66 @@ private:
       prefix + "contact_tool_link", "");
     profile.transport_named_target = declare_parameter<std::string>(
       prefix + "transport_named_target", "");
-    profile.tool_tip_offset = declare_parameter<double>(
+    const auto tool_tip_position = declare_parameter<std::vector<double>>(
+      prefix + "tool_tip_position", std::vector<double>{});
+    const double legacy_tool_tip_offset = declare_parameter<double>(
       prefix + "tool_tip_offset", 0.0);
+    if (tool_tip_position.empty()) {
+      if (!std::isfinite(legacy_tool_tip_offset) ||
+        legacy_tool_tip_offset < 0.0)
+      {
+        throw std::invalid_argument(
+                "Parameter '" + prefix +
+                "tool_tip_offset' must be finite and non-negative.");
+      }
+      profile.tool_tip_position = tf2::Vector3(
+        0.0, 0.0, -legacy_tool_tip_offset);
+    } else {
+      if (tool_tip_position.size() != 3U ||
+        std::any_of(
+          tool_tip_position.begin(), tool_tip_position.end(),
+          [](double value) {return !std::isfinite(value);}))
+      {
+        throw std::invalid_argument(
+                "Parameter '" + prefix +
+                "tool_tip_position' must contain three finite values.");
+      }
+      if (std::abs(legacy_tool_tip_offset) > 1.0e-12) {
+        throw std::invalid_argument(
+                "Tool profile '" + type_name +
+                "' must not declare both tool_tip_position and the legacy "
+                "non-zero tool_tip_offset.");
+      }
+      profile.tool_tip_position = tf2::Vector3(
+        tool_tip_position[0], tool_tip_position[1], tool_tip_position[2]);
+    }
+    profile.calibration_joint_names =
+      declare_parameter<std::vector<std::string>>(
+      prefix + "calibration_joint_names", std::vector<std::string>{});
+    profile.calibration_joint_positions =
+      declare_parameter<std::vector<double>>(
+      prefix + "calibration_joint_positions", std::vector<double>{});
+    const std::unordered_set<std::string> unique_calibration_joints(
+      profile.calibration_joint_names.begin(),
+      profile.calibration_joint_names.end());
+    if (profile.calibration_joint_names.size() !=
+      profile.calibration_joint_positions.size() ||
+      unique_calibration_joints.size() !=
+      profile.calibration_joint_names.size() ||
+      std::any_of(
+        profile.calibration_joint_names.begin(),
+        profile.calibration_joint_names.end(),
+        [](const std::string & value) {return value.empty();}) ||
+      std::any_of(
+        profile.calibration_joint_positions.begin(),
+        profile.calibration_joint_positions.end(),
+        [](double value) {return !std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "Tool profile '" + type_name +
+              "' calibration joint names/positions must be finite, unique "
+              "and have equal length.");
+    }
     return profile;
   }
 
@@ -769,7 +860,44 @@ private:
     move_group_name_ = profile.move_group;
     contact_tool_link_ = profile.contact_tool_link;
     transport_named_target_ = profile.transport_named_target;
-    tool_tip_offset_ = profile.tool_tip_offset;
+    tool_tip_position_ = profile.tool_tip_position;
+    tool_tip_calibration_joint_names_ = profile.calibration_joint_names;
+    tool_tip_calibration_joint_positions_ =
+      profile.calibration_joint_positions;
+  }
+
+  void verify_tool_tip_calibration_state(
+    const moveit::core::RobotState & robot_state) const
+  {
+    for (std::size_t index = 0U;
+      index < tool_tip_calibration_joint_names_.size(); ++index)
+    {
+      const auto & joint_name = tool_tip_calibration_joint_names_[index];
+      double measured_position;
+      try {
+        measured_position = robot_state.getVariablePosition(joint_name);
+      } catch (const std::exception & error) {
+        throw OperationError(
+                PressCabinetButton::Result::NOT_READY,
+                "Tool business-point calibration references unknown joint '" +
+                joint_name + "': " + error.what());
+      }
+      const double expected_position =
+        tool_tip_calibration_joint_positions_[index];
+      if (!std::isfinite(measured_position) ||
+        std::abs(measured_position - expected_position) >
+        tool_tip_calibration_joint_tolerance_)
+      {
+        throw OperationError(
+                PressCabinetButton::Result::NOT_READY,
+                "Tool joint '" + joint_name + "' is at " +
+                std::to_string(measured_position) +
+                " rad/m, outside its calibrated business-point position " +
+                std::to_string(expected_position) + " +/- " +
+                std::to_string(tool_tip_calibration_joint_tolerance_) +
+                "; arm motion was blocked. Reset the tool first.");
+      }
+    }
   }
 
   void require_absolute_ros_name(
@@ -1219,6 +1347,15 @@ private:
         }
       }
       if (is_button) {
+        button->tool_roll_offset = declare_parameter<double>(
+          prefix + "tool_roll_offset", 0.0);
+        if (!std::isfinite(button->tool_roll_offset) ||
+          std::abs(button->tool_roll_offset) > std::acos(-1.0))
+        {
+          throw std::invalid_argument(
+                  "Button '" + control_id +
+                  "' tool_roll_offset must be finite and within [-pi, pi].");
+        }
         button->spring_stiffness = declare_parameter<double>(
           prefix + "spring_stiffness", button_default_spring_stiffness);
         button->press_threshold = declare_parameter<double>(
@@ -1295,6 +1432,24 @@ private:
                   "Control '" + control_id +
                   "' navigation_station frame must match navigation_frame '" +
                   navigation_frame_ + "'.");
+        }
+        if (button->operable && !station_standoff_is_safe(
+            station.standoff, docking_base_footprint_,
+            docking_base_footprint_padding_, docking_position_tolerance_,
+            docking_yaw_tolerance_, station.base_yaw_offset))
+        {
+          const double minimum_standoff = minimum_safe_station_standoff(
+            docking_base_footprint_, docking_base_footprint_padding_,
+            docking_position_tolerance_, docking_yaw_tolerance_,
+            station.base_yaw_offset);
+          throw std::invalid_argument(
+                  "Operable control '" + control_id +
+                  "' navigation_station.standoff=" +
+                  std::to_string(station.standoff) +
+                  " m is unsafe for the configured docking-base footprint; "
+                  "it must be at least " +
+                  std::to_string(minimum_standoff) +
+                  " m including footprint padding and docking tolerance.");
         }
         button->navigation_station = std::move(station);
       }
@@ -1755,7 +1910,9 @@ private:
       }
       configure_move_group(*move_group);
       move_group_ready_for_motion = true;
-      (void)synchronized_current_robot_state(*move_group);
+      const auto initial_robot_state =
+        synchronized_current_robot_state(*move_group);
+      verify_tool_tip_calibration_state(*initial_robot_state);
 
       if (should_navigate_to_staging_pose) {
         publish_feedback(
@@ -1797,6 +1954,11 @@ private:
         "Refining the configured control station from odometry.");
       dock_to_staging_pose(goal_handle, staging_poses.planning_pose);
       interruptible_hold(goal_handle, planning_scene_settle_seconds_);
+      verify_staging_pose_before_arm_motion(
+        goal_handle, staging_poses.planning_pose);
+      const auto predelivery_robot_state =
+        synchronized_current_robot_state(*move_group);
+      verify_tool_tip_calibration_state(*predelivery_robot_state);
 
       publish_feedback(
         goal_handle,
@@ -2255,6 +2417,7 @@ private:
       configure_move_group(*move_group);
       const auto current_robot_state =
         synchronized_current_robot_state(*move_group);
+      verify_tool_tip_calibration_state(*current_robot_state);
 
       if (validation_only) {
         result->operation_executed = false;
@@ -2337,6 +2500,13 @@ private:
       if (preparation_policy.wait_for_scene_settle) {
         interruptible_hold(goal_handle, planning_scene_settle_seconds_);
       }
+      if (preparation_policy.execute_precision_docking) {
+        verify_staging_pose_before_arm_motion(
+          goal_handle, staging_poses->planning_pose);
+      }
+      const auto predelivery_robot_state =
+        synchronized_current_robot_state(*move_group);
+      verify_tool_tip_calibration_state(*predelivery_robot_state);
 
       if (is_button) {
         result->diagnostic_stage = "ready";
@@ -3143,11 +3313,13 @@ private:
     tool_rotation.normalize();
 
     geometry_msgs::msg::Pose pose;
-    // The contact link origin is anchored at the tool's flange, whose
-    // operating tip protrudes tool_tip_offset_ toward the control.  Offset the
-    // arm farther back so the tip lands on the grasp point.
-    const tf2::Vector3 position_world = grasp +
-      outward * (outward_offset + tool_tip_offset_);
+    // Place the measured 3-D business point, rather than the contact-link
+    // origin, on the desired grasp point.  This is essential for off-axis
+    // fingers whose empty tool centre must never be aimed at the control.
+    const tf2::Vector3 desired_tip_position =
+      grasp + outward * outward_offset;
+    const tf2::Vector3 position_world = desired_tip_position -
+      tf2::quatRotate(tool_rotation, tool_tip_position_);
     pose.position.x = position_world.x();
     pose.position.y = position_world.y();
     pose.position.z = position_world.z();
@@ -4062,7 +4234,9 @@ private:
     outward.normalize();
     const tf2::Vector3 inward = -outward;
 
-    // Keep tool +X vertical and tool -Z aligned with the press direction.
+    // At zero roll keep tool +X vertical and tool -Z aligned with the press
+    // direction.  A calibrated local-Z roll may then clear the passive sibling
+    // tool without changing either the working direction or business point.
     tf2::Vector3 tool_z = outward;
     tf2::Vector3 tool_x(0.0, 0.0, 1.0);
     tool_x -= tool_z * tool_z.dot(tool_x);
@@ -4080,17 +4254,22 @@ private:
       tool_x.z(), tool_y.z(), tool_z.z());
     tf2::Quaternion tool_rotation;
     tool_basis.getRotation(tool_rotation);
+    tf2::Quaternion tool_roll;
+    tool_roll.setRotation(
+      tf2::Vector3(0.0, 0.0, 1.0), button.tool_roll_offset);
+    tool_roll.normalize();
+    tool_rotation *= tool_roll;
     tool_rotation.normalize();
     const auto make_tool_pose =
       [&](double tip_offset) -> geometry_msgs::msg::Pose {
-        // Hold the arm tool_tip_offset_ farther back so the tool's operating
-        // tip (not the flange-anchored body origin) reaches the target.
-        const tf2::Vector3 tip_position = button_face +
-          inward * (tip_offset - tool_tip_offset_);
+        const tf2::Vector3 desired_tip_position =
+          button_face + inward * tip_offset;
+        const tf2::Vector3 link_position = desired_tip_position -
+          tf2::quatRotate(tool_rotation, tool_tip_position_);
         geometry_msgs::msg::Pose pose;
-        pose.position.x = tip_position.x();
-        pose.position.y = tip_position.y();
-        pose.position.z = tip_position.z();
+        pose.position.x = link_position.x();
+        pose.position.y = link_position.y();
+        pose.position.z = link_position.z();
         pose.orientation = to_message(tool_rotation);
         return pose;
       };
@@ -5462,6 +5641,71 @@ private:
   }
 
   template<typename GoalHandleT>
+  void verify_staging_pose_before_arm_motion(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const geometry_msgs::msg::PoseStamped & target)
+  {
+    check_cancel(goal_handle);
+    publish_manual_base_stop();
+
+    geometry_msgs::msg::TransformStamped current_transform;
+    try {
+      current_transform = transform_buffer_->lookupTransform(
+        planning_frame_, docking_base_frame_, tf2::TimePointZero,
+        tf2::durationFromSec(system_wait_timeout_));
+    } catch (const tf2::TransformException & error) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Cannot verify the stopped base pose before arm motion: " +
+              std::string(error.what()));
+    }
+
+    tf2::Quaternion target_rotation;
+    tf2::Quaternion current_rotation;
+    tf2::fromMsg(target.pose.orientation, target_rotation);
+    tf2::fromMsg(
+      current_transform.transform.rotation, current_rotation);
+    const double current_x = current_transform.transform.translation.x;
+    const double current_y = current_transform.transform.translation.y;
+    if (target.header.frame_id != planning_frame_ ||
+      !std::isfinite(target.pose.position.x) ||
+      !std::isfinite(target.pose.position.y) ||
+      !std::isfinite(current_x) || !std::isfinite(current_y) ||
+      !std::isfinite(target_rotation.length2()) ||
+      target_rotation.length2() <= 1.0e-12 ||
+      !std::isfinite(current_rotation.length2()) ||
+      current_rotation.length2() <= 1.0e-12)
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "The stopped base pose is invalid before arm motion.");
+    }
+    target_rotation.normalize();
+    current_rotation.normalize();
+    const double target_body_yaw = navigation_yaw_in_model_frame(
+      tf2::getYaw(target_rotation), navigation_velocity_yaw_offset_);
+    const double current_yaw = tf2::getYaw(current_rotation);
+    const double position_error = std::hypot(
+      target.pose.position.x - current_x,
+      target.pose.position.y - current_y);
+    const double yaw_error = std::atan2(
+      std::sin(target_body_yaw - current_yaw),
+      std::cos(target_body_yaw - current_yaw));
+    if (!staging_pose_error_is_safe(
+        position_error, yaw_error, docking_position_tolerance_,
+        docking_yaw_tolerance_))
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NAVIGATION_FAILED,
+              "The base moved outside the verified cabinet station while "
+              "the planning scene settled (position error " +
+              std::to_string(position_error) + " m, yaw error " +
+              std::to_string(std::abs(yaw_error)) +
+              " rad); arm motion was blocked.");
+    }
+  }
+
+  template<typename GoalHandleT>
   void dock_to_staging_pose(
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const geometry_msgs::msg::PoseStamped & target)
@@ -5553,8 +5797,9 @@ private:
           takeover_distance_verified = true;
         }
 
-        if (position_error <= docking_position_tolerance_ &&
-          std::abs(yaw_error) <= docking_yaw_tolerance_)
+        if (staging_pose_error_is_safe(
+            position_error, yaw_error, docking_position_tolerance_,
+            docking_yaw_tolerance_))
         {
           ++settled_cycles;
           publish_manual_base_stop();
@@ -6219,7 +6464,10 @@ private:
   std::string move_group_namespace_;
   std::string contact_tool_link_;
   std::string transport_named_target_;
-  double tool_tip_offset_{0.0};
+  tf2::Vector3 tool_tip_position_{0.0, 0.0, 0.0};
+  std::vector<std::string> tool_tip_calibration_joint_names_;
+  std::vector<double> tool_tip_calibration_joint_positions_;
+  double tool_tip_calibration_joint_tolerance_{0.001};
   std::unordered_map<std::uint8_t, ToolProfile> tool_profiles_;
   double planning_time_{10.0};
   int planning_attempts_{10};
@@ -6252,6 +6500,8 @@ private:
   double docking_timeout_{45.0};
   double docking_position_tolerance_{0.015};
   double docking_yaw_tolerance_{0.10};
+  std::vector<PlanarFootprintPoint> docking_base_footprint_;
+  double docking_base_footprint_padding_{0.03};
   double docking_max_linear_speed_{0.15};
   double docking_max_angular_speed_{0.45};
   double docking_linear_gain_{0.8};

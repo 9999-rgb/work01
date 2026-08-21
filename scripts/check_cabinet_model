@@ -204,6 +204,23 @@ def validate_rotary_adapter_override(
     catalog_parameters: Dict[str, object],
 ) -> None:
     """Validate robot-specific knob pose, roll and release calibration."""
+    if "tool_roll_offset" in override:
+        roll_offset = override["tool_roll_offset"]
+        if control.get("type") != "button":
+            fail(
+                f"Robot adapter {control_id}.tool_roll_offset is only valid "
+                "for button controls."
+            )
+        if (
+            isinstance(roll_offset, bool)
+            or not isinstance(roll_offset, (int, float))
+            or not math.isfinite(float(roll_offset))
+            or abs(float(roll_offset)) > math.pi
+        ):
+            fail(
+                f"Robot adapter {control_id}.tool_roll_offset must be "
+                "finite and within [-pi, pi]."
+            )
     has_roll = "tool_roll_offsets" in override
     has_release = "detent_release_fraction" in override
     has_ready_seed = "ready_joint_seed" in override
@@ -1512,8 +1529,8 @@ def main() -> int:
                 f"controls.{control_id}.local_position",
             )
             # The fixed tools retain the original right-shoulder calibration.
-            # box_5_knob uses the independently collision-checked lateral
-            # station that clears the passive three-cylinder sibling tool.
+            # box_5_knob keeps its lateral planning calibration, but its base
+            # standoff must remain outside the padded chassis footprint.
             shoulder_offset = 0.55 if control_id == "box_5_knob" else 0.35
             expected_anchor = [
                 control_position[0] + shoulder_offset,
@@ -1529,13 +1546,13 @@ def main() -> int:
                 )
             if control_id == "box_5_knob" and not math.isclose(
                 float(station.get("standoff", 0.0)),
-                0.400,
+                0.769,
                 rel_tol=0.0,
                 abs_tol=1.0e-9,
             ):
                 fail(
                     "box_5_knob navigation standoff must retain the "
-                    "collision-checked 0.400 m calibration."
+                    "safe 0.769 m planning-only calibration."
                 )
         rear_door_station = adapter_controls["cabinet_rear_door"][
             "navigation_station"
@@ -2506,16 +2523,40 @@ def main() -> int:
                     "the arm_6 shell to both complete tool flanges."
                 )
 
-        # Tool profiles must describe the unchanged fixed hardware, including
-        # the measured/legacy flange-to-business-point offsets.  These values
-        # do not claim physical reachability; unreachable controls remain
-        # planning-only until a per-control closed-loop validation succeeds.
+        # Tool profiles must describe the unchanged fixed hardware.  The
+        # three-cylinder's working finger is off-axis, so button/door poses
+        # require its complete measured business-point vector rather than a
+        # scalar length that would aim the empty tool centre at the panel.
+        # These values do not claim physical reachability; unreachable
+        # controls remain planning-only until closed-loop validation succeeds.
         expected_tool_profiles = {
-            "button": ("right_arm", "r_three_cyl_base", 0.39),
+            "button": (
+                "right_arm",
+                "r_three_cyl_base",
+                [0.0265, -0.061735, -0.3885],
+            ),
             "knob": ("right_arm", "r_rotbtn_body", 0.0),
             "switch": ("left_arm", "l_rocker_body", 0.143),
-            "door": ("right_arm", "r_three_cyl_base", 0.39),
+            "door": (
+                "right_arm",
+                "r_three_cyl_base",
+                [0.0265, -0.061735, -0.3885],
+            ),
         }
+        if not math.isclose(
+            float(
+                robot_parameters.get(
+                    "tool_tip_calibration_joint_tolerance", float("nan")
+                )
+            ),
+            0.001,
+            rel_tol=0.0,
+            abs_tol=1.0e-12,
+        ):
+            fail(
+                "Robot adapter tool tip calibration joint tolerance must "
+                "remain 0.001."
+            )
         tool_profiles = robot_parameters.get("tool_profiles")
         if not isinstance(tool_profiles, dict) or set(tool_profiles) != set(
             expected_tool_profiles
@@ -2524,7 +2565,7 @@ def main() -> int:
                 "Robot adapter tool_profiles must cover exactly button, knob, "
                 "switch and door."
             )
-        for control_type, (move_group, contact_link, expected_offset) in (
+        for control_type, (move_group, contact_link, expected_tip) in (
             expected_tool_profiles.items()
         ):
             profile = tool_profiles[control_type]
@@ -2540,22 +2581,52 @@ def main() -> int:
                     f"Robot adapter {control_type} must use the unchanged "
                     f"hardware link {contact_link}."
                 )
-            tip_offset = profile.get("tool_tip_offset")
-            if (
-                isinstance(tip_offset, bool)
-                or not isinstance(tip_offset, (int, float))
-                or not math.isfinite(float(tip_offset))
-                or not math.isclose(
-                    float(tip_offset),
-                    expected_offset,
-                    rel_tol=0.0,
-                    abs_tol=1.0e-12,
+            if isinstance(expected_tip, list):
+                tip_position = numbers(
+                    profile.get("tool_tip_position"),
+                    f"tool_profiles.{control_type}.tool_tip_position",
                 )
-            ):
-                fail(
-                    f"Robot adapter {control_type} must retain its calibrated "
-                    f"{expected_offset:.3f} m fixed-hardware tip offset."
-                )
+                if not close_lists(tip_position, expected_tip):
+                    fail(
+                        f"Robot adapter {control_type} must retain the "
+                        "measured off-axis three-cylinder business point."
+                    )
+                if "tool_tip_offset" in profile:
+                    fail(
+                        f"Robot adapter {control_type} must not mix the "
+                        "3-D business point with legacy tool_tip_offset."
+                    )
+                if profile.get("calibration_joint_names") != (
+                    THREE_CYLINDER_JOINTS
+                ) or not close_lists(
+                    numbers(
+                        profile.get("calibration_joint_positions"),
+                        f"tool_profiles.{control_type}."
+                        "calibration_joint_positions",
+                    ),
+                    [0.0, 0.0, 0.0],
+                ):
+                    fail(
+                        f"Robot adapter {control_type} must require all "
+                        "three cylinder joints at the measured zero pose."
+                    )
+            else:
+                tip_offset = profile.get("tool_tip_offset")
+                if (
+                    isinstance(tip_offset, bool)
+                    or not isinstance(tip_offset, (int, float))
+                    or not math.isfinite(float(tip_offset))
+                    or not math.isclose(
+                        float(tip_offset),
+                        expected_tip,
+                        rel_tol=0.0,
+                        abs_tol=1.0e-12,
+                    )
+                ):
+                    fail(
+                        f"Robot adapter {control_type} must retain its "
+                        f"calibrated {expected_tip:.3f} m axial tip offset."
+                    )
             if profile.get("transport_named_target") != "home":
                 fail(
                     f"Robot adapter {control_type} transport target must be home."
@@ -3208,6 +3279,45 @@ def main() -> int:
 
         with NAV2_CONFIG.open("r", encoding="utf-8") as stream:
             nav2_config = yaml.safe_load(stream)
+        configured_docking_footprint = numbers(
+            robot_parameters.get("docking_base_footprint"),
+            "Robot adapter docking_base_footprint",
+        )
+        if (
+            len(configured_docking_footprint) < 6
+            or len(configured_docking_footprint) % 2 != 0
+        ):
+            fail(
+                "Robot adapter docking_base_footprint must contain at least "
+                "three flat [x, y] points."
+            )
+        configured_docking_padding = float(
+            robot_parameters.get("docking_base_footprint_padding", -1.0)
+        )
+        for costmap_name in ("local_costmap", "global_costmap"):
+            costmap_parameters = nav2_config[costmap_name][costmap_name][
+                "ros__parameters"
+            ]
+            nav2_footprint_points = yaml.safe_load(
+                costmap_parameters["footprint"]
+            )
+            nav2_flat_footprint = [
+                float(coordinate)
+                for point in nav2_footprint_points
+                for coordinate in point
+            ]
+            if not close_lists(
+                configured_docking_footprint, nav2_flat_footprint
+            ) or not math.isclose(
+                configured_docking_padding,
+                float(costmap_parameters["footprint_padding"]),
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            ):
+                fail(
+                    "Precision docking footprint and padding must exactly "
+                    f"reuse Nav2 {costmap_name}."
+                )
         controller_parameters = nav2_config["controller_server"][
             "ros__parameters"
         ]
