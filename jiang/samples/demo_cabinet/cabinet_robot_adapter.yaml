@@ -126,6 +126,11 @@
     goal_orientation_tolerance: 0.01
     goal_joint_tolerance: 0.001
     allow_replanning: true
+    # 实测：三电缸指尖业务点比真实接触面轴向深约 1.15 mm（7 mm 指令按压只让
+    # 按钮走 5.85 mm）。press_depth 提到按钮物理上限 8 mm 后，实体按压约
+    # 6.85 mm，越过 6 mm 触发阈值且不超出按钮 8 mm 行程，工具尖端仍高出面板
+    # 数毫米、无碰撞。见 box_6_button_1 实压验收记录。
+    press_depth: 0.008
     docking_base_frame: body
     # 精确停靠会临时绕过 Nav2 控制器，因此在 operator 内复用同一机器人
     # 足迹做面板法向安全包络校验。坐标位于 navigation_base_frame，padding
