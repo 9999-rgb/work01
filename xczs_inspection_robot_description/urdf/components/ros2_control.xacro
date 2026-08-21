@@ -56,10 +56,11 @@
       <xacro:xczs_position_controlled_joint joint_name="r_arm_5_joint" initial_value="${initial_positions['r_arm_5_joint']}" />
       <xacro:xczs_position_controlled_joint joint_name="r_arm_6_joint" initial_value="${initial_positions['r_arm_6_joint']}" />
 
-      <!-- Right tools - three_cylinder (3) + rotate_button (2). -->
+      <!-- Right tools - three_cylinder (3) + rotate_button (rotate carrier + 2 jaws). -->
       <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />
       <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger2_joint" />
       <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger3_joint" />
+      <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_rotate_joint" />
       <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
       <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
 

@@ -1290,14 +1290,6 @@ private:
           std::vector<double>(transition_count, 0.0));
         button->detent_release_fraction = declare_parameter<double>(
           prefix + "detent_release_fraction", 1.0);
-        button->ready_joint_seed_names =
-          declare_parameter<std::vector<std::string>>(
-          prefix + "ready_joint_seed.joint_names",
-          std::vector<std::string>{});
-        button->ready_joint_seed_positions =
-          declare_parameter<std::vector<double>>(
-          prefix + "ready_joint_seed.positions",
-          std::vector<double>{});
         if (button->tool_roll_offsets.size() != transition_count ||
           std::any_of(
             button->tool_roll_offsets.begin(),
@@ -1320,6 +1312,20 @@ private:
                   "Control '" + control_id +
                   "' detent_release_fraction must be in (0.5, 1.0].");
         }
+      }
+      // ready_joint_seed 对按钮与旋钮均有效：七轴臂对同一夹具位姿存在多组
+      // IK，把自由空间目标（如 prepress）固定到 r_arm_4<0 的连续分支，可让
+      // 接近、按压、撤回全程避开腕部翻转奇点。set_pose_target_with_
+      // calibrated_ik_seed 在规划时按 move_group 变量名严格校验种子。
+      button->ready_joint_seed_names =
+        declare_parameter<std::vector<std::string>>(
+        prefix + "ready_joint_seed.joint_names",
+        std::vector<std::string>{});
+      button->ready_joint_seed_positions =
+        declare_parameter<std::vector<double>>(
+        prefix + "ready_joint_seed.positions",
+        std::vector<double>{});
+      {
         const bool has_ready_joint_seed =
           !button->ready_joint_seed_names.empty() ||
           !button->ready_joint_seed_positions.empty();
@@ -1966,7 +1972,8 @@ private:
         0.25F,
         "Planning to the button prepress pose.");
       plan_and_execute_pose(
-        *move_group, goal_handle, poses.prepress_pose, contact_tool_link_);
+        *move_group, goal_handle, poses.prepress_pose, contact_tool_link_,
+        nullptr, button.get());
       should_attempt_retreat = true;
 
       publish_feedback(
@@ -2517,7 +2524,7 @@ private:
           "Planning to the button ready pose.");
         plan_and_execute_pose(
           *move_group, goal_handle, button_poses.prepress_pose,
-          contact_tool_link_, &result->operation_executed);
+          contact_tool_link_, &result->operation_executed, control.get());
         should_attempt_retreat = true;
         result->diagnostic_stage = "approach";
         publish_operate_feedback(

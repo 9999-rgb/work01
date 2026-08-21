@@ -418,11 +418,7 @@ def _validate_robot_control_overrides(
         has_roll_calibration = "tool_roll_offsets" in override
         has_partial_release = "detent_release_fraction" in override
         has_ready_joint_seed = "ready_joint_seed" in override
-        if (
-            has_roll_calibration
-            or has_partial_release
-            or has_ready_joint_seed
-        ):
+        if has_roll_calibration or has_partial_release:
             if control.get("type") != "knob":
                 raise ProfileContractError(
                     f"robot adapter controls.{control_id} rotary tool "
@@ -469,58 +465,69 @@ def _validate_robot_control_overrides(
                     raise ProfileContractError(
                         f"{field} must be a finite number in (0.5, 1.0]."
                     )
-            if has_ready_joint_seed:
-                field = (
-                    f"robot adapter controls.{control_id}.ready_joint_seed"
+        if has_ready_joint_seed:
+            field = (
+                f"robot adapter controls.{control_id}.ready_joint_seed"
+            )
+            seed = override.get("ready_joint_seed")
+            if not isinstance(seed, Mapping):
+                raise ProfileContractError(f"{field} must be a mapping.")
+            unknown_seed_fields = set(seed) - {
+                "joint_names",
+                "positions",
+            }
+            if unknown_seed_fields:
+                raise ProfileContractError(
+                    f"{field} contains unknown fields: "
+                    + ", ".join(sorted(str(v) for v in unknown_seed_fields))
                 )
-                seed = override.get("ready_joint_seed")
-                if not isinstance(seed, Mapping):
-                    raise ProfileContractError(f"{field} must be a mapping.")
-                unknown_seed_fields = set(seed) - {
-                    "joint_names",
-                    "positions",
-                }
-                if unknown_seed_fields:
-                    raise ProfileContractError(
-                        f"{field} contains unknown fields: "
-                        + ", ".join(sorted(str(v) for v in unknown_seed_fields))
-                    )
-                seed_names = _unique_strings(
-                    seed.get("joint_names"), f"{field}.joint_names"
-                )
-                seed_positions = seed.get("positions")
-                _vector(seed_positions, f"{field}.positions", len(seed_names))
+            seed_names = _unique_strings(
+                seed.get("joint_names"), f"{field}.joint_names"
+            )
+            seed_positions = seed.get("positions")
+            _vector(seed_positions, f"{field}.positions", len(seed_names))
 
-                tool_profiles = operator.get("tool_profiles", {})
-                manual_groups = adapter_parameters.get(
-                    "manual_joint_groups", {}
+            # ready_joint_seed pins the free-space target pose onto one IK
+            # branch (e.g. the r_arm_4<0 branch that keeps a button approach
+            # continuous across the wrist-flip singularity), so it is valid
+            # for any control whose tool_profile names an arm move_group --
+            # buttons and knobs today.  The seed joints must be exactly the
+            # variables of that control's own move_group.
+            control_type = control.get("type")
+            if control_type not in ("button", "knob"):
+                raise ProfileContractError(
+                    f"{field} is only valid for button or knob controls."
                 )
-                knob_profile = (
-                    tool_profiles.get("knob", {})
-                    if isinstance(tool_profiles, Mapping)
-                    else {}
+            tool_profiles = operator.get("tool_profiles", {})
+            manual_groups = adapter_parameters.get(
+                "manual_joint_groups", {}
+            )
+            control_profile = (
+                tool_profiles.get(control_type, {})
+                if isinstance(tool_profiles, Mapping)
+                else {}
+            )
+            move_group = (
+                control_profile.get("move_group")
+                if isinstance(control_profile, Mapping)
+                else None
+            )
+            expected_names = (
+                manual_groups.get(move_group)
+                if isinstance(manual_groups, Mapping)
+                and isinstance(move_group, str)
+                else None
+            )
+            if (
+                not isinstance(expected_names, Sequence)
+                or isinstance(expected_names, (str, bytes))
+                or set(seed_names) != set(expected_names)
+                or len(seed_names) != len(expected_names)
+            ):
+                raise ProfileContractError(
+                    f"{field}.joint_names must name every joint in the "
+                    f"'{move_group}' MoveIt group exactly once."
                 )
-                move_group = (
-                    knob_profile.get("move_group")
-                    if isinstance(knob_profile, Mapping)
-                    else None
-                )
-                expected_names = (
-                    manual_groups.get(move_group)
-                    if isinstance(manual_groups, Mapping)
-                    and isinstance(move_group, str)
-                    else None
-                )
-                if (
-                    not isinstance(expected_names, Sequence)
-                    or isinstance(expected_names, (str, bytes))
-                    or set(seed_names) != set(expected_names)
-                    or len(seed_names) != len(expected_names)
-                ):
-                    raise ProfileContractError(
-                        f"{field}.joint_names must name every joint in the "
-                        "knob MoveIt group exactly once."
-                    )
 
     for legacy_field in (
         "unreachable_control_ids",

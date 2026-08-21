@@ -279,7 +279,7 @@ class RobotAdapterTest(unittest.TestCase):
             adapter.joint_group_names,
         )
         self.assertEqual(6, len(adapter.controller_groups))
-        self.assertEqual(22, len(adapter.manual_joints))
+        self.assertEqual(23, len(adapter.manual_joints))
         self.assertEqual(
             "/xczs/left_arm_controller/joint_trajectory",
             adapter.controller_topic_for_group("left_arm"),
@@ -294,7 +294,7 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(3, len(adapter.joint_names_for_group("three_cylinder")))
         self.assertEqual(2, len(adapter.joint_names_for_group("two_cylinder")))
         self.assertEqual(1, len(adapter.joint_names_for_group("rocker")))
-        self.assertEqual(2, len(adapter.joint_names_for_group("rotate_button")))
+        self.assertEqual(3, len(adapter.joint_names_for_group("rotate_button")))
         self.assertEqual("map", adapter.reset_base_pose.frame_id)
         self.assertEqual(0.0, adapter.reset_base_pose.x)
         self.assertEqual(0.0, adapter.reset_base_pose.y)

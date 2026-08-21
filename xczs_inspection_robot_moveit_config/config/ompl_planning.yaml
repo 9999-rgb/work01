@@ -46,5 +46,5 @@ rocker:
 rotate_button:
   planner_configs:
     - RRTConnect
-  projection_evaluator: joints(r_rotbtn_jaw1_joint,r_rotbtn_jaw2_joint)
+  projection_evaluator: joints(r_rotbtn_rotate_joint,r_rotbtn_jaw1_joint,r_rotbtn_jaw2_joint)
   longest_valid_segment_fraction: 0.01

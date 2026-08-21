@@ -79,6 +79,7 @@
       rocker:
         - l_rocker_rotor_joint
       rotate_button:
+        - r_rotbtn_rotate_joint
         - r_rotbtn_jaw1_joint
         - r_rotbtn_jaw2_joint
     # Web 手动关节命令按上方顺序传递；每个范围都是适配器合同的一部分，
@@ -104,8 +105,9 @@
       l_two_cyl_finger1_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
       l_two_cyl_finger2_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
       l_rocker_rotor_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
-      r_rotbtn_jaw1_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
-      r_rotbtn_jaw2_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
+      r_rotbtn_rotate_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
+      r_rotbtn_jaw1_joint: {min_position: 0.0, max_position: 0.018, default_position: 0.0}
+      r_rotbtn_jaw2_joint: {min_position: 0.0, max_position: 0.018, default_position: 0.0}
 
 /**/xczs_cabinet_button_operator:
   ros__parameters:
@@ -304,6 +306,27 @@
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
+        # 七轴臂对同一夹具位姿存在多组 IK。直压接近(prepress->contact)若落在
+        # r_arm_4 为 +2.02 的分支，会卡在腕部翻转奇点附近，Cartesian 路径约 15%
+        # 即失败。此种子把 prepress 固定在 r_arm_4≈-1.47 的连续分支，使接近、
+        # 按压、撤回全程 IK 连续（已用 /compute_ik 逐段验证）。
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - 1.6929
+            - 0.9137
+            - -0.0395
+            - 2.1282
+            - -1.4704
+            - -0.0216
+            - 1.4698
       box_6_button_2:
         navigation_station:
           local_anchor: [0.849000, 1.115, 0.000]
@@ -311,6 +334,24 @@
           standoff: 0.769
           base_yaw_offset: 0.0
           frame_id: map
+        # 同 box_6_button_1：固定到 r_arm_4≈-1.46 的连续分支。
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - 1.7091
+            - 1.0751
+            - -0.0546
+            - 2.0569
+            - -1.4581
+            - -0.0469
+            - 1.5568
       box_7_button_1:
         navigation_station:
           local_anchor: [0.470000, 1.115, 0.000]
@@ -485,12 +526,18 @@
     # 控件才可加入该清单，未列控件一律只做实时规划验证。
     # 清单为空时按 ROS 2 参数规则省略该键；节点声明的空 vector 默认值
     # 表示所有控件均为 planning-only，避免 YAML 空数组成为 NOT_SET。
+    operable_control_ids:
+      - box_6_button_1
+      - box_6_button_2
     inoperable_control_reason: >-
       5 号柜旋钮原工位的 0.400 m 退距小于机器人底盘沿柜面法向的半尺寸，
       不满足底盘防碰撞安全包络，现已撤销物理执行权限。其余控件实测仍存在
       末端工具与面板干涉、无运动学解或无碰撞路径，或尚未完成带安全退距的
-      物理到档验收。未列控件仅保留状态显示和实时规划验证，不下发机械臂、
-      抓取或柜体写入命令。
+      物理到档验收。其中 1/2 号柜按钮（顶部，press 工具点高 1.27 m）与
+      10/11 号柜按钮（底部，press 工具点贴近地面 0.03/-0.23 m）超出右臂
+      在现工位退距下的可达工作空间，OMPL 无法为 prepress 目标采样有效解；
+      仅中排 3~8 号柜按钮在右臂肩高附近可达。未列控件仅保留状态显示和实时
+      规划验证，不下发机械臂、抓取或柜体写入命令。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

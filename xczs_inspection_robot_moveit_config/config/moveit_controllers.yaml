@@ -66,6 +66,7 @@ moveit_simple_controller_manager:
     action_ns: follow_joint_trajectory
     default: true
     joints:
+      - r_rotbtn_rotate_joint
       - r_rotbtn_jaw1_joint
       - r_rotbtn_jaw2_joint
 

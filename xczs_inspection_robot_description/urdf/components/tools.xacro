@@ -184,7 +184,7 @@
       <origin xyz="0.034 -0.061735 -0.2985" rpy="0 0 0" />
       <parent link="${prefix}_three_cyl_base" />
       <child link="${prefix}_three_cyl_finger1" />
-      <axis xyz="0 0 1" />
+      <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
       <dynamics damping="0.1" friction="1" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
@@ -192,15 +192,15 @@
 
     <link name="${prefix}_three_cyl_finger2">
       <inertial>
-        <origin xyz="-0.0073918 0.044164 -0.031571" rpy="0 0 0" />
-        <mass value="0.045641" />
+        <origin xyz="-0.0037004 0.0221089 0.0142134" rpy="0 0 0" />
+        <mass value="0.091170" />
         <inertia
-          ixx="3.8647E-05"
-          ixy="6.6552E-06"
+          ixx="9.4466E-05"
+          ixy="6.6551E-06"
           ixz="1.0732E-06"
-          iyy="1.4357E-05"
+          iyy="7.0181E-05"
           iyz="-1.1067E-06"
-          izz="3.4869E-05" />
+          izz="3.7619E-05" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -220,7 +220,7 @@
       <origin xyz="-0.034 -0.061735 -0.2935" rpy="0 0 0" />
       <parent link="${prefix}_three_cyl_base" />
       <child link="${prefix}_three_cyl_finger2" />
-      <axis xyz="0 0 1" />
+      <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
       <dynamics damping="0.1" friction="1" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
@@ -331,7 +331,7 @@
       <origin xyz="0.034 -0.061735 -0.2935" rpy="0 0 0" />
       <parent link="${prefix}_two_cyl_base" />
       <child link="${prefix}_two_cyl_finger1" />
-      <axis xyz="0 0 1" />
+      <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
       <dynamics damping="0.1" friction="1" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
@@ -367,7 +367,7 @@
       <origin xyz="-0.034 -0.061735 -0.2935" rpy="0 0 0" />
       <parent link="${prefix}_two_cyl_base" />
       <child link="${prefix}_two_cyl_finger2" />
-      <axis xyz="0 0 1" />
+      <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
       <dynamics damping="0.1" friction="1" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
@@ -450,10 +450,11 @@
   </xacro:macro>
 
   <!--
-    Rotate-button mechanism (right hand) - two opposing jaws clamp a round knob
-    while the arm wrist rotates.  NOTE - the SolidWorks export declares these two
-    joints as prismatic with +/-3.14 limits; physically a small clamp travel is
-    expected, so verify these limits against the real mechanism before tuning.
+    Rotate-button mechanism (right hand) - a passive revolute carrier (rotate link,
+    position-held at 0 by the controller) rides between the body and the two
+    opposing jaws; the jaws clamp a round knob while the arm wrist rotates.
+    The updated SolidWorks export declares the jaw clamp travel as 0..0.018 (real
+    clamp), so the prismatic limits now reflect the physical mechanism.
   -->
   <xacro:macro name="xczs_rotate_button" params="prefix parent">
     <joint name="${prefix}_rotbtn_mount" type="fixed">
@@ -467,15 +468,15 @@
 
     <link name="${prefix}_rotbtn_body">
       <inertial>
-        <origin xyz="-0.049092 0.0051357 0.092115" rpy="0 0 0" />
-        <mass value="0.58892" />
+        <origin xyz="-0.048762 0.0054367 0.0897504" rpy="0 0 0" />
+        <mass value="0.57342" />
         <inertia
-          ixx="0.00061308"
-          ixy="3.0822E-07"
+          ixx="0.00061121"
+          ixy="3.0809E-07"
           ixz="6.8548E-05"
-          iyy="0.00055869"
-          iyz="7.511E-07"
-          izz="0.00032867" />
+          iyy="0.00055725"
+          iyz="7.5112E-07"
+          izz="0.00032591" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -492,17 +493,53 @@
       </collision>
     </link>
 
+    <link name="${prefix}_rotbtn_rotate">
+      <inertial>
+        <origin xyz="6.4752E-07 -1.0998E-06 0.0066044" rpy="0 0 0" />
+        <mass value="0.011598" />
+        <inertia
+          ixx="1.66116E-06"
+          ixy="1.33386E-10"
+          ixz="5.84594E-12"
+          iyy="1.36259E-06"
+          iyz="-1.68912E-11"
+          izz="2.57566E-06" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/rotate.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/rotate.STL" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}_rotbtn_rotate_joint" type="revolute">
+      <origin xyz="-0.06128 -0.006 0.1725" rpy="0 0 0" />
+      <parent link="${prefix}_rotbtn_body" />
+      <child link="${prefix}_rotbtn_rotate" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+      <dynamics damping="0.1" friction="1" />
+      <safety_controller soft_lower_limit="-3.14" soft_upper_limit="3.14" k_position="1" k_velocity="1" />
+    </joint>
+
     <link name="${prefix}_rotbtn_jaw1">
       <inertial>
-        <origin xyz="-0.0077993 0.024306 0.013004" rpy="0 0 0" />
-        <mass value="0.0030345" />
+        <origin xyz="-0.0058217 0.019764 0.0055009" rpy="0 0 0" />
+        <mass value="0.00481" />
         <inertia
-          ixx="2.7125E-07"
+          ixx="3.7186E-07"
           ixy="3.7141E-08"
-          ixz="4.2906E-08"
-          iyy="2.3896E-07"
+          ixz="4.2433E-08"
+          iyy="2.6869E-07"
           iyz="-6.4061E-08"
-          izz="2.0758E-07" />
+          izz="2.9875E-07" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -519,26 +556,26 @@
       </collision>
     </link>
     <joint name="${prefix}_rotbtn_jaw1_joint" type="prismatic">
-      <origin xyz="-0.05068 -0.0095 0.1885" rpy="0 0 0" />
-      <parent link="${prefix}_rotbtn_body" />
+      <origin xyz="0.0106 -0.0035 0.016" rpy="0 0 0" />
+      <parent link="${prefix}_rotbtn_rotate" />
       <child link="${prefix}_rotbtn_jaw1" />
       <axis xyz="0 -1 0" />
-      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+      <limit lower="0" upper="0.018" effort="100" velocity="1" />
       <dynamics damping="0.1" friction="1" />
       <safety_controller soft_lower_limit="-3.14" soft_upper_limit="3.14" k_position="1" k_velocity="1" />
     </joint>
 
     <link name="${prefix}_rotbtn_jaw2">
       <inertial>
-        <origin xyz="0.0077993 -0.024306 0.013004" rpy="0 0 0" />
-        <mass value="0.0030345" />
+        <origin xyz="0.0058217 -0.019764 0.0055009" rpy="0 0 0" />
+        <mass value="0.00481" />
         <inertia
-          ixx="2.7125E-07"
+          ixx="3.7186E-07"
           ixy="3.7141E-08"
-          ixz="-4.2906E-08"
-          iyy="2.3896E-07"
+          ixz="-4.2433E-08"
+          iyy="2.6869E-07"
           iyz="6.4061E-08"
-          izz="2.0758E-07" />
+          izz="2.9875E-07" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -555,11 +592,11 @@
       </collision>
     </link>
     <joint name="${prefix}_rotbtn_jaw2_joint" type="prismatic">
-      <origin xyz="-0.07188 -0.0025 0.1885" rpy="0 0 0" />
-      <parent link="${prefix}_rotbtn_body" />
+      <origin xyz="-0.0106 0.0035 0.016" rpy="0 0 0" />
+      <parent link="${prefix}_rotbtn_rotate" />
       <child link="${prefix}_rotbtn_jaw2" />
       <axis xyz="0 1 0" />
-      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+      <limit lower="0" upper="0.018" effort="100" velocity="1" />
       <dynamics damping="0.1" friction="1" />
       <safety_controller soft_lower_limit="-3.14" soft_upper_limit="3.14" k_position="1" k_velocity="1" />
     </joint>

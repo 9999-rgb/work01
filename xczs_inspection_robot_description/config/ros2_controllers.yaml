@@ -162,6 +162,7 @@
   ros__parameters:
     use_sim_time: true
     joints:
+      - r_rotbtn_rotate_joint
       - r_rotbtn_jaw1_joint
       - r_rotbtn_jaw2_joint
     command_interfaces:
@@ -177,5 +178,6 @@
     constraints:
       goal_time: 1.0
       stopped_velocity_tolerance: 0.05
+      r_rotbtn_rotate_joint: {trajectory: 0.10, goal: 0.05}
       r_rotbtn_jaw1_joint: {trajectory: 0.10, goal: 0.05}
       r_rotbtn_jaw2_joint: {trajectory: 0.10, goal: 0.05}

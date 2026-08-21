@@ -55,6 +55,7 @@
     <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger3" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_rotate" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
 
@@ -141,6 +142,7 @@
         <hold_joint>r_three_cyl_finger1_joint</hold_joint>
         <hold_joint>r_three_cyl_finger2_joint</hold_joint>
         <hold_joint>r_three_cyl_finger3_joint</hold_joint>
+        <hold_joint>r_rotbtn_rotate_joint</hold_joint>
         <hold_joint>r_rotbtn_jaw1_joint</hold_joint>
         <hold_joint>r_rotbtn_jaw2_joint</hold_joint>
         <hold_joint>l_two_cyl_finger1_joint</hold_joint>

@@ -38,6 +38,7 @@
   </group>
 
   <group name="rotate_button">
+    <joint name="r_rotbtn_rotate_joint" />
     <joint name="r_rotbtn_jaw1_joint" />
     <joint name="r_rotbtn_jaw2_joint" />
   </group>
@@ -80,6 +81,7 @@
   </group_state>
 
   <group_state name="open" group="rotate_button">
+    <joint name="r_rotbtn_rotate_joint" value="0" />
     <joint name="r_rotbtn_jaw1_joint" value="0" />
     <joint name="r_rotbtn_jaw2_joint" value="0" />
   </group_state>
@@ -156,6 +158,9 @@
 
   <disable_collisions link1="l_rocker_body" link2="l_rocker_rotor" reason="Adjacent" />
 
+  <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_rotate" reason="Adjacent" />
+  <disable_collisions link1="r_rotbtn_rotate" link2="r_rotbtn_jaw1" reason="Adjacent" />
+  <disable_collisions link1="r_rotbtn_rotate" link2="r_rotbtn_jaw2" reason="Adjacent" />
   <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw1" reason="Adjacent" />
   <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw2" reason="Adjacent" />
   <disable_collisions link1="r_rotbtn_jaw1" link2="r_rotbtn_jaw2" reason="Default" />

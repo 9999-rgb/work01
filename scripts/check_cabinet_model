@@ -126,7 +126,11 @@ THREE_CYLINDER_JOINTS = [
 ]
 TWO_CYLINDER_JOINTS = ["l_two_cyl_finger1_joint", "l_two_cyl_finger2_joint"]
 ROCKER_JOINTS = ["l_rocker_rotor_joint"]
-ROTATE_BUTTON_JOINTS = ["r_rotbtn_jaw1_joint", "r_rotbtn_jaw2_joint"]
+ROTATE_BUTTON_JOINTS = [
+    "r_rotbtn_rotate_joint",
+    "r_rotbtn_jaw1_joint",
+    "r_rotbtn_jaw2_joint",
+]
 JOINT_GROUPS = {
     "left_arm": LEFT_ARM_JOINTS,
     "right_arm": RIGHT_ARM_JOINTS,
@@ -203,7 +207,7 @@ def validate_rotary_adapter_override(
     control: Dict[str, object],
     catalog_parameters: Dict[str, object],
 ) -> None:
-    """Validate robot-specific knob pose, roll and release calibration."""
+    """Validate robot-specific knob pose/roll/release and IK seed calibration."""
     if "tool_roll_offset" in override:
         roll_offset = override["tool_roll_offset"]
         if control.get("type") != "button":
@@ -224,58 +228,65 @@ def validate_rotary_adapter_override(
     has_roll = "tool_roll_offsets" in override
     has_release = "detent_release_fraction" in override
     has_ready_seed = "ready_joint_seed" in override
-    if not has_roll and not has_release and not has_ready_seed:
-        return
-    if control.get("type") != "knob":
-        fail(
-            f"Robot adapter {control_id} rotary calibration is only valid "
-            "for knob controls."
-        )
-    defaults = catalog_parameters.get("knob_defaults", {})
-    if not isinstance(defaults, dict):
-        defaults = {}
-    state_ids = control.get("state_ids", defaults.get("state_ids"))
-    if (
-        not isinstance(state_ids, list)
-        or not state_ids
-        or any(not isinstance(value, str) or not value for value in state_ids)
-    ):
-        fail(f"Control {control_id} must define non-empty knob state_ids.")
-    if has_roll:
-        raw_offsets = override.get("tool_roll_offsets")
-        expected_count = len(state_ids) ** 2
+    if has_roll or has_release:
+        if control.get("type") != "knob":
+            fail(
+                f"Robot adapter {control_id} rotary calibration is only valid "
+                "for knob controls."
+            )
+        defaults = catalog_parameters.get("knob_defaults", {})
+        if not isinstance(defaults, dict):
+            defaults = {}
+        state_ids = control.get("state_ids", defaults.get("state_ids"))
         if (
-            not isinstance(raw_offsets, list)
-            or len(raw_offsets) != expected_count
-            or any(isinstance(value, bool) for value in raw_offsets)
+            not isinstance(state_ids, list)
+            or not state_ids
+            or any(not isinstance(value, str) or not value for value in state_ids)
         ):
-            fail(
-                f"Robot adapter {control_id}.tool_roll_offsets must contain "
-                f"exactly {expected_count} numeric entries."
+            fail(f"Control {control_id} must define non-empty knob state_ids.")
+        if has_roll:
+            raw_offsets = override.get("tool_roll_offsets")
+            expected_count = len(state_ids) ** 2
+            if (
+                not isinstance(raw_offsets, list)
+                or len(raw_offsets) != expected_count
+                or any(isinstance(value, bool) for value in raw_offsets)
+            ):
+                fail(
+                    f"Robot adapter {control_id}.tool_roll_offsets must contain "
+                    f"exactly {expected_count} numeric entries."
+                )
+            offsets = numbers(
+                raw_offsets,
+                f"Robot adapter {control_id}.tool_roll_offsets",
             )
-        offsets = numbers(
-            raw_offsets,
-            f"Robot adapter {control_id}.tool_roll_offsets",
-        )
-        if any(abs(value) > math.pi for value in offsets):
-            fail(
-                f"Robot adapter {control_id}.tool_roll_offsets entries must "
-                "be within [-pi, pi]."
-            )
-    if has_release:
-        fraction = override.get("detent_release_fraction")
-        if (
-            isinstance(fraction, bool)
-            or not isinstance(fraction, (int, float))
-            or not math.isfinite(float(fraction))
-            or float(fraction) <= 0.5
-            or float(fraction) > 1.0
-        ):
-            fail(
-                f"Robot adapter {control_id}.detent_release_fraction must "
-                "be in (0.5, 1.0]."
-            )
+            if any(abs(value) > math.pi for value in offsets):
+                fail(
+                    f"Robot adapter {control_id}.tool_roll_offsets entries must "
+                    "be within [-pi, pi]."
+                )
+        if has_release:
+            fraction = override.get("detent_release_fraction")
+            if (
+                isinstance(fraction, bool)
+                or not isinstance(fraction, (int, float))
+                or not math.isfinite(float(fraction))
+                or float(fraction) <= 0.5
+                or float(fraction) > 1.0
+            ):
+                fail(
+                    f"Robot adapter {control_id}.detent_release_fraction must "
+                    "be in (0.5, 1.0]."
+                )
+    # ready_joint_seed pins the free-space target pose onto one IK branch
+    # (e.g. the r_arm_4<0 branch that keeps a button approach continuous), so
+    # it is valid for any arm-move-group control -- buttons and knobs today.
     if has_ready_seed:
+        if control.get("type") not in ("button", "knob"):
+            fail(
+                f"Robot adapter {control_id}.ready_joint_seed is only valid "
+                "for button or knob controls."
+            )
         seed = override.get("ready_joint_seed")
         if not isinstance(seed, dict) or set(seed) != {
             "joint_names",
