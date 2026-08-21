@@ -173,4 +173,10 @@
   <disable_collisions link1="r_three_cyl_finger2" link2="r_three_cyl_finger3" reason="Serial finger stages" />
   <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Tucked finger inside tool body" />
   <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Tucked finger inside tool body" />
+  <!-- The wrist (r_arm_6) is separated from the upper forearm (r_arm_4) only by
+       the short r_arm_5 link; their collision meshes pack to sub-mm contact in
+       folded poses (the fortune-cat idle posture, r_arm_5≈0.8 rad).  This is a
+       stable, contact-free pose in Gazebo ODE, so exclude the pair from MoveIt
+       planning exactly like the adjacent arm-link pairs. -->
+  <disable_collisions link1="r_arm_4" link2="r_arm_6" reason="Packed wrist gap in folded idle pose" />
 </robot>

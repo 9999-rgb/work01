@@ -123,6 +123,19 @@ def _launch_setup(context):
                 "use_sim_time": use_sim_time,
                 "allow_trajectory_execution": True,
                 "monitor_dynamics": False,
+                # The arm's collision meshes pack to ~3 mm between non-adjacent
+                # links (r_arm_4/r_arm_6) in the folded fortune-cat idle pose.
+                # MoveIt's default 10 mm robot self-padding flags that gap as a
+                # "collision" and blocks every plan from the idle pose, even
+                # though Gazebo ODE (padding 0) runs it contact-free.  Shrink
+                # robot self-padding to 1 mm so the folded pose plans, while
+                # object/attached padding keeps the 10 mm cabinet clearance.
+                "robot_description_planning": {
+                    "default_robot_padding": 0.001,
+                    "default_robot_padding_scale": 1.0,
+                    "default_object_padding": 0.01,
+                    "default_attached_padding": 0.01,
+                },
             },
         ],
     )
