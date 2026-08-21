@@ -14,12 +14,29 @@ from launch.conditions import IfCondition
 from launch.event_handlers import OnProcessExit
 from launch.events import Shutdown
 from launch.substitutions import LaunchConfiguration
+from launch.substitutions import PythonExpression
 from launch_ros.actions import Node
 from moveit_configs_utils import MoveItConfigsBuilder
 
 
 MOVEIT_CONFIG_PACKAGE = "xczs_inspection_robot_moveit_config"
 DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
+
+VALID_TOOLSETS = ("A", "B")
+DEFAULT_TOOLSET = "A"
+
+
+def _toolset_substitution() -> PythonExpression:
+    """Runtime substitution resolving the normalized toolset (A/B, uppercase)."""
+    return PythonExpression(
+        [
+            "(str('",
+            LaunchConfiguration("toolset"),
+            "').strip().upper() if str('",
+            LaunchConfiguration("toolset"),
+            "').strip().upper() in ('A','B') else 'A')",
+        ]
+    )
 
 
 def _shutdown_on_required_runtime_exit(
@@ -66,6 +83,12 @@ def _launch_setup(context):
         "moveit_config_package"
     ).perform(context)
     robot_xacro = LaunchConfiguration("robot_xacro").perform(context)
+    toolset = (
+        LaunchConfiguration("toolset").perform(context).strip().upper()
+        or DEFAULT_TOOLSET
+    )
+    if toolset not in VALID_TOOLSETS:
+        toolset = DEFAULT_TOOLSET
     moveit_srdf = LaunchConfiguration("moveit_srdf").perform(context)
     moveit_kinematics = LaunchConfiguration("moveit_kinematics").perform(
         context
@@ -92,7 +115,10 @@ def _launch_setup(context):
             robot_name,
             package_name=moveit_config_package,
         )
-        .robot_description(file_path=robot_xacro)
+        .robot_description(
+            file_path=robot_xacro,
+            mappings={"toolset": toolset},
+        )
         .robot_description_semantic(file_path=moveit_srdf)
         .robot_description_kinematics(file_path=moveit_kinematics)
         .joint_limits(file_path=moveit_joint_limits)
@@ -190,8 +216,20 @@ def generate_launch_description() -> LaunchDescription:
             ),
         ),
         DeclareLaunchArgument(
+            "toolset",
+            default_value=DEFAULT_TOOLSET,
+            description=(
+                "末端工具套装 A/B: A = 三电缸(右)+两电缸(左), "
+                "B = 旋转按钮(右)+摇入摇出(左)。默认 A。"
+            ),
+        ),
+        DeclareLaunchArgument(
             "moveit_srdf",
-            default_value="config/xczs_inspection_robot.srdf",
+            default_value=[
+                "config/xczs_inspection_robot_toolset_",
+                _toolset_substitution(),
+                ".srdf",
+            ],
         ),
         DeclareLaunchArgument(
             "moveit_kinematics",
@@ -199,11 +237,19 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "moveit_joint_limits",
-            default_value="config/joint_limits.yaml",
+            default_value=[
+                "config/joint_limits_toolset_",
+                _toolset_substitution(),
+                ".yaml",
+            ],
         ),
         DeclareLaunchArgument(
             "moveit_controllers",
-            default_value="config/moveit_controllers.yaml",
+            default_value=[
+                "config/moveit_controllers_toolset_",
+                _toolset_substitution(),
+                ".yaml",
+            ],
         ),
         DeclareLaunchArgument(
             "joint_state_topic",

@@ -131,6 +131,13 @@
     # 6.85 mm，越过 6 mm 触发阈值且不超出按钮 8 mm 行程，工具尖端仍高出面板
     # 数毫米、无碰撞。见 box_6_button_1 实压验收记录。
     press_depth: 0.008
+    # prepress 退距：0.06 m 时 OMPL 从折叠 home 到 box_6 prepress 的摆动路径
+    # 会扫过相邻 5 号模块控件（box_5_knob / box_5_button_2），move_group
+    # 校验拒绝（Computed path is not valid），重试时好时坏。退到 0.12 m 后
+    # 目标更远离面板，OMPL 路径经真实 move_group plan() 连续 3 轮 ×10 次
+    # 采样全部通过校验；近柜直压由 Cartesian 接近段（prepress->contact）
+    # 覆盖，全程无碰撞。box_6 两按钮按此值验收。
+    prepress_distance: 0.12
     docking_base_frame: body
     # 精确停靠会临时绕过 Nav2 控制器，因此在 operator 内复用同一机器人
     # 足迹做面板法向安全包络校验。坐标位于 navigation_base_frame，padding
@@ -304,10 +311,20 @@
           base_yaw_offset: 0.0
           frame_id: map
       box_6_button_1:
+        # 轴向挂载后，旧工位(1.230,-0.470)会让七轴臂肘部满折(Elbow≈2.69)自碰撞
+        # (r_arm_0<->r_arm_5)，RRTConnect 报 goal tree 无有效状态。
+        # 工位 (1.040,-0.330) 的 prepress 目标本身无碰撞，但 OMPL 从折叠 home
+        # 摆动到 prepress 的路径会扫过相邻 5 号模块控件（box_5_knob /
+        # box_5_button_2），move_group 校验拒绝（Computed path is not valid）。
+        # 本工位保留 check_cabinet_model 的肩部校准合同（anchor.x =
+        # local_position.x + 0.35，即 dock Y = -0.469），standoff 1.10 把 dock
+        # 置于 (0.900,-0.469)。此处 + prepress_distance 0.12 下，seeded prepress
+        # 无碰撞，OMPL 路径连续 3 轮 ×10 次采样全部通过真实 move_group plan()
+        # 校验（cart_probe dock=0.90,y=-0.469 组合：in3=3/3, tot=10/10）。
         navigation_station:
           local_anchor: [0.799000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.769
+          standoff: 1.100
           base_yaw_offset: 0.0
           frame_id: map
         # 七轴臂对同一夹具位姿存在多组 IK。直压接近(prepress->contact)若落在
@@ -324,18 +341,22 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6929
-            - 0.9137
-            - -0.0395
-            - 2.1282
-            - -1.4704
-            - -0.0216
-            - 1.4698
+            - 1.6780
+            - 1.3430
+            - -0.0230
+            - 1.9800
+            - -1.4740
+            - -0.0400
+            - 1.7490
       box_6_button_2:
+        # 同 box_6_button_1：保留肩部校准合同（anchor.x = local_position.x +
+        # 0.35，dock Y = -0.519），standoff 1.10 把 dock 置于 (0.900,-0.519)。
+        # r_arm_4≈-1.46 连续分支无碰撞，与 prepress_distance 0.12 组合经真实
+        # move_group plan() 三轮 ×10 次采样全过（in3=3/3, tot=10/10）。
         navigation_station:
           local_anchor: [0.849000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.769
+          standoff: 1.100
           base_yaw_offset: 0.0
           frame_id: map
         # 同 box_6_button_1：固定到 r_arm_4≈-1.46 的连续分支。
@@ -349,13 +370,13 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.7091
-            - 1.0751
-            - -0.0546
-            - 2.0569
-            - -1.4581
-            - -0.0469
-            - 1.5568
+            - 1.6760
+            - 1.4880
+            - -0.0200
+            - 1.8580
+            - -1.4730
+            - -0.0400
+            - 1.7720
       box_7_button_1:
         navigation_station:
           local_anchor: [0.470000, 1.115, 0.000]

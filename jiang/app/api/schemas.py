@@ -306,8 +306,9 @@ class SceneSwitchRequest(BaseModel):
 class AssetSelectionRequest(BaseModel):
     """POST /assets/selection 请求体。
 
-    两个字段均可选；``null`` 或空串表示该维度不选择（保持现状）。
+    三个字段均可选；``null`` 或空串表示该维度不选择（保持现状）。
     名称将在后端再次校验：scene / cabinet 必须已在资产库 catalog 中。
+    ``toolset`` 只能是 A / B（大小写不敏感），null 表示不改变。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -317,6 +318,9 @@ class AssetSelectionRequest(BaseModel):
     )
     cabinet: str | None = Field(
         default=None, description="柜体资产名；null 表示不选择柜体"
+    )
+    toolset: str | None = Field(
+        default=None, description="末端工具套装 A/B；null 表示不改变"
     )
 
     @field_validator("scene", "cabinet")
@@ -328,3 +332,15 @@ class AssetSelectionRequest(BaseModel):
             raise ValueError("必须是字符串或 null")
         stripped = value.strip()
         return stripped or None
+
+    @field_validator("toolset")
+    @classmethod
+    def _toolset(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise ValueError("必须是字符串或 null")
+        normalized = value.strip().upper()
+        if normalized not in ("A", "B"):
+            raise ValueError("toolset 只能是 A 或 B")
+        return normalized

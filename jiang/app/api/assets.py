@@ -53,6 +53,24 @@ def _library() -> AssetLibrary:
     return AssetLibrary(root, store=SqlAssetStore())
 
 
+#: 工具套装切换的重启标记文件路径（start_xczs_bridge.sh 导出，指向本次
+#: 启动的临时目录）。未设置时（如 Web 独立运行）写标记会被跳过，但响应仍
+#: 携带 ``restart_required`` 供前端提示。
+RESTART_MARKER_ENV = "XCZS_RESTART_MARKER"
+
+
+def _write_restart_marker() -> None:
+    """写入工具套装切换标记；watchdog 检测后以退出码 42 触发整体重启。"""
+    path = os.environ.get(RESTART_MARKER_ENV)
+    if not path:
+        return
+    try:
+        Path(path).write_text("toolset", encoding="utf-8")
+    except OSError:
+        # 写标记失败不应让保存选择失败：下次启动仍会读取新选择。
+        pass
+
+
 def _selection_from_request(
     body: AssetSelectionRequest, library: AssetLibrary
 ) -> AssetSelection:
@@ -64,6 +82,7 @@ def _selection_from_request(
     return AssetSelection(
         scene=body.scene,
         cabinet=body.cabinet,
+        toolset=body.toolset,
     )
 
 
@@ -97,12 +116,16 @@ async def get_selection() -> dict[str, Any]:
 @router.post(
     "/assets/selection",
     summary="保存资产选择",
-    description="持久化选择组合；重启后由启动脚本消费。scene / cabinet 必须已在资产库中。",
+    description=(
+        "持久化选择组合；重启后由启动脚本消费。scene / cabinet 必须已在资产库中。"
+        "切换 toolset 会写入重启标记，栈自动重启后以新套装生效。"
+    ),
 )
 async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
     library = _library()
 
     def _run() -> dict[str, Any]:
+        previous = library.load_selection()
         try:
             selection = _selection_from_request(body, library)
         except AssetNotFoundError as error:
@@ -113,8 +136,18 @@ async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from None
+        toolset_changed = bool(
+            selection.toolset
+            and selection.toolset.upper() != (previous.toolset or "").upper()
+        )
         library.save_selection(selection)
-        return library.load_selection().to_dict()
+        result = library.load_selection().to_dict()
+        if toolset_changed:
+            _write_restart_marker()
+            result["restart_required"] = True
+        else:
+            result["restart_required"] = False
+        return result
 
     return await asyncio.to_thread(_run)
 

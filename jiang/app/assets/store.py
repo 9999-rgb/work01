@@ -153,6 +153,7 @@ class SqlAssetStore:
             return AssetSelection(
                 scene=row.scene,
                 cabinet=row.cabinet,
+                toolset=row.toolset,
             )
 
     def save_selection(self, selection: AssetSelection) -> None:
@@ -163,6 +164,7 @@ class SqlAssetStore:
                 session.add(row)
             row.scene = selection.scene
             row.cabinet = selection.cabinet
+            row.toolset = selection.toolset
             session.commit()
 
     # ── 映射 ───────────────────────────────────────────────────────────

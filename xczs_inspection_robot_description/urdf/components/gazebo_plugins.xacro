@@ -45,32 +45,36 @@
     <xacro:xczs_gazebo_link_properties link_name="r_arm_5" material="Gazebo/Orange" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_arm_6" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
 
-    <!-- Passive dual-tool carriers. -->
-    <xacro:xczs_gazebo_link_properties link_name="r_tool_carrier" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="l_tool_carrier" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <!-- Right tools - toolset A (three_cylinder) / toolset B (rotate_button). -->
+    <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger3" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    </xacro:if>
+    <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_rotate" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    </xacro:if>
 
-    <!-- Right tools - three_cylinder + rotate_button. -->
-    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger3" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_rotate" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-
-    <!-- Left tools - two_cylinder + rocker. -->
-    <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="l_rocker_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
-    <xacro:xczs_gazebo_link_properties link_name="l_rocker_rotor" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    <!-- Left tools - toolset A (two_cylinder) / toolset B (rocker). -->
+    <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
+      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger1" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger2" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    </xacro:if>
+    <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
+      <xacro:xczs_gazebo_link_properties link_name="l_rocker_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_rocker_rotor" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+    </xacro:if>
 
     <!-- Passive visual sensor housings.  The body-mounted laser housings
          (l_laser / r_laser) are fixed to body and get lumped into it during
          URDF-to-SDF conversion, so they intentionally carry no gazebo block
-         here: a per-link gravity would surface as a second <gravity> on the
-         body link and break the single gravity=1 chassis contract. -->
+         here, since a per-link gravity would surface as a second <gravity> on
+         the body link and break the single gravity=1 chassis contract. -->
     <xacro:xczs_gazebo_link_properties link_name="l_camera" material="Gazebo/Black" gravity="false" friction="0.8" />
     <xacro:xczs_gazebo_link_properties link_name="r_camera" material="Gazebo/Black" gravity="false" friction="0.8" />
 
@@ -139,15 +143,19 @@
         <hold_joint>r_arm_4_joint</hold_joint>
         <hold_joint>r_arm_5_joint</hold_joint>
         <hold_joint>r_arm_6_joint</hold_joint>
-        <hold_joint>r_three_cyl_finger1_joint</hold_joint>
-        <hold_joint>r_three_cyl_finger2_joint</hold_joint>
-        <hold_joint>r_three_cyl_finger3_joint</hold_joint>
-        <hold_joint>r_rotbtn_rotate_joint</hold_joint>
-        <hold_joint>r_rotbtn_jaw1_joint</hold_joint>
-        <hold_joint>r_rotbtn_jaw2_joint</hold_joint>
-        <hold_joint>l_two_cyl_finger1_joint</hold_joint>
-        <hold_joint>l_two_cyl_finger2_joint</hold_joint>
-        <hold_joint>l_rocker_rotor_joint</hold_joint>
+        <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
+          <hold_joint>r_three_cyl_finger1_joint</hold_joint>
+          <hold_joint>r_three_cyl_finger2_joint</hold_joint>
+          <hold_joint>r_three_cyl_finger3_joint</hold_joint>
+          <hold_joint>l_two_cyl_finger1_joint</hold_joint>
+          <hold_joint>l_two_cyl_finger2_joint</hold_joint>
+        </xacro:if>
+        <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
+          <hold_joint>r_rotbtn_rotate_joint</hold_joint>
+          <hold_joint>r_rotbtn_jaw1_joint</hold_joint>
+          <hold_joint>r_rotbtn_jaw2_joint</hold_joint>
+          <hold_joint>l_rocker_rotor_joint</hold_joint>
+        </xacro:if>
       </plugin>
     </gazebo>
   </xacro:macro>

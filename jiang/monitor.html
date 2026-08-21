@@ -1024,12 +1024,21 @@
                 <option value="">（保持默认）</option>
               </select>
             </div>
+            <div class="form-field">
+              <label for="assetToolsetSelect">末端工具套装</label>
+              <select id="assetToolsetSelect" disabled>
+                <option value="">（保持默认）</option>
+                <option value="A">套装 A：三电缸(右) + 两电缸(左)，用于抽拉柜 / 按钮 / 柜门</option>
+                <option value="B">套装 B：旋转按钮(右) + 摇入摇出(左)，用于旋钮 / 摇杆开关</option>
+              </select>
+            </div>
           </div>
           <div class="command-row">
             <button class="btn btn-primary" id="btnAssetApply" disabled>保存选择</button>
           </div>
           <div class="status-detail" id="assetLibraryRoot">
             选择会在下次启动时由 <strong>./run_all.sh</strong> 应用到场景 / 导航 / 柜体配置。
+            切换工具套装会触发栈自动重启，并以新套装重新加载机器人模型。
           </div>
         </div>
       </div>
@@ -1216,6 +1225,7 @@ const assetUpload = $('assetUpload');
 const assetSkipValidate = $('assetSkipValidate');
 const assetSceneSelect = $('assetSceneSelect');
 const assetCabinetSelect = $('assetCabinetSelect');
+const assetToolsetSelect = $('assetToolsetSelect');
 const btnAssetImport = $('btnAssetImport');
 const btnAssetRefresh = $('btnAssetRefresh');
 const btnAssetDelete = $('btnAssetDelete');
@@ -3571,6 +3581,7 @@ function updateAssetControlState() {
   btnAssetApply.disabled = !enabled || assetImportInFlight;
   assetSceneSelect.disabled = !enabled;
   assetCabinetSelect.disabled = !enabled;
+  assetToolsetSelect.disabled = !enabled;
 }
 
 function applyAssets(payload) {
@@ -3601,6 +3612,10 @@ function applyAssets(payload) {
 
   fillAssetSelect(assetSceneSelect, scenes, assetSelectionSnapshot.scene);
   fillAssetSelect(assetCabinetSelect, cabinets, assetSelectionSnapshot.cabinet);
+  const savedToolset = ['A', 'B'].includes(assetSelectionSnapshot.toolset)
+    ? assetSelectionSnapshot.toolset
+    : '';
+  assetToolsetSelect.value = assetToolsetSelect.value || savedToolset;
 
   const count = assetCatalog.length;
   setAutonomyState(assetState, `${count} 项`, count ? 'ok' : '');
@@ -3654,12 +3669,21 @@ async function importAssetFile() {
 async function saveAssetSelection() {
   const payload = {
     scene: assetSceneSelect.value || null,
-    cabinet: assetCabinetSelect.value || null
+    cabinet: assetCabinetSelect.value || null,
+    toolset: assetToolsetSelect.value || null
   };
   setAutonomyState(assetState, '保存中 ...', 'busy');
   try {
     const saved = await assetRequest('/assets/selection', 'POST', payload);
     assetSelectionSnapshot = saved;
+    if (saved.restart_required) {
+      toast('工具套装已切换，栈自动重启中 ...', 'ok');
+      assetDetail.textContent =
+        '工具套装切换已保存，正在自动重启整个机器人栈（约需数十秒），' +
+        '重启后请刷新本页面查看新套装。';
+      setAutonomyState(assetState, '重启中 ...', 'busy');
+      return;
+    }
     toast('已保存本次运行组合，重启后生效', 'ok');
     log('ok', `资产选择已保存：${JSON.stringify(saved)}`);
     await refreshAssets();

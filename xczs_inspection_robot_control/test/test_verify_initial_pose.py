@@ -139,19 +139,25 @@ def test_initial_position_file_rejects_nonfinite_or_nonnumeric_values(
 
 
 def _srdf_home_positions():
-    root = ElementTree.parse(
-        MOVEIT_ROOT / "config" / "xczs_inspection_robot.srdf"
-    ).getroot()
+    # Each toolset SRDF carries the same 14-joint dual-arm home state; the
+    # union over both sets must match the shared spawn/reset pose exactly.
     result = {}
-    for state in root.findall("group_state"):
-        if state.attrib.get("name") != "home":
-            continue
-        result.update(
-            {
-                joint.attrib["name"]: float(joint.attrib["value"])
-                for joint in state.findall("joint")
-            }
-        )
+    for srdf_name in (
+        "xczs_inspection_robot_toolset_A.srdf",
+        "xczs_inspection_robot_toolset_B.srdf",
+    ):
+        root = ElementTree.parse(
+            MOVEIT_ROOT / "config" / srdf_name
+        ).getroot()
+        for state in root.findall("group_state"):
+            if state.attrib.get("name") != "home":
+                continue
+            result.update(
+                {
+                    joint.attrib["name"]: float(joint.attrib["value"])
+                    for joint in state.findall("joint")
+                }
+            )
     return result
 
 

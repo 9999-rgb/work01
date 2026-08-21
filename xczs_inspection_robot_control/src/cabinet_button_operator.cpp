@@ -365,6 +365,11 @@ public:
       "robot_model_name", "");
     move_group_namespace_ = declare_parameter<std::string>(
       "move_group_namespace", "/");
+    toolset_ = declare_parameter<std::string>("toolset", "A");
+    if (toolset_ != "A" && toolset_ != "B") {
+      throw std::invalid_argument(
+              "Parameter 'toolset' must be 'A' or 'B'.");
+    }
     load_tool_profiles();
     tool_tip_calibration_joint_tolerance_ = positive_parameter(
       "tool_tip_calibration_joint_tolerance", 0.001);
@@ -1107,6 +1112,24 @@ private:
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
+  // The mounted end-effector toolset only serves the control types whose
+  // contact tool link it carries: Set A (three-cylinder + two-cylinder)
+  // operates buttons and doors, Set B (rotate-button + rocker) operates
+  // knobs and switches.  The shared adapter allowlist may span both
+  // toolsets, so the catalog must report only the mounted set as
+  // physically operable; the per-operation configure_move_group() check
+  // still rejects the unmounted set before any TF lookup.
+  bool tool_serves_control(std::uint8_t control_type) const
+  {
+    using Control = xczs_inspection_robot_control::msg::CabinetControl;
+    if (toolset_ == "B") {
+      return control_type == Control::TYPE_KNOB ||
+        control_type == Control::TYPE_SWITCH;
+    }
+    return control_type == Control::TYPE_BUTTON ||
+      control_type == Control::TYPE_DOOR;
+  }
+
   void configure_controls()
   {
     const auto control_ids = declare_parameter<std::vector<std::string>>(
@@ -1369,7 +1392,8 @@ private:
         button->default_force = declare_parameter<double>(
           prefix + "default_force", button_default_force);
       }
-      button->operable = operable_controls.count(control_id) != 0U;
+      button->operable = operable_controls.count(control_id) != 0U &&
+        tool_serves_control(button->control_type);
       button->unavailable_reason = declare_parameter<std::string>(
         prefix + "unavailable_reason", "");
       if (button->operable && !button->unavailable_reason.empty()) {
@@ -6469,6 +6493,7 @@ private:
   std::string robot_model_name_;
   std::string move_group_name_;
   std::string move_group_namespace_;
+  std::string toolset_;
   std::string contact_tool_link_;
   std::string transport_named_target_;
   tf2::Vector3 tool_tip_position_{0.0, 0.0, 0.0};

@@ -43,6 +43,29 @@ ROBOT_NAME = "xczs_inspection_robot"
 XACRO_FILENAME = "xczs_inspection_robot.urdf.xacro"
 CABINET_XACRO_FILENAME = "control_cabinet.urdf.xacro"
 SCENE_FLOOR_ENTITY = "xczs_scene_floor"
+
+# 末端工具套装 A / B(见 xczs_inspection_robot.urdf.xacro)。非 A/B 一律回退 A。
+VALID_TOOLSETS = ("A", "B")
+DEFAULT_TOOLSET = "A"
+
+
+def _normalize_toolset(value: str) -> str:
+    """Normalize a toolset value to ``A`` or ``B`` (case-insensitive)."""
+    value = (value or "").strip().upper()
+    return value if value in VALID_TOOLSETS else DEFAULT_TOOLSET
+
+
+def _toolset_substitution() -> PythonExpression:
+    """Runtime substitution resolving the normalized toolset (A/B, uppercase)."""
+    return PythonExpression(
+        [
+            "(str('",
+            LaunchConfiguration("toolset"),
+            "').strip().upper() if str('",
+            LaunchConfiguration("toolset"),
+            "').strip().upper() in ('A','B') else 'A')",
+        ]
+    )
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
 _BOOLEAN_LAUNCH_ARGUMENTS = (
@@ -617,6 +640,9 @@ def _cabinet_nodes(context, *, cabinet_xacro):
     if moveit_enabled:
         robot_name = LaunchConfiguration("robot_name").perform(context)
         robot_xacro = LaunchConfiguration("robot_xacro").perform(context)
+        toolset = _normalize_toolset(
+            LaunchConfiguration("toolset").perform(context)
+        )
         moveit_config_package = LaunchConfiguration(
             "moveit_config_package"
         ).perform(context)
@@ -632,7 +658,10 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                 robot_name,
                 package_name=moveit_config_package,
             )
-            .robot_description(file_path=robot_xacro)
+            .robot_description(
+                file_path=robot_xacro,
+                mappings={"toolset": toolset},
+            )
             .robot_description_semantic(file_path=moveit_srdf)
             .robot_description_kinematics(file_path=moveit_kinematics)
             .joint_limits(file_path=moveit_joint_limits)
@@ -805,6 +834,7 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                                     value_type=bool,
                                 ),
                                 "cabinet_frame": cabinet_frame,
+                                "toolset": toolset,
                             },
                         ],
                     ),
@@ -1034,6 +1064,39 @@ def _robot_spawn_node(context, *, controllers=None):
     ]
 
 
+def _tool_controller_spawner_node(context):
+    """Build the per-toolset tool controller spawner.
+
+    Tool controllers exist only for the active toolset (controller_manager
+    configures them from ``ros2_controllers_toolset_{A,B}.yaml``), so the
+    spawner must only ever name the mounted set's controllers.
+    """
+    toolset = _normalize_toolset(
+        LaunchConfiguration("toolset").perform(context)
+    )
+    tools = (
+        ["three_cylinder_controller", "two_cylinder_controller"]
+        if toolset == "A"
+        else ["rotate_button_controller", "rocker_controller"]
+    )
+    return [
+        Node(
+            package="controller_manager",
+            executable="spawner",
+            name="xczs_tool_controller_spawner",
+            output="screen",
+            arguments=[
+                *tools,
+                "--controller-manager", "/xczs/controller_manager",
+                "--controller-manager-timeout", "30",
+                "--switch-timeout", "30",
+                "--activate-as-group",
+            ],
+            condition=IfCondition(LaunchConfiguration("robot_bringup")),
+        )
+    ]
+
+
 def _cleanup_generated_directories():
     while _GENERATED_DIRECTORIES:
         shutil.rmtree(_GENERATED_DIRECTORIES.pop(), ignore_errors=True)
@@ -1091,6 +1154,8 @@ def generate_launch_description() -> LaunchDescription:
                 FindExecutable(name="xacro"),
                 " ",
                 LaunchConfiguration("robot_xacro"),
+                " toolset:=",
+                _toolset_substitution(),
             ]
         ),
         value_type=str,
@@ -1128,12 +1193,24 @@ def generate_launch_description() -> LaunchDescription:
             default_value=str(xacro_file),
         ),
         DeclareLaunchArgument(
+            "toolset",
+            default_value=DEFAULT_TOOLSET,
+            description=(
+                "末端工具套装 A/B: A = 三电缸(右)+两电缸(左), "
+                "B = 旋转按钮(右)+摇入摇出(左)。默认 A。"
+            ),
+        ),
+        DeclareLaunchArgument(
             "moveit_config_package",
             default_value=MOVEIT_CONFIG_PACKAGE,
         ),
         DeclareLaunchArgument(
             "moveit_srdf",
-            default_value="config/xczs_inspection_robot.srdf",
+            default_value=[
+                "config/xczs_inspection_robot_toolset_",
+                _toolset_substitution(),
+                ".srdf",
+            ],
         ),
         DeclareLaunchArgument(
             "moveit_kinematics",
@@ -1141,11 +1218,19 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "moveit_joint_limits",
-            default_value="config/joint_limits.yaml",
+            default_value=[
+                "config/joint_limits_toolset_",
+                _toolset_substitution(),
+                ".yaml",
+            ],
         ),
         DeclareLaunchArgument(
             "moveit_controllers",
-            default_value="config/moveit_controllers.yaml",
+            default_value=[
+                "config/moveit_controllers_toolset_",
+                _toolset_substitution(),
+                ".yaml",
+            ],
         ),
         DeclareLaunchArgument(
             "moveit_rviz_config",
@@ -1234,6 +1319,7 @@ def generate_launch_description() -> LaunchDescription:
         launch_arguments={
             "rviz": LaunchConfiguration("moveit_rviz"),
             "robot_name": LaunchConfiguration("robot_name"),
+            "toolset": LaunchConfiguration("toolset"),
             "moveit_config_package": LaunchConfiguration(
                 "moveit_config_package"
             ),
@@ -1301,16 +1387,15 @@ def generate_launch_description() -> LaunchDescription:
             "joint_state_broadcaster",
             "left_arm_controller",
             "right_arm_controller",
-            "three_cylinder_controller",
-            "two_cylinder_controller",
-            "rocker_controller",
-            "rotate_button_controller",
             "--controller-manager", "/xczs/controller_manager",
             "--controller-manager-timeout", "30",
             "--switch-timeout", "30",
             "--activate-as-group",
         ],
         condition=IfCondition(LaunchConfiguration("robot_bringup")),
+    )
+    tool_controllers = OpaqueFunction(
+        function=_tool_controller_spawner_node,
     )
     spawn_robot = OpaqueFunction(
         function=_robot_spawn_node,
@@ -1455,6 +1540,7 @@ def generate_launch_description() -> LaunchDescription:
                 _continue_or_shutdown_required_process,
                 process_label="ros2_control controller spawner",
                 success_actions=[
+                    tool_controllers,
                     initial_pose_verifier_handler,
                     initial_pose_verifier,
                 ],

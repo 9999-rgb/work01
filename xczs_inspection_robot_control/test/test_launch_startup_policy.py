@@ -77,6 +77,7 @@ def _build_cabinet_actions(module, tmp_path, *, spawn_cabinet):
             "cabinet_robot_adapter": "adapter.yaml",
             "cabinet_pose_source": "static",
             "use_sim_time": "true",
+            "toolset": "A",
         }
     )
     cabinet_xacro = tmp_path / "cabinet.urdf.xacro"

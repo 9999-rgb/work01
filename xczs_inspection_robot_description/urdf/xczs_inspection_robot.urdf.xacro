@@ -14,6 +14,16 @@
     name="initial_positions_file"
     default="$(find xczs_inspection_robot_description)/config/initial_positions.yaml" />
 
+  <!--
+    末端工具套装选择（A / B，默认 A）：
+      A - 三个电缸(右) + 两个电缸(左)，用于抽拉柜 / 按钮 / 柜门
+      B - 旋转按钮机构(右) + 摇入摇出机构(左)，用于旋钮 / 摇杆开关
+    每臂只挂载所选套装的一只工具，另一只不在 URDF 中出现。由
+    inspection_robot.launch.py 的 `toolset` 参数通过 xacro 命令与
+    MoveItConfigsBuilder 的 mappings 传入。
+  -->
+  <xacro:arg name="toolset" default="A" />
+
   <!-- Shared definitions. -->
   <xacro:include filename="components/properties.xacro" />
   <xacro:include filename="components/materials.xacro" />

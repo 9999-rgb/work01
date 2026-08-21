@@ -82,11 +82,18 @@ SIMULATION_WORLD_PATH="${SIMULATION_WORLD_PATH:-$WORK_DIR/xczs_inspection_robot_
 CABINET_XACRO_PATH="${CABINET_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/control_cabinet.urdf.xacro}"
 ROBOT_NAME="${ROBOT_NAME:-xczs_inspection_robot}"
 ROBOT_XACRO_PATH="${ROBOT_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/xczs_inspection_robot.urdf.xacro}"
+# 末端工具套装 A/B(Web 选择持久化在资产库,见 selection 表的 toolset 列)。
+# 归一为大写;非 A/B 一律回退 A。所有按套装的模型/控制器/MoveIt 路径由此派生。
+TOOLSET="$(printf '%s' "${TOOLSET:-A}" | tr '[:lower:]' '[:upper:]')"
+case "$TOOLSET" in
+    A|B) ;;
+    *) TOOLSET="A" ;;
+esac
 MOVEIT_CONFIG_PACKAGE="${MOVEIT_CONFIG_PACKAGE:-xczs_inspection_robot_moveit_config}"
-MOVEIT_SRDF_PATH="${MOVEIT_SRDF_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/xczs_inspection_robot.srdf}"
+MOVEIT_SRDF_PATH="${MOVEIT_SRDF_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/xczs_inspection_robot_toolset_${TOOLSET}.srdf}"
 MOVEIT_KINEMATICS_PATH="${MOVEIT_KINEMATICS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/kinematics.yaml}"
-MOVEIT_JOINT_LIMITS_PATH="${MOVEIT_JOINT_LIMITS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/joint_limits.yaml}"
-MOVEIT_CONTROLLERS_PATH="${MOVEIT_CONTROLLERS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/moveit_controllers.yaml}"
+MOVEIT_JOINT_LIMITS_PATH="${MOVEIT_JOINT_LIMITS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/joint_limits_toolset_${TOOLSET}.yaml}"
+MOVEIT_CONTROLLERS_PATH="${MOVEIT_CONTROLLERS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/moveit_controllers_toolset_${TOOLSET}.yaml}"
 MOVEIT_RVIZ_CONFIG_PATH="${MOVEIT_RVIZ_CONFIG_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/moveit.rviz}"
 MOVEIT_LAUNCH_PATH="${MOVEIT_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/launch/move_group.launch.py}"
 NAV2_LAUNCH_PATH="${NAV2_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/launch/navigation.launch.py}"
@@ -421,6 +428,9 @@ _create_launch_runtime_directory() {
         return 1
     }
     export XCZS_LAUNCH_RUNTIME_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY"
+    # 工具套装切换的重启标记文件路径：Web 端点写入，watchdog 检测后以退出码
+    # 42 触发整体重启（run_all.sh 捕获并重新拉起，重新读取 selection）。
+    export XCZS_RESTART_MARKER="$LAUNCH_RUNTIME_DIRECTORY/restart.marker"
 }
 
 _cleanup_launch_runtime_directory() {
@@ -1244,6 +1254,13 @@ _monitor_managed_processes() {
     local pid=""
     local status=0
     while true; do
+        # 工具套装切换标记（Web 端选择后写入）：删除标记并以专用退出码 42
+        # 触发整个栈自动重启，run_all.sh 捕获后重读 selection 重新拉起。
+        if [ -n "${XCZS_RESTART_MARKER:-}" ] && [ -e "$XCZS_RESTART_MARKER" ]; then
+            rm -f "$XCZS_RESTART_MARKER"
+            echo "检测到末端工具套装切换标记，自动重启机器人栈（退出码 42）。" >&2
+            return 42
+        fi
         for ((index=0; index < ${#MANAGED_PIDS[@]}; index++)); do
             pid="${MANAGED_PIDS[$index]}"
             if ! _managed_leader_is_running \
@@ -1396,6 +1413,7 @@ LAUNCH_ARGS=(
     "nav2_rviz:=false"
     "robot_name:=$ROBOT_NAME"
     "robot_xacro:=$ROBOT_XACRO_PATH"
+    "toolset:=$TOOLSET"
     "moveit_config_package:=$MOVEIT_CONFIG_PACKAGE"
     "moveit_srdf:=$MOVEIT_SRDF_PATH"
     "moveit_kinematics:=$MOVEIT_KINEMATICS_PATH"

@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import traceback
 from collections import Counter
 from pathlib import Path
 from typing import Dict
@@ -139,6 +140,70 @@ JOINT_GROUPS = {
     "rocker": ROCKER_JOINTS,
     "rotate_button": ROTATE_BUTTON_JOINTS,
 }
+
+# End-effector toolset exclusivity.  Set A mounts the drawer tools
+# (three-cylinder right + two-cylinder left); Set B mounts the button
+# spinners (rotate-button right + rocker left).  Only one set is ever
+# present in the URDF at a time, so every check that inspects tool
+# geometry, controllers or SRDF must resolve the active set first.
+TOOLSET = "A"
+TOOLSET_ACTIVE_GROUPS = {
+    "A": ("three_cylinder", "two_cylinder"),
+    "B": ("rotate_button", "rocker"),
+}
+TOOLSET_INACTIVE_GROUPS = {
+    "A": ("rotate_button", "rocker"),
+    "B": ("three_cylinder", "two_cylinder"),
+}
+TOOLSET_TOOL_CONTACT_LINKS = {
+    "A": frozenset({"r_three_cyl_base", "l_two_cyl_base"}),
+    "B": frozenset({"r_rotbtn_body", "l_rocker_body"}),
+}
+ROS2_CONTROLLERS_TOOLSET = {
+    "A": (
+        ROOT
+        / "xczs_inspection_robot_description"
+        / "config"
+        / "ros2_controllers_toolset_A.yaml"
+    ),
+    "B": (
+        ROOT
+        / "xczs_inspection_robot_description"
+        / "config"
+        / "ros2_controllers_toolset_B.yaml"
+    ),
+}
+MOVEIT_CONTROLLERS_TOOLSET = {
+    "A": MOVEIT_CONFIG / "moveit_controllers_toolset_A.yaml",
+    "B": MOVEIT_CONFIG / "moveit_controllers_toolset_B.yaml",
+}
+JOINT_LIMITS_TOOLSET = {
+    "A": MOVEIT_CONFIG / "joint_limits_toolset_A.yaml",
+    "B": MOVEIT_CONFIG / "joint_limits_toolset_B.yaml",
+}
+SRDF_TOOLSET = {
+    "A": MOVEIT_CONFIG / "xczs_inspection_robot_toolset_A.srdf",
+    "B": MOVEIT_CONFIG / "xczs_inspection_robot_toolset_B.srdf",
+}
+
+
+def active_joint_groups() -> Dict[str, list]:
+    """Arms plus the tool groups mounted by the current ``TOOLSET``.
+
+    Inactive tool groups are absent from the per-toolset controllers / SRDF
+    files, so controller-name and joint-coverage checks must not require them.
+    """
+    groups = dict(JOINT_GROUPS)
+    for name in TOOLSET_INACTIVE_GROUPS[TOOLSET]:
+        del groups[name]
+    return groups
+
+
+def inactive_contact_links() -> frozenset:
+    """Contact links of the toolset that is *not* currently mounted."""
+    return TOOLSET_TOOL_CONTACT_LINKS["B" if TOOLSET == "A" else "A"]
+
+
 TYPE_TO_JOINT = {
     "button": "prismatic",
     "knob": "revolute",
@@ -401,7 +466,14 @@ def expand_xacro(path: Path = XACRO) -> ElementTree.Element:
 
 
 def validate_rcl_parameter_value(robot_description: str) -> None:
-    """Ensure gazebo_ros2_control can pass this XML through rcl arguments."""
+    """Ensure gazebo_ros2_control can pass this XML through rcl arguments.
+
+    gazebo_ros2_control hands robot_description to rcl as an unquoted
+    ``--param robot_description:=<xml>`` override, which rcl parses as YAML.
+    XML comments must therefore stay free of YAML-significant text (a ``:``
+    followed by space or end-of-line, a leading ``-``, flow ``{ } [ ] ,``
+    indicators, etc.) or the controller manager will refuse to start.
+    """
     try:
         import rclpy
     except ImportError:
@@ -482,6 +554,13 @@ def _parser() -> argparse.ArgumentParser:
         "--cabinet-name",
         default=CABINET_NAME,
         help="cabinet instance name used for the structural expansion",
+    )
+    parser.add_argument(
+        "--toolset",
+        choices=["A", "B"],
+        default="A",
+        help="end-effector toolset validated against the fixed robot stack "
+        "(A: three-cylinder + two-cylinder; B: rotate-button + rocker)",
     )
     parser.add_argument(
         "--asset",
@@ -981,13 +1060,19 @@ def validate_cabinet_asset() -> None:
 def main() -> int:
     arguments = _parser().parse_args()
     global CONFIG, SCENE_CONFIG, ROBOT_ADAPTER_CONFIG, XACRO  # noqa: PLW0603
-    global CABINET_NAME, CABINET_NAMESPACE  # noqa: PLW0603
+    global CABINET_NAME, CABINET_NAMESPACE, TOOLSET  # noqa: PLW0603
+    global ROS2_CONTROLLERS, MOVEIT_CONTROLLERS, JOINT_LIMITS, SRDF  # noqa: PLW0603
     CONFIG = Path(arguments.controls).expanduser()
     SCENE_CONFIG = Path(arguments.scene).expanduser()
     ROBOT_ADAPTER_CONFIG = Path(arguments.adapter).expanduser()
     XACRO = Path(arguments.xacro).expanduser()
     CABINET_NAME = arguments.cabinet_name
     CABINET_NAMESPACE = f"/xczs/cabinet/{CABINET_NAME}"
+    TOOLSET = arguments.toolset
+    ROS2_CONTROLLERS = ROS2_CONTROLLERS_TOOLSET[TOOLSET]
+    MOVEIT_CONTROLLERS = MOVEIT_CONTROLLERS_TOOLSET[TOOLSET]
+    JOINT_LIMITS = JOINT_LIMITS_TOOLSET[TOOLSET]
+    SRDF = SRDF_TOOLSET[TOOLSET]
     asset_mode = arguments.asset
     try:
         if asset_mode:
@@ -2368,7 +2453,7 @@ def main() -> int:
                 f"joints; got {prismatic_count} and {revolute_count}."
             )
 
-        robot_description = render_xacro(ROBOT_XACRO)
+        robot_description = render_xacro(ROBOT_XACRO, f"toolset:={TOOLSET}")
         validate_rcl_parameter_value(robot_description)
         robot_root = ElementTree.fromstring(robot_description)
         robot_links = {
@@ -2385,154 +2470,94 @@ def main() -> int:
             if joint.find("child") is not None
         }
 
-        # Each wrist carries two legacy tools at +/-0.20 m.  Those fixed
-        # origins used to be separated from arm_6 by empty space.  Require a
-        # passive, fully physical carrier plate between the wrist and tools in
-        # both RViz (visual) and Gazebo/MoveIt (collision) descriptions.
-        carrier_size = [0.48, 0.08, 0.03]
-        carrier_collision_wings = {
-            "positive": ([0.1575, 0.0, 0.0], [0.165, 0.068, 0.03]),
-            "negative": ([-0.1475, 0.0, 0.0], [0.185, 0.068, 0.03]),
-        }
-        carrier_links = {
-            "r_tool_carrier": "r_arm_6",
-            "l_tool_carrier": "l_arm_6",
-        }
-        for carrier_name, wrist_name in carrier_links.items():
-            carrier = robot_links.get(carrier_name)
-            if carrier is None:
-                fail(f"Expanded robot is missing {carrier_name}.")
-            carrier_joint = child_to_robot_joint.get(carrier_name)
-            carrier_parent = (
-                ""
-                if carrier_joint is None
-                or carrier_joint.find("parent") is None
-                else carrier_joint.find("parent").attrib.get("link", "")
-            )
-            carrier_origin = (
-                None
-                if carrier_joint is None
-                else carrier_joint.find("origin")
-            )
-            if (
-                carrier_joint is None
-                or carrier_joint.attrib.get("type") != "fixed"
-                or carrier_parent != wrist_name
-                or carrier_origin is None
-                or not close_lists(
-                    numbers(
-                        carrier_origin.attrib.get("xyz"),
-                        f"{carrier_name} joint origin",
-                    ),
-                    [0.0, 0.0, 0.0],
-                )
-                or not close_lists(
-                    numbers(
-                        carrier_origin.attrib.get("rpy"),
-                        f"{carrier_name} joint orientation",
-                    ),
-                    [0.0, 0.0, 0.0],
-                )
-            ):
-                fail(
-                    f"{carrier_name} must remain fixed at the {wrist_name} "
-                    "flange origin."
-                )
-            visual_box = carrier.find("./visual/geometry/box")
-            visual_origin = carrier.find("./visual/origin")
-            if visual_box is None or visual_origin is None or not close_lists(
-                numbers(
-                    visual_box.attrib.get("size"),
-                    f"{carrier_name} visual size",
-                ),
-                carrier_size,
-            ) or not close_lists(
-                numbers(
-                    visual_origin.attrib.get("xyz"),
-                    f"{carrier_name} visual origin",
-                ),
+        # Tools mount under the robot's native wrist boss (the model's
+        # end-effector interface): each SolidWorks z=0 base face is centred on
+        # the boss axis and seated just below the wrist ball tip, so the boss
+        # nests into the tool top with no fabricated carrier plate and no
+        # lateral offset.  xyz is the measured boss-centred seat in the arm_6
+        # link frame; rpy encodes the per-arm downstream orientation (working
+        # end pointing away from the wrist).
+        expected_tool_mounts = {
+            "r_three_cyl_base": (
+                "r_arm_6",
+                [0.004, 0.0, -0.2185],
                 [0.0, 0.0, 0.0],
-            ):
+            ),
+            "l_two_cyl_base": (
+                "l_arm_6",
+                [0.004, 0.0, 0.2185],
+                [0.0, math.pi, 0.0],
+            ),
+            "r_rotbtn_body": (
+                "r_arm_6",
+                [0.004, 0.0, -0.2185],
+                [0.0, math.pi, 0.0],
+            ),
+            "l_rocker_body": (
+                "l_arm_6",
+                [0.004, 0.0, 0.2185],
+                [0.0, 0.0, 0.0],
+            ),
+        }
+        for carrier_name in ("r_tool_carrier", "l_tool_carrier"):
+            if carrier_name in robot_links:
                 fail(
-                    f"{carrier_name} visual must continuously span both "
-                    "legacy tool flange centres."
+                    f"Expanded robot must not contain fabricated carrier "
+                    f"plate {carrier_name}; tools mount flush on the native "
+                    "wrist flange."
                 )
-            carrier_collisions = {
-                collision.attrib.get("name", ""): collision
-                for collision in carrier.findall("collision")
-            }
-            parsed_collision_wings = {}
-            for wing, (expected_origin, expected_size) in (
-                carrier_collision_wings.items()
-            ):
-                collision = carrier_collisions.get(
-                    f"{carrier_name}_{wing}_collision"
-                )
-                box = (
-                    None
-                    if collision is None
-                    else collision.find("./geometry/box")
-                )
-                origin = (
-                    None if collision is None else collision.find("origin")
-                )
-                if (
-                    box is None
-                    or origin is None
-                    or not close_lists(
-                        numbers(
-                            box.attrib.get("size"),
-                            f"{carrier_name} {wing} collision size",
-                        ),
-                        expected_size,
-                    )
-                    or not close_lists(
-                        numbers(
-                            origin.attrib.get("xyz"),
-                            f"{carrier_name} {wing} collision origin",
-                        ),
-                        expected_origin,
-                    )
-                ):
+        for tool_name, (wrist_name, expected_xyz, expected_rpy) in (
+            expected_tool_mounts.items()
+        ):
+            if tool_name in inactive_contact_links():
+                if tool_name in robot_links:
                     fail(
-                        f"{carrier_name} {wing} collision wing must bridge "
-                        "arm_6 to its legacy tool flange."
+                        f"Tool link {tool_name} belongs to inactive toolset "
+                        f"{'B' if TOOLSET == 'A' else 'A'} but is still "
+                        f"mounted in toolset {TOOLSET}."
                     )
-                parsed_collision_wings[wing] = (
-                    numbers(
-                        origin.attrib.get("xyz"),
-                        f"{carrier_name} {wing} collision origin",
-                    ),
-                    numbers(
-                        box.attrib.get("size"),
-                        f"{carrier_name} {wing} collision size",
-                    ),
+                continue
+            if tool_name not in robot_links:
+                fail(
+                    f"Expanded robot is missing tool link {tool_name} for "
+                    f"toolset {TOOLSET}."
                 )
-            positive_origin, positive_size = parsed_collision_wings[
-                "positive"
-            ]
-            negative_origin, negative_size = parsed_collision_wings[
-                "negative"
-            ]
-            positive_min_x = positive_origin[0] - positive_size[0] / 2.0
-            positive_max_x = positive_origin[0] + positive_size[0] / 2.0
-            negative_min_x = negative_origin[0] - negative_size[0] / 2.0
-            negative_max_x = negative_origin[0] + negative_size[0] / 2.0
-            # Bounds are the extrema of both exported arm_6 collision meshes.
-            # Each wing must overlap that shell, reach past the complete
-            # +/-0.20 m, r=33.5 mm tool flange, and cover its diameter in Y.
+            mount_joint = child_to_robot_joint.get(tool_name)
+            mount_parent = (
+                ""
+                if mount_joint is None
+                or mount_joint.find("parent") is None
+                else mount_joint.find("parent").attrib.get("link", "")
+            )
+            mount_origin = (
+                None if mount_joint is None else mount_joint.find("origin")
+            )
             if (
-                positive_min_x > 0.08393 + 1.0e-6
-                or positive_max_x < 0.2335 - 1.0e-6
-                or negative_max_x < -0.06042 - 1.0e-6
-                or negative_min_x > -0.2335 + 1.0e-6
-                or positive_size[1] < 0.067 - 1.0e-6
-                or negative_size[1] < 0.067 - 1.0e-6
+                mount_joint is None
+                or mount_joint.attrib.get("type") != "fixed"
+                or mount_parent != wrist_name
+                or mount_origin is None
+                or not close_lists(
+                    numbers(
+                        mount_origin.attrib.get("xyz"),
+                        f"{tool_name} mount origin",
+                    ),
+                    expected_xyz,
+                )
+                or not close_lists(
+                    numbers(
+                        mount_origin.attrib.get("rpy"),
+                        f"{tool_name} mount orientation",
+                    ),
+                    expected_rpy,
+                )
             ):
                 fail(
-                    f"{carrier_name} collision wings do not physically join "
-                    "the arm_6 shell to both complete tool flanges."
+                    f"{tool_name} must be fixed at the {wrist_name} "
+                    f"boss-centred seat below the wrist ball tip "
+                    f"(xyz {expected_xyz}, rpy {expected_rpy})."
                 )
+
 
         # Tool profiles must describe the unchanged fixed hardware.  The
         # three-cylinder's working finger is off-axis, so button/door poses
@@ -2642,63 +2667,86 @@ def main() -> int:
                 fail(
                     f"Robot adapter {control_type} transport target must be home."
                 )
+            if contact_link in inactive_contact_links():
+                # The inactive toolset's hardware must not be mounted at all
+                # (strict exclusivity for the --toolset validation).
+                if contact_link in robot_links:
+                    fail(
+                        f"Tool link {contact_link} belongs to inactive "
+                        f"toolset {'B' if TOOLSET == 'A' else 'A'} but is "
+                        f"still mounted in toolset {TOOLSET}."
+                    )
+                continue
             if contact_link not in robot_links:
-                fail(f"Expanded robot is missing tool link {contact_link}.")
+                fail(
+                    f"Expanded robot is missing tool link {contact_link} for "
+                    f"toolset {TOOLSET}."
+                )
             wrist = "r_arm_6" if contact_link.startswith("r_") else "l_arm_6"
-            expected_carrier = (
-                "r_tool_carrier"
-                if contact_link.startswith("r_")
-                else "l_tool_carrier"
-            )
+            # Tools mount under the native wrist boss.  Each SolidWorks z=0
+            # base face is centred on the boss axis, seated just below the
+            # wrist ball tip (measured in the arm_6 link frame), with the
+            # working end pointing downstream.  No fabricated carrier plate.
+            expected_mounts = {
+                "r_three_cyl_base": (
+                    "r_arm_6",
+                    [0.004, 0.0, -0.2185],
+                    [0.0, 0.0, 0.0],
+                ),
+                "l_two_cyl_base": (
+                    "l_arm_6",
+                    [0.004, 0.0, 0.2185],
+                    [0.0, math.pi, 0.0],
+                ),
+                "r_rotbtn_body": (
+                    "r_arm_6",
+                    [0.004, 0.0, -0.2185],
+                    [0.0, math.pi, 0.0],
+                ),
+                "l_rocker_body": (
+                    "l_arm_6",
+                    [0.004, 0.0, 0.2185],
+                    [0.0, 0.0, 0.0],
+                ),
+            }
+            expected_wrist, expected_xyz, expected_rpy = expected_mounts[
+                contact_link
+            ]
             mount_joint = child_to_robot_joint.get(contact_link)
             mount_parent = (
                 ""
                 if mount_joint is None or mount_joint.find("parent") is None
                 else mount_joint.find("parent").attrib.get("link", "")
             )
+            mount_origin = (
+                None if mount_joint is None else mount_joint.find("origin")
+            )
             if (
                 mount_joint is None
                 or mount_joint.attrib.get("type") != "fixed"
-                or mount_parent != expected_carrier
+                or mount_parent != expected_wrist
+                or mount_origin is None
+                or not close_lists(
+                    numbers(
+                        mount_origin.attrib.get("xyz"),
+                        f"{contact_link} mount origin",
+                    ),
+                    expected_xyz,
+                )
+                or not close_lists(
+                    numbers(
+                        mount_origin.attrib.get("rpy"),
+                        f"{contact_link} mount orientation",
+                    ),
+                    expected_rpy,
+                )
             ):
                 fail(
-                    f"Unchanged tool link {contact_link} must remain fixed to "
-                    f"{expected_carrier}."
+                    f"Unchanged tool link {contact_link} must remain fixed at "
+                    f"the {expected_wrist} boss-centred seat below the wrist "
+                    f"ball tip (xyz {expected_xyz}, rpy {expected_rpy})."
                 )
-            mount_origin = mount_joint.find("origin")
-            if mount_origin is None:
-                fail(f"Tool mount {mount_joint.attrib.get('name')} has no origin.")
-            mount_xyz = numbers(
-                mount_origin.attrib.get("xyz"),
-                f"{contact_link} mount origin",
-            )
-            # The 480 x 80 mm plate covers both +/-200 mm tool centres plus
-            # each exported 33.5 mm flange radius.  It also crosses z=0, the
-            # common SolidWorks mounting plane, so no tool can float beside
-            # the wrist while still satisfying this contract.
-            flange_radius = 0.0335
-            if (
-                len(mount_xyz) != 3
-                or not math.isclose(
-                    abs(mount_xyz[0]),
-                    0.20,
-                    rel_tol=0.0,
-                    abs_tol=1.0e-6,
-                )
-                or not math.isclose(
-                    mount_xyz[1], 0.0, rel_tol=0.0, abs_tol=1.0e-6
-                )
-                or not math.isclose(
-                    mount_xyz[2], 0.0, rel_tol=0.0, abs_tol=1.0e-6
-                )
-                or abs(mount_xyz[0]) + flange_radius
-                > carrier_size[0] / 2.0 + 1.0e-9
-                or flange_radius > carrier_size[1] / 2.0 + 1.0e-9
-            ):
-                fail(
-                    f"{contact_link} flange is not fully supported by the "
-                    f"fixed {wrist} carrier plate."
-                )
+
 
         robot_sensors = {
             sensor.attrib.get("name", ""): sensor
@@ -3083,7 +3131,7 @@ def main() -> int:
         ]
         if "joint_state_broadcaster" not in controller_manager:
             fail("ros2_control must register a joint_state_broadcaster.")
-        for group_name, joint_names in JOINT_GROUPS.items():
+        for group_name, joint_names in active_joint_groups().items():
             controller_name = f"{group_name}_controller"
             if controller_name not in controller_manager:
                 fail(f"ros2_control must register {controller_name}.")
@@ -3106,11 +3154,12 @@ def main() -> int:
             moveit_controllers = yaml.safe_load(stream)
         moveit_manager = moveit_controllers["moveit_simple_controller_manager"]
         expected_controller_names = [
-            f"xczs/{group_name}_controller" for group_name in JOINT_GROUPS
+            f"xczs/{group_name}_controller"
+            for group_name in active_joint_groups()
         ]
         if moveit_manager["controller_names"] != expected_controller_names:
             fail("MoveIt controller names differ from the dual-arm controllers.")
-        for group_name, joint_names in JOINT_GROUPS.items():
+        for group_name, joint_names in active_joint_groups().items():
             controller_key = f"xczs/{group_name}_controller"
             if moveit_manager[controller_key]["joints"] != joint_names:
                 fail(
@@ -3121,10 +3170,12 @@ def main() -> int:
             moveit_limits = yaml.safe_load(stream)["joint_limits"]
         if "body_arm_lift" in moveit_limits:
             fail("MoveIt joint limits still contain the removed arm lift.")
-        all_robot_joints = {
-            joint for joints in JOINT_GROUPS.values() for joint in joints
+        active_robot_joints = {
+            joint
+            for joints in active_joint_groups().values()
+            for joint in joints
         }
-        if not all_robot_joints.issubset(moveit_limits):
+        if not active_robot_joints.issubset(moveit_limits):
             fail("MoveIt joint limits do not cover the complete dual-arm robot.")
         with OMPL_PLANNING.open("r", encoding="utf-8") as stream:
             ompl_config = yaml.safe_load(stream)
@@ -3142,7 +3193,7 @@ def main() -> int:
                 )
 
         srdf_root = ElementTree.parse(SRDF).getroot()
-        for group_name, joint_names in JOINT_GROUPS.items():
+        for group_name, joint_names in active_joint_groups().items():
             group = srdf_root.find(f"./group[@name='{group_name}']")
             if group_name in ("left_arm", "right_arm"):
                 chain = None if group is None else group.find("chain")
@@ -3211,22 +3262,29 @@ def main() -> int:
         }
         if any(forbidden_lift_links & pair for pair in disabled_pairs):
             fail("MoveIt SRDF still contains an arm-lift collision exemption.")
-        required_carrier_adjacencies = {
-            frozenset(("r_arm_6", "r_tool_carrier")),
-            frozenset(("l_arm_6", "l_tool_carrier")),
-            frozenset(("r_tool_carrier", "r_three_cyl_base")),
-            frozenset(("r_tool_carrier", "r_rotbtn_body")),
-            frozenset(("l_tool_carrier", "l_two_cyl_base")),
-            frozenset(("l_tool_carrier", "l_rocker_body")),
-        }
-        if not required_carrier_adjacencies.issubset(disabled_pairs):
-            fail(
-                "MoveIt SRDF must exempt only the directly connected, "
-                "overlapping wrist/carrier/tool flange pairs."
+        active_wrist_tool_pairs = (
+            (
+                frozenset(("r_arm_6", "r_three_cyl_base")),
+                frozenset(("l_arm_6", "l_two_cyl_base")),
             )
-        carrier_and_tool_bases = {
-            "r_tool_carrier",
-            "l_tool_carrier",
+            if TOOLSET == "A"
+            else (
+                frozenset(("r_arm_6", "r_rotbtn_body")),
+                frozenset(("l_arm_6", "l_rocker_body")),
+            )
+        )
+        required_adjacencies = set(active_wrist_tool_pairs)
+        if not required_adjacencies.issubset(disabled_pairs):
+            fail(
+                "MoveIt SRDF must exempt only the directly connected "
+                "overlapping wrist-flange/tool pairs."
+            )
+        if any(inactive_contact_links() & pair for pair in disabled_pairs):
+            fail(
+                "MoveIt SRDF must not exempt collisions for the inactive "
+                "toolset's tool links."
+            )
+        tool_base_links = {
             "r_three_cyl_base",
             "r_rotbtn_body",
             "l_two_cyl_base",
@@ -3238,23 +3296,44 @@ def main() -> int:
             for index in (3, 4, 5)
         }
         if any(
-            pair & carrier_and_tool_bases
+            pair & tool_base_links
             and pair & nonadjacent_forearms
             for pair in disabled_pairs
         ):
             fail(
-                "MoveIt SRDF must not hide a carrier/tool collision with "
+                "MoveIt SRDF must not hide a tool collision with "
                 "arm_3, arm_4 or arm_5; calibrate a collision-free pose."
             )
-        forbidden_wrist_exemptions = {
-            frozenset(("l_arm_4", "l_arm_6")),
-            frozenset(("r_arm_4", "r_arm_6")),
-        }
+        # The fortune-cat idle pose folds the right wrist to sub-mm packing
+        # against r_arm_4; the verified exemption (02de59c) keeps exactly that
+        # one packed pair.  Any other non-adjacent arm_4/arm_6 self-collision
+        # exemption hides a real collision and is forbidden.
+        forbidden_wrist_exemptions = {frozenset(("l_arm_4", "l_arm_6"))}
         if forbidden_wrist_exemptions & disabled_pairs:
             fail(
-                "MoveIt SRDF must not hide non-adjacent arm_4/arm_6 "
-                "self-collisions; calibrate a genuinely collision-free "
+                "MoveIt SRDF must not hide the left non-adjacent arm_4/arm_6 "
+                "self-collision; calibrate a genuinely collision-free "
                 "spawn/home pose."
+            )
+        right_wrist_exemption = next(
+            (
+                entry
+                for entry in srdf_root.findall("disable_collisions")
+                if {
+                    entry.attrib.get("link1"),
+                    entry.attrib.get("link2"),
+                }
+                == {"r_arm_4", "r_arm_6"}
+            ),
+            None,
+        )
+        if right_wrist_exemption is not None and (
+            right_wrist_exemption.attrib.get("reason")
+            != "Packed wrist gap in folded idle pose"
+        ):
+            fail(
+                "The right wrist arm_4/arm_6 exemption must keep the verified "
+                "'Packed wrist gap in folded idle pose' reason."
             )
         for body_pair in (
             {"body", "l_arm_0"},
@@ -3445,6 +3524,7 @@ def main() -> int:
         return 0
     except Exception as error:  # noqa: BLE001
         print(f"Cabinet model validation failed: {error}", file=sys.stderr)
+        traceback.print_exc()
         return 1
 
 

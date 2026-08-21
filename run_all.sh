@@ -23,5 +23,17 @@ set -eo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# 转发所有参数给 jiang/start_xczs_bridge.sh
-exec "$SCRIPT_DIR/jiang/start_xczs_bridge.sh" "$@"
+# 转发所有参数给 jiang/start_xczs_bridge.sh。退出码 42 = 末端工具套装
+# 切换标记触发，需要重读资产库选择并以新套装重新拉起整个栈。
+# 用 if 包裹使非零退出码不触发 set -e。
+while true; do
+    if "$SCRIPT_DIR/jiang/start_xczs_bridge.sh" "$@"; then
+        exit 0
+    fi
+    status=$?
+    if [ "$status" -eq 42 ]; then
+        echo "工具套装已切换，自动重启机器人栈。"
+        continue
+    fi
+    exit "$status"
+done

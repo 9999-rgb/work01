@@ -209,7 +209,7 @@ class AssetWebReadContractTest(_AssetWebTestCase):
         data = response.json()
         self.assertEqual([], data["assets"])
         self.assertEqual(
-            {"scene": None, "cabinet": None},
+            {"scene": None, "cabinet": None, "toolset": None},
             data["selection"],
         )
         self.assertEqual(str(self.assets_dir), data["library_root"])
@@ -218,7 +218,7 @@ class AssetWebReadContractTest(_AssetWebTestCase):
         response = self.client.get("/assets/selection")
         self.assertEqual(200, response.status_code)
         self.assertEqual(
-            {"scene": None, "cabinet": None},
+            {"scene": None, "cabinet": None, "toolset": None},
             response.json(),
         )
 

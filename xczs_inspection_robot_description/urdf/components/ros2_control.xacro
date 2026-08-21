@@ -56,18 +56,23 @@
       <xacro:xczs_position_controlled_joint joint_name="r_arm_5_joint" initial_value="${initial_positions['r_arm_5_joint']}" />
       <xacro:xczs_position_controlled_joint joint_name="r_arm_6_joint" initial_value="${initial_positions['r_arm_6_joint']}" />
 
-      <!-- Right tools - three_cylinder (3) + rotate_button (rotate carrier + 2 jaws). -->
-      <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger2_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger3_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_rotate_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
-
-      <!-- Left tools - two_cylinder (2) + rocker (1). -->
-      <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger1_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger2_joint" />
-      <xacro:xczs_position_controlled_joint joint_name="l_rocker_rotor_joint" />
+      <!-- Tool joints are declared only for the mounted toolset (A/B), so
+           controller_manager never builds controllers for tool joints that
+           are absent from the URDF. Set A is three-cylinder(右) + two-cylinder(左);
+           Set B is rotate-button(右) + rocker(左). -->
+      <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
+        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger2_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger3_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger1_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger2_joint" />
+      </xacro:if>
+      <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
+        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_rotate_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="l_rocker_rotor_joint" />
+      </xacro:if>
 
       <!-- The planar Gazebo plugin moves the base. ros2_control only exposes
            wheel state so robot_state_publisher keeps the complete TF tree. -->
@@ -82,7 +87,7 @@
         <robot_param>robot_description</robot_param>
         <robot_param_node>/robot_state_publisher</robot_param_node>
         <parameters>
-          $(find xczs_inspection_robot_description)/config/ros2_controllers.yaml
+          $(find xczs_inspection_robot_description)/config/ros2_controllers_toolset_${'$(arg toolset)'.upper()}.yaml
         </parameters>
         <hold_joints>true</hold_joints>
         <ros>

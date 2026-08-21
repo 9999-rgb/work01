@@ -1,9 +1,11 @@
 <?xml version="1.0"?>
 <!--
-  Dual-arm semantic robot description.  Two 7-DOF manipulator groups (left_arm,
-  right_arm) plus four end-effector tool groups.  Each pair of tools hangs from
-  its arm wrist (l_arm_6 / r_arm_6) through a passive fixed carrier, matching
-  the robot_description produced by xczs_inspection_robot.urdf.xacro.
+  Dual-arm semantic robot description for end-effector TOOLSET B:
+  rotate_button on the right wrist + rocker on the left wrist.
+  Arms, virtual_joint, fortune-cat home states and the wrist-flange/tool
+  collision exemptions are shared with toolset A (xczs_inspection_robot_toolset_A.srdf);
+  only this set's tool groups / end-effectors / collision exemptions appear here,
+  so every link referenced exists in the toolset-B robot_description.
 -->
 <robot
   xmlns:xacro="http://www.ros.org/wiki/xacro"
@@ -20,17 +22,6 @@
 
   <group name="right_arm">
     <chain base_link="body" tip_link="r_arm_6" />
-  </group>
-
-  <group name="three_cylinder">
-    <joint name="r_three_cyl_finger1_joint" />
-    <joint name="r_three_cyl_finger2_joint" />
-    <joint name="r_three_cyl_finger3_joint" />
-  </group>
-
-  <group name="two_cylinder">
-    <joint name="l_two_cyl_finger1_joint" />
-    <joint name="l_two_cyl_finger2_joint" />
   </group>
 
   <group name="rocker">
@@ -65,17 +56,6 @@
     <joint name="r_arm_6_joint" value="0.1" />
   </group_state>
 
-  <group_state name="open" group="three_cylinder">
-    <joint name="r_three_cyl_finger1_joint" value="0" />
-    <joint name="r_three_cyl_finger2_joint" value="0" />
-    <joint name="r_three_cyl_finger3_joint" value="0" />
-  </group_state>
-
-  <group_state name="open" group="two_cylinder">
-    <joint name="l_two_cyl_finger1_joint" value="0" />
-    <joint name="l_two_cyl_finger2_joint" value="0" />
-  </group_state>
-
   <group_state name="center" group="rocker">
     <joint name="l_rocker_rotor_joint" value="0" />
   </group_state>
@@ -86,16 +66,6 @@
     <joint name="r_rotbtn_jaw2_joint" value="0" />
   </group_state>
 
-  <end_effector
-    name="three_cylinder"
-    parent_link="r_arm_6"
-    group="three_cylinder"
-    parent_group="right_arm" />
-  <end_effector
-    name="two_cylinder"
-    parent_link="l_arm_6"
-    group="two_cylinder"
-    parent_group="left_arm" />
   <end_effector
     name="rocker"
     parent_link="l_arm_6"
@@ -136,21 +106,9 @@
   <disable_collisions link1="r_arm_6" link2="arm_camera_link" reason="Adjacent" />
 
   <!-- Tools mount flush on the native wrist flange (arm_6 ball end face).
-       Only directly connected fixed pairs are excluded.  This file predates
-       the per-toolset SRDFs and is kept for reference only. -->
-  <disable_collisions link1="r_arm_6" link2="r_three_cyl_base" reason="Adjacent" />
+       Only directly connected fixed pairs are excluded. -->
   <disable_collisions link1="r_arm_6" link2="r_rotbtn_body" reason="Adjacent" />
-  <disable_collisions link1="l_arm_6" link2="l_two_cyl_base" reason="Adjacent" />
   <disable_collisions link1="l_arm_6" link2="l_rocker_body" reason="Adjacent" />
-
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger1" reason="Adjacent" />
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger2" reason="Adjacent" />
-  <disable_collisions link1="r_three_cyl_finger2" link2="r_three_cyl_finger3" reason="Adjacent" />
-  <disable_collisions link1="r_three_cyl_finger1" link2="r_three_cyl_finger2" reason="Default" />
-
-  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Adjacent" />
-  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Adjacent" />
-  <disable_collisions link1="l_two_cyl_finger1" link2="l_two_cyl_finger2" reason="Default" />
 
   <disable_collisions link1="l_rocker_body" link2="l_rocker_rotor" reason="Adjacent" />
 
@@ -161,14 +119,6 @@
   <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw2" reason="Adjacent" />
   <disable_collisions link1="r_rotbtn_jaw1" link2="r_rotbtn_jaw2" reason="Default" />
 
-  <!-- Tucked fingers overlap their tool base at the retracted position (the
-       tool body's flat face presses cabinet buttons). -->
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger1" reason="Tucked finger inside tool body" />
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger2" reason="Tucked finger inside tool body" />
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger3" reason="Tucked finger inside tool body" />
-  <disable_collisions link1="r_three_cyl_finger2" link2="r_three_cyl_finger3" reason="Serial finger stages" />
-  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Tucked finger inside tool body" />
-  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Tucked finger inside tool body" />
   <!-- The wrist (r_arm_6) is separated from the upper forearm (r_arm_4) only by
        the short r_arm_5 link; their collision meshes pack to sub-mm contact in
        folded poses (the fortune-cat idle posture, r_arm_5≈0.8 rad).  This is a

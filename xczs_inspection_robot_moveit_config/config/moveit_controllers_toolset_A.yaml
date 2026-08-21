@@ -1,0 +1,52 @@
+# 套装 A 的 MoveIt 控制器映射:双臂 + three_cylinder + two_cylinder。
+moveit_controller_manager: moveit_simple_controller_manager/MoveItSimpleControllerManager
+moveit_manage_controllers: false
+moveit_simple_controller_manager:
+  controller_names:
+  - xczs/left_arm_controller
+  - xczs/right_arm_controller
+  - xczs/three_cylinder_controller
+  - xczs/two_cylinder_controller
+  xczs/left_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+    - l_arm_0_joint
+    - l_arm_1_joint
+    - l_arm_2_joint
+    - l_arm_3_joint
+    - l_arm_4_joint
+    - l_arm_5_joint
+    - l_arm_6_joint
+  xczs/right_arm_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+    - r_arm_0_joint
+    - r_arm_1_joint
+    - r_arm_2_joint
+    - r_arm_3_joint
+    - r_arm_4_joint
+    - r_arm_5_joint
+    - r_arm_6_joint
+  xczs/three_cylinder_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+    - r_three_cyl_finger1_joint
+    - r_three_cyl_finger2_joint
+    - r_three_cyl_finger3_joint
+  xczs/two_cylinder_controller:
+    type: FollowJointTrajectory
+    action_ns: follow_joint_trajectory
+    default: true
+    joints:
+    - l_two_cyl_finger1_joint
+    - l_two_cyl_finger2_joint
+trajectory_execution:
+  allowed_execution_duration_scaling: 1.5
+  allowed_goal_duration_margin: 1.0
+  allowed_start_tolerance: 0.05

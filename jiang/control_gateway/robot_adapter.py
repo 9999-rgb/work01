@@ -307,8 +307,9 @@ def _derived_controller_topics(
     ``<namespace>/<group>_controller/joint_trajectory`` and publishes its
     action status under ``<namespace>/<group>_controller/``
     ``follow_joint_trajectory/_action/status``.  This convention is shared by
-    every controller in ``config/ros2_controllers.yaml``, so topics need not
-    be repeated per group.
+    every controller in the active toolset's
+    ``config/ros2_controllers_toolset_{A,B}.yaml``, so topics need not be
+    repeated per group.
     """
     base = f"{namespace.rstrip('/')}/{name}_controller"
     return (

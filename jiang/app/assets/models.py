@@ -41,3 +41,5 @@ class Selection(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     scene: Mapped[str | None] = mapped_column(String(64), nullable=True)
     cabinet: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # 末端工具套装 A / B（None = 未选择，视为 A）。
+    toolset: Mapped[str | None] = mapped_column(String(2), nullable=True)

@@ -105,16 +105,20 @@ class AssetSelection:
 
     ``scene`` and ``cabinet`` name imported assets (by asset name).  For a scene
     asset the asset name equals the primary scene name inside its ``scenes.yaml``
-    (enforced at import).
+    (enforced at import).  ``toolset`` selects the end-effector tool set
+    (``"A"``: 三电缸右 + 两电缸左, ``"B"``: 旋转按钮右 + 摇入摇出左); the robot
+    stack must restart for a toolset change to take effect.
     """
 
     scene: Optional[str] = None
     cabinet: Optional[str] = None
+    toolset: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Optional[str]]:
         return {
             "scene": self.scene,
             "cabinet": self.cabinet,
+            "toolset": self.toolset,
         }
 
 
@@ -409,6 +413,8 @@ class AssetLibrary:
             env.update(self._scene_env(selection.scene))
         if selection.cabinet:
             env.update(self._cabinet_env(selection.cabinet))
+        if selection.toolset:
+            env["TOOLSET"] = selection.toolset.upper()
         return env
 
     def _scene_env(self, name: str) -> Dict[str, str]:

@@ -1,9 +1,11 @@
 <?xml version="1.0"?>
 <!--
-  Dual-arm semantic robot description.  Two 7-DOF manipulator groups (left_arm,
-  right_arm) plus four end-effector tool groups.  Each pair of tools hangs from
-  its arm wrist (l_arm_6 / r_arm_6) through a passive fixed carrier, matching
-  the robot_description produced by xczs_inspection_robot.urdf.xacro.
+  Dual-arm semantic robot description for end-effector TOOLSET A (default):
+  three_cylinder on the right wrist + two_cylinder on the left wrist.
+  Arms, virtual_joint, fortune-cat home states and the wrist-flange/tool
+  collision exemptions are shared with toolset B (xczs_inspection_robot_toolset_B.srdf);
+  only this set's tool groups / end-effectors / collision exemptions appear here,
+  so every link referenced exists in the toolset-A robot_description.
 -->
 <robot
   xmlns:xacro="http://www.ros.org/wiki/xacro"
@@ -31,16 +33,6 @@
   <group name="two_cylinder">
     <joint name="l_two_cyl_finger1_joint" />
     <joint name="l_two_cyl_finger2_joint" />
-  </group>
-
-  <group name="rocker">
-    <joint name="l_rocker_rotor_joint" />
-  </group>
-
-  <group name="rotate_button">
-    <joint name="r_rotbtn_rotate_joint" />
-    <joint name="r_rotbtn_jaw1_joint" />
-    <joint name="r_rotbtn_jaw2_joint" />
   </group>
 
   <!-- Calibrated fortune-cat transport pose, identical to Gazebo spawn and
@@ -76,16 +68,6 @@
     <joint name="l_two_cyl_finger2_joint" value="0" />
   </group_state>
 
-  <group_state name="center" group="rocker">
-    <joint name="l_rocker_rotor_joint" value="0" />
-  </group_state>
-
-  <group_state name="open" group="rotate_button">
-    <joint name="r_rotbtn_rotate_joint" value="0" />
-    <joint name="r_rotbtn_jaw1_joint" value="0" />
-    <joint name="r_rotbtn_jaw2_joint" value="0" />
-  </group_state>
-
   <end_effector
     name="three_cylinder"
     parent_link="r_arm_6"
@@ -96,16 +78,6 @@
     parent_link="l_arm_6"
     group="two_cylinder"
     parent_group="left_arm" />
-  <end_effector
-    name="rocker"
-    parent_link="l_arm_6"
-    group="rocker"
-    parent_group="left_arm" />
-  <end_effector
-    name="rotate_button"
-    parent_link="r_arm_6"
-    group="rotate_button"
-    parent_group="right_arm" />
 
   <!-- Adjacent / never-moving link pairs whose collision checks are skipped. -->
   <disable_collisions link1="body" link2="l_arm_0" reason="Adjacent" />
@@ -136,12 +108,9 @@
   <disable_collisions link1="r_arm_6" link2="arm_camera_link" reason="Adjacent" />
 
   <!-- Tools mount flush on the native wrist flange (arm_6 ball end face).
-       Only directly connected fixed pairs are excluded.  This file predates
-       the per-toolset SRDFs and is kept for reference only. -->
+       Only directly connected fixed pairs are excluded. -->
   <disable_collisions link1="r_arm_6" link2="r_three_cyl_base" reason="Adjacent" />
-  <disable_collisions link1="r_arm_6" link2="r_rotbtn_body" reason="Adjacent" />
   <disable_collisions link1="l_arm_6" link2="l_two_cyl_base" reason="Adjacent" />
-  <disable_collisions link1="l_arm_6" link2="l_rocker_body" reason="Adjacent" />
 
   <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger1" reason="Adjacent" />
   <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger2" reason="Adjacent" />
@@ -151,15 +120,6 @@
   <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Adjacent" />
   <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Adjacent" />
   <disable_collisions link1="l_two_cyl_finger1" link2="l_two_cyl_finger2" reason="Default" />
-
-  <disable_collisions link1="l_rocker_body" link2="l_rocker_rotor" reason="Adjacent" />
-
-  <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_rotate" reason="Adjacent" />
-  <disable_collisions link1="r_rotbtn_rotate" link2="r_rotbtn_jaw1" reason="Adjacent" />
-  <disable_collisions link1="r_rotbtn_rotate" link2="r_rotbtn_jaw2" reason="Adjacent" />
-  <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw1" reason="Adjacent" />
-  <disable_collisions link1="r_rotbtn_body" link2="r_rotbtn_jaw2" reason="Adjacent" />
-  <disable_collisions link1="r_rotbtn_jaw1" link2="r_rotbtn_jaw2" reason="Default" />
 
   <!-- Tucked fingers overlap their tool base at the retracted position (the
        tool body's flat face presses cabinet buttons). -->
