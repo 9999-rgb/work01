@@ -57,9 +57,40 @@
         knob's revolute joint.  The joint remains dynamic and its physical
         detent still decides the reported state.
       -->
-      <grasp_coupling_stiffness>1.0</grasp_coupling_stiffness>
-      <grasp_coupling_damping>0.02</grasp_coupling_damping>
-      <grasp_coupling_max_effort>0.5</grasp_coupling_max_effort>
+      <!--
+        Knob coupling calibration (2026-08-21): the sweep target sits just past
+        the detent midpoint (release_fraction 0.75 -> 0.589 rad vs midpoint
+        0.393 rad), so the coupling must keep driving the knob as it crosses
+        the midpoint.  The old (1.0 / 0.02 / 0.5) was too weak and the effort
+        saturated into a bang-bang limit cycle.
+
+        (5.0 / 0.08 / 3.0) fixed the stiffness but NOT the saturation: with the
+        tiny 3e-5 kg m^2 knob inertia the coupling reaches the clamp threshold
+        within one ODE step, and the +-3.0 clamp self-sustains a +-59 rad/s
+        limit cycle.  Even unclamped at max_effort 6.0, the velocity term
+        -0.08*vel swamps the spring the moment the knob crosses the detent
+        ridge (0.08*59 ~ 4.7 N*m vs the 0.98 N*m spring), flinging it back to
+        center.  The coupling damping must therefore be negligible for this
+        micro-inertia joint.
+
+        Root cause (2026-08-21 v2): while grasped the base detent effort stayed
+        active because grasp_stiffness defaulted to detent_stiffness 0.60.  At
+        the 0.393 rad midpoint the detent force flips by 0.785*0.60 ~ 0.47 N*m;
+        on the 3e-5 kg m^2 knob that injects ~15.7 rad/s per 1 ms ODE step, so
+        every midpoint crossing re-pumped the +-59 rad/s limit cycle no matter
+        how the coupling was tuned.  The fix is to disable the base detent
+        while the tool grips the knob: grasp_stiffness 0 / grasp_damping 0.  The
+        compliant coupling then drives the knob alone and it tracks the tool's
+        slow sweep (coupling 0.005 plus the joint's own 0.04 damping is well
+        overdamped, zeta ~1.8), so the knob crosses the midpoint once, smoothly.
+        On release the 0.60 detent re-engages and snaps the knob into the
+        latched target, the intended over-center finish.
+      -->
+      <grasp_stiffness>0.0</grasp_stiffness>
+      <grasp_damping>0.0</grasp_damping>
+      <grasp_coupling_stiffness>5.0</grasp_coupling_stiffness>
+      <grasp_coupling_damping>0.005</grasp_coupling_damping>
+      <grasp_coupling_max_effort>6.0</grasp_coupling_max_effort>
       <motion_tolerance>0.025</motion_tolerance>
       <reset_position>0.0</reset_position>
       <graspable>true</graspable>

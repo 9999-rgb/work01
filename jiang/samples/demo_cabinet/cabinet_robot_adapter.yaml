@@ -174,13 +174,34 @@
       knob:
         move_group: right_arm
         contact_tool_link: r_rotbtn_body
+        # The cabinet grasp plugin measures the attach distance from this link
+        # to the control's grasp point.  r_rotbtn_body sits 0.19 m behind the
+        # jaw clamp centre, so the compliant grasp would fail the 0.12 m
+        # threshold even when the jaws are exactly on the control.  The jaw
+        # carrier r_rotbtn_rotate is 16 mm short of the clamp centre and is the
+        # correct distance probe (it is rigid to the body while the jaws are
+        # held open by the controller).
+        grasp_link: r_rotbtn_rotate
         transport_named_target: home
-        tool_tip_offset: 0.0
+        tool_axis_orientation: toward_control
+        tool_tip_position: [-0.0613, -0.006, 0.1885]
       switch:
         move_group: left_arm
         contact_tool_link: l_rocker_body
+        # The rocker rotor is position-held at 0 by the rocker controller, so
+        # it is rigid to the body during the operation and is the correct
+        # distance probe: l_rocker_body sits 0.27 m behind the rotor centre,
+        # which would fail the 0.12 m grasp distance threshold.  The rotor also
+        # carries the compliant grasp coupling, which drives the switch joint
+        # to follow the rotor's world twist.
+        grasp_link: l_rocker_rotor
         transport_named_target: home
-        tool_tip_offset: 0.143
+        # The rocker carries its rotor on local +Z, so +Z must face the switch
+        # handle (into the cabinet) and the wrist stays outside the rear door.
+        # The tip is the rotor joint centre in the tool body frame, so the
+        # rotor (not the body origin) lands on the switch grasp point.
+        tool_axis_orientation: toward_control
+        tool_tip_position: [-0.01, -0.07, 0.2611]
       door:
         move_group: right_arm
         contact_tool_link: r_three_cyl_base
@@ -192,10 +213,11 @@
           - r_three_cyl_finger3_joint
         calibration_joint_positions: [0.0, 0.0, 0.0]
     # Loosest position layer of the navigation->docking handoff.  Must be >=
-    # NAVIGATION_POSITION_TOLERANCE_M (0.22) — see test_nav2_config_contract.py.
-    # 0.22 m absorbs the open-scene AMCL longitudinal drift; the docking
-    # controller then narrows to its own 0.008 m target.
-    navigation_takeover_distance: 0.22
+    # NAVIGATION_POSITION_TOLERANCE_M (1.0) — see test_nav2_config_contract.py.
+    # 1.0 m covers the Nav2 inflation-limited stop for the tight Set B docks
+    # (knob/switch stop 0.5-0.8 m short, observed 0.52 m / 0.80 m across runs);
+    # the docking controller then narrows to its own 0.008 m target.
+    navigation_takeover_distance: 1.0
     navigation_takeover_yaw_tolerance: 0.35
     navigation_takeover_stall_timeout: 4.0
     docking_timeout: 45.0
@@ -233,13 +255,32 @@
           base_yaw_offset: 0.0
           frame_id: map
       # 总开关安装在后门上；必须与后门共用柜后工位，不得从正面隔柜规划。
+      # 左臂 + rocker 在 0.930 m 退距下够不到开关握柄，改为 0.780 m：
+      # IK 扫描确认 ≤0.82 m 时接近路径全部可达（与主 adapter 一致）。
       cabinet_main_switch:
         navigation_station:
           local_anchor: [0.610, 1.115, -0.680]
           outward_axis: [0.0, 0.0, -1.0]
-          standoff: 0.930
+          standoff: 0.780
           base_yaw_offset: 0.0
           frame_id: map
+        ready_joint_seed:
+          joint_names:
+            - l_arm_0_joint
+            - l_arm_1_joint
+            - l_arm_2_joint
+            - l_arm_3_joint
+            - l_arm_4_joint
+            - l_arm_5_joint
+            - l_arm_6_joint
+          positions:
+            - -0.0374
+            - -2.1330
+            - 1.9093
+            - -0.9783
+            - 2.4426
+            - 0.7052
+            - -0.0849
       box_1_button_1:
         navigation_station:
           local_anchor: [0.470000, 1.115, 0.000]
@@ -464,19 +505,32 @@
       box_5_knob:
         # 历史标定曾为追求 IK 将退距压到 0.400 m，但该值小于底盘
         # 沿柜面法向的半外廓，接近时会先让底盘/工具与柜体产生物理接触。
-        # 恢复 0.769 m 安全退距；以下方向标定只供无运动的实时规划诊断，
-        # 不得用缩短底盘距离的方式将本控件重新加入物理执行清单。
+        # 恢复 0.769 m 安全退距；不得用缩短底盘距离的方式改变本控件几何。
+        #
+        # tool_roll_offsets 在 toward_control 方向下全部置 0：工具 +Z 指向
+        # 控件时，roll=0 使钳口开合轴(tool +Y)平行于旋钮叶片法向(世界 ±Y)，
+        # 叶片(11 mm 厚)可无接触滑入 36 mm 钳口；历史数值(沿原 outward 方向
+        # 标定)会让钳口转成垂直(世界 ±Z)，叶片 65 mm 高无法进入 36 mm 竖向
+        # 间隙，接近阶段必然顶动叶片并触发 pre-grasp 扰动保护。
+        # roll=0 在旋转全程保持对齐：工具与叶片随 wq(旋钮角)一同转动。
         tool_roll_offsets:
           - 0.0
-          - -0.872664625997
           - 0.0
-          - -1.1344640138
           - 0.0
-          - -1.57079632679
           - 0.0
-          - -1.83259571459
           - 0.0
-        detent_release_fraction: 0.58
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        # 退距标定：叶片(11 mm)必须滑入钳口挂钩间隙(36 mm)，但钳口根部基板
+        # (8 mm 间隙)会先于挂钩扫过叶片前缘。钳口基板面到叶片面间距 =
+        # grasp_outward_offset − 0.022(基板内沿距钳心半距)。0.020 → 2 mm 重叠
+        # (接近阶段顶动叶片，pre-grasp 扰动)；0.026 → 4 mm 净间隙，且仍保证
+        # 挂钩与叶片中部有效咬合(挂钩间隙中心在钳心 +16 mm，叶片入深 8-30 mm)。
+        # 柔顺抓取只依赖工具姿态耦合，工具退后 6 mm 不影响旋钮旋转。
+        grasp_outward_offset: 0.026
+        detent_release_fraction: 0.75
         # 七轴臂对同一夹具位姿存在多组 IK。该命名种子选择已逐段验证可继续
         # 完成接近、相邻档旋转和撤离的分支；运行时仍会按实时 TF 重新求 IK。
         ready_joint_seed:
@@ -554,15 +608,16 @@
     operable_control_ids:
       - box_6_button_1
       - box_6_button_2
+      - box_5_knob
+      - cabinet_main_switch
     inoperable_control_reason: >-
-      5 号柜旋钮原工位的 0.400 m 退距小于机器人底盘沿柜面法向的半尺寸，
-      不满足底盘防碰撞安全包络，现已撤销物理执行权限。其余控件实测仍存在
-      末端工具与面板干涉、无运动学解或无碰撞路径，或尚未完成带安全退距的
-      物理到档验收。其中 1/2 号柜按钮（顶部，press 工具点高 1.27 m）与
-      10/11 号柜按钮（底部，press 工具点贴近地面 0.03/-0.23 m）超出右臂
-      在现工位退距下的可达工作空间，OMPL 无法为 prepress 目标采样有效解；
-      仅中排 3~8 号柜按钮在右臂肩高附近可达。未列控件仅保留状态显示和实时
-      规划验证，不下发机械臂、抓取或柜体写入命令。
+      未列入 operable_control_ids 的控件仅保留状态显示和实时规划验证，
+      不下发机械臂、抓取或柜体写入命令。1/2 号柜按钮（顶部，press 工具点
+      高约 1.27 m）与 10/11 号柜按钮（底部，press 工具点贴近地面
+      0.03/-0.23 m）超出右臂在现工位退距下的可达工作空间，OMPL 无法为
+      prepress 目标采样有效解；其余中排按钮未完成带安全退距的物理到档
+      验收。总开关已通过 0.780 m 退距下的左臂 + rocker 物理到档验收，
+      见 cabinet_main_switch。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

@@ -900,9 +900,14 @@ class TaskRunnerTest(unittest.TestCase):
         accepted = server.submit_navigation_task("cabinet_a")
 
         self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        # Nav2 stops 0.95 m short of the dock (inflation-limited stop for a
+        # tight station, like the Set B knob/switch docks).  The first leg is
+        # still accepted (within the 1.0 m handoff window); the refreshed live
+        # station then puts the handoff pose > 1.0 m away, so a correction is
+        # required.
         node.finish_navigation(
             "succeeded",
-            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+            pose={"x": 0.05, "y": 0.0, "yaw": math.pi},
         )
         correction_x = node.wait_for_navigation_goal(2)
         self.assertIsNotNone(correction_x)
@@ -994,7 +999,7 @@ class TaskRunnerTest(unittest.TestCase):
             return NavigationStation(
                 cabinet=cabinet,
                 frame_id="map",
-                x=1.0 if calls == 1 else 1.15,
+                x=1.0 if calls == 1 else 1.5,
                 y=0.0,
                 z=0.0,
                 yaw=math.pi,
@@ -1003,26 +1008,28 @@ class TaskRunnerTest(unittest.TestCase):
         node.navigation_station_from_tf = live_station
         accepted = server.submit_navigation_task("cabinet_a")
         self.assertIsNotNone(node.wait_for_navigation_goal(1))
-        # The first goal is valid against its own station, but the live station
-        # drifts to x=1.15, so the localized finish pose (x=0.87) lands 0.28 m
-        # away — outside the 0.22 m operation handoff margin.
+        # The first goal is valid against its own station: Nav2 stops 0.95 m
+        # short (inflation-limited stop), which is inside the 1.0 m handoff
+        # window.  The live station then drifts to x=1.5 (0.5 m, at the
+        # localization-jump cap), so the localized finish pose (x=0.05) lands
+        # 1.45 m away — outside the 1.0 m operation handoff margin.
         node.finish_navigation(
             "succeeded",
-            pose={"x": 0.87, "y": 0.0, "yaw": math.pi},
+            pose={"x": 0.05, "y": 0.0, "yaw": math.pi},
         )
         correction = node.wait_for_navigation_goal(2)
         self.assertIsNotNone(correction)
         assert correction is not None
-        self.assertAlmostEqual(1.15, correction["x"])
+        self.assertAlmostEqual(1.5, correction["x"])
         node.finish_navigation(
             "succeeded",
-            pose={"x": 1.15, "y": 0.0, "yaw": math.pi},
+            pose={"x": 1.5, "y": 0.0, "yaw": math.pi},
         )
 
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
         self.assertEqual("success", task["status"])
         self.assertEqual(1, task["result"]["route"]["correction_count"])
-        self.assertAlmostEqual(1.15, task["result"]["station"]["x"])
+        self.assertAlmostEqual(1.5, task["result"]["station"]["x"])
 
     def test_navigation_records_station_drift_without_a_redundant_goal(
         self,
@@ -1117,7 +1124,7 @@ class TaskRunnerTest(unittest.TestCase):
             return NavigationStation(
                 cabinet=cabinet,
                 frame_id="map",
-                x=1.0 + 0.25 * (calls - 1),
+                x=1.0 + 0.5 * (calls - 1),
                 y=0.0,
                 z=0.0,
                 yaw=math.pi,
@@ -1125,14 +1132,18 @@ class TaskRunnerTest(unittest.TestCase):
 
         node.navigation_station_from_tf = moving_station
         accepted = server.submit_navigation_task("cabinet_a")
-        for goal_count, goal_x in enumerate((1.0, 1.25, 1.5), start=1):
+        # Nav2 stops 0.6 m short of every dock (within the 1.0 m handoff
+        # window); the station keeps advancing 0.5 m per refresh (at the
+        # localization-jump cap), so each handoff pose stays > 1.0 m away and
+        # a bounded correction is issued until the limit is exhausted.
+        for goal_count, goal_x in enumerate((1.0, 1.5, 2.0), start=1):
             goal = node.wait_for_navigation_goal(goal_count)
             self.assertIsNotNone(goal)
             assert goal is not None
             self.assertAlmostEqual(goal_x, goal["x"])
             node.finish_navigation(
                 "succeeded",
-                pose={"x": goal_x, "y": 0.0, "yaw": math.pi},
+                pose={"x": goal_x - 0.6, "y": 0.0, "yaw": math.pi},
             )
 
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
@@ -1142,7 +1153,7 @@ class TaskRunnerTest(unittest.TestCase):
             task["failure_code"],
         )
         self.assertEqual(3, node.navigation_goal_count)
-        self.assertAlmostEqual(1.75, task["result"]["station"]["x"])
+        self.assertAlmostEqual(2.5, task["result"]["station"]["x"])
 
     def test_navigation_correction_reuses_original_ros_time_budget(self) -> None:
         server, node = _server()
@@ -1247,7 +1258,7 @@ class TaskRunnerTest(unittest.TestCase):
             return NavigationStation(
                 cabinet=cabinet,
                 frame_id="map",
-                x=1.0 if calls == 1 else 1.3,
+                x=1.0 if calls == 1 else 1.5,
                 y=0.0,
                 z=0.0,
                 yaw=math.pi,
@@ -1256,9 +1267,12 @@ class TaskRunnerTest(unittest.TestCase):
         node.navigation_station_from_tf = live_station
         accepted = server.submit_navigation_task("cabinet_a")
         self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        # Nav2 stops 0.95 m short; the refreshed live station (x=1.5, drift
+        # 0.5 m at the jump cap) puts the handoff pose 1.45 m away, so a
+        # correction goal is issued before the cancel arrives.
         node.finish_navigation(
             "succeeded",
-            pose={"x": 1.0, "y": 0.0, "yaw": math.pi},
+            pose={"x": 0.05, "y": 0.0, "yaw": math.pi},
         )
         self.assertIsNotNone(node.wait_for_navigation_goal(2))
 

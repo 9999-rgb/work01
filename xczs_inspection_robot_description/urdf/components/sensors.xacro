@@ -22,7 +22,13 @@
     180-degree fan away from the body to prevent the chassis from masking the
     measurements.
   -->
-  <xacro:property name="body_lidar_mount_xyz" value="0 0.259 -0.100" />
+  <!--
+    Mount raised from z=-0.100 (inside the migrated body_collision mesh, whose
+    top is z=+1.029 in the body frame) to z=+1.600, just above the raised
+    fortune-cat wrists and below the 2.23 m cabinet top, so the planar fan is
+    neither masked by the chassis nor passing over the cabinets.
+  -->
+  <xacro:property name="body_lidar_mount_xyz" value="0 0.259 1.600" />
   <xacro:property
     name="body_lidar_mount_rpy"
     value="0 0 1.57079632679" />

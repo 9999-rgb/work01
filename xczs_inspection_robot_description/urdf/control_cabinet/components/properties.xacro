@@ -36,11 +36,31 @@
   <xacro:property name="cabinet_button_collision_length" value="0.012" />
 
   <xacro:property name="cabinet_knob_limit" value="0.7853981633974483" />
+  <!--
+    The extreme knob detents coincide exactly with the original revolute joint
+    limit (0.785398), so a knob driven to its detent by the release snap rests
+    on the ODE stop motor.  That stop contact is sticky: the constraint force
+    balances the detent pull exactly, and the knob never returns to its detent,
+    so the next operation's attach check sees the control still moving and
+    refuses.  The joint limit is therefore a pure safety backstop placed well
+    past the snap overshoot (the observed coast past the detent is about
+    0.01 rad at the 3e-5 kg m^2 inertia).  With the backstop at +-0.8854 the
+    knob coasts to its natural peak, the detent reverses it, and the low joint
+    friction (0.002 N m, primitives.xacro) lets it seat back at the detent.
+  -->
+  <xacro:property name="cabinet_knob_joint_limit" value="0.8853981633974483" />
   <xacro:property name="cabinet_knob_mass" value="0.08" />
   <xacro:property name="cabinet_knob_base_radius" value="0.0175" />
   <xacro:property name="cabinet_knob_base_length" value="0.020" />
 
   <xacro:property name="cabinet_switch_limit" value="1.5707963267948966" />
+  <!--
+    The switch ON detent (0.785398 -> pi/2) coincides exactly with the original
+    upper revolute limit.  As with the knob, a switch driven to its ON detent
+    by the release snap would rest on the ODE stop motor and never seat back.
+    Give the travel the same generous safety-backstop margin.
+  -->
+  <xacro:property name="cabinet_switch_joint_limit" value="1.6707963267948966" />
   <xacro:property name="cabinet_door_limit" value="1.5707963267948966" />
 
   <xacro:property name="cabinet_contact_friction" value="1.0" />

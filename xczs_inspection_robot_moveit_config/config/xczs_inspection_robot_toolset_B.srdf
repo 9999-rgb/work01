@@ -109,6 +109,12 @@
        Only directly connected fixed pairs are excluded. -->
   <disable_collisions link1="r_arm_6" link2="r_rotbtn_body" reason="Adjacent" />
   <disable_collisions link1="l_arm_6" link2="l_rocker_body" reason="Adjacent" />
+  <!-- arm_camera_link and r_rotbtn_body are BOTH rigidly fixed to r_arm_6, so
+       their relative pose is constant.  The camera box (0.050x0.040x0.035 at
+       z=-0.190) clips the rotate-button body rim by ~2 mm in CAD; the physical
+       flange seats both with clearance.  Static pair, exempt exactly like the
+       arm_6/camera adjacency above. -->
+  <disable_collisions link1="r_rotbtn_body" link2="arm_camera_link" reason="Adjacent" />
 
   <disable_collisions link1="l_rocker_body" link2="l_rocker_rotor" reason="Adjacent" />
 

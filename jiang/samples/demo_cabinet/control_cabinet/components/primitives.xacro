@@ -125,11 +125,19 @@
       <child link="${link_name}" />
       <axis xyz="0 0 1" />
       <limit
-        lower="-${cabinet_knob_limit}"
-        upper="${cabinet_knob_limit}"
+        lower="-${cabinet_knob_joint_limit}"
+        upper="${cabinet_knob_joint_limit}"
         effort="5.0"
         velocity="1.0" />
-      <dynamics damping="0.04" friction="0.02" />
+      <!--
+        Joint friction must stay well below the detent restoring force at the
+        cushion offset (0.60 * 0.01 = 0.006 N m).  0.02 N m gave a +-0.033 rad
+        Coulomb dead zone, so a release snap landing 0.0054 rad past the detent
+        stuck there on the ODE stop motor and kicked on approach.  0.002 N m
+        keeps the dead zone +-0.0033 rad inside the cushion, so the detent
+        always seats the knob back at its detent.
+      -->
+      <dynamics damping="0.04" friction="0.002" />
     </joint>
     <xacro:control_cabinet_gazebo_link
       link_name="${link_name}"

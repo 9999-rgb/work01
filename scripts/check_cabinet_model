@@ -345,12 +345,13 @@ def validate_rotary_adapter_override(
                 )
     # ready_joint_seed pins the free-space target pose onto one IK branch
     # (e.g. the r_arm_4<0 branch that keeps a button approach continuous), so
-    # it is valid for any arm-move-group control -- buttons and knobs today.
+    # it is valid for any arm-move-group control -- buttons, knobs and
+    # switches.
     if has_ready_seed:
-        if control.get("type") not in ("button", "knob"):
+        if control.get("type") not in ("button", "knob", "switch"):
             fail(
                 f"Robot adapter {control_id}.ready_joint_seed is only valid "
-                "for button or knob controls."
+                "for button, knob or switch controls."
             )
         seed = override.get("ready_joint_seed")
         if not isinstance(seed, dict) or set(seed) != {
@@ -1671,7 +1672,7 @@ def main() -> int:
                     "The door-mounted cabinet_main_switch must share the "
                     f"rear-door navigation station {field}."
                 )
-        for field in ("standoff", "base_yaw_offset"):
+        for field in ("base_yaw_offset",):
             if not math.isclose(
                 float(rear_door_station.get(field, 0.0)),
                 float(main_switch_station.get(field, 0.0)),
@@ -1682,6 +1683,31 @@ def main() -> int:
                     "The door-mounted cabinet_main_switch must share the "
                     f"rear-door navigation station {field}."
                 )
+        # The switch shares the rear-door dock geometry (anchor / outward /
+        # frame checked above) but its standoff is intentionally shorter than
+        # the rear door's: the Set B rocker arm cannot reach the switch handle
+        # from the 0.930 m standoff (its body mounting point sits ~0.094 m
+        # beyond the left-arm workspace), so the 0.780 m standoff is pinned and
+        # must stay strictly below the rear-door standoff.  The whole approach
+        # path at 0.780 m is reachable (verified by staged IK scans).
+        if not math.isclose(
+            float(main_switch_station.get("standoff", 0.0)),
+            0.780,
+            rel_tol=0.0,
+            abs_tol=1.0e-9,
+        ):
+            fail(
+                "cabinet_main_switch navigation standoff must retain the "
+                "calibrated 0.780 m rocker-reach standoff."
+            )
+        if not (
+            float(main_switch_station.get("standoff", 0.0))
+            < float(rear_door_station.get("standoff", 0.0))
+        ):
+            fail(
+                "cabinet_main_switch standoff must stay below the rear-door "
+                "standoff (rocker reach constraint)."
+            )
         if rear_door_station.get("frame_id", navigation_frame) != (
             main_switch_station.get("frame_id", navigation_frame)
         ):
@@ -1824,13 +1850,19 @@ def main() -> int:
         takeover_distance = float(
             robot_parameters.get("navigation_takeover_distance", 0.0)
         )
+        # The takeover distance must be at least the navigation handoff margin
+        # (NAVIGATION_POSITION_TOLERANCE_M = 1.0 m) so the tight Set B docks
+        # (whose Nav2 stops 0.5-0.8 m short, inside the costmap inflation
+        # radius) still hand off to the precision docking phase instead of
+        # failing navigation.  The upper bound keeps the docking controller
+        # from grabbing the base from across the scene.
         if (
             not math.isfinite(takeover_distance)
-            or not 0.10 <= takeover_distance <= 0.25
+            or not 1.0 <= takeover_distance <= 2.0
         ):
             fail(
-                "Nav2 precision-takeover distance must be in "
-                "[0.10, 0.25] m."
+                "Nav2 precision-takeover distance must be in [1.0, 2.0] m "
+                "(covering the Nav2 inflation-limited stop for tight docks)."
             )
         takeover_stall_timeout = float(
             robot_parameters.get("navigation_takeover_stall_timeout", 0.0)
@@ -2571,8 +2603,14 @@ def main() -> int:
                 "r_three_cyl_base",
                 [0.0265, -0.061735, -0.3885],
             ),
-            "knob": ("right_arm", "r_rotbtn_body", 0.0),
-            "switch": ("left_arm", "l_rocker_body", 0.143),
+            # The knob profile carries the measured jaw-clamp centre (3-D
+            # business point) so the pincer jaws, not the body origin, land on
+            # the control grasp point.  Validated below via the list branch.
+            "knob": ("right_arm", "r_rotbtn_body", [-0.0613, -0.006, 0.1885]),
+            # The switch profile likewise carries the rotor-joint centre (3-D
+            # business point) in the rocker body frame, so the rotor (not the
+            # body origin) lands on the switch handle.
+            "switch": ("left_arm", "l_rocker_body", [-0.01, -0.07, 0.2611]),
             "door": (
                 "right_arm",
                 "r_three_cyl_base",
@@ -2625,27 +2663,31 @@ def main() -> int:
                 if not close_lists(tip_position, expected_tip):
                     fail(
                         f"Robot adapter {control_type} must retain the "
-                        "measured off-axis three-cylinder business point."
+                        "measured 3-D business point."
                     )
                 if "tool_tip_offset" in profile:
                     fail(
                         f"Robot adapter {control_type} must not mix the "
                         "3-D business point with legacy tool_tip_offset."
                     )
-                if profile.get("calibration_joint_names") != (
-                    THREE_CYLINDER_JOINTS
-                ) or not close_lists(
-                    numbers(
-                        profile.get("calibration_joint_positions"),
-                        f"tool_profiles.{control_type}."
-                        "calibration_joint_positions",
-                    ),
-                    [0.0, 0.0, 0.0],
-                ):
-                    fail(
-                        f"Robot adapter {control_type} must require all "
-                        "three cylinder joints at the measured zero pose."
-                    )
+                # Only the three-cylinder end-effector pins its calibration
+                # joints to the measured zero pose; the pincer knob tool has
+                # no such joints.
+                if "calibration_joint_names" in profile:
+                    if profile.get("calibration_joint_names") != (
+                        THREE_CYLINDER_JOINTS
+                    ) or not close_lists(
+                        numbers(
+                            profile.get("calibration_joint_positions"),
+                            f"tool_profiles.{control_type}."
+                            "calibration_joint_positions",
+                        ),
+                        [0.0, 0.0, 0.0],
+                    ):
+                        fail(
+                            f"Robot adapter {control_type} must require all "
+                            "three cylinder joints at the measured zero pose."
+                        )
             else:
                 tip_offset = profile.get("tool_tip_offset")
                 if (
@@ -2667,6 +2709,35 @@ def main() -> int:
                 fail(
                     f"Robot adapter {control_type} transport target must be home."
                 )
+            # Pincer tools (knob / switch) carry their jaws/rotor on local +Z,
+            # so +Z must face the control (toward_control) and the grasp
+            # distance probe must be the jaw/rotor carrier (the body origin
+            # sits 0.19-0.27 m behind the business point).  The three-cylinder
+            # tools default to along_outward and probe their own contact link.
+            expected_grasp_link = {
+                "knob": "r_rotbtn_rotate",
+                "switch": "l_rocker_rotor",
+            }.get(control_type)
+            if expected_grasp_link is not None:
+                if profile.get("grasp_link") != expected_grasp_link:
+                    fail(
+                        f"Robot adapter {control_type} must probe the grasp "
+                        f"distance with grasp_link {expected_grasp_link}."
+                    )
+                if profile.get("tool_axis_orientation") != "toward_control":
+                    fail(
+                        f"Robot adapter {control_type} must use "
+                        "tool_axis_orientation toward_control (pincer +Z "
+                        "faces the control)."
+                    )
+            else:
+                if "grasp_link" in profile or profile.get(
+                    "tool_axis_orientation", "along_outward"
+                ) != "along_outward":
+                    fail(
+                        f"Robot adapter {control_type} must keep the legacy "
+                        "along_outward axis and no grasp_link override."
+                    )
             if contact_link in inactive_contact_links():
                 # The inactive toolset's hardware must not be mounted at all
                 # (strict exclusivity for the --toolset validation).

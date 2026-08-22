@@ -103,15 +103,17 @@ NAVIGATION_LOCALIZATION_JUMP_POSITION_M = 0.50
 NAVIGATION_LOCALIZATION_JUMP_YAW_RAD = 0.35
 NAVIGATION_STATION_CORRECTION_LIMIT = 2
 # The cabinet operator's docking controller takes over after handoff and
-# refines the pose to its own tighter tolerances (0.015 m / 0.10 rad).
+# refines the pose to its own tighter tolerances (0.008 m / 0.070 rad).
 # The handoff tolerances must accept Nav2's actual stopping accuracy so
 # that navigation can succeed; the docking phase then narrows the gap.
-# Nav2's omnidirectional DWB settles inside ~0.06 m with the finer velocity
-# sampling, comfortably within this handoff window.  The window is loosened
-# from 0.15 m to absorb AMCL's ~0.09-0.11 m longitudinal drift in the open
-# inspection scenes (no longitudinal lidar features), so navigation accepts
-# before the docking phase narrows to its own 0.015 m target.
-NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 0.22
+# Nav2's omnidirectional DWB settles inside ~0.06 m for Nav2-reachable
+# docks, but the Set B knob/switch docks (0.769 / 0.780 m standoff, forced
+# by the short rotary/rocker arm reach) sit inside the costmap inflation
+# radius (0.60 m), so Nav2 physically stops 0.5-0.8 m short (observed
+# 0.52 m / 0.80 m across runs).  The window is widened to 1.0 m so those
+# tight docks hand off to the precision-docking takeover, which then
+# narrows to its own 0.008 m target.
+NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 1.0
 NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.25
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
@@ -121,11 +123,13 @@ OPERATION_CANCEL_GRACE_SEC = 5.0
 OPERATION_PREFLIGHT_PROGRESS = 0.02
 TASK_MONITOR_PERIOD_SEC = 0.10
 EXECUTOR_SPIN_PERIOD_SEC = 0.10
-# Must stay looser than the Nav2 goal checker (0.20 m) and tighter than the
-# docking takeover distance (0.22 m) — see test_nav2_config_contract.py.
-# 0.22 m absorbs the open-scene AMCL longitudinal drift that otherwise leaves
-# the map-frame pose just outside the checker and stalls final approach.
-NAVIGATION_POSITION_TOLERANCE_M = 0.22
+# Must stay looser than the Nav2 goal checker (0.20 m) and no tighter than
+# the docking takeover distance (1.0 m) — see test_nav2_config_contract.py.
+# 1.0 m absorbs both the open-scene AMCL longitudinal drift and the Nav2
+# inflation-limited stop for the tight Set B docks (knob/switch stop 0.5-0.8
+# m short); the operator's docking then narrows the map-frame gap to its own
+# 0.008 m target.
+NAVIGATION_POSITION_TOLERANCE_M = 1.0
 # Nav2's 0.25 rad goal checker and the following TF sample can differ by a
 # fraction of a degree while the base settles.  Keep a 5 mrad verification
 # margin without relaxing the controller's own stopping criterion.

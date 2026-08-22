@@ -491,12 +491,13 @@ def _validate_robot_control_overrides(
             # branch (e.g. the r_arm_4<0 branch that keeps a button approach
             # continuous across the wrist-flip singularity), so it is valid
             # for any control whose tool_profile names an arm move_group --
-            # buttons and knobs today.  The seed joints must be exactly the
-            # variables of that control's own move_group.
+            # buttons, knobs and switches.  The seed joints must be exactly
+            # the variables of that control's own move_group.
             control_type = control.get("type")
-            if control_type not in ("button", "knob"):
+            if control_type not in ("button", "knob", "switch"):
                 raise ProfileContractError(
-                    f"{field} is only valid for button or knob controls."
+                    f"{field} is only valid for button, knob or switch "
+                    "controls."
                 )
             tool_profiles = operator.get("tool_profiles", {})
             manual_groups = adapter_parameters.get(

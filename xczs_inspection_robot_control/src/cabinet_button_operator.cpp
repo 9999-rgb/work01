@@ -159,9 +159,30 @@ struct ControlStagingPoses
 // safe retreat pose in the SRDF.
 struct ToolProfile
 {
+  enum class ToolAxisOrientation
+  {
+    // Tool local +Z points along the control's outward (retraction) axis.
+    // Matches the legacy three-cylinder design whose business point sits at
+    // the opposite (-Z) end, so +Z is the empty, non-contacting side.
+    ALONG_OUTWARD,
+    // Tool local +Z points toward the control (opposite the outward axis).
+    // Required by pincer tools (rotate_button, rocker) whose jaws / rotor are
+    // at the +Z end: keeping +Z == outward would push the wrist past the
+    // control into the cabinet, making the grasp pose unreachable.
+    TOWARD_CONTROL,
+  };
+
   std::string move_group;
   std::string contact_tool_link;
+  // Link whose origin the cabinet grasp plugin should measure against the
+  // control's grasp point.  Defaults to contact_tool_link.  Pincer tools
+  // (rotate_button) carry their jaws far from the contact-tool origin, so the
+  // body origin can sit well outside the grasp distance threshold even when
+  // the jaws are exactly on the control; the jaw-carrier link is a better
+  // distance probe.
+  std::string grasp_link;
   std::string transport_named_target;
+  ToolAxisOrientation tool_axis_orientation{ToolAxisOrientation::ALONG_OUTWARD};
   // Full 3-D position of the physical business point in contact_tool_link.
   // A scalar axial offset cannot represent an off-axis finger and can align
   // the empty tool centre with a button while a real finger hits the panel.
@@ -751,8 +772,24 @@ private:
       prefix + "move_group", "");
     profile.contact_tool_link = declare_parameter<std::string>(
       prefix + "contact_tool_link", "");
+    profile.grasp_link = declare_parameter<std::string>(
+      prefix + "grasp_link", profile.contact_tool_link);
     profile.transport_named_target = declare_parameter<std::string>(
       prefix + "transport_named_target", "");
+    const auto tool_axis_orientation = declare_parameter<std::string>(
+      prefix + "tool_axis_orientation", "along_outward");
+    if (tool_axis_orientation == "along_outward") {
+      profile.tool_axis_orientation =
+        ToolProfile::ToolAxisOrientation::ALONG_OUTWARD;
+    } else if (tool_axis_orientation == "toward_control") {
+      profile.tool_axis_orientation =
+        ToolProfile::ToolAxisOrientation::TOWARD_CONTROL;
+    } else {
+      throw std::invalid_argument(
+              "Parameter '" + prefix + "tool_axis_orientation' must be "
+              "'along_outward' or 'toward_control', got '" +
+              tool_axis_orientation + "'.");
+    }
     const auto tool_tip_position = declare_parameter<std::vector<double>>(
       prefix + "tool_tip_position", std::vector<double>{});
     const double legacy_tool_tip_offset = declare_parameter<double>(
@@ -864,7 +901,10 @@ private:
     const auto & profile = iterator->second;
     move_group_name_ = profile.move_group;
     contact_tool_link_ = profile.contact_tool_link;
+    grasp_link_ = profile.grasp_link.empty() ?
+      profile.contact_tool_link : profile.grasp_link;
     transport_named_target_ = profile.transport_named_target;
+    tool_axis_orientation_ = profile.tool_axis_orientation;
     tool_tip_position_ = profile.tool_tip_position;
     tool_tip_calibration_joint_names_ = profile.calibration_joint_names;
     tool_tip_calibration_joint_positions_ =
@@ -3332,8 +3372,16 @@ private:
     world_rotation.normalize();
     const tf2::Vector3 outward = tf2::quatRotate(
       world_rotation, outward_zero).normalized();
+    // Pincer tools (rotate_button, rocker) carry their jaws/rotor on local +Z,
+    // so +Z must point at the control for the wrist to stay out of the cabinet.
+    // The offset direction (outward) remains unchanged so retraction and the
+    // prepress standoff still move away from the control.
+    const tf2::Vector3 tool_axis_reference =
+      tool_axis_orientation_ ==
+        ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
+      -outward_zero : outward_zero;
     const tf2::Quaternion tool_zero =
-      tool_rotation_from_outward(outward_zero);
+      tool_rotation_from_outward(tool_axis_reference);
     tf2::Quaternion tool_roll;
     tool_roll.setRotation(tf2::Vector3(0.0, 0.0, 1.0), tool_roll_offset);
     tool_roll.normalize();
@@ -3522,7 +3570,7 @@ private:
       xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
     request->control_id = control_id;
     request->robot_model = robot_model_name_;
-    request->robot_link = contact_tool_link_;
+    request->robot_link = grasp_link_;
     request->robot_base_link = grasp_brake_link_;
     request->attach = attach;
     auto future = grasp_client_->async_send_request(request);
@@ -3563,7 +3611,7 @@ private:
           xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
         request->control_id = control_id;
         request->robot_model = robot_model_name_;
-        request->robot_link = contact_tool_link_;
+        request->robot_link = grasp_link_;
         request->robot_base_link = grasp_brake_link_;
         request->attach = false;
         auto future = grasp_client_->async_send_request(request);
@@ -6495,7 +6543,10 @@ private:
   std::string move_group_namespace_;
   std::string toolset_;
   std::string contact_tool_link_;
+  std::string grasp_link_;
   std::string transport_named_target_;
+  ToolProfile::ToolAxisOrientation tool_axis_orientation_{
+    ToolProfile::ToolAxisOrientation::ALONG_OUTWARD};
   tf2::Vector3 tool_tip_position_{0.0, 0.0, 0.0};
   std::vector<std::string> tool_tip_calibration_joint_names_;
   std::vector<double> tool_tip_calibration_joint_positions_;

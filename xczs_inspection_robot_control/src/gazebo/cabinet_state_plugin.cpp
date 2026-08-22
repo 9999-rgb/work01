@@ -317,6 +317,10 @@ public:
           owner->pregrasp_disturbance_control_.clear();
           owner->pregrasp_max_position_error_ = 0.0;
           owner->pregrasp_max_velocity_ = 0.0;
+          // A changed active control starts a fresh pre-grasp phase: any prior
+          // grasp-engage state from the previous operation must not suppress
+          // disturbance detection for the new approach.
+          owner->grasp_engaged_during_operation_ = false;
         }
         owner->active_operation_control_ = message->data;
       });
@@ -948,6 +952,14 @@ private:
     {
       return;
     }
+    // A grasp has already been attached during this operation, so the control
+    // is no longer in its pre-grasp phase.  The detent snap on release and any
+    // settling motion while the operator retreats are the operation's physical
+    // outcome, not a robot bump, so they must not latch a disturbance that
+    // would block a later grasp attach.
+    if (grasp_engaged_during_operation_) {
+      return;
+    }
     const double detent_position =
       control.detents[control.detent_target_index];
     if (!pregrasp_detent_is_disturbed(
@@ -1213,6 +1225,7 @@ private:
       pregrasp_disturbance_control_.clear();
       pregrasp_max_position_error_ = 0.0;
       pregrasp_max_velocity_ = 0.0;
+      grasp_engaged_during_operation_ = false;
     }
     for (auto & control : controls_) {
       control.joint->SetForce(0, 0.0);
@@ -1523,6 +1536,10 @@ private:
       active_robot_model_ = request.robot_model;
       active_robot_link_ = request.robot_link;
       publish_grasp_active(true);
+      // Once a grasp attaches, the control leaves its pre-grasp phase: the
+      // operation's release-settle motion is its own outcome, not an unsafe
+      // pre-grasp disturbance.
+      grasp_engaged_during_operation_ = true;
       // The fixed grasp and an articulated door otherwise form a closed
       // contact loop when the panel sweeps through the robot. Suppress only
       // the configured moving panel while it is robot-guided; the revolute
@@ -1658,6 +1675,11 @@ private:
   std::string pregrasp_disturbance_control_;
   double pregrasp_max_position_error_{0.0};
   double pregrasp_max_velocity_{0.0};
+  // Set once a grasp attaches during the active operation and reset when the
+  // operation control changes or controls are reset.  Suppresses the pre-grasp
+  // disturbance detector for the rest of the operation so the post-release
+  // detent settle is never misreported as an unsafe approach bump.
+  bool grasp_engaged_during_operation_{false};
 
   gazebo::physics::JointPtr grasp_joint_;
   bool compliant_grasp_active_{false};

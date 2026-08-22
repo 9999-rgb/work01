@@ -119,7 +119,10 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
     # Never trade base/cabinet clearance for an otherwise reachable arm IK.
     assert calibration["navigation_station"]["standoff"] == 0.769
     assert calibration["navigation_station"]["standoff"] > 0.426
-    assert calibration["detent_release_fraction"] == 0.58
+    # 0.75 of the 0.785 rad travel puts the tool just past the center/right
+    # midpoint (0.589 rad vs 0.393 rad); the detent finishes the travel on
+    # release, so the wrist never needs a full-angle Cartesian arc.
+    assert calibration["detent_release_fraction"] == 0.75
     assert calibration["ready_joint_seed"] == {
         "joint_names": [f"r_arm_{index}_joint" for index in range(7)],
         "positions": [
@@ -133,21 +136,10 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
         ],
     }
 
-    expected_rolls = [
-        0.0,
-        -0.872664625997,
-        0.0,
-        -1.1344640138,
-        0.0,
-        -1.57079632679,
-        0.0,
-        -1.83259571459,
-        0.0,
-    ]
-    assert calibration["tool_roll_offsets"] == expected_rolls
-    # Row-major left/center/right: every physically used adjacent transition
-    # has its own measured roll; direct left<->right entries remain unused.
-    assert all(
-        math.isfinite(calibration["tool_roll_offsets"][index])
-        for index in (1, 3, 5, 7)
-    )
+    # All-zero rolls in the toward_control orientation: with tool +Z pointing
+    # at the control, roll=0 keeps the jaw opening axis (tool +Y) parallel to
+    # the knob-blade normal (world +-Y), so the 11 mm blade slips into the
+    # 36 mm jaw without contact.  The historical non-zero rolls were calibrated
+    # along the old outward axis, which turned the jaws vertical (world +-Z)
+    # and made the 65 mm blade unable to enter the 36 mm vertical gap.
+    assert calibration["tool_roll_offsets"] == [0.0] * 9

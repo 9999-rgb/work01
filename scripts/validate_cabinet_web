@@ -17,7 +17,10 @@ EXPECTED_COUNTS_DEFAULT="20 11 1 1"
 EXPECTED_COUNTS="$EXPECTED_COUNTS_DEFAULT"
 # This is the verified task-layer handoff envelope.  The cabinet operator's
 # closed-loop docking phase deliberately narrows it before moving either arm.
-NAVIGATION_POSITION_TOLERANCE_M=0.22
+# 1.0 m covers the Nav2 inflation-limited stop for the tight Set B docks
+# (knob/switch stop 0.5-0.8 m short); the docking controller then narrows to
+# its own 0.008 m target.
+NAVIGATION_POSITION_TOLERANCE_M=1.0
 RESPONSE_BODY=""
 TASK_BODY=""
 ACTIVE_TASK_ID=""

@@ -309,10 +309,20 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(0.0, defaults["l_rocker_rotor_joint"])
         stations = dict(adapter.control_navigation_stations)
         self.assertEqual(33, len(stations))
-        self.assertEqual(
-            stations["cabinet_rear_door"],
-            stations["cabinet_main_switch"],
-        )
+        rear_door = stations["cabinet_rear_door"]
+        switch = stations["cabinet_main_switch"]
+        # The switch is mounted on the rear door, so it must share the
+        # behind-cabinet dock (same anchor / outward axis / frame).  Its
+        # standoff is shorter (0.780 m) than the rear door's (0.930 m)
+        # because the Set B rocker arm cannot reach the handle from the
+        # longer standoff; the shorter standoff keeps the whole approach
+        # path inside the rocker's verified reach envelope.
+        self.assertEqual(rear_door.local_anchor, switch.local_anchor)
+        self.assertEqual(rear_door.outward_axis, switch.outward_axis)
+        self.assertEqual(rear_door.frame_id, switch.frame_id)
+        self.assertEqual(rear_door.base_yaw_offset, switch.base_yaw_offset)
+        self.assertEqual(0.780, switch.standoff)
+        self.assertLess(switch.standoff, rear_door.standoff)
 
     def test_navigation_frame_defaults_to_map(self) -> None:
         parameters = _parameters()

@@ -381,7 +381,15 @@ planner_server:
       plugin: nav2_navfn_planner/NavfnPlanner
       tolerance: 0.25
       use_astar: true
-      allow_unknown: false
+      # The Set B switch dock is on the cabinet's rear (east) face, behind the
+      # cabinet column.  From the spawn side the lidar only sees the cabinets'
+      # west faces, so the east approach corridor stays unknown; with
+      # allow_unknown=false NavfnPlanner treats every unknown cell as lethal and
+      # cannot plan to the switch dock at all ("failed to generate a valid
+      # path").  The corridor behind the column is genuinely free (2.4 m wide
+      # to the map edge), and the lidar-scanned west-face inflation already
+      # covers the cabinet body, so routing through unknown is safe here.
+      allow_unknown: true
 
 smoother_server:
   ros__parameters:
