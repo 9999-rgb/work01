@@ -631,6 +631,11 @@
       prepress 目标采样有效解；其余中排按钮未完成带安全退距的物理到档
       验收。总开关已通过 0.780 m 退距下的左臂 + rocker 物理到档验收，
       见 cabinet_main_switch。
+    toolset_mismatch_reason: >-
+      该控件在 operable_control_ids 允许清单内，但当前工具套装未挂载其
+      操作工具（套装 A：三电缸/两电缸；套装 B：旋转按钮/摇杆）。控件仍保留
+      状态显示和实时规划验证，不下发机械臂、抓取或柜体写入命令；切换套装
+      并重启后即可操作。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

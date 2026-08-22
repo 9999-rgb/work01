@@ -277,6 +277,18 @@ class AssetLibraryTest(unittest.TestCase):
         loaded = self.library.load_selection()
         self.assertEqual(selection, loaded)
 
+    def test_selection_roundtrip_preserves_toolset(self) -> None:
+        # YamlAssetStore 是默认/参考 store：save->load 往返必须保留 toolset，
+        # 否则 selection_to_env 不会输出 TOOLSET，下一次启动会静默回退默认套装。
+        selection = AssetSelection(scene="scene_a", toolset="B")
+        self.library.save_selection(selection)
+        loaded = self.library.load_selection()
+        self.assertEqual(selection, loaded)
+
+    def test_selection_to_env_maps_toolset(self) -> None:
+        env = self.library.selection_to_env(AssetSelection(toolset="b"))
+        self.assertEqual("B", env["TOOLSET"])
+
     def test_load_selection_defaults_empty(self) -> None:
         self.assertEqual(AssetSelection(), self.library.load_selection())
 

@@ -90,7 +90,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endbody3.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -117,7 +117,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink1.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -153,7 +153,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink2.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -189,7 +189,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink3.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -237,7 +237,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endBody4.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -264,7 +264,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink1.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -300,7 +300,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink2.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -348,7 +348,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endbody2.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -375,7 +375,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endrotatelink.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -429,7 +429,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endbody.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -456,7 +456,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/rotate.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -492,7 +492,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink1.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -528,7 +528,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink2.STL" />
         </geometry>
-        <material name="graphite_black" />
+        <material name="solidworks_white" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />

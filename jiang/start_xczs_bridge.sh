@@ -1364,14 +1364,14 @@ _start_web_control() {
             _LAN_IP="$(hostname -I 2>/dev/null | awk '
                 { for (i = 1; i <= NF; i++)
                     if ($i !~ /:/) { print $i; exit } }
-            ')"
+            ' || true)"
             _SHOW_HOST="${_LAN_IP:-127.0.0.1}"
             ;;
         ::)
             _LAN_IP="$(hostname -I 2>/dev/null | awk '
                 { for (i = 1; i <= NF; i++)
                     if ($i ~ /:/) { print $i; exit } }
-            ')"
+            ' || true)"
             _SHOW_HOST="${_LAN_IP:-::1}"
             ;;
         *) _SHOW_HOST="$CONTROL_HOST" ;;

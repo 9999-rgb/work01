@@ -25,14 +25,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # 转发所有参数给 jiang/start_xczs_bridge.sh。退出码 42 = 末端工具套装
 # 切换标记触发，需要重读资产库选择并以新套装重新拉起整个栈。
-# 用 if 包裹使非零退出码不触发 set -e。
+# 注意：不能用 `if cmd; then ...; fi` 捕获退出码——条件为假且无 else 时
+# if 语句自身返回 0，会吞掉 42。必须用 `cmd || status=$?` 直接取码。
 while true; do
-    if "$SCRIPT_DIR/jiang/start_xczs_bridge.sh" "$@"; then
+    status=0
+    "$SCRIPT_DIR/jiang/start_xczs_bridge.sh" "$@" || status=$?
+    if [ "$status" -eq 0 ]; then
         exit 0
     fi
-    status=$?
     if [ "$status" -eq 42 ]; then
         echo "工具套装已切换，自动重启机器人栈。"
+        # Web 切换以持久化选择为唯一事实来源：清除外部导出的 TOOLSET，
+        # 否则 env 优先级会吞掉本次切换（重启后栈仍停在旧套装）。
+        unset TOOLSET 2>/dev/null || true
         continue
     fi
     exit "$status"

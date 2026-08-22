@@ -254,6 +254,9 @@ class YamlAssetStore:
             cabinet=_optional_selection_name(
                 document.get("cabinet"), "cabinet", path
             ),
+            toolset=_optional_selection_name(
+                document.get("toolset"), "toolset", path
+            ),
         )
 
     def save_selection(self, selection: AssetSelection) -> None:
@@ -378,12 +381,14 @@ class AssetLibrary:
             selection = AssetSelection(
                 scene=None,
                 cabinet=selection.cabinet,
+                toolset=selection.toolset,
             )
             changed = True
         elif kind == "cabinet" and selection.cabinet == name:
             selection = AssetSelection(
                 scene=selection.scene,
                 cabinet=None,
+                toolset=selection.toolset,
             )
             changed = True
         if changed:

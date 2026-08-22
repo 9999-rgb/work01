@@ -136,6 +136,15 @@ async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from None
+        if selection.toolset is None:
+            # toolset 为 null 表示"不改变"（见 schemas.py）：保留上次选择，
+            # 避免把已持久化的 B 覆盖成默认 A 且不写重启标记，导致下次启动
+            # 静默回退。冻结 dataclass，需重建实例。
+            selection = AssetSelection(
+                scene=selection.scene,
+                cabinet=selection.cabinet,
+                toolset=previous.toolset,
+            )
         toolset_changed = bool(
             selection.toolset
             and selection.toolset.upper() != (previous.toolset or "").upper()

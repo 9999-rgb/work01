@@ -1185,6 +1185,14 @@ private:
       "inoperable_control_reason",
       "The control has not passed this robot adapter's complete physical "
       "operation and recovery validation.");
+    // A control that IS in operable_control_ids but whose operating tool is
+    // not mounted in the current end-effector toolset (e.g. Set A cannot
+    // rotate a knob) is not "outside the allowlist" -- report the toolset
+    // mismatch instead of the generic inoperable reason.
+    const auto toolset_mismatch_reason = declare_parameter<std::string>(
+      "toolset_mismatch_reason",
+      "The control's operating tool is not mounted in the current end-effector "
+      "toolset; the control keeps status display and planning validation only.");
     const std::unordered_set<std::string> operable_controls(
       operable_control_ids.begin(), operable_control_ids.end());
     if (operable_controls.size() != operable_control_ids.size() ||
@@ -1432,8 +1440,9 @@ private:
         button->default_force = declare_parameter<double>(
           prefix + "default_force", button_default_force);
       }
-      button->operable = operable_controls.count(control_id) != 0U &&
-        tool_serves_control(button->control_type);
+      const bool in_allowlist = operable_controls.count(control_id) != 0U;
+      const bool tool_serves = tool_serves_control(button->control_type);
+      button->operable = in_allowlist && tool_serves;
       button->unavailable_reason = declare_parameter<std::string>(
         prefix + "unavailable_reason", "");
       if (button->operable && !button->unavailable_reason.empty()) {
@@ -1442,7 +1451,11 @@ private:
                 "' must not declare an unavailable_reason.");
       }
       if (!button->operable && button->unavailable_reason.empty()) {
-        button->unavailable_reason = inoperable_control_reason;
+        // 控件在允许清单内但当前套装未挂载其操作工具时，原因是"套装不匹配"
+        // 而非"未列入 operable_control_ids"，用专门文案避免误导 Web 目录。
+        button->unavailable_reason = in_allowlist && !tool_serves
+          ? toolset_mismatch_reason
+          : inoperable_control_reason;
       }
       const std::string station_prefix = prefix + "navigation_station.";
       const std::string station_anchor_parameter =

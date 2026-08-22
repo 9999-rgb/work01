@@ -359,6 +359,20 @@ private:
         }
         any_extracted = true;
         if (!route.action_active) {
+          if (route.publisher->get_subscription_count() == 0U) {
+            // The controller topic is not subscribed by the controller_manager
+            // under the active toolset (e.g. rocker/rotate_button controllers
+            // do not exist in Set A).  Surface the drop instead of silently
+            // publishing into the void and reporting success in the Web UI.
+            RCLCPP_WARN_THROTTLE(
+              get_logger(),
+              *get_clock(),
+              2000,
+              "Manual '%s' controller has no subscribers under the active "
+              "toolset; its trajectory is dropped.",
+              route.name.c_str());
+            continue;
+          }
           route.publisher->publish(*sub_trajectory);
         } else {
           RCLCPP_WARN_THROTTLE(

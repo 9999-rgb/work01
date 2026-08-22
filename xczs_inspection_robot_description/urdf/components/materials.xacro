@@ -12,4 +12,12 @@
   <material name="rubber_black">
     <color rgba="0.025 0.025 0.03 1" />
   </material>
+  <!--
+    The four end-effector tools were exported from SolidWorks with a white
+    appearance (rgba 1 1 1 1).  Restored so the tools read as the user's
+    original mechanism instead of an uncoloured dark blob against the wrist.
+  -->
+  <material name="solidworks_white">
+    <color rgba="1 1 1 1" />
+  </material>
 </robot>

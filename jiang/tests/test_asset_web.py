@@ -234,6 +234,18 @@ class AssetWebReadContractTest(_AssetWebTestCase):
         self.assertEqual(200, saved.status_code, saved.text)
         self.assertIsNone(saved.json()["scene"])
 
+    def test_toolset_null_preserves_previous_selection(self) -> None:
+        # toolset 为 null 表示"不改变"（schemas.py）：必须保留已持久化的 B，
+        # 而不是覆盖成默认 A 且不写重启标记，导致下次启动静默回退。
+        first = self.client.post("/assets/selection", json={"toolset": "B"})
+        self.assertEqual(200, first.status_code, first.text)
+        self.assertTrue(first.json()["restart_required"])
+
+        second = self.client.post("/assets/selection", json={"toolset": None})
+        self.assertEqual(200, second.status_code, second.text)
+        self.assertFalse(second.json()["restart_required"])
+        self.assertEqual("B", second.json()["toolset"])
+
 
 class AssetWebImportContractTest(_AssetWebTestCase):
     """导入 / 删除契约：这些端点挂 ``require_admin``（与 /users 同姿态）。
@@ -461,6 +473,23 @@ class AssetWebImportContractTest(_AssetWebTestCase):
             "/assets", headers=self.admin_headers
         ).json()
         self.assertEqual([], listing["assets"])
+
+    def test_delete_preserves_toolset_in_selection(self) -> None:
+        # 删除所选资产只清空对应 scene/cabinet 字段；toolset 必须原样保留，
+        # 否则清除场景会静默把已选套装覆盖回默认 A。
+        record = self._import_scene()
+        self.client.post(
+            "/assets/selection",
+            json={"scene": record["name"], "toolset": "B"},
+            headers=self.admin_headers,
+        )
+
+        removed = self.client.delete(
+            f"/assets/scene/{record['name']}", headers=self.admin_headers
+        )
+        self.assertEqual(200, removed.status_code, removed.text)
+        self.assertIsNone(removed.json()["selection"]["scene"])
+        self.assertEqual("B", removed.json()["selection"]["toolset"])
 
     def test_delete_unknown_asset_404_and_bad_kind_400(self) -> None:
         unknown = self.client.delete(

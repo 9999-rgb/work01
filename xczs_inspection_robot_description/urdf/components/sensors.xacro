@@ -46,20 +46,12 @@
           iyz="0"
           izz="1.7083e-05" />
       </inertial>
-      <visual>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <box size="0.050 0.040 0.035" />
-        </geometry>
-        <material name="graphite_black" />
-      </visual>
-      <visual>
-        <origin xyz="0.031 0 0" rpy="0 1.57079632679 0" />
-        <geometry>
-          <cylinder radius="0.012" length="0.012" />
-        </geometry>
-        <material name="graphite_black" />
-      </visual>
+      <!--
+        No visible body.  The placeholder black box that used to represent the
+        camera was not part of the original model and read as a stray
+        uncoloured blob on the right wrist.  The optical frame alone carries
+        the sensor, so the Web feed is unchanged.
+      -->
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
         <geometry>
