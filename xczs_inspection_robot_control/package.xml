@@ -24,6 +24,7 @@
   <depend>moveit_core</depend>
   <depend>moveit_ros_planning_interface</depend>
   <depend>nav2_msgs</depend>
+  <depend>rcl</depend>
   <depend>rclcpp</depend>
   <depend>rclcpp_action</depend>
   <depend>sensor_msgs</depend>

@@ -56,6 +56,12 @@ DEFAULT_READY_TIMEOUT_SEC = 120.0
 DEFAULT_SERVICE_TIMEOUT_SEC = 10.0
 DEFAULT_CHILD_STOP_TIMEOUT_SEC = 20.0
 POLL_INTERVAL_SEC = 0.10
+# The global-args guard lives inside gzserver and only appears once the Gazebo
+# world has loaded, which can take longer than the service timeout during a
+# cold start.  The very first robot spawn starts from a fresh gzserver whose
+# global rcl arguments are already clean, so the guard is only a requirement
+# for switch/rollback spawns, never for the initial one.
+GUARD_INITIAL_WAIT_SEC = 3.0
 # A Nav2 lifecycle manager can advertise ``is_active`` while its single
 # executor is busy activating a managed node.  Such a request is legitimately
 # queued without a response; do not let it block an A/B readiness worker for
@@ -383,6 +389,10 @@ class ToolsetSupervisor(Node):
             GetEntityState,
             "/get_entity_state",
         )
+        self._global_args_guard_client = self.create_client(
+            Trigger,
+            "/xczs/global_args_guard/reset",
+        )
         self.create_subscription(
             JointState,
             joint_state_topic,
@@ -614,6 +624,7 @@ class ToolsetSupervisor(Node):
                 self._initial_toolset,
                 pose=None,
                 spawn_cabinet=self._initial_spawn_cabinet,
+                guard_reset_required=False,
             )
             self._wait_for_robot_ready(self._initial_toolset)
         except Exception as error:  # noqa: BLE001 - process fault boundary
@@ -635,8 +646,10 @@ class ToolsetSupervisor(Node):
                     last_error=message,
                     message=message,
                 )
-            if rclpy.ok(context=self.context):
-                rclpy.shutdown(context=self.context)
+            self.get_logger().error(
+                "Keeping the Gazebo world alive after the failed initial "
+                "start; restart the system to retry the robot child."
+            )
             return
         if self._is_stopping():
             return
@@ -731,8 +744,15 @@ class ToolsetSupervisor(Node):
                         last_error=fatal,
                         message=fatal,
                     )
-            if not restored and rclpy.ok(context=self.context):
-                rclpy.shutdown(context=self.context)
+            if not restored:
+                # The Gazebo world must survive an internal fault: the shell's
+                # process monitor tears everything down when this supervisor
+                # exits, so staying alive keeps the world recoverable.  The
+                # failed state rejects further switches; restart to relaunch.
+                self.get_logger().error(
+                    "Keeping the Gazebo world alive after the failed switch; "
+                    "restart the system to recover the robot child."
+                )
             return
 
         if self._is_stopping():
@@ -789,12 +809,72 @@ class ToolsetSupervisor(Node):
                 self.get_logger().error(f"Toolset rollback failed: {error}")
             return False
 
+    def _reset_gazebo_global_args(self, *, required: bool = True) -> None:
+        """Reset gzserver's process-global rcl arguments before a robot spawn.
+
+        gazebo_ros2_control rewrites the gzserver global rcl arguments on
+        every robot spawn, injecting a ``--remap __ns:=/xczs`` default remap
+        (verified live: the second robot's lidar appears on ``/xczs/scan``
+        instead of ``/xczs/lidar/scan``).  rcl_node_init applies that default
+        remap to every node the gzserver process creates afterwards, so the
+        sensor nodes of the NEXT spawn, which load before the ros2_control
+        plugin, have their ``/xczs/lidar/scan`` and ``/xczs/camera/*``
+        namespaces truncated to ``/xczs`` -- breaking Nav2, the Web sensor
+        feeds and the toolset switch readiness check.  Calling the guard
+        service here, before any child launch issues a spawn_entity, gives the
+        new robot a clean default namespace so its sensor plugins register
+        under their full paths again.
+
+        The guard service lives in gzserver and only appears after the Gazebo
+        world has loaded.  During a cold start the world can still be loading
+        when the *initial* spawn begins, but a fresh gzserver always starts
+        with clean global arguments, so ``required=False`` (the initial spawn)
+        skips the reset with a warning if the guard is not up yet.  Switch and
+        rollback spawns re-enter a long-lived gzserver whose arguments are
+        polluted by the previous robot, so they pass ``required=True`` and fail
+        fast if the guard cannot be reached.
+        """
+        request = Trigger.Request()
+        try:
+            response = self._call_service(
+                self._global_args_guard_client,
+                request,
+                "reset gzserver global rcl arguments",
+                timeout_sec=(
+                    self._service_timeout_sec
+                    if required
+                    else GUARD_INITIAL_WAIT_SEC
+                ),
+            )
+        except ToolsetSupervisorError:
+            if required:
+                raise
+            self.get_logger().warn(
+                "gazebo global-args guard is not ready yet; skipping the reset "
+                "for the initial spawn (a fresh gzserver starts with clean "
+                "global arguments, so the first spawn is unaffected by the "
+                "namespace truncation)."
+            )
+            return
+        if not bool(getattr(response, "success", False)):
+            message = (
+                "gazebo global-args guard could not reset rcl arguments: "
+                f"{getattr(response, 'message', '')}"
+            )
+            if required:
+                raise ToolsetSupervisorError(message)
+            self.get_logger().warn(
+                "%s (continuing with the initial spawn)", message
+            )
+            return
+
     def _start_robot_child(
         self,
         toolset: str,
         *,
         pose: Mapping[str, float] | None,
         spawn_cabinet: bool,
+        guard_reset_required: bool = True,
     ) -> None:
         target = normalize_toolset(toolset)
         with self._lock:
@@ -832,6 +912,15 @@ class ToolsetSupervisor(Node):
                     f"robot_spawn_{field}:={float(pose[field]):.12g}"
                     for field in ("x", "y", "z", "yaw")
                 )
+            # gazebo_ros2_control pollutes the gzserver global rcl arguments
+            # (default namespace remap to /xczs) on every robot spawn, which
+            # truncates the sensor namespaces of every later spawn.  Reset them
+            # right before this spawn so the new robot's sensors register under
+            # their full /xczs/lidar/scan and /xczs/camera/* paths again.  Only
+            # switch/rollback spawns require the guard; the initial spawn starts
+            # from a clean gzserver and must not be held hostage by the world
+            # still loading.
+            self._reset_gazebo_global_args(required=guard_reset_required)
             environment = dict(os.environ)
             environment["TOOLSET"] = target
             environment["XCZS_ACTIVE_TOOLSET"] = target
@@ -1024,6 +1113,13 @@ class ToolsetSupervisor(Node):
         ``gazebo_ros::Node`` names while the next child starts.  Requiring two
         consecutive absent observations spans at least one poll interval and
         gives Gazebo's deletion queue a deterministic handoff point.
+
+        ``gazebo_ros_state`` reports a missing entity as ``success=false``
+        with an *empty* ``status_message`` — it logs the reason but never
+        fills the field (verified in gazebo_ros_pkgs ``gazebo_ros_state.cpp``).
+        With ``reference_frame="world"`` that is the only failure mode a
+        GetEntityState response can have, so a non-success response is treated
+        as the entity being absent rather than as an unverifiable fault.
         """
         deadline = time.monotonic() + self._service_timeout_sec
         consecutive_absent = 0
@@ -1040,11 +1136,13 @@ class ToolsetSupervisor(Node):
             if bool(getattr(response, "success", False)):
                 consecutive_absent = 0
             else:
+                # A missing entity yields success=false with no message.
+                # Only a non-empty, non-absent message is an unexpected fault.
                 detail = str(getattr(response, "status_message", "")).strip()
-                if not self._entity_status_means_absent(detail):
+                if detail and not self._entity_status_means_absent(detail):
                     raise ToolsetSupervisorError(
-                        detail
-                        or f"Gazebo could not verify removal of robot '{self._robot_name}'"
+                        "Gazebo reported an unexpected status while verifying "
+                        f"removal of robot '{self._robot_name}': {detail}"
                     )
                 consecutive_absent += 1
                 if consecutive_absent >= ENTITY_REMOVAL_STABLE_CYCLES:
@@ -1353,8 +1451,10 @@ class ToolsetSupervisor(Node):
             self.get_logger().warning(
                 f"Failed to stop residual robot child group: {error}"
             )
-        if rclpy.ok(context=self.context):
-            rclpy.shutdown(context=self.context)
+        self.get_logger().error(
+            "Keeping the Gazebo world alive after the robot child exited; "
+            "restart the system to relaunch the robot."
+        )
 
 
 def _parser() -> argparse.ArgumentParser:

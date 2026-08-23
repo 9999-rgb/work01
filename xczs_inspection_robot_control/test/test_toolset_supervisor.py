@@ -203,6 +203,39 @@ def test_entity_removal_requires_two_consecutive_absent_observations():
         assert request.reference_frame == "world"
 
 
+def test_entity_removal_treats_empty_status_message_as_absent():
+    """gazebo_ros_state leaves status_message empty for a missing entity.
+
+    ``success=false`` with no message is the normal post-delete response, not
+    an unverifiable fault; otherwise every toolset switch would abort right
+    after a successful DeleteEntity and cascade into a full stack teardown.
+    """
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._service_timeout_sec = 1.0
+    supervisor._robot_name = "xczs_inspection_robot"
+    supervisor._get_entity_state_client = object()
+    supervisor._ensure_not_stopping = lambda: None
+
+    responses = (
+        # First poll still sees the entity, then two empty-message absences.
+        SimpleNamespace(success=True, status_message=""),
+        SimpleNamespace(success=False, status_message=""),
+        SimpleNamespace(success=False, status_message=""),
+    )
+    with (
+        patch.object(
+            module.ToolsetSupervisor,
+            "_call_service",
+            side_effect=responses,
+        ) as call_service,
+        patch.object(module.time, "sleep"),
+    ):
+        supervisor._wait_for_robot_entity_absent()
+
+    assert call_service.call_count == 3
+
+
 def test_stopping_child_reaps_the_launch_leader_before_group_check():
     module = _load_module()
 

@@ -17,6 +17,7 @@ find_package(moveit_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(Qt5 REQUIRED COMPONENTS Widgets)
+find_package(rcl REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(rosidl_default_generators REQUIRED)
@@ -69,6 +70,11 @@ add_library(
   xczs_cabinet_state
   SHARED
   src/gazebo/cabinet_state_plugin.cpp
+)
+add_library(
+  xczs_ros_global_args_guard
+  SHARED
+  src/gazebo/xczs_ros_global_args_guard.cpp
 )
 
 foreach(target keyboard_teleop inspection_robot_gui)
@@ -255,6 +261,15 @@ target_link_libraries(
   "${cabinet_state_plugin_typesupport}"
 )
 
+target_compile_features(xczs_ros_global_args_guard PUBLIC cxx_std_17)
+ament_target_dependencies(
+  xczs_ros_global_args_guard
+  gazebo_dev
+  rcl
+  rclcpp
+  std_srvs
+)
+
 install(
   TARGETS
     keyboard_teleop
@@ -273,6 +288,7 @@ install(
   TARGETS
     xczs_planar_stabilizer
     xczs_cabinet_state
+    xczs_ros_global_args_guard
   LIBRARY DESTINATION lib
 )
 
@@ -288,6 +304,7 @@ install(
 ament_export_include_directories(include)
 ament_export_libraries(xczs_planar_stabilizer)
 ament_export_libraries(xczs_cabinet_state)
+ament_export_libraries(xczs_ros_global_args_guard)
 ament_export_dependencies(gazebo_dev)
 ament_export_dependencies(rosidl_default_runtime)
 

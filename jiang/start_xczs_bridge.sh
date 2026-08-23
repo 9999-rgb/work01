@@ -1373,6 +1373,11 @@ _toolset_transition_is_active() {
     # while Nav2's map service is being replaced, so the runtime monitor uses
     # the former first and must not turn that normal maintenance window into a
     # full-system teardown.
+    #
+    # A "failed" state is also a recoverable hold rather than a dead stack:
+    # the supervisor keeps the Gazebo world alive after an aborted switch or
+    # rollback, so the runtime monitor must not tear the world down over it.
+    # The process-leader PID check still catches a genuinely dead supervisor.
     "$PYTHON_BIN" -c '
 import json
 import sys
@@ -1392,7 +1397,7 @@ raise SystemExit(
     0
     if isinstance(toolset, dict)
     and toolset.get("managed") is True
-    and toolset.get("state") in {"starting", "switching"}
+    and toolset.get("state") in {"starting", "switching", "failed"}
     else 1
 )
 '

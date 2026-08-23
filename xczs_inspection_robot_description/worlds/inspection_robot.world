@@ -36,6 +36,16 @@
     <plugin name="gazebo_ros_state" filename="libgazebo_ros_state.so">
     </plugin>
 
+    <!-- gazebo_ros2_control rewrites the gzserver process-global rcl
+         arguments on every robot spawn, injecting a default namespace remap
+         to /xczs that truncates the sensor namespaces of every later spawn.
+         This guard exposes /xczs/global_args_guard/reset so the toolset
+         supervisor can restore a clean default namespace immediately before
+         each new robot spawn. -->
+    <plugin name="xczs_ros_global_args_guard"
+            filename="libxczs_ros_global_args_guard.so">
+    </plugin>
+
     <include>
       <uri>model://sun</uri>
     </include>
