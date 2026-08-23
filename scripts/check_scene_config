@@ -3,19 +3,25 @@
 
 Checks that ``scenes.yaml`` parses under the strict :class:`SceneCatalog`
 dataclass contract, that every referenced static-floor model (URDF/SDF) and
-Nav2 map YAML resolves to a real file, and that each map YAML points at an existing PGM
-image.  ``package://`` references are resolved against the workspace layout
-first (the description/nav2 packages live at the repo root) and fall back to
+Nav2 map resolves, and that map metadata and image contents are usable.  When
+a scene declares ``robot_spawn``, the checker also proves that the padded,
+oriented Nav2 footprint is wholly inside the map and covers only free cells.
+``package://`` references are resolved against the workspace layout first
+(the description/nav2 packages live at the repo root) and fall back to
 ``ament_index_python`` when the package is not in this checkout.
 """
 
 from __future__ import annotations
 
 import argparse
+import math
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Mapping, Sequence
 
 import yaml
+from PIL import Image, UnidentifiedImageError
 
 
 WORKSPACE = Path(__file__).resolve().parents[1]
@@ -35,6 +41,29 @@ from control_gateway.scene_catalog import SceneError  # noqa: E402
 
 
 CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
+NAV2_CONFIG = WORKSPACE / "xczs_inspection_robot_nav2" / "config"
+
+
+@dataclass(frozen=True)
+class MapData:
+    """Validated map metadata plus a fully decoded RGBA image."""
+
+    image: Image.Image
+    resolution: float
+    origin: tuple[float, float, float]
+    negate: int
+    occupied_thresh: float
+    free_thresh: float
+    mode: str
+    has_alpha: bool
+
+
+@dataclass(frozen=True)
+class FootprintConfig:
+    """Nav2 footprint polygon and its configured component-wise padding."""
+
+    points: tuple[tuple[float, float], ...]
+    padding: float
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -45,6 +74,11 @@ def _parser() -> argparse.ArgumentParser:
         "--scenes",
         default=str(CONTROL_CONFIG / "scenes.yaml"),
         help="scene catalog YAML",
+    )
+    parser.add_argument(
+        "--nav2-params",
+        default=str(NAV2_CONFIG / "nav2_params.yaml"),
+        help="Nav2 parameters containing global_costmap footprint settings",
     )
     return parser
 
@@ -69,28 +103,482 @@ def _resolve(uri: str) -> Path:
         return candidate
 
 
-def _check_map_yaml(path: Path, scene_name: str) -> list[str]:
+def _is_finite_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _mapping_at(document: Any, keys: Sequence[str]) -> Mapping[str, Any] | None:
+    value = document
+    for key in keys:
+        if not isinstance(value, Mapping):
+            return None
+        value = value.get(key)
+    return value if isinstance(value, Mapping) else None
+
+
+def _load_footprint(path: Path) -> tuple[FootprintConfig | None, list[str]]:
+    """Load the global-costmap footprint exactly as Nav2 will pad it."""
+
+    try:
+        document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except OSError as error:
+        return None, [f"cannot read Nav2 parameters {path}: {error}"]
+    except yaml.YAMLError as error:
+        return None, [f"invalid Nav2 parameter YAML {path}: {error}"]
+
+    parameters = _mapping_at(
+        document, ("global_costmap", "global_costmap", "ros__parameters")
+    )
+    if parameters is None:
+        return None, [
+            f"Nav2 parameters {path} have no "
+            "global_costmap.global_costmap.ros__parameters mapping."
+        ]
+
+    raw_footprint = parameters.get("footprint")
+    if isinstance(raw_footprint, str):
+        try:
+            raw_footprint = yaml.safe_load(raw_footprint)
+        except yaml.YAMLError as error:
+            return None, [f"Nav2 footprint in {path} is invalid YAML: {error}"]
+    if not isinstance(raw_footprint, list) or len(raw_footprint) < 3:
+        return None, [f"Nav2 footprint in {path} must contain at least 3 points."]
+
+    points: list[tuple[float, float]] = []
+    for index, point in enumerate(raw_footprint):
+        if (
+            not isinstance(point, (list, tuple))
+            or len(point) != 2
+            or not all(_is_finite_number(coordinate) for coordinate in point)
+        ):
+            return None, [
+                f"Nav2 footprint point {index} in {path} "
+                "must contain 2 finite numbers."
+            ]
+        points.append((float(point[0]), float(point[1])))
+
+    if math.isclose(_polygon_area(points), 0.0, abs_tol=1.0e-12):
+        return None, [f"Nav2 footprint in {path} must have non-zero area."]
+
+    raw_padding = parameters.get("footprint_padding")
+    if not _is_finite_number(raw_padding) or float(raw_padding) < 0.0:
+        return None, [
+            f"Nav2 footprint_padding in {path} must be a finite number >= 0."
+        ]
+    return FootprintConfig(tuple(points), float(raw_padding)), []
+
+
+def _resolve_map_image(map_path: Path, image: str) -> Path:
+    # Nav2 Humble treats only a leading '/' as absolute; all other image names
+    # are resolved relative to the map YAML directory.
+    image_path = Path(image.strip())
+    return image_path if image_path.is_absolute() else map_path.parent / image_path
+
+
+def _load_map_yaml(
+    path: Path, scene_name: str
+) -> tuple[MapData | None, list[str]]:
+    """Validate Nav2 metadata and force Pillow to decode the complete image."""
+
     errors: list[str] = []
     try:
         document = yaml.safe_load(path.read_text(encoding="utf-8"))
     except OSError as error:
-        return [f"{scene_name}: cannot read map YAML {path}: {error}"]
+        return None, [f"{scene_name}: cannot read map YAML {path}: {error}"]
     except yaml.YAMLError as error:
-        return [f"{scene_name}: invalid map YAML {path}: {error}"]
+        return None, [f"{scene_name}: invalid map YAML {path}: {error}"]
     if not isinstance(document, dict):
-        return [f"{scene_name}: map YAML {path} is not a mapping."]
-    image = document.get("image")
-    if not isinstance(image, str) or not image.strip():
-        return [f"{scene_name}: map YAML {path} has no image field."]
-    image_path = path.parent / image
-    if not image_path.exists():
-        errors.append(
-            f"{scene_name}: map image {image_path} referenced by {path} is missing."
-        )
-    for field in ("resolution", "origin", "negate", "occupied_thresh", "free_thresh"):
+        return None, [f"{scene_name}: map YAML {path} is not a mapping."]
+
+    required = ("resolution", "origin", "negate", "occupied_thresh", "free_thresh")
+    for field in required:
         if field not in document:
             errors.append(f"{scene_name}: map YAML {path} is missing '{field}'.")
-    return errors
+
+    image = document.get("image")
+    if not isinstance(image, str) or not image.strip():
+        errors.append(f"{scene_name}: map YAML {path} has no image field.")
+
+    resolution = document.get("resolution")
+    if not _is_finite_number(resolution) or float(resolution) <= 0.0:
+        errors.append(
+            f"{scene_name}: map YAML {path} resolution must be a finite number > 0."
+        )
+
+    raw_origin = document.get("origin")
+    origin: tuple[float, float, float] | None = None
+    if (
+        not isinstance(raw_origin, (list, tuple))
+        or len(raw_origin) != 3
+        or not all(_is_finite_number(coordinate) for coordinate in raw_origin)
+    ):
+        errors.append(
+            f"{scene_name}: map YAML {path} origin must contain 3 finite numbers."
+        )
+    else:
+        origin = (
+            float(raw_origin[0]),
+            float(raw_origin[1]),
+            float(raw_origin[2]),
+        )
+
+    negate = document.get("negate")
+    if isinstance(negate, bool):
+        negate = int(negate)
+    elif not isinstance(negate, int) or negate not in (0, 1):
+        errors.append(f"{scene_name}: map YAML {path} negate must be 0 or 1.")
+
+    occupied_thresh = document.get("occupied_thresh")
+    free_thresh = document.get("free_thresh")
+    if not _is_finite_number(free_thresh):
+        errors.append(
+            f"{scene_name}: map YAML {path} free_thresh must be finite."
+        )
+    if not _is_finite_number(occupied_thresh):
+        errors.append(
+            f"{scene_name}: map YAML {path} occupied_thresh must be finite."
+        )
+    if _is_finite_number(free_thresh) and _is_finite_number(occupied_thresh):
+        free_value = float(free_thresh)
+        occupied_value = float(occupied_thresh)
+        if not 0.0 <= free_value < occupied_value <= 1.0:
+            errors.append(
+                f"{scene_name}: map YAML {path} thresholds must satisfy "
+                "0 <= free_thresh < occupied_thresh <= 1."
+            )
+
+    mode = document.get("mode", "trinary")
+    if not isinstance(mode, str) or mode.lower() not in {"trinary", "scale", "raw"}:
+        errors.append(
+            f"{scene_name}: map YAML {path} mode must be trinary, scale, or raw."
+        )
+    else:
+        mode = mode.lower()
+
+    decoded: Image.Image | None = None
+    has_alpha = False
+    if isinstance(image, str) and image.strip():
+        image_value = image.strip()
+        if image_value.startswith(("package://", "~/")):
+            errors.append(
+                f"{scene_name}: map image '{image_value}' uses a URI/home "
+                "reference that Nav2 Humble does not resolve; use a path "
+                "relative to the map YAML or an absolute path."
+            )
+        else:
+            image_path = _resolve_map_image(path, image_value)
+            if not image_path.is_file():
+                errors.append(
+                    f"{scene_name}: map image {image_path} referenced by "
+                    f"{path} is missing."
+                )
+            else:
+                try:
+                    with Image.open(image_path) as source:
+                        source.load()
+                        has_alpha = (
+                            "A" in source.getbands()
+                            or "transparency" in source.info
+                        )
+                        decoded = source.convert("RGBA")
+                        decoded.load()
+                except (
+                    OSError,
+                    UnidentifiedImageError,
+                    Image.DecompressionBombError,
+                ) as error:
+                    errors.append(
+                        f"{scene_name}: cannot decode map image "
+                        f"{image_path}: {error}"
+                    )
+                if decoded is not None and (
+                    decoded.width <= 0 or decoded.height <= 0
+                ):
+                    errors.append(f"{scene_name}: map image {image_path} is empty.")
+                    decoded = None
+
+    if errors or decoded is None or origin is None:
+        return None, errors
+    return (
+        MapData(
+            image=decoded,
+            resolution=float(resolution),
+            origin=origin,
+            negate=int(negate),
+            occupied_thresh=float(occupied_thresh),
+            free_thresh=float(free_thresh),
+            mode=str(mode),
+            has_alpha=has_alpha,
+        ),
+        [],
+    )
+
+
+def _polygon_area(points: Sequence[tuple[float, float]]) -> float:
+    return 0.5 * abs(
+        sum(
+            x1 * y2 - x2 * y1
+            for (x1, y1), (x2, y2) in zip(points, (*points[1:], points[0]))
+        )
+    )
+
+
+def _clip_boundary(
+    polygon: Sequence[tuple[float, float]],
+    inside: Any,
+    intersection: Any,
+) -> list[tuple[float, float]]:
+    if not polygon:
+        return []
+    output: list[tuple[float, float]] = []
+    previous = polygon[-1]
+    previous_inside = inside(previous)
+    for current in polygon:
+        current_inside = inside(current)
+        if current_inside != previous_inside:
+            output.append(intersection(previous, current))
+        if current_inside:
+            output.append(current)
+        previous = current
+        previous_inside = current_inside
+    return output
+
+
+def _clip_to_cell(
+    polygon: Sequence[tuple[float, float]],
+    left: float,
+    bottom: float,
+    right: float,
+    top: float,
+) -> list[tuple[float, float]]:
+    """Clip a polygon to one map cell using Sutherland-Hodgman."""
+
+    def vertical(
+        first: tuple[float, float], second: tuple[float, float], x: float
+    ) -> tuple[float, float]:
+        fraction = (x - first[0]) / (second[0] - first[0])
+        return x, first[1] + fraction * (second[1] - first[1])
+
+    def horizontal(
+        first: tuple[float, float], second: tuple[float, float], y: float
+    ) -> tuple[float, float]:
+        fraction = (y - first[1]) / (second[1] - first[1])
+        return first[0] + fraction * (second[0] - first[0]), y
+
+    clipped = list(polygon)
+    clipped = _clip_boundary(
+        clipped, lambda point: point[0] >= left, lambda a, b: vertical(a, b, left)
+    )
+    clipped = _clip_boundary(
+        clipped, lambda point: point[0] <= right, lambda a, b: vertical(a, b, right)
+    )
+    clipped = _clip_boundary(
+        clipped,
+        lambda point: point[1] >= bottom,
+        lambda a, b: horizontal(a, b, bottom),
+    )
+    return _clip_boundary(
+        clipped,
+        lambda point: point[1] <= top,
+        lambda a, b: horizontal(a, b, top),
+    )
+
+
+def _padded_points(config: FootprintConfig) -> tuple[tuple[float, float], ...]:
+    # nav2_costmap_2d::padFootprint expands x/y independently using sign0().
+    padding = config.padding
+
+    def padded_component(value: float) -> float:
+        if value > 0.0:
+            return value + padding
+        if value < 0.0:
+            return value - padding
+        return value
+
+    return tuple(
+        (padded_component(x), padded_component(y))
+        for x, y in config.points
+    )
+
+
+def _nav2_line_cells(
+    start: tuple[int, int], end: tuple[int, int]
+) -> list[tuple[int, int]]:
+    """Rasterize one edge exactly like ``nav2_util::LineIterator``."""
+
+    x0, y0 = start
+    x1, y1 = end
+    x = x0
+    y = y0
+    delta_x = abs(x1 - x0)
+    delta_y = abs(y1 - y0)
+    x_increment_1 = 1 if x1 >= x0 else -1
+    x_increment_2 = x_increment_1
+    y_increment_1 = 1 if y1 >= y0 else -1
+    y_increment_2 = y_increment_1
+    if delta_x >= delta_y:
+        x_increment_1 = 0
+        y_increment_2 = 0
+        denominator = delta_x
+        numerator = delta_x // 2
+        numerator_increment = delta_y
+        pixel_count = delta_x
+    else:
+        x_increment_2 = 0
+        y_increment_1 = 0
+        denominator = delta_y
+        numerator = delta_y // 2
+        numerator_increment = delta_x
+        pixel_count = delta_y
+
+    cells: list[tuple[int, int]] = []
+    for _ in range(pixel_count + 1):
+        cells.append((x, y))
+        numerator += numerator_increment
+        if numerator >= denominator and denominator != 0:
+            numerator -= denominator
+            x += x_increment_1
+            y += y_increment_1
+        x += x_increment_2
+        y += y_increment_2
+    return cells
+
+
+def _map_footprint(
+    scene: Any, map_data: MapData, config: FootprintConfig
+) -> tuple[tuple[float, float], ...]:
+    """Return the oriented footprint in map-local metric coordinates."""
+
+    robot_cos = math.cos(scene.robot_spawn.yaw)
+    robot_sin = math.sin(scene.robot_spawn.yaw)
+    origin_x, origin_y, origin_yaw = map_data.origin
+    origin_cos = math.cos(origin_yaw)
+    origin_sin = math.sin(origin_yaw)
+    points: list[tuple[float, float]] = []
+    for base_x, base_y in _padded_points(config):
+        world_x = scene.robot_spawn.x + robot_cos * base_x - robot_sin * base_y
+        world_y = scene.robot_spawn.y + robot_sin * base_x + robot_cos * base_y
+        delta_x = world_x - origin_x
+        delta_y = world_y - origin_y
+        points.append(
+            (
+                origin_cos * delta_x + origin_sin * delta_y,
+                -origin_sin * delta_x + origin_cos * delta_y,
+            )
+        )
+    return tuple(points)
+
+
+def _pixel_state(pixel: tuple[int, int, int, int], map_data: MapData) -> str:
+    red, green, blue, alpha = pixel
+    channels = [red, green, blue]
+    # Nav2 Humble preserves its historical trinary behavior by averaging the
+    # opacity channel with RGB whenever the source image carries alpha.
+    if map_data.mode == "trinary" and map_data.has_alpha:
+        channels.append(alpha)
+    pixel_value = sum(channels) / len(channels)
+    if map_data.mode == "raw":
+        # MapIO's RAW branch applies std::round() to the non-negative shade
+        # before storing it.  floor(x + 0.5) is the exact half-away-from-zero
+        # result for image-channel values and avoids Python's bankers rounding.
+        raw_value = math.floor(pixel_value + 0.5)
+        if raw_value == 0:
+            return "free"
+        return "occupied" if raw_value <= 100 else "unknown"
+    shade = pixel_value / 255.0
+    if map_data.mode == "scale" and alpha < 255:
+        return "unknown"
+    occupancy = shade if map_data.negate else 1.0 - shade
+    if occupancy > map_data.occupied_thresh:
+        return "occupied"
+    if occupancy < map_data.free_thresh:
+        return "free"
+    return "unknown"
+
+
+def _check_robot_spawn(
+    scene: Any, map_data: MapData, config: FootprintConfig
+) -> list[str]:
+    polygon = _map_footprint(scene, map_data, config)
+    width, height = map_data.image.size
+    map_width = width * map_data.resolution
+    map_height = height * map_data.resolution
+    if any(
+        x < 0.0
+        or y < 0.0
+        or x >= map_width
+        or y >= map_height
+        for x, y in polygon
+    ):
+        return [
+            f"{scene.name}: robot_spawn padded footprint is outside the map "
+            f"bounds (0..{map_width:g}, 0..{map_height:g} m)."
+        ]
+
+    minimum_x = max(
+        0,
+        math.floor(min(point[0] for point in polygon) / map_data.resolution),
+    )
+    maximum_x = min(
+        width - 1,
+        math.ceil(max(point[0] for point in polygon) / map_data.resolution) - 1,
+    )
+    minimum_y = max(
+        0,
+        math.floor(min(point[1] for point in polygon) / map_data.resolution),
+    )
+    maximum_y = min(
+        height - 1,
+        math.ceil(max(point[1] for point in polygon) / map_data.resolution) - 1,
+    )
+
+    # FootprintCollisionChecker first maps every vertex with worldToMap()
+    # (floor for this map-local representation), then checks each polygon edge
+    # with nav2_util::LineIterator.  Include those tangent cells in addition
+    # to the positive-area interior below; otherwise an obstacle exactly on a
+    # right/top edge would be incorrectly accepted by this preflight.
+    map_vertices = tuple(
+        (
+            math.floor(x / map_data.resolution),
+            math.floor(y / map_data.resolution),
+        )
+        for x, y in polygon
+    )
+    edge_cells: set[tuple[int, int]] = set()
+    for start, end in zip(
+        map_vertices, (*map_vertices[1:], map_vertices[0])
+    ):
+        edge_cells.update(_nav2_line_cells(start, end))
+    for grid_x, grid_y in sorted(edge_cells, key=lambda cell: (cell[1], cell[0])):
+        pixel = map_data.image.getpixel((grid_x, height - 1 - grid_y))
+        state = _pixel_state(pixel, map_data)
+        if state != "free":
+            return [
+                f"{scene.name}: robot_spawn padded footprint edge covers "
+                f"{state} map cell ({grid_x}, {grid_y})."
+            ]
+
+    for grid_y in range(minimum_y, maximum_y + 1):
+        bottom = grid_y * map_data.resolution
+        top = bottom + map_data.resolution
+        for grid_x in range(minimum_x, maximum_x + 1):
+            left = grid_x * map_data.resolution
+            right = left + map_data.resolution
+            overlap = _clip_to_cell(polygon, left, bottom, right, top)
+            if len(overlap) < 3 or _polygon_area(overlap) <= 1.0e-12:
+                continue
+            pixel = map_data.image.getpixel((grid_x, height - 1 - grid_y))
+            state = _pixel_state(pixel, map_data)
+            if state != "free":
+                return [
+                    f"{scene.name}: robot_spawn padded footprint covers {state} "
+                    f"map cell ({grid_x}, {grid_y})."
+                ]
+    return []
 
 
 def main() -> int:
@@ -102,6 +590,13 @@ def main() -> int:
         return 1
 
     errors: list[str] = []
+    footprint: FootprintConfig | None = None
+    if any(scene.robot_spawn is not None for scene in catalog):
+        footprint, footprint_errors = _load_footprint(
+            Path(arguments.nav2_params).expanduser()
+        )
+        errors.extend(footprint_errors)
+
     for scene in catalog:
         if scene.model is not None:
             model_path = _resolve(scene.model.file)
@@ -120,7 +615,14 @@ def main() -> int:
                 f"{scene.name}: nav2_map {scene.nav2_map} ({map_path}) is missing."
             )
         else:
-            errors.extend(_check_map_yaml(map_path, scene.name))
+            map_data, map_errors = _load_map_yaml(map_path, scene.name)
+            errors.extend(map_errors)
+            if (
+                map_data is not None
+                and footprint is not None
+                and scene.robot_spawn is not None
+            ):
+                errors.extend(_check_robot_spawn(scene, map_data, footprint))
 
     if errors:
         for error in errors:

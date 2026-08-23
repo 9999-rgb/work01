@@ -5,12 +5,14 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,6 +28,7 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_control/planning_scene_profile.hpp"
 
@@ -37,6 +40,8 @@ namespace
 
 using CabinetControlState =
   xczs_inspection_robot_control::msg::CabinetControlState;
+
+constexpr std::size_t kExpiredLeaseHistoryLimit = 64U;
 
 struct BoxPart
 {
@@ -116,6 +121,13 @@ public:
     collision_object_prefix_ = declare_parameter<std::string>(
       "collision_object_prefix", "");
     require_pose_valid_ = declare_parameter<bool>("require_pose_valid", false);
+    operation_watchdog_timeout_ = declare_parameter<double>(
+      "operation_watchdog_timeout", 2.0);
+    if (!operation_watchdog_timeout_is_valid(operation_watchdog_timeout_)) {
+      throw std::invalid_argument(
+              "Parameter 'operation_watchdog_timeout' must be finite and "
+              "positive.");
+    }
     const auto pose_valid_topic = required_string_parameter(
       "pose_valid_topic", "pose_valid");
 
@@ -134,9 +146,19 @@ public:
       "active_control",
       rclcpp::QoS(1).reliable().transient_local(),
       [this](const std_msgs::msg::String::SharedPtr message) {
-        std::lock_guard<std::mutex> lock(state_mutex_);
-        active_control_id_ = message->data;
-        ++scene_revision_;
+        receive_active_control(message->data);
+      });
+    operation_heartbeat_subscription_ =
+      create_subscription<std_msgs::msg::String>(
+      "operation_heartbeat", rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::String::SharedPtr message) {
+        receive_operation_heartbeat(message->data);
+      });
+    operation_fault_subscription_ =
+      create_subscription<std_msgs::msg::String>(
+      "operation_fault", rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::String::SharedPtr message) {
+        receive_operation_fault(message->data);
       });
     pose_valid_subscription_ = create_subscription<std_msgs::msg::Bool>(
       pose_valid_topic,
@@ -176,6 +198,159 @@ public:
   }
 
 private:
+  void remember_expired_operation_lease_locked(
+    const std::string & operation_lease_id)
+  {
+    if (operation_lease_id.empty() ||
+      !expired_operation_lease_ids_.insert(operation_lease_id).second)
+    {
+      return;
+    }
+    expired_operation_lease_history_.push_back(operation_lease_id);
+    while (expired_operation_lease_history_.size() >
+      kExpiredLeaseHistoryLimit)
+    {
+      expired_operation_lease_ids_.erase(
+        expired_operation_lease_history_.front());
+      expired_operation_lease_history_.pop_front();
+    }
+  }
+
+  void clear_active_operation_locked(bool expire_lease)
+  {
+    if (expire_lease) {
+      remember_expired_operation_lease_locked(operation_heartbeat_lease_id_);
+    }
+    active_control_id_.clear();
+    operation_heartbeat_received_ = false;
+    operation_heartbeat_lease_id_.clear();
+    operation_last_heartbeat_ =
+      std::chrono::steady_clock::time_point{};
+    operation_monitor_started_at_ =
+      std::chrono::steady_clock::time_point{};
+    watchdog_operation_lease_id_.clear();
+    ++active_control_generation_;
+    watchdog_active_control_generation_ = active_control_generation_;
+    ++scene_revision_;
+  }
+
+  void receive_active_control(const std::string & control_id)
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (active_control_id_ == control_id) {
+      return;
+    }
+    remember_expired_operation_lease_locked(operation_heartbeat_lease_id_);
+    active_control_id_ = control_id;
+    operation_heartbeat_received_ = false;
+    operation_heartbeat_lease_id_.clear();
+    operation_last_heartbeat_ =
+      std::chrono::steady_clock::time_point{};
+    ++active_control_generation_;
+    watchdog_active_control_generation_ = active_control_generation_;
+    watchdog_operation_lease_id_.clear();
+    operation_monitor_started_at_ = control_id.empty() ?
+      std::chrono::steady_clock::time_point{} :
+    std::chrono::steady_clock::now();
+    ++scene_revision_;
+  }
+
+  void receive_operation_heartbeat(const std::string & operation_lease_id)
+  {
+    std::lock_guard<std::mutex> lock(state_mutex_);
+    if (active_control_id_.empty() || operation_lease_id.empty() ||
+      expired_operation_lease_ids_.count(operation_lease_id) != 0U)
+    {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    const bool collision_exemption_was_active =
+      operation_heartbeat_received_;
+    if (operation_heartbeat_lease_id_ != operation_lease_id) {
+      remember_expired_operation_lease_locked(
+        operation_heartbeat_lease_id_);
+      operation_monitor_started_at_ = now;
+      watchdog_operation_lease_id_ = operation_lease_id;
+    }
+    operation_heartbeat_received_ = true;
+    operation_heartbeat_lease_id_ = operation_lease_id;
+    operation_last_heartbeat_ = now;
+    if (!collision_exemption_was_active) {
+      // The transient active-control value alone is not authorization to
+      // remove a MoveIt collision object.  Publish the exemption only after a
+      // live volatile heartbeat proves that the corresponding lease holder is
+      // currently running.
+      ++scene_revision_;
+    }
+  }
+
+  void receive_operation_fault(const std::string & operation_lease_id)
+  {
+    std::string cleared_control;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (!operation_fault_matches_active_lease(
+          !active_control_id_.empty(), operation_heartbeat_lease_id_,
+          operation_lease_id))
+      {
+        return;
+      }
+      cleared_control = active_control_id_;
+      clear_active_operation_locked(true);
+    }
+    RCLCPP_ERROR(
+      get_logger(),
+      "Cabinet physics fault for lease '%s' revoked MoveIt collision "
+      "exemption '%s'.",
+      operation_lease_id.c_str(), cleared_control.c_str());
+  }
+
+  void enforce_operation_watchdog()
+  {
+    std::string expired_control;
+    std::string expired_lease;
+    double elapsed = 0.0;
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (active_control_id_.empty()) {
+        return;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      if (watchdog_active_control_generation_ !=
+        active_control_generation_ ||
+        watchdog_operation_lease_id_ != operation_heartbeat_lease_id_)
+      {
+        watchdog_active_control_generation_ = active_control_generation_;
+        watchdog_operation_lease_id_ = operation_heartbeat_lease_id_;
+        operation_monitor_started_at_ = now;
+      }
+      if (operation_monitor_started_at_ ==
+        std::chrono::steady_clock::time_point{})
+      {
+        operation_monitor_started_at_ = now;
+      }
+      const auto reference_time = operation_heartbeat_received_ ?
+        std::max(operation_monitor_started_at_, operation_last_heartbeat_) :
+        operation_monitor_started_at_;
+      elapsed = std::chrono::duration<double>(
+        now - reference_time).count();
+      if (!operation_watchdog_has_expired(
+          true, false, elapsed, operation_watchdog_timeout_))
+      {
+        return;
+      }
+      expired_control = active_control_id_;
+      expired_lease = operation_heartbeat_lease_id_;
+      clear_active_operation_locked(true);
+    }
+    RCLCPP_ERROR(
+      get_logger(),
+      "Cabinet planning-scene heartbeat for control '%s' lease '%s' timed "
+      "out after %.3f s; its MoveIt collision exemption was revoked.",
+      expired_control.c_str(),
+      expired_lease.empty() ? "<none>" : expired_lease.c_str(), elapsed);
+  }
+
   bool has_door() const
   {
     return !door_control_id_.empty();
@@ -580,10 +755,13 @@ private:
 
   void publish_scene_if_needed()
   {
+    // Wall-clock liveness is independent of TF and simulation time.  Revoke a
+    // stale collision exemption before attempting any potentially unavailable
+    // pose lookup, then republish from the last latched cabinet transform.
+    enforce_operation_watchdog();
     tf2::Transform observed_model;
-    if (!lookup_model_transform(observed_model)) {
-      return;
-    }
+    const bool observed_model_available =
+      lookup_model_transform(observed_model);
 
     std::string active_control;
     std::string published_active_control;
@@ -594,20 +772,26 @@ private:
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
       // Collision objects and task geometry must use one latched cabinet pose
-      // for the whole manipulation.  Defer external pose updates until the
-      // active-control topic returns to idle.
-      if (!model_transform_received_ ||
-        (active_control_id_.empty() &&
-        transform_changed(model_transform_, observed_model)))
+      // for the whole live manipulation.  A transient active-control sample
+      // without a volatile heartbeat is stale after a process restart and
+      // must neither freeze TF nor remove a collision object.
+      if (observed_model_available &&
+        (!model_transform_received_ ||
+        ((active_control_id_.empty() || !operation_heartbeat_received_) &&
+        transform_changed(model_transform_, observed_model))))
       {
         model_transform_ = observed_model;
         model_transform_received_ = true;
         ++scene_revision_;
       }
+      if (!model_transform_received_) {
+        return;
+      }
       if (scene_published_ && published_revision_ == scene_revision_) {
         return;
       }
-      active_control = active_control_id_;
+      active_control = operation_heartbeat_received_ ?
+        active_control_id_ : std::string{};
       published_active_control = published_active_control_id_;
       model = model_transform_;
       door_position = door_position_;
@@ -687,6 +871,10 @@ private:
   rclcpp::TimerBase::SharedPtr retry_timer_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     active_control_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    operation_heartbeat_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    operation_fault_subscription_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
     pose_valid_subscription_;
   rclcpp::Subscription<CabinetControlState>::SharedPtr
@@ -699,6 +887,15 @@ private:
   mutable std::mutex state_mutex_;
   std::string active_control_id_;
   std::string published_active_control_id_;
+  std::uint64_t active_control_generation_{0U};
+  std::uint64_t watchdog_active_control_generation_{0U};
+  bool operation_heartbeat_received_{false};
+  std::string operation_heartbeat_lease_id_;
+  std::string watchdog_operation_lease_id_;
+  std::chrono::steady_clock::time_point operation_last_heartbeat_{};
+  std::chrono::steady_clock::time_point operation_monitor_started_at_{};
+  std::unordered_set<std::string> expired_operation_lease_ids_;
+  std::deque<std::string> expired_operation_lease_history_;
   tf2::Transform model_transform_{tf2::Transform::getIdentity()};
   double door_position_{0.0};
   double switch_position_{0.0};
@@ -713,6 +910,7 @@ private:
   std::string cabinet_frame_;
   std::string collision_object_prefix_;
   bool require_pose_valid_{false};
+  double operation_watchdog_timeout_{2.0};
   std::vector<BoxPart> frame_parts_;
   std::vector<SceneControlProfile> control_profiles_;
   std::vector<ControlCollision> control_collisions_;

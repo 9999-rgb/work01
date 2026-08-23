@@ -127,6 +127,7 @@ class ResetBasePoseConfig:
 class RobotAdapterConfig:
     """Immutable ROS/TF interface contract for one robot adapter."""
 
+    active_toolset: Optional[str]
     planning_frame: str
     pose_parent_frame: str
     manual_linear_axis: str
@@ -148,6 +149,8 @@ class RobotAdapterConfig:
     reset_joint_tolerance: float
     reset_joint_timeout_sec: float
     reset_joint_duration_sec: float
+    calibration_joint_targets: Tuple[Tuple[str, float], ...]
+    calibration_joint_tolerance: Optional[float]
     controller_groups: Tuple[ControllerGroupConfig, ...]
     manual_joints: Tuple[ManualJointConfig, ...]
     control_navigation_stations: Tuple[
@@ -184,6 +187,25 @@ class RobotAdapterConfig:
             if group.name == name:
                 return group.status_topic
         return None
+
+    def reset_tolerance_for_joint(self, name: str) -> float:
+        """Return the reset acceptance tolerance for one active joint.
+
+        Most arm joints use the general reset tolerance.  A tool business
+        point can additionally require a calibrated joint pose; in that case
+        the stricter calibration tolerance is authoritative so the gateway
+        cannot report a robot as home and then have the cabinet action reject
+        the same physical state.
+        """
+        if self.calibration_joint_tolerance is not None and any(
+            calibrated_name == name
+            for calibrated_name, _ in self.calibration_joint_targets
+        ):
+            return min(
+                self.reset_joint_tolerance,
+                self.calibration_joint_tolerance,
+            )
+        return self.reset_joint_tolerance
 
     def control_navigation_station(
         self,
@@ -461,6 +483,82 @@ def _controller_groups(
     return tuple(groups)
 
 
+def _active_controller_groups(
+    parameters: Mapping[str, Any],
+    groups: Tuple[ControllerGroupConfig, ...],
+    toolset: Optional[str],
+) -> tuple[Tuple[ControllerGroupConfig, ...], Optional[str]]:
+    """Select the controller groups mounted by one runtime toolset.
+
+    ``manual_joint_groups`` remains the authoritative definition of every
+    supported group, so all joints and limits can be validated from one
+    adapter file.  ``manual_joint_groups_by_toolset`` only selects which of
+    those already-validated groups are present in the current URDF.  A
+    toolset-aware adapter must never fall back to the union: doing so makes
+    joint-state verification wait forever for joints that are not mounted.
+    """
+    configured = parameters.get("manual_joint_groups_by_toolset")
+    if configured is None:
+        return groups, None
+    if not isinstance(configured, Mapping) or not configured:
+        raise RobotAdapterError(
+            "manual_joint_groups_by_toolset must be a non-empty mapping."
+        )
+
+    available_groups = {group.name: group for group in groups}
+    normalized: dict[str, Tuple[str, ...]] = {}
+    for raw_name, raw_groups in configured.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            raise RobotAdapterError(
+                "manual_joint_groups_by_toolset keys must be non-empty "
+                "toolset names."
+            )
+        name = raw_name.strip().upper()
+        if name in normalized:
+            raise RobotAdapterError(
+                "manual_joint_groups_by_toolset contains duplicate toolset "
+                f"name '{name}' after normalization."
+            )
+        selected_names = _joint_names(
+            raw_groups,
+            f"manual_joint_groups_by_toolset.{name}",
+            allow_empty=False,
+        )
+        unknown = sorted(set(selected_names) - set(available_groups))
+        if unknown:
+            raise RobotAdapterError(
+                f"manual_joint_groups_by_toolset.{name} references unknown "
+                "controller groups: " + ", ".join(unknown) + "."
+            )
+        normalized[name] = selected_names
+
+    uncovered = sorted(
+        set(available_groups)
+        - {group_name for names in normalized.values() for group_name in names}
+    )
+    if uncovered:
+        raise RobotAdapterError(
+            "manual_joint_groups_by_toolset does not expose configured "
+            "controller groups: " + ", ".join(uncovered) + "."
+        )
+    if toolset is None or not isinstance(toolset, str) or not toolset.strip():
+        raise RobotAdapterError(
+            "This robot adapter declares manual_joint_groups_by_toolset; "
+            "an active toolset is required."
+        )
+    active_toolset = toolset.strip().upper()
+    if active_toolset not in normalized:
+        raise RobotAdapterError(
+            f"Unknown active toolset '{active_toolset}'; expected one of: "
+            + ", ".join(sorted(normalized))
+            + "."
+        )
+    return (
+        tuple(available_groups[name] for name in normalized[active_toolset]),
+        active_toolset,
+    )
+
+
 def _manual_joints(
     groups: Tuple[ControllerGroupConfig, ...],
     limits_value: Any,
@@ -671,7 +769,129 @@ def _control_navigation_stations(
     return tuple(stations)
 
 
-def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
+def _active_calibration_joint_targets(
+    document: Mapping[str, Any],
+    path: Path,
+    *,
+    all_manual_joints: Sequence[ManualJointConfig],
+    active_manual_joints: Sequence[ManualJointConfig],
+) -> tuple[Tuple[Tuple[str, float], ...], Optional[float]]:
+    """Load calibrated business-point joints relevant to the mounted toolset.
+
+    The cabinet operator and the gateway consume the same adapter document.
+    Reading the calibration constraint here prevents their two definitions of
+    "robot home" from drifting apart.  Profiles for a non-mounted toolset are
+    still validated, but are excluded from the active reset acceptance set.
+    """
+    operator = _operator_parameters(document, path)
+    if operator is None:
+        return (), None
+
+    profiles = operator.get("tool_profiles", {})
+    if not isinstance(profiles, Mapping):
+        raise RobotAdapterError(
+            f"Robot adapter {path} operator tool_profiles must be a mapping."
+        )
+
+    all_defaults = {
+        joint.name: joint.default_position for joint in all_manual_joints
+    }
+    active_names = {joint.name for joint in active_manual_joints}
+    targets: dict[str, float] = {}
+    uses_calibration = False
+    for profile_name, profile in profiles.items():
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise RobotAdapterError(
+                f"Robot adapter {path} operator tool profile names must be "
+                "non-empty strings."
+            )
+        if not isinstance(profile, Mapping):
+            raise RobotAdapterError(
+                f"Robot adapter {path} tool profile '{profile_name}' must be "
+                "a mapping."
+            )
+        names_value = profile.get("calibration_joint_names")
+        positions_value = profile.get("calibration_joint_positions")
+        if names_value is None and positions_value is None:
+            continue
+        uses_calibration = True
+        if names_value is None or positions_value is None:
+            raise RobotAdapterError(
+                f"Robot adapter {path} tool profile '{profile_name}' must "
+                "declare calibration_joint_names and "
+                "calibration_joint_positions together."
+            )
+        names = _joint_names(
+            names_value,
+            f"tool_profiles.{profile_name}.calibration_joint_names",
+            allow_empty=False,
+        )
+        if (
+            not isinstance(positions_value, Sequence)
+            or isinstance(positions_value, (str, bytes, bytearray))
+            or len(positions_value) != len(names)
+        ):
+            raise RobotAdapterError(
+                f"tool_profiles.{profile_name}.calibration_joint_positions "
+                "must contain one finite number per calibration joint."
+            )
+        positions = tuple(
+            _finite_number(
+                value,
+                f"tool_profiles.{profile_name}.calibration_joint_positions",
+            )
+            for value in positions_value
+        )
+        for name, target in zip(names, positions):
+            if name not in all_defaults:
+                raise RobotAdapterError(
+                    f"tool_profiles.{profile_name} calibration joint '{name}' "
+                    "is not a configured manual joint."
+                )
+            if not math.isclose(
+                target,
+                all_defaults[name],
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            ):
+                raise RobotAdapterError(
+                    f"tool_profiles.{profile_name} calibration target for "
+                    f"'{name}' must match its manual default_position."
+                )
+            existing = targets.get(name)
+            if existing is not None and not math.isclose(
+                existing,
+                target,
+                rel_tol=0.0,
+                abs_tol=1.0e-12,
+            ):
+                raise RobotAdapterError(
+                    f"Robot adapter {path} assigns conflicting calibration "
+                    f"targets to joint '{name}'."
+                )
+            targets[name] = target
+
+    if not uses_calibration:
+        return (), None
+    tolerance = _positive_number(
+        operator.get("tool_tip_calibration_joint_tolerance"),
+        "tool_tip_calibration_joint_tolerance",
+    )
+    return (
+        tuple(
+            (name, target)
+            for name, target in targets.items()
+            if name in active_names
+        ),
+        tolerance,
+    )
+
+
+def load(
+    path_value: Union[str, Path],
+    *,
+    toolset: Optional[str] = None,
+) -> RobotAdapterConfig:
     """Load and strictly validate a cabinet robot adapter YAML file."""
     path = Path(path_value).expanduser().resolve()
     try:
@@ -710,10 +930,26 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
     )
     if manual_linear_axis_value not in {"x", "y"}:
         raise RobotAdapterError("manual_linear_axis must be either x or y.")
-    controller_groups = _controller_groups(parameters, legacy)
-    manual_joints = _manual_joints(
-        controller_groups,
+    all_controller_groups = _controller_groups(parameters, legacy)
+    all_manual_joints = _manual_joints(
+        all_controller_groups,
         _required(parameters, "manual_joint_limits", legacy=legacy),
+    )
+    controller_groups, active_toolset = _active_controller_groups(
+        parameters,
+        all_controller_groups,
+        toolset,
+    )
+    joints_by_group = {
+        group.name: tuple(
+            joint for joint in all_manual_joints if joint.group == group.name
+        )
+        for group in all_controller_groups
+    }
+    manual_joints = tuple(
+        joint
+        for group in controller_groups
+        for joint in joints_by_group[group.name]
     )
     reset_base_pose = _reset_base_pose(
         _required(parameters, "reset_base_pose", legacy=legacy),
@@ -754,7 +990,16 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
             if action_namespace
             else _LEGACY_DEFAULTS["navigation_readiness_service"]
         )
+    calibration_joint_targets, calibration_joint_tolerance = (
+        _active_calibration_joint_targets(
+            document,
+            path,
+            all_manual_joints=all_manual_joints,
+            active_manual_joints=manual_joints,
+        )
+    )
     return RobotAdapterConfig(
+        active_toolset=active_toolset,
         planning_frame=planning_frame,
         pose_parent_frame=pose_parent_frame,
         manual_linear_axis=manual_linear_axis_value,
@@ -816,6 +1061,8 @@ def load(path_value: Union[str, Path]) -> RobotAdapterConfig:
         reset_joint_tolerance=reset_joint_tolerance,
         reset_joint_timeout_sec=reset_joint_timeout_sec,
         reset_joint_duration_sec=reset_joint_duration_sec,
+        calibration_joint_targets=calibration_joint_targets,
+        calibration_joint_tolerance=calibration_joint_tolerance,
         controller_groups=controller_groups,
         manual_joints=manual_joints,
         control_navigation_stations=_control_navigation_stations(

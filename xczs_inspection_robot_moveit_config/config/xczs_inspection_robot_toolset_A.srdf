@@ -112,13 +112,8 @@
   <disable_collisions link1="r_arm_6" link2="r_three_cyl_base" reason="Adjacent" />
   <disable_collisions link1="l_arm_6" link2="l_two_cyl_base" reason="Adjacent" />
 
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger1" reason="Adjacent" />
-  <disable_collisions link1="r_three_cyl_base" link2="r_three_cyl_finger2" reason="Adjacent" />
-  <disable_collisions link1="r_three_cyl_finger2" link2="r_three_cyl_finger3" reason="Adjacent" />
   <disable_collisions link1="r_three_cyl_finger1" link2="r_three_cyl_finger2" reason="Default" />
 
-  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger1" reason="Adjacent" />
-  <disable_collisions link1="l_two_cyl_base" link2="l_two_cyl_finger2" reason="Adjacent" />
   <disable_collisions link1="l_two_cyl_finger1" link2="l_two_cyl_finger2" reason="Default" />
 
   <!-- Tucked fingers overlap their tool base at the retracted position (the

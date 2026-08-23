@@ -12,6 +12,7 @@ SQLite 连接参数（``check_same_thread=False``、WAL、busy_timeout）与
 from __future__ import annotations
 
 import os
+import threading
 from typing import Optional
 
 from sqlalchemy import create_engine, event, select
@@ -20,7 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.assets.models import Asset, Selection
 from app.config import settings
-from app.database.base import Base
+from app.database.migrations import migrate_database
 
 from control_gateway.asset_library import (
     AssetNotFoundError,
@@ -36,8 +37,11 @@ _SELECTION_ROW_ID = 1
 #: 且测试里每用例覆盖 ``XCZS_DATABASE_URL`` 时自然得到隔离的引擎。
 _ENGINES: dict[str, Engine] = {}
 _SESSION_FACTORIES: dict[str, sessionmaker] = {}
-#: 已建表的 URL 集合：建表只随引擎首次创建执行一次。
+#: 已迁移的 URL 集合：迁移只随 store 首次创建执行一次。
 _SCHEMA_ENSURED: set[str] = set()
+# 同一进程内的并发首建必须共享一个迁移/engine 初始化临界区，避免创建多个
+# 连接池后只保留最后一个引用。
+_STORE_INIT_LOCK = threading.RLock()
 
 
 def _sync_database_url(database_url: Optional[str] = None) -> str:
@@ -69,35 +73,23 @@ class SqlAssetStore:
 
     def __init__(self, database_url: Optional[str] = None) -> None:
         url = _sync_database_url(database_url)
-        if url not in _ENGINES:
-            connect_args: dict = {}
-            if url.startswith("sqlite"):
+        with _STORE_INIT_LOCK:
+            if url not in _SCHEMA_ENSURED:
+                migrate_database(url)
+                _SCHEMA_ENSURED.add(url)
+            if url not in _ENGINES:
                 connect_args = {
                     "check_same_thread": False,
                     "timeout": _SQLITE_TIMEOUT_SEC,
                 }
-            engine = create_engine(url, connect_args=connect_args)
-            if url.startswith("sqlite"):
+                engine = create_engine(url, connect_args=connect_args)
                 _set_sqlite_pragmas(engine)
-            _ENGINES[url] = engine
-            _SESSION_FACTORIES[url] = sessionmaker(
-                bind=engine, expire_on_commit=False
-            )
-        self._engine = _ENGINES[url]
-        self._session_factory = _SESSION_FACTORIES[url]
-        # 建表只随引擎首次创建执行一次，避免每个请求（Web 每请求新建 store）
-        # 都触发一次 checkfirst 反射。CLI / 启动脚本先于 Web 构造 store 时同样
-        # 会在这里建表，保证目录 / 选择表在读取前已存在。
-        if url not in _SCHEMA_ENSURED:
-            self._ensure_schema()
-            _SCHEMA_ENSURED.add(url)
-
-    def _ensure_schema(self) -> None:
-        """幂等建表（``checkfirst=True``）。CLI / 启动脚本先于 Web 启动时也会
-        调用，保证目录 / 选择表在读取前已存在。"""
-        Base.metadata.create_all(
-            self._engine, tables=[Asset.__table__, Selection.__table__]
-        )
+                _ENGINES[url] = engine
+                _SESSION_FACTORIES[url] = sessionmaker(
+                    bind=engine, expire_on_commit=False
+                )
+            self._engine = _ENGINES[url]
+            self._session_factory = _SESSION_FACTORIES[url]
 
     # ── AssetStore 实现 ─────────────────────────────────────────────────
 

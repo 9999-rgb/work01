@@ -103,7 +103,7 @@
 
     <gazebo>
       <plugin
-        name="xczs_planar_move"
+        name="xczs_planar_move_$(arg gazebo_plugin_instance_id)"
         filename="libgazebo_ros_planar_move.so">
         <ros>
           <namespace>/xczs</namespace>
@@ -118,15 +118,17 @@
         <covariance_y>0.0001</covariance_y>
         <covariance_yaw>0.001</covariance_yaw>
       </plugin>
-      <!-- Load after gazebo_ros2_control so commanded positions are captured
-           before each physics step. -->
+      <!-- Keep the spawn pose until its required verifier releases this
+           startup-only hold.  It must not remain active during ordinary
+           trajectories, where ros2_control is the sole joint authority. -->
       <plugin
-        name="xczs_planar_stabilizer"
+        name="xczs_planar_stabilizer_$(arg gazebo_plugin_instance_id)"
         filename="libxczs_planar_stabilizer.so">
         <ros>
           <namespace>/xczs</namespace>
         </ros>
         <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
+        <joint_hold_topic>/xczs/joint_hold_enabled</joint_hold_topic>
         <cmd_vel_topic>/xczs/cmd_vel</cmd_vel_topic>
         <settling_duration>1.5</settling_duration>
         <hold_joint>l_arm_0_joint</hold_joint>

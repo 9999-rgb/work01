@@ -32,12 +32,18 @@ _QUERY_TOKEN_PATHS: frozenset[str] = frozenset(
 _PUBLIC_PATHS: frozenset[str] = frozenset(
     {
         "/health",
+        # 只读的运行态既不暴露控制能力，也供启动脚本在 A/B 热切换期间
+        # 判断维护窗口；其鉴权策略与 /health 保持一致。
+        "/robot/toolset/status",
         "/auth/login",
         "/docs",
         "/redoc",
         "/openapi.json",
         "/",
         "/monitor.html",
+        # The page contains its own login flow, so it must be reachable before
+        # a bearer token exists.  Its history APIs remain protected normally.
+        "/history.html",
         "/favicon.ico",
     }
 )

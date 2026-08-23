@@ -594,10 +594,11 @@ def validate_profile(
     controls_path: str | Path,
     scene_path: str | Path,
     pose_path: str | Path,
+    toolset: str = "A",
 ) -> ProfileContractReport:
     """Validate one complete robot + cabinet profile without starting ROS."""
     try:
-        adapter = load_robot_adapter(robot_adapter_path)
+        adapter = load_robot_adapter(robot_adapter_path, toolset=toolset)
         inventory = CabinetInventory.load(instances_path, scene_path)
     except (RobotAdapterError, InventoryError) as error:
         raise ProfileContractError(str(error)) from error

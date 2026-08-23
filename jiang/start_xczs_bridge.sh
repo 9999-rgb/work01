@@ -27,6 +27,8 @@ BRIDGE_PID=""
 PROXY_PID=""
 CONTROL_PID=""
 LAUNCH_PID=""
+WORLD_LAUNCH_PID=""
+TOOLSET_SUPERVISOR_PID=""
 CLEANUP_DONE="false"
 STARTUP_TIMEOUT_SEC="${XCZS_STARTUP_TIMEOUT_SEC:-30}"
 ROBOT_READY_TIMEOUT_SEC="${XCZS_ROBOT_READY_TIMEOUT_SEC:-120}"
@@ -36,6 +38,7 @@ MANAGED_PIDS=()
 MANAGED_PGIDS=()
 MANAGED_LABELS=()
 LAUNCH_RUNTIME_DIRECTORY=""
+GAZEBO_LOG_DIRECTORY=""
 
 # ── 路径配置 ──────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -53,17 +56,33 @@ ROS2_SETUP="/opt/ros/humble/setup.bash"
 WORKSPACE_SETUP="$WORK_DIR/install/setup.bash"
 PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 
+# 帮助与参数错误不应依赖资产数据库可用；在任何迁移或文件访问之前先完成纯
+# 参数预检。后面的正式解析仍负责设置运行模式。
+for _startup_argument in "$@"; do
+    case "$_startup_argument" in
+        --with-proxy|--web|--keyboard) ;;
+        -h|--help)
+            sed -n '3,15p' "$0" | sed 's/^# *//'
+            exit 0
+            ;;
+        *) echo "未知选项: $_startup_argument" >&2; exit 1 ;;
+    esac
+done
+
 # ── 资产库选择 → 现有环境指针 ──────────────────────────────────────
 # 选择持久化在 SQLite（``selection`` 表，与 auth 用户同库）。这里通过 CLI 的
-# ``--print-env`` 把选中的场景/柜体/夹爪变体映射到现有的 CABINET_*_PATH /
-# SCENES_CONFIG / SCENE 环境变量，由下方默认值块与 launch/Web 消费。仅当用户
+# ``--print-env`` 把选中的场景/柜体/工具套装映射到现有的 CABINET_*_PATH /
+# SCENES_CONFIG / SCENE / TOOLSET 环境变量，由下方默认值块与 launch/Web 消费。仅当用户
 # 没有显式设置对应变量时生效——显式环境变量优先于资产库选择。无选择（空表 /
-# 首次启动）或依赖缺失时本块静默退化为空操作。
+# 首次启动）正常返回空结果；数据库迁移或 schema 错误必须阻止带病启动。
 XCZS_ASSETS_DIR="${XCZS_ASSETS_DIR:-$WORK_DIR/jiang/data/assets}"
-ASSET_SELECTION_LINES="$(
+if ! ASSET_SELECTION_LINES="$(
     "$PYTHON_BIN" "$WORK_DIR/scripts/xczs_import_asset" \
-        --assets-dir "$XCZS_ASSETS_DIR" --print-env 2>/dev/null || true
-)"
+        --assets-dir "$XCZS_ASSETS_DIR" --print-env
+)"; then
+    echo "ERROR: 资产选择或数据库迁移失败，已中止启动。" >&2
+    exit 1
+fi
 while IFS='=' read -r _asset_key _asset_value; do
     [ -z "$_asset_key" ] && continue
     if [ -z "${!_asset_key:-}" ]; then
@@ -82,13 +101,16 @@ SIMULATION_WORLD_PATH="${SIMULATION_WORLD_PATH:-$WORK_DIR/xczs_inspection_robot_
 CABINET_XACRO_PATH="${CABINET_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/control_cabinet.urdf.xacro}"
 ROBOT_NAME="${ROBOT_NAME:-xczs_inspection_robot}"
 ROBOT_XACRO_PATH="${ROBOT_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/xczs_inspection_robot.urdf.xacro}"
-# 末端工具套装 A/B(Web 选择持久化在资产库,见 selection 表的 toolset 列)。
-# 归一为大写;非 A/B 一律回退 A。所有按套装的模型/控制器/MoveIt 路径由此派生。
+# 末端工具套装 A/B（Web 选择持久化在资产库，见 selection 表的 toolset 列）。
+# 归一为大写；非 A/B 一律回退 A。所有按套装的模型/控制器/MoveIt 路径由此派生。
+# 在本地 Web+Gazebo 模式，toolset_supervisor 会保持 Gazebo 世界并替换机器人
+# 实体/控制栈；本变量仅表示首次加载的套装。其他启动组合沿用单体 launch。
 TOOLSET="$(printf '%s' "${TOOLSET:-A}" | tr '[:lower:]' '[:upper:]')"
 case "$TOOLSET" in
     A|B) ;;
     *) TOOLSET="A" ;;
 esac
+export XCZS_ACTIVE_TOOLSET="$TOOLSET"
 MOVEIT_CONFIG_PACKAGE="${MOVEIT_CONFIG_PACKAGE:-xczs_inspection_robot_moveit_config}"
 MOVEIT_SRDF_PATH="${MOVEIT_SRDF_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/xczs_inspection_robot_toolset_${TOOLSET}.srdf}"
 MOVEIT_KINEMATICS_PATH="${MOVEIT_KINEMATICS_PATH:-$WORK_DIR/xczs_inspection_robot_moveit_config/config/kinematics.yaml}"
@@ -111,6 +133,12 @@ SPAWN_CABINET="${SPAWN_CABINET:-true}"
 SPAWN_Z="${SPAWN_Z:-0.515}"
 CABINET_POSE_SOURCE="${CABINET_POSE_SOURCE:-static}"
 PREFLIGHT_ONLY="${XCZS_PREFLIGHT_ONLY:-false}"
+# 仅本地 Web + Gazebo + 内置机器人栈支持运行中切换；保留显式开关，方便
+# 诊断外部栈或旧部署。关闭时严格走历史单体 launch 路径。
+TOOLSET_HOTSWAP_REQUESTED="${XCZS_TOOLSET_HOTSWAP:-true}"
+TOOLSET_HOTSWAP_ACTIVE="false"
+TOOLSET_HOTSWAP_LABEL="未启用（等待运行模式判定）"
+TOOLSET_SUPERVISOR_SCRIPT="$WORK_DIR/xczs_inspection_robot_control/scripts/toolset_supervisor.py"
 
 CONTROL_ORIGINS=()
 NORMALIZED_CONTROL_ORIGINS=()
@@ -428,9 +456,29 @@ _create_launch_runtime_directory() {
         return 1
     }
     export XCZS_LAUNCH_RUNTIME_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY"
-    # 工具套装切换的重启标记文件路径：Web 端点写入，watchdog 检测后以退出码
-    # 42 触发整体重启（run_all.sh 捕获并重新拉起，重新读取 selection）。
-    export XCZS_RESTART_MARKER="$LAUNCH_RUNTIME_DIRECTORY/restart.marker"
+}
+
+_configure_gazebo_log_directory() {
+    # Gazebo Classic 默认会把运行日志放到用户级目录，长时间仿真会无界增长。
+    # 本入口已经拥有一个每次运行独立的临时目录，因此仅在用户没有显式指定
+    # GAZEBO_LOG_PATH 时把本次日志重定向到其中；模型资源缓存绝不触碰。
+    if [ "$GAZEBO_ENABLED" != "true" ]; then
+        return 0
+    fi
+    if [ -n "${GAZEBO_LOG_PATH:-}" ]; then
+        GAZEBO_LOG_DIRECTORY="$GAZEBO_LOG_PATH"
+        return 0
+    fi
+    if [ -z "${LAUNCH_RUNTIME_DIRECTORY:-}" ]; then
+        echo "ERROR: 创建 Gazebo 日志目录前必须先创建本次运行目录。" >&2
+        return 1
+    fi
+    GAZEBO_LOG_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY/gazebo_logs"
+    mkdir -p -- "$GAZEBO_LOG_DIRECTORY" || {
+        echo "ERROR: 无法创建本次 Gazebo 日志目录: $GAZEBO_LOG_DIRECTORY" >&2
+        return 1
+    }
+    export GAZEBO_LOG_PATH="$GAZEBO_LOG_DIRECTORY"
 }
 
 _cleanup_launch_runtime_directory() {
@@ -476,7 +524,8 @@ cleanup() {
         echo "═══════════════════════════════════════════"
     fi
 
-    # 按逆启动顺序停止：先 launch，再 Web/代理，最后 bridge。
+    # 按逆启动顺序发出停止信号：Web/代理与可替换机器人监督器先于常驻
+    # Gazebo 世界登记，因此所有受管进程都能在统一宽限期内自行收尾。
     for ((index=${#MANAGED_PIDS[@]} - 1; index >= 0; index--)); do
         process_group="${MANAGED_PGIDS[$index]}"
         if _process_group_is_running "$process_group"; then
@@ -556,7 +605,7 @@ if [ "$ZENOH_REQUIRED" = "true" ] && [ ! -x "$ZENOH_BRIDGE" ]; then
     echo "ERROR: zenoh-bridge-ros2dds 不存在或不可执行: $ZENOH_BRIDGE"
     exit 1
 fi
-for required_command in setsid ps tr mktemp rm; do
+for required_command in setsid ps tr mktemp mkdir rm; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         echo "ERROR: 启动脚本缺少系统命令: $required_command"
         exit 1
@@ -706,9 +755,10 @@ for boolean_value in \
     "$MOVEIT_ENABLED" \
     "$CABINET_BRINGUP" \
     "$SPAWN_CABINET" \
+    "$TOOLSET_HOTSWAP_REQUESTED" \
     "$PREFLIGHT_ONLY"; do
     if [ "$boolean_value" != "true" ] && [ "$boolean_value" != "false" ]; then
-        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
+        echo "ERROR: ROBOT_BRINGUP、GAZEBO_ENABLED、USE_SIM_TIME、MOVEIT_ENABLED、CABINET_BRINGUP、SPAWN_CABINET、XCZS_TOOLSET_HOTSWAP 和 XCZS_PREFLIGHT_ONLY 必须为 true 或 false。"
         exit 1
     fi
 done
@@ -735,6 +785,21 @@ if [ "$CABINET_BRINGUP" = "true" ] && [ "$MOVEIT_ENABLED" = "true" ]; then
     # cabinet_button_operator 只在这两个子系统同时启用时启动；其他组合
     # 仍可提供导航能力，不应等待一个按配置不会存在的 Action。
     CABINET_ACTION_REQUIRED="true"
+fi
+# A/B 的关节和 ros2_control 接口互斥，Gazebo Classic 无法把它们热插拔到
+# 同一个实体。受管模式让世界进程常驻，toolset_supervisor 仅替换机器人及其
+# 控制/柜体运行栈。因此只在入口实际拥有 Web、Gazebo 和机器人时开启；外部
+# 栈、无 Gazebo 或键盘模式都保留既有单体 launch 行为。
+if [ "$TOOLSET_HOTSWAP_REQUESTED" = "true" ] && \
+    [ "$CONTROL_MODE" = "web" ] && \
+    [ "$GAZEBO_ENABLED" = "true" ] && \
+    [ "$ROBOT_BRINGUP" = "true" ]; then
+    TOOLSET_HOTSWAP_ACTIVE="true"
+    TOOLSET_HOTSWAP_LABEL="启用（Gazebo 世界常驻，机器人末端可一键替换）"
+elif [ "$TOOLSET_HOTSWAP_REQUESTED" = "false" ]; then
+    TOOLSET_HOTSWAP_LABEL="已由 XCZS_TOOLSET_HOTSWAP=false 关闭（单体 launch）"
+else
+    TOOLSET_HOTSWAP_LABEL="当前模式不支持（需要 Web + 本地 Gazebo + 内置机器人栈）"
 fi
 if [ "$CABINET_POSE_SOURCE" != "static" ] && [ "$CABINET_POSE_SOURCE" != "topic" ]; then
     echo "ERROR: CABINET_POSE_SOURCE 必须为 static 或 topic。"
@@ -770,6 +835,68 @@ _require_file() {
         echo "ERROR: 配置或模型文件不存在: $path"
         exit 1
     fi
+}
+
+_read_cabinet_operation_actions() {
+    # The cabinet operators are namespaced per physical instance.  Do not use
+    # the legacy unscoped action name here: Zenoh may advertise a proxy for it
+    # even when no real rclcpp action server is ready, which would leave the
+    # hot-switch supervisor permanently in "starting".
+    "$PYTHON_BIN" - "$CABINET_INSTANCES_PATH" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+path = Path(sys.argv[1]).expanduser()
+try:
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    instances = document["instances"]
+except (OSError, KeyError, TypeError, yaml.YAMLError) as error:
+    raise SystemExit(f"cannot read cabinet instances: {error}")
+
+if not isinstance(instances, list) or not instances:
+    raise SystemExit("cabinet instances must contain at least one item")
+
+pattern = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
+names = set()
+for instance in instances:
+    name = instance.get("name") if isinstance(instance, dict) else None
+    if not isinstance(name, str) or pattern.fullmatch(name) is None:
+        raise SystemExit("cabinet instance name is invalid")
+    if name in names:
+        raise SystemExit(f"duplicate cabinet instance name: {name}")
+    names.add(name)
+    print(f"/xczs/cabinet/{name}/operate_cabinet_control")
+PY
+}
+
+_toolset_path_template() {
+    local path="$1"
+    local label="$2"
+    local active_marker="toolset_${TOOLSET}"
+    local replacement='toolset_{toolset}'
+    # A runtime switch needs an unambiguous path for *both* A and B.  Accept a
+    # caller-provided ``{toolset}`` placeholder, or derive it from the active
+    # conventional filename.  A fixed A/B file would silently launch a robot
+    # whose URDF and MoveIt semantic/controller contracts disagree.
+    if [[ "$path" == *"{toolset}"* ]]; then
+        printf '%s' "$path"
+        return 0
+    fi
+    if [[ "$path" == *"$active_marker"* ]]; then
+        printf '%s' "${path//"$active_marker"/$replacement}"
+        return 0
+    fi
+    echo "ERROR: 启用末端热切换时，$label 必须包含 {toolset} 或当前套装标记 $active_marker: $path" >&2
+    exit 1
+}
+
+_toolset_path_for() {
+    local template="$1"
+    local target_toolset="$2"
+    printf '%s' "${template//\{toolset\}/$target_toolset}"
 }
 
 _require_file "$CABINET_ROBOT_ADAPTER_PATH"
@@ -820,6 +947,43 @@ if [ "$ROBOT_BRINGUP" = "true" ]; then
 fi
 if [ "$GAZEBO_ENABLED" = "true" ]; then
     _require_file "$SIMULATION_WORLD_PATH"
+fi
+if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
+    _require_file "$TOOLSET_SUPERVISOR_SCRIPT"
+fi
+
+CABINET_OPERATION_ACTIONS=()
+if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ] && \
+    [ "$CABINET_ACTION_REQUIRED" = "true" ]; then
+    if ! _cabinet_operation_actions="$(_read_cabinet_operation_actions)"; then
+        echo "ERROR: 无法解析柜体操作 Action 名称，已中止末端热切换启动。" >&2
+        exit 1
+    fi
+    while IFS= read -r _cabinet_operation_action; do
+        [ -z "$_cabinet_operation_action" ] && continue
+        CABINET_OPERATION_ACTIONS+=("$_cabinet_operation_action")
+    done <<< "$_cabinet_operation_actions"
+    if [ "${#CABINET_OPERATION_ACTIONS[@]}" -eq 0 ]; then
+        echo "ERROR: 末端热切换需要至少一个已配置柜体操作 Action。" >&2
+        exit 1
+    fi
+fi
+
+# The supervisor expands {toolset} immediately before starting each child
+# launch.  Validate both resolved configurations before Gazebo is started so a
+# bad B profile is reported at startup rather than after the robot was removed.
+MOVEIT_SRDF_TEMPLATE="$MOVEIT_SRDF_PATH"
+MOVEIT_JOINT_LIMITS_TEMPLATE="$MOVEIT_JOINT_LIMITS_PATH"
+MOVEIT_CONTROLLERS_TEMPLATE="$MOVEIT_CONTROLLERS_PATH"
+if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ] && [ "$MOVEIT_ENABLED" = "true" ]; then
+    MOVEIT_SRDF_TEMPLATE="$(_toolset_path_template "$MOVEIT_SRDF_PATH" "MOVEIT_SRDF_PATH")"
+    MOVEIT_JOINT_LIMITS_TEMPLATE="$(_toolset_path_template "$MOVEIT_JOINT_LIMITS_PATH" "MOVEIT_JOINT_LIMITS_PATH")"
+    MOVEIT_CONTROLLERS_TEMPLATE="$(_toolset_path_template "$MOVEIT_CONTROLLERS_PATH" "MOVEIT_CONTROLLERS_PATH")"
+    for _toolset_preflight in A B; do
+        _require_file "$(_toolset_path_for "$MOVEIT_SRDF_TEMPLATE" "$_toolset_preflight")"
+        _require_file "$(_toolset_path_for "$MOVEIT_JOINT_LIMITS_TEMPLATE" "$_toolset_preflight")"
+        _require_file "$(_toolset_path_for "$MOVEIT_CONTROLLERS_TEMPLATE" "$_toolset_preflight")"
+    done
 fi
 
 # ── ROS 域隔离 ─────────────────────────────────────────────────────
@@ -1025,14 +1189,34 @@ fi
 
 if [ "$CONTROL_MODE" = "web" ] || [ "$CABINET_BRINGUP" = "true" ]; then
     echo "  检查跨文件机器人/导航/柜体配置合同..."
-    if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_adapter_contract" \
-        --robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
-        --instances "$CABINET_INSTANCES_PATH" \
-        --controls "$CABINET_CONTROLS_PATH" \
-        --scene "$CABINET_SCENE_PATH" \
-        --pose "$CABINET_POSE_PATH" \
-        --kinematics "$MOVEIT_KINEMATICS_PATH"; then
-        echo "ERROR: 启动配置合同校验失败。"
+    TOOLSET_CONTRACTS=("$TOOLSET")
+    if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
+        # Web 会在同一 Gazebo 世界内请求 A/B，因此两个配置都必须在启动
+        # 前通过模型和业务点合同，不能只验证本次初始套装。
+        TOOLSET_CONTRACTS=(A B)
+    fi
+    for _toolset_contract in "${TOOLSET_CONTRACTS[@]}"; do
+        if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_adapter_contract" \
+            --robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
+            --instances "$CABINET_INSTANCES_PATH" \
+            --controls "$CABINET_CONTROLS_PATH" \
+            --scene "$CABINET_SCENE_PATH" \
+            --pose "$CABINET_POSE_PATH" \
+            --toolset "$_toolset_contract" \
+            --kinematics "$MOVEIT_KINEMATICS_PATH"; then
+            echo "ERROR: 工具套装 $_toolset_contract 的启动配置合同校验失败。"
+            exit 1
+        fi
+        if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_cabinet_model" \
+            --toolset "$_toolset_contract"; then
+            echo "ERROR: 工具套装 $_toolset_contract 的控制柜模型合同校验失败。"
+            exit 1
+        fi
+    done
+    if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_scene_config" \
+        --scenes "$SCENES_CONFIG" \
+        --nav2-params "$NAV2_PARAMS_FILE"; then
+        echo "ERROR: 场景目录合同校验失败。"
         exit 1
     fi
 fi
@@ -1081,6 +1265,7 @@ if [ "$CONTROL_MODE" = "web" ]; then
 fi
 echo "  Gazebo URI: $GAZEBO_MASTER_URI"
 echo "  Gazebo 检查: $GAZEBO_PREFLIGHT_LABEL"
+echo "  末端热切换: $TOOLSET_HOTSWAP_LABEL"
 if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "false" ]; then
     NAV2_LABEL="由外部机器人栈提供"
 elif [ "$NAV2_ENABLED" = "true" ]; then
@@ -1180,6 +1365,39 @@ if not (
 ' "$require_cabinet"
 }
 
+_toolset_transition_is_active() {
+    # During an accepted A/B replacement the supervisor deliberately stops
+    # controllers, MoveIt, Nav2 and cabinet runtime nodes for a bounded time.
+    # This accepts either the lightweight /robot/toolset/status document or
+    # the legacy nested "toolset" object from /health.  The latter can block
+    # while Nav2's map service is being replaced, so the runtime monitor uses
+    # the former first and must not turn that normal maintenance window into a
+    # full-system teardown.
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+try:
+    document = json.load(sys.stdin)
+except (json.JSONDecodeError, AttributeError, TypeError):
+    raise SystemExit(1)
+
+if not isinstance(document, dict):
+    raise SystemExit(1)
+toolset = document.get("toolset")
+if not isinstance(toolset, dict):
+    toolset = document
+
+raise SystemExit(
+    0
+    if isinstance(toolset, dict)
+    and toolset.get("managed") is True
+    and toolset.get("state") in {"starting", "switching"}
+    else 1
+)
+'
+}
+
 _wait_for_task_stack() {
     local url="$1"
     local require_cabinet="$2"
@@ -1249,18 +1467,12 @@ _wait_for_stable_processes() {
 _monitor_managed_processes() {
     local consecutive_health_failures=0
     local health_body=""
+    local toolset_status_body=""
     local index=0
     local next_health_check=$SECONDS
     local pid=""
     local status=0
     while true; do
-        # 工具套装切换标记（Web 端选择后写入）：删除标记并以专用退出码 42
-        # 触发整个栈自动重启，run_all.sh 捕获后重读 selection 重新拉起。
-        if [ -n "${XCZS_RESTART_MARKER:-}" ] && [ -e "$XCZS_RESTART_MARKER" ]; then
-            rm -f "$XCZS_RESTART_MARKER"
-            echo "检测到末端工具套装切换标记，自动重启机器人栈（退出码 42）。" >&2
-            return 42
-        fi
         for ((index=0; index < ${#MANAGED_PIDS[@]}; index++)); do
             pid="${MANAGED_PIDS[$index]}"
             if ! _managed_leader_is_running \
@@ -1283,12 +1495,34 @@ _monitor_managed_processes() {
         if [ "$CONTROL_MODE" = "web" ] &&
             (( SECONDS >= next_health_check )); then
             next_health_check=$((SECONDS + 2))
+            # /health performs synchronous map, Nav2 and cabinet probes.  A
+            # hot switch intentionally drains those services, so consult the
+            # dedicated read-only supervisor status before performing that
+            # expensive probe.  This endpoint is public like /health because
+            # it exposes no control capability and is also used by this local
+            # process liveness monitor before any user has authenticated.
+            if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
+                toolset_status_body="$(
+                    curl -fsS --connect-timeout 1 --max-time 2 \
+                        "http://${_READY_URL_HOST}:$CONTROL_PORT/robot/toolset/status" \
+                        2>/dev/null || true
+                )"
+                if printf '%s' "$toolset_status_body" |
+                    _toolset_transition_is_active; then
+                    consecutive_health_failures=0
+                    sleep 0.5
+                    continue
+                fi
+            fi
             health_body="$(
                 curl -fsS --connect-timeout 1 --max-time 2 \
                     "http://${_READY_URL_HOST}:$CONTROL_PORT/health" \
                     2>/dev/null || true
             )"
             if printf '%s' "$health_body" |
+                _toolset_transition_is_active; then
+                consecutive_health_failures=0
+            elif printf '%s' "$health_body" |
                 _task_stack_is_ready "$CABINET_ACTION_REQUIRED"; then
                 consecutive_health_failures=0
             else
@@ -1323,11 +1557,15 @@ _start_bridge() {
 # writer；Web 传感器进程直接订阅 Gazebo 的 ROS 2 camera writer。
 
 _start_web_control() {
+    local toolset_supervisor_args=()
     # 迁移到 FastAPI 后，原先独立的 SSE 桥、传感器流、HTTP 文件服务器与
     # Web 控制服务合并为单个 uvicorn 进程（默认 CONTROL_PORT 8090）。
     # 本地仿真与 Zenoh 路由先稳定，再创建长期运行的传感器 readers。
     if [ "$CONTROL_MODE" != "web" ]; then
         return
+    fi
+    if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
+        toolset_supervisor_args=(--toolset-supervisor)
     fi
     echo "       启动统一 Web 控制服务 (port $CONTROL_PORT)..."
     cd "$JIANG_DIR"
@@ -1345,6 +1583,8 @@ _start_web_control() {
         --scenes-config "$SCENES_CONFIG" \
         --cabinet-xacro "$CABINET_XACRO_PATH" \
         --robot-entity "$ROBOT_NAME" \
+        --toolset "$TOOLSET" \
+        "${toolset_supervisor_args[@]}" \
         --initial-scene "$SCENE" \
         --zenoh "tcp/127.0.0.1:$BRIDGE_TCP_PORT" \
         "${CONTROL_ORIGIN_ARGS[@]}"
@@ -1401,29 +1641,18 @@ if [ "$CONTROL_MODE" = "keyboard" ]; then
     TELEOP_ENABLED="true"
 fi
 
-LAUNCH_ARGS=(
-    "gui:=$GAZEBO_GUI"
-    "gazebo:=$GAZEBO_ENABLED"
-    "robot_bringup:=$ROBOT_BRINGUP"
+# This list is owned by the robot child in managed toolset mode.  It contains
+# only settings that stay stable across A/B; the supervisor owns topology,
+# process lifecycle and all spawn switches.  ``{toolset}`` is expanded by the
+# supervisor immediately before every child launch.
+ROBOT_CHILD_STATIC_LAUNCH_ARGS=(
     "use_sim_time:=$USE_SIM_TIME"
-    "control_gui:=false"
-    "teleop:=$TELEOP_ENABLED"
     "moveit:=$MOVEIT_ENABLED"
     "nav2:=$NAV2_ENABLED"
-    "nav2_rviz:=false"
     "robot_name:=$ROBOT_NAME"
     "robot_xacro:=$ROBOT_XACRO_PATH"
-    "toolset:=$TOOLSET"
-    "moveit_config_package:=$MOVEIT_CONFIG_PACKAGE"
-    "moveit_srdf:=$MOVEIT_SRDF_PATH"
-    "moveit_kinematics:=$MOVEIT_KINEMATICS_PATH"
-    "moveit_joint_limits:=$MOVEIT_JOINT_LIMITS_PATH"
-    "moveit_controllers:=$MOVEIT_CONTROLLERS_PATH"
-    "moveit_rviz_config:=$MOVEIT_RVIZ_CONFIG_PATH"
-    "moveit_launch:=$MOVEIT_LAUNCH_PATH"
     "nav2_launch:=$NAV2_LAUNCH_PATH"
     "nav2_params_file:=$NAV2_PARAMS_FILE"
-    "world:=$SIMULATION_WORLD_PATH"
     "robot_control:=$ROBOT_CONTROL_PATH"
     "cabinet_instances:=$CABINET_INSTANCES_PATH"
     "cabinet_controls:=$CABINET_CONTROLS_PATH"
@@ -1431,36 +1660,162 @@ LAUNCH_ARGS=(
     "cabinet_pose:=$CABINET_POSE_PATH"
     "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
     "cabinet_xacro:=$CABINET_XACRO_PATH"
-    "cabinet_bringup:=$CABINET_BRINGUP"
-    "spawn_cabinet:=$SPAWN_CABINET"
     "scene:=$SCENE"
     "scenes_config:=$SCENES_CONFIG"
     "spawn_z:=$SPAWN_Z"
     "cabinet_pose_source:=$CABINET_POSE_SOURCE"
 )
+if [ "$MOVEIT_ENABLED" = "true" ]; then
+    ROBOT_CHILD_STATIC_LAUNCH_ARGS+=(
+        "moveit_config_package:=$MOVEIT_CONFIG_PACKAGE"
+        "moveit_srdf:=$MOVEIT_SRDF_TEMPLATE"
+        "moveit_kinematics:=$MOVEIT_KINEMATICS_PATH"
+        "moveit_joint_limits:=$MOVEIT_JOINT_LIMITS_TEMPLATE"
+        "moveit_controllers:=$MOVEIT_CONTROLLERS_TEMPLATE"
+        "moveit_rviz_config:=$MOVEIT_RVIZ_CONFIG_PATH"
+        "moveit_launch:=$MOVEIT_LAUNCH_PATH"
+    )
+fi
 # nav2_map 是可选覆盖：默认留空由 scenes.yaml 决定实际地图。空值不能作为
 # launch 参数传递（会生成非法的 ``nav2_map:=``），仅在显式设置时追加。
 if [ -n "$NAV2_MAP_PATH" ]; then
-    LAUNCH_ARGS+=("nav2_map:=$NAV2_MAP_PATH")
+    ROBOT_CHILD_STATIC_LAUNCH_ARGS+=("nav2_map:=$NAV2_MAP_PATH")
 fi
+
 _create_launch_runtime_directory
-_start_managed_process LAUNCH_PID "ROS 2 launch" \
-    ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
-    "${LAUNCH_ARGS[@]}"
-if [ "$LOCAL_LAUNCH_PERSISTENT" = "true" ]; then
-    # Each check is 200 ms.  Ten real seconds gives Gazebo sensor plugins and
-    # the Zenoh DDS routes time to finish their initial endpoint churn before
-    # the Web process creates long-lived image readers.
+_configure_gazebo_log_directory
+if [ "$GAZEBO_ENABLED" = "true" ]; then
+    if [ "$GAZEBO_LOG_DIRECTORY" = "$LAUNCH_RUNTIME_DIRECTORY/gazebo_logs" ]; then
+        echo "       Gazebo 日志已重定向到本次临时目录（退出后自动清理）"
+    else
+        echo "       保留用户指定的 Gazebo 日志目录: $GAZEBO_LOG_DIRECTORY"
+    fi
+fi
+
+if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
+    # The world owner deliberately has no robot/cabinet runtime nodes.  It
+    # starts gzserver, gzclient and the static scene floor once; the supervisor
+    # below owns the replaceable robot entity plus toolset-specific control,
+    # MoveIt, Nav2 and cabinet runtime processes.
+    WORLD_LAUNCH_ARGS=(
+        "gui:=$GAZEBO_GUI"
+        "gazebo:=true"
+        "robot_bringup:=false"
+        "use_sim_time:=$USE_SIM_TIME"
+        "control_gui:=false"
+        "teleop:=false"
+        "moveit:=false"
+        "moveit_rviz:=false"
+        "nav2:=false"
+        "nav2_rviz:=false"
+        "world:=$SIMULATION_WORLD_PATH"
+        "robot_name:=$ROBOT_NAME"
+        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
+        "cabinet_bringup:=false"
+        "spawn_cabinet:=false"
+        "scene:=$SCENE"
+        "scenes_config:=$SCENES_CONFIG"
+        "spawn_z:=$SPAWN_Z"
+        "cabinet_pose_source:=$CABINET_POSE_SOURCE"
+    )
+    echo "       启动常驻 Gazebo 世界（不含机器人与柜体运行节点）..."
+    _start_managed_process WORLD_LAUNCH_PID "Gazebo 世界 launch" \
+        ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+        "${WORLD_LAUNCH_ARGS[@]}"
+    # Each check is 200 ms.  Give gzserver/factory and the static floor spawn
+    # ten seconds to settle before the supervisor asks Gazebo for services.
+    _wait_for_stable_processes 50
+
+    TOOLSET_SUPERVISOR_ARGS=(
+        --toolset "$TOOLSET"
+        --robot-name "$ROBOT_NAME"
+        --initial-spawn-cabinet "$SPAWN_CABINET"
+        --cabinet-bringup "$CABINET_BRINGUP"
+        --ready-timeout "$ROBOT_READY_TIMEOUT_SEC"
+    )
+    if [ "$NAV2_ENABLED" = "true" ]; then
+        TOOLSET_SUPERVISOR_ARGS+=(--require-nav2)
+    fi
+    if [ "$CABINET_ACTION_REQUIRED" = "true" ]; then
+        TOOLSET_SUPERVISOR_ARGS+=(--require-cabinet-action)
+        for _cabinet_operation_action in "${CABINET_OPERATION_ACTIONS[@]}"; do
+            TOOLSET_SUPERVISOR_ARGS+=(
+                --cabinet-action "$_cabinet_operation_action"
+            )
+        done
+    fi
+    for _robot_child_launch_arg in "${ROBOT_CHILD_STATIC_LAUNCH_ARGS[@]}"; do
+        TOOLSET_SUPERVISOR_ARGS+=(
+            --launch-arg "$_robot_child_launch_arg"
+        )
+    done
+    echo "       启动末端工具集监督器（首次套装 $TOOLSET）..."
+    _start_managed_process TOOLSET_SUPERVISOR_PID "末端工具集监督器" \
+        "$PYTHON_BIN" "$TOOLSET_SUPERVISOR_SCRIPT" \
+        "${TOOLSET_SUPERVISOR_ARGS[@]}"
     _wait_for_stable_processes 50
 else
-    echo "       本入口未启用本地 ROS 节点，校验 launch 配置后连接外部完整栈..."
-    if wait "$LAUNCH_PID"; then
-        _unregister_last_process "$LAUNCH_PID"
-        LAUNCH_PID=""
+    # Legacy/special-mode path: keep the previous single launch exactly as a
+    # unit.  It covers keyboard use, external robot stacks, no-Gazebo runs and
+    # deployments that explicitly disable XCZS_TOOLSET_HOTSWAP.
+    LAUNCH_ARGS=(
+        "gui:=$GAZEBO_GUI"
+        "gazebo:=$GAZEBO_ENABLED"
+        "robot_bringup:=$ROBOT_BRINGUP"
+        "use_sim_time:=$USE_SIM_TIME"
+        "control_gui:=false"
+        "teleop:=$TELEOP_ENABLED"
+        "moveit:=$MOVEIT_ENABLED"
+        "nav2:=$NAV2_ENABLED"
+        "nav2_rviz:=false"
+        "robot_name:=$ROBOT_NAME"
+        "robot_xacro:=$ROBOT_XACRO_PATH"
+        "toolset:=$TOOLSET"
+        "moveit_config_package:=$MOVEIT_CONFIG_PACKAGE"
+        "moveit_srdf:=$MOVEIT_SRDF_PATH"
+        "moveit_kinematics:=$MOVEIT_KINEMATICS_PATH"
+        "moveit_joint_limits:=$MOVEIT_JOINT_LIMITS_PATH"
+        "moveit_controllers:=$MOVEIT_CONTROLLERS_PATH"
+        "moveit_rviz_config:=$MOVEIT_RVIZ_CONFIG_PATH"
+        "moveit_launch:=$MOVEIT_LAUNCH_PATH"
+        "nav2_launch:=$NAV2_LAUNCH_PATH"
+        "nav2_params_file:=$NAV2_PARAMS_FILE"
+        "world:=$SIMULATION_WORLD_PATH"
+        "robot_control:=$ROBOT_CONTROL_PATH"
+        "cabinet_instances:=$CABINET_INSTANCES_PATH"
+        "cabinet_controls:=$CABINET_CONTROLS_PATH"
+        "cabinet_scene:=$CABINET_SCENE_PATH"
+        "cabinet_pose:=$CABINET_POSE_PATH"
+        "cabinet_robot_adapter:=$CABINET_ROBOT_ADAPTER_PATH"
+        "cabinet_xacro:=$CABINET_XACRO_PATH"
+        "cabinet_bringup:=$CABINET_BRINGUP"
+        "spawn_cabinet:=$SPAWN_CABINET"
+        "scene:=$SCENE"
+        "scenes_config:=$SCENES_CONFIG"
+        "spawn_z:=$SPAWN_Z"
+        "cabinet_pose_source:=$CABINET_POSE_SOURCE"
+    )
+    if [ -n "$NAV2_MAP_PATH" ]; then
+        LAUNCH_ARGS+=("nav2_map:=$NAV2_MAP_PATH")
+    fi
+    _start_managed_process LAUNCH_PID "ROS 2 launch" \
+        ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+        "${LAUNCH_ARGS[@]}"
+    if [ "$LOCAL_LAUNCH_PERSISTENT" = "true" ]; then
+        # Each check is 200 ms.  Ten real seconds gives Gazebo sensor plugins
+        # and the Zenoh DDS routes time to finish their initial endpoint churn
+        # before the Web process creates long-lived image readers.
+        _wait_for_stable_processes 50
     else
-        launch_status=$?
-        echo "ERROR: ROS 2 launch 配置校验失败（status=$launch_status）。" >&2
-        exit "$launch_status"
+        echo "       本入口未启用本地 ROS 节点，校验 launch 配置后连接外部完整栈..."
+        if wait "$LAUNCH_PID"; then
+            _unregister_last_process "$LAUNCH_PID"
+            LAUNCH_PID=""
+        else
+            launch_status=$?
+            echo "ERROR: ROS 2 launch 配置校验失败（status=$launch_status）。" >&2
+            exit "$launch_status"
+        fi
     fi
 fi
 
@@ -1516,12 +1871,15 @@ if [ "$CONTROL_MODE" = "web" ]; then
         echo "       ROS 任务栈已就绪（Nav2 可用）"
     fi
 fi
-if [ -n "$LAUNCH_PID" ]; then
+if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
+    echo "       Gazebo 世界 launch 已启动 (PID $WORLD_LAUNCH_PID)"
+    echo "       末端工具集监督器已启动 (PID $TOOLSET_SUPERVISOR_PID)"
+elif [ -n "$LAUNCH_PID" ]; then
     echo "       ROS 2 launch 已启动 (PID $LAUNCH_PID)"
 else
     echo "       本地 ROS launch 配置已通过，正在使用外部完整栈"
 fi
-echo "       持续监控 Zenoh、Web 和 ROS 2 launch；任一进程异常退出将关闭本次启动。"
+echo "       持续监控 Zenoh、Web、Gazebo 世界和机器人运行栈；任一受管进程异常退出将关闭本次启动。"
 
 if _monitor_managed_processes; then
     exit 0

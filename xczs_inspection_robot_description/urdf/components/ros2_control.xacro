@@ -13,6 +13,19 @@
     </joint>
   </xacro:macro>
 
+  <xacro:macro
+    name="xczs_effort_controlled_joint"
+    params="joint_name initial_value:=0.0">
+    <joint name="${joint_name}">
+      <command_interface name="effort" />
+      <state_interface name="position">
+        <param name="initial_value">${initial_value}</param>
+      </state_interface>
+      <state_interface name="velocity" />
+      <state_interface name="effort" />
+    </joint>
+  </xacro:macro>
+
   <xacro:macro name="xczs_state_only_joint" params="joint_name">
     <joint name="${joint_name}">
       <state_interface name="position">
@@ -61,17 +74,28 @@
            are absent from the URDF. Set A is three-cylinder(右) + two-cylinder(左);
            Set B is rotate-button(右) + rocker(左). -->
       <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
-        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger2_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger3_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger1_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger2_joint" />
+        <!-- Gazebo Classic's ODE backend emits one Anchor warning per physics
+             step when a prismatic joint is driven through SetPosition.  Keep
+             the public JointTrajectory position contract, but let the mature
+             JTC effort/PID path drive these five sliders with SetForce.
+             This avoids multi-gigabyte Gazebo server logs without changing a
+             mesh, material, link, joint origin, or operator-facing API. -->
+        <xacro:xczs_effort_controlled_joint joint_name="r_three_cyl_finger1_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="r_three_cyl_finger2_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="r_three_cyl_finger3_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="l_two_cyl_finger1_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="l_two_cyl_finger2_joint" />
       </xacro:if>
       <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
-        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_rotate_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
-        <xacro:xczs_position_controlled_joint joint_name="l_rocker_rotor_joint" />
+        <!-- The rotate-button jaws are also prismatic.  Use the same
+             effort/PID route as Set A so selecting Set B cannot reintroduce
+             Gazebo Classic's SliderJoint Anchor log flood.  Keeping the
+             rotary joints on this route lets each public tool group remain a
+             single JointTrajectoryController. -->
+        <xacro:xczs_effort_controlled_joint joint_name="r_rotbtn_rotate_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
+        <xacro:xczs_effort_controlled_joint joint_name="l_rocker_rotor_joint" />
       </xacro:if>
 
       <!-- The planar Gazebo plugin moves the base. ros2_control only exposes
@@ -83,7 +107,9 @@
     </ros2_control>
 
     <gazebo>
-      <plugin name="xczs_ros2_control" filename="libgazebo_ros2_control.so">
+      <plugin
+        name="xczs_ros2_control_$(arg gazebo_plugin_instance_id)"
+        filename="libgazebo_ros2_control.so">
         <robot_param>robot_description</robot_param>
         <robot_param_node>/robot_state_publisher</robot_param_node>
         <parameters>

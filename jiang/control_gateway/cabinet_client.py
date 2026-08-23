@@ -82,6 +82,14 @@ class CabinetClient(Node):
             CabinetControl.TYPE_DOOR,
         }
     )
+    BUTTON_CONTROL_TYPE = CabinetControl.TYPE_BUTTON
+    ARTICULATED_CONTROL_TYPES = frozenset(
+        {
+            CabinetControl.TYPE_KNOB,
+            CabinetControl.TYPE_SWITCH,
+            CabinetControl.TYPE_DOOR,
+        }
+    )
     ACTIVE_STATES = frozenset({"sending", "operating", "canceling"})
     DETENT_TOLERANCE = 0.035
 
@@ -231,6 +239,11 @@ class CabinetClient(Node):
             self._begin_operation_locked(
                 generation,
                 control_id,
+                (
+                    int(control["control_type"])
+                    if control is not None
+                    else None
+                ),
                 command_code,
                 command_name,
                 normalized_state,
@@ -938,6 +951,9 @@ class CabinetClient(Node):
             ):
                 return {}
             now = time.time()
+            control_type = self._status.get("control_type")
+            if control_type in self.CONTROL_TYPES:
+                result_data["control_type"] = int(control_type)
             self._goal_handle = None
             self._cancel_requested = False
             self._status.update(
@@ -1007,6 +1023,7 @@ class CabinetClient(Node):
         self,
         generation: int,
         control_id: str,
+        control_type: Optional[int],
         command_code: int,
         command_name: str,
         target_state: Optional[str],
@@ -1021,6 +1038,7 @@ class CabinetClient(Node):
             "message": "Sending the cabinet operation goal.",
             "generation": generation,
             "control_id": control_id,
+            "control_type": control_type,
             "command": command_name,
             "command_code": command_code,
             "target_state": target_state,
@@ -1384,6 +1402,7 @@ class CabinetClient(Node):
             "message": "No cabinet operation has been sent.",
             "generation": 0,
             "control_id": "",
+            "control_type": None,
             "command": None,
             "command_code": None,
             "target_state": None,

@@ -47,6 +47,8 @@ SCENE_FLOOR_ENTITY = "xczs_scene_floor"
 # 末端工具套装 A / B(见 xczs_inspection_robot.urdf.xacro)。非 A/B 一律回退 A。
 VALID_TOOLSETS = ("A", "B")
 DEFAULT_TOOLSET = "A"
+DEFAULT_GAZEBO_PLUGIN_INSTANCE_ID = "initial"
+_GAZEBO_PLUGIN_INSTANCE_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
 def _normalize_toolset(value: str) -> str:
@@ -66,6 +68,27 @@ def _toolset_substitution() -> PythonExpression:
             "').strip().upper() in ('A','B') else 'A')",
         ]
     )
+
+
+def _gazebo_plugin_instance_id(context) -> str:
+    """Read the validated per-child Gazebo plugin node suffix.
+
+    The suffix is consumed only by the names of Gazebo ROS plugins in the
+    robot's xacro.  Their namespaces and topic remappings remain unchanged,
+    while a new robot child cannot collide with a plugin whose deletion is
+    still completing inside Gazebo Classic.
+    """
+    raw_value = LaunchConfiguration("gazebo_plugin_instance_id").perform(
+        context
+    ).strip()
+    if _GAZEBO_PLUGIN_INSTANCE_ID_PATTERN.fullmatch(raw_value) is None:
+        raise RuntimeError(
+            "gazebo_plugin_instance_id must match [a-z][a-z0-9_]{0,63}, "
+            f"got {raw_value!r}."
+        )
+    return raw_value
+
+
 _CABINET_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _GENERATED_DIRECTORIES = []
 _BOOLEAN_LAUNCH_ARGUMENTS = (
@@ -206,6 +229,47 @@ def _launch_finite_number(context, name):
     return value
 
 
+def _optional_launch_finite_number(context, name):
+    """Read an optional finite launch number, preserving an empty default."""
+    raw_value = str(context.launch_configurations.get(name, "")).strip()
+    if not raw_value:
+        return None
+    try:
+        value = float(raw_value)
+    except ValueError as error:
+        raise RuntimeError(
+            f"{name} must be a finite number when supplied, got {raw_value!r}."
+        ) from error
+    if not math.isfinite(value):
+        raise RuntimeError(
+            f"{name} must be a finite number when supplied, got {raw_value!r}."
+        )
+    return value
+
+
+def _robot_spawn_override(context):
+    """Return an all-or-nothing runtime spawn-pose override.
+
+    The toolset supervisor captures the current Gazebo root pose before it
+    replaces the mutually exclusive A/B robot entity.  Requiring all four
+    values prevents a partial override from silently mixing a saved x/y with
+    a scene-default z/yaw.
+    """
+    values = {
+        field: _optional_launch_finite_number(context, f"robot_spawn_{field}")
+        for field in ("x", "y", "z", "yaw")
+    }
+    supplied = [field for field, value in values.items() if value is not None]
+    if supplied and len(supplied) != len(values):
+        missing = sorted(set(values) - set(supplied))
+        raise RuntimeError(
+            "robot_spawn_x/y/z/yaw must be supplied together; missing "
+            + ", ".join(missing)
+            + "."
+        )
+    return values if supplied else None
+
+
 def _validate_launch_arguments(context):
     actions = []
     for name in _BOOLEAN_LAUNCH_ARGUMENTS:
@@ -214,6 +278,12 @@ def _validate_launch_arguments(context):
             SetLaunchConfiguration(name, "true" if value else "false")
         )
     _launch_finite_number(context, "spawn_z")
+    _robot_spawn_override(context)
+    actions.append(
+        SetLaunchConfiguration(
+            "gazebo_plugin_instance_id", _gazebo_plugin_instance_id(context)
+        )
+    )
     return actions
 
 
@@ -643,6 +713,7 @@ def _cabinet_nodes(context, *, cabinet_xacro):
         toolset = _normalize_toolset(
             LaunchConfiguration("toolset").perform(context)
         )
+        gazebo_plugin_instance_id = _gazebo_plugin_instance_id(context)
         moveit_config_package = LaunchConfiguration(
             "moveit_config_package"
         ).perform(context)
@@ -660,7 +731,10 @@ def _cabinet_nodes(context, *, cabinet_xacro):
             )
             .robot_description(
                 file_path=robot_xacro,
-                mappings={"toolset": toolset},
+                mappings={
+                    "toolset": toolset,
+                    "gazebo_plugin_instance_id": gazebo_plugin_instance_id,
+                },
             )
             .robot_description_semantic(file_path=moveit_srdf)
             .robot_description_kinematics(file_path=moveit_kinematics)
@@ -903,24 +977,38 @@ def _scene_floor_nodes(context):
     model_path = _resolve_package_path(model["file"])
     if not Path(model_path).is_file():
         raise RuntimeError(f"Scene floor model does not exist: {model_path}")
+    spawn_node = Node(
+        package="gazebo_ros",
+        executable="spawn_entity.py",
+        name="spawn_scene_floor",
+        output="screen",
+        prefix="/usr/bin/python3",
+        arguments=[
+            "-entity", SCENE_FLOOR_ENTITY,
+            "-file", model_path,
+            "-x", str(model["x"]),
+            "-y", str(model["y"]),
+            "-z", str(model["z"]),
+            "-R", str(model["roll"]),
+            "-P", str(model["pitch"]),
+            "-Y", str(model["yaw"]),
+        ],
+    )
+    # The world-only owner must fail closed if its immutable scene floor is
+    # absent.  Otherwise Gazebo would remain alive and the supervisor would
+    # bring up a perfectly healthy robot in an incomplete scene.
     return [
-        Node(
-            package="gazebo_ros",
-            executable="spawn_entity.py",
-            name="spawn_scene_floor",
-            output="screen",
-            prefix="/usr/bin/python3",
-            arguments=[
-                "-entity", SCENE_FLOOR_ENTITY,
-                "-file", model_path,
-                "-x", str(model["x"]),
-                "-y", str(model["y"]),
-                "-z", str(model["z"]),
-                "-R", str(model["roll"]),
-                "-P", str(model["pitch"]),
-                "-Y", str(model["yaw"]),
-            ],
-        )
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawn_node,
+                on_exit=partial(
+                    _continue_or_shutdown_required_process,
+                    process_label="Gazebo scene floor spawn",
+                    success_actions=[],
+                ),
+            )
+        ),
+        spawn_node,
     ]
 
 
@@ -999,6 +1087,9 @@ def _active_robot_spawn(context):
     顶层 ``spawn_z``（对应 shell 的 ``SPAWN_Z``）始终覆盖场景里的 ``z``，
     否则当场景显式指定了 ``robot_spawn`` 时，用户设置的覆盖高度会被静默忽略。
     """
+    override = _robot_spawn_override(context)
+    if override is not None:
+        return override
     spawn = _scene_spec(context).get("robot_spawn")
     override_z = _launch_finite_number(context, "spawn_z")
     if spawn is None:
@@ -1064,7 +1155,7 @@ def _robot_spawn_node(context, *, controllers=None):
     ]
 
 
-def _tool_controller_spawner_node(context):
+def _tool_controller_spawner_node(context, *, success_actions):
     """Build the per-toolset tool controller spawner.
 
     Tool controllers exist only for the active toolset (controller_manager
@@ -1079,21 +1170,36 @@ def _tool_controller_spawner_node(context):
         if toolset == "A"
         else ["rotate_button_controller", "rocker_controller"]
     )
+    spawner = Node(
+        package="controller_manager",
+        executable="spawner",
+        name="xczs_tool_controller_spawner",
+        output="screen",
+        arguments=[
+            *tools,
+            "--controller-manager", "/xczs/controller_manager",
+            "--controller-manager-timeout", "30",
+            "--switch-timeout", "30",
+            "--activate-as-group",
+        ],
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
+    )
+    # The tool controller set is part of the physical robot contract.  Do not
+    # release the startup joint hold or expose MoveIt/Web command routes until
+    # this spawner has completed successfully.  Register before scheduling the
+    # process so a fast failure cannot race the event handler.
     return [
-        Node(
-            package="controller_manager",
-            executable="spawner",
-            name="xczs_tool_controller_spawner",
-            output="screen",
-            arguments=[
-                *tools,
-                "--controller-manager", "/xczs/controller_manager",
-                "--controller-manager-timeout", "30",
-                "--switch-timeout", "30",
-                "--activate-as-group",
-            ],
-            condition=IfCondition(LaunchConfiguration("robot_bringup")),
-        )
+        RegisterEventHandler(
+            OnProcessExit(
+                target_action=spawner,
+                on_exit=partial(
+                    _continue_or_shutdown_required_process,
+                    process_label="ros2_control tool controller spawner",
+                    success_actions=success_actions,
+                ),
+            )
+        ),
+        spawner,
     ]
 
 
@@ -1156,6 +1262,8 @@ def generate_launch_description() -> LaunchDescription:
                 LaunchConfiguration("robot_xacro"),
                 " toolset:=",
                 _toolset_substitution(),
+                " gazebo_plugin_instance_id:=",
+                LaunchConfiguration("gazebo_plugin_instance_id"),
             ]
         ),
         value_type=str,
@@ -1198,6 +1306,14 @@ def generate_launch_description() -> LaunchDescription:
             description=(
                 "末端工具套装 A/B: A = 三电缸(右)+两电缸(左), "
                 "B = 旋转按钮(右)+摇入摇出(左)。默认 A。"
+            ),
+        ),
+        DeclareLaunchArgument(
+            "gazebo_plugin_instance_id",
+            default_value=DEFAULT_GAZEBO_PLUGIN_INSTANCE_ID,
+            description=(
+                "当前机器人 child 的 Gazebo ROS 插件私有节点后缀；"
+                "由末端热切换监督器生成。"
             ),
         ),
         DeclareLaunchArgument(
@@ -1253,6 +1369,10 @@ def generate_launch_description() -> LaunchDescription:
             default_value=str(cabinet_xacro),
         ),
         DeclareLaunchArgument("spawn_z", default_value="0.515"),
+        DeclareLaunchArgument("robot_spawn_x", default_value=""),
+        DeclareLaunchArgument("robot_spawn_y", default_value=""),
+        DeclareLaunchArgument("robot_spawn_z", default_value=""),
+        DeclareLaunchArgument("robot_spawn_yaw", default_value=""),
         DeclareLaunchArgument("cabinet_bringup", default_value="true"),
         DeclareLaunchArgument("spawn_cabinet", default_value="true"),
         DeclareLaunchArgument("scene", default_value="cabinet_operation"),
@@ -1394,9 +1514,6 @@ def generate_launch_description() -> LaunchDescription:
         ],
         condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
-    tool_controllers = OpaqueFunction(
-        function=_tool_controller_spawner_node,
-    )
     spawn_robot = OpaqueFunction(
         function=_robot_spawn_node,
         kwargs={"controllers": controllers},
@@ -1419,6 +1536,12 @@ def generate_launch_description() -> LaunchDescription:
                 ),
             },
         ],
+        # In world-preserving toolset mode the first launch owns only Gazebo;
+        # the supervisor starts a separate robot child with this argument set
+        # to true.  Without this condition the world owner would leave a
+        # duplicate pair of command routers alive and both stacks would claim
+        # the same ROS interfaces during every A/B replacement.
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
     trajectory_router = Node(
         package=CONTROL_PACKAGE,
@@ -1435,6 +1558,7 @@ def generate_launch_description() -> LaunchDescription:
                 )
             },
         ],
+        condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
     keyboard = Node(
         package=CONTROL_PACKAGE,
@@ -1462,6 +1586,8 @@ def generate_launch_description() -> LaunchDescription:
             PythonExpression(
                 [
                     "'",
+                    LaunchConfiguration("robot_bringup"),
+                    "' == 'true' and '",
                     LaunchConfiguration("moveit"),
                     "' == 'true' and '",
                     LaunchConfiguration("cabinet_bringup"),
@@ -1513,6 +1639,8 @@ def generate_launch_description() -> LaunchDescription:
             ),
             "--joint-state-topic",
             LaunchConfiguration("adapter_joint_state_topic"),
+            "--toolset",
+            _toolset_substitution(),
         ],
         output="screen",
     )
@@ -1533,6 +1661,15 @@ def generate_launch_description() -> LaunchDescription:
             ),
         )
     )
+    tool_controllers = OpaqueFunction(
+        function=_tool_controller_spawner_node,
+        kwargs={
+            "success_actions": [
+                initial_pose_verifier_handler,
+                initial_pose_verifier,
+            ],
+        },
+    )
     after_controllers = RegisterEventHandler(
         OnProcessExit(
             target_action=controllers,
@@ -1541,8 +1678,6 @@ def generate_launch_description() -> LaunchDescription:
                 process_label="ros2_control controller spawner",
                 success_actions=[
                     tool_controllers,
-                    initial_pose_verifier_handler,
-                    initial_pose_verifier,
                 ],
             ),
         )

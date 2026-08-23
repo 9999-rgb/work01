@@ -25,7 +25,9 @@ stores the same records in ``assets`` / ``selection`` tables.
 
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -106,8 +108,9 @@ class AssetSelection:
     ``scene`` and ``cabinet`` name imported assets (by asset name).  For a scene
     asset the asset name equals the primary scene name inside its ``scenes.yaml``
     (enforced at import).  ``toolset`` selects the end-effector tool set
-    (``"A"``: 三电缸右 + 两电缸左, ``"B"``: 旋转按钮右 + 摇入摇出左); the robot
-    stack must restart for a toolset change to take effect.
+    (``"A"``: 三电缸右 + 两电缸左, ``"B"``: 旋转按钮右 + 摇入摇出左).  The
+    persisted value is consumed by the next manual startup; it never changes
+    the already loaded Gazebo robot model at runtime.
     """
 
     scene: Optional[str] = None
@@ -330,38 +333,115 @@ class AssetLibrary:
             raise AssetExistsError(record.kind, record.name, record.version)
 
         destination = self.root / manifest.kind / manifest.name
+        destination_parent = destination.parent
+        destination_parent.mkdir(parents=True, exist_ok=True)
+        if destination.exists() and not existing:
+            # A catalog-less directory may be an interrupted legacy import or
+            # an operator's manual data.  Never silently overlay or delete it.
+            raise AssetLibraryError(
+                f"Asset destination {destination} exists without a catalog entry. "
+                "Resolve it explicitly before importing."
+            )
+        if existing and not destination.is_dir():
+            raise AssetLibraryError(
+                f"Asset catalog entry {manifest.kind}/{manifest.name} points to "
+                f"a missing or non-directory destination: {destination}."
+            )
+
+        # Copy, reference normalization, and semantic validation occur in an
+        # unreferenced sibling directory.  In particular, a failed --force
+        # upload can no longer erase the previously working asset directory.
+        staging = Path(
+            tempfile.mkdtemp(
+                prefix=f".{manifest.name}.staging-",
+                dir=destination_parent,
+            )
+        )
+        backup: Path | None = None
+        promoted = False
         try:
-            _copy_asset_tree(source, destination)
-            _normalize_scene_refs(manifest, destination)
+            _copy_asset_tree(source, staging)
+            _normalize_scene_refs(
+                manifest,
+                staging,
+                reference_root=destination,
+            )
 
             validated = False
             if validate is not None:
-                validate(manifest, destination)
+                validate(manifest, staging)
                 validated = True
+            record = AssetRecord(
+                kind=manifest.kind,
+                name=manifest.name,
+                version=manifest.version,
+                description=manifest.description,
+                path=manifest.kind + "/" + manifest.name,
+                files=dict(manifest.files),
+                references=manifest.references.to_dict(),
+                imported_at=_utc_now(),
+                validated=validated,
+            )
+
+            if destination.exists():
+                backup = Path(
+                    tempfile.mkdtemp(
+                        prefix=f".{manifest.name}.backup-",
+                        dir=destination_parent,
+                    )
+                )
+                # ``mkdtemp`` creates an empty directory; replacing it with
+                # the old asset yields a same-filesystem rename, so both the
+                # old tree and staging tree remain recoverable until the store
+                # commit has completed.
+                backup.rmdir()
+                os.replace(destination, backup)
+            os.replace(staging, destination)
+            promoted = True
+            try:
+                self._store.put_asset(record)
+            except Exception as error:
+                _restore_import_destination(destination, backup)
+                promoted = False
+                _restore_catalog_record(
+                    self._store,
+                    existing[0] if existing else None,
+                    kind=manifest.kind,
+                    name=manifest.name,
+                )
+                raise AssetLibraryError(
+                    f"Asset {manifest.kind}/{manifest.name} could not be indexed: "
+                    f"{error}"
+                ) from error
+
+            if backup is not None:
+                shutil.rmtree(backup)
+                backup = None
+            return record
         except Exception as error:
-            # Never leave a partially imported directory behind: a failed
-            # import must be indistinguishable from no import at all.
-            shutil.rmtree(destination, ignore_errors=True)
+            if promoted:
+                _restore_import_destination(destination, backup)
+                _restore_catalog_record(
+                    self._store,
+                    existing[0] if existing else None,
+                    kind=manifest.kind,
+                    name=manifest.name,
+                )
             if isinstance(error, AssetLibraryError):
                 raise
             raise AssetLibraryError(
                 f"Asset {manifest.kind}/{manifest.name} failed validation: "
                 f"{error}"
             ) from error
-
-        record = AssetRecord(
-            kind=manifest.kind,
-            name=manifest.name,
-            version=manifest.version,
-            description=manifest.description,
-            path=manifest.kind + "/" + manifest.name,
-            files=dict(manifest.files),
-            references=manifest.references.to_dict(),
-            imported_at=_utc_now(),
-            validated=validated,
-        )
-        self._store.put_asset(record)
-        return record
+        finally:
+            # Staging is either still an unvalidated copy or has been moved to
+            # ``destination``.  This cleanup never targets the live asset.
+            if staging.exists():
+                shutil.rmtree(staging, ignore_errors=True)
+            if backup is not None and backup.exists() and not destination.exists():
+                # Best-effort last line of defence if an unexpected exception
+                # interrupted rollback before the original tree was restored.
+                os.replace(backup, destination)
 
     def remove_asset(self, kind: str, name: str) -> AssetRecord:
         """Delete an asset and clear it from the selection if selected.
@@ -459,6 +539,33 @@ def default_library_root() -> Path:
 # ── internal helpers ──────────────────────────────────────────────────────
 
 
+def _restore_import_destination(destination: Path, backup: Path | None) -> None:
+    """Restore the old asset tree after a failed index write.
+
+    Both paths are constructed by :meth:`AssetLibrary.import_asset` below the
+    library's validated kind/name directory.  The helper intentionally never
+    accepts an externally supplied path or glob.
+    """
+    if destination.exists():
+        shutil.rmtree(destination)
+    if backup is not None and backup.exists():
+        os.replace(backup, destination)
+
+
+def _restore_catalog_record(
+    store: AssetStore,
+    previous: AssetRecord | None,
+    *,
+    kind: str,
+    name: str,
+) -> None:
+    """Best-effort restore of the catalog after a failed replacement write."""
+    if previous is None:
+        store.delete_asset(kind, name)
+        return
+    store.put_asset(previous)
+
+
 def _copy_asset_tree(source: Path, destination: Path) -> None:
     """Copy an asset directory wholesale (minus VCS / cache dirs).
 
@@ -480,7 +587,12 @@ def _copy_asset_tree(source: Path, destination: Path) -> None:
             shutil.copy2(entry, target)
 
 
-def _normalize_scene_refs(manifest: AssetManifest, root: Path) -> None:
+def _normalize_scene_refs(
+    manifest: AssetManifest,
+    root: Path,
+    *,
+    reference_root: Path | None = None,
+) -> None:
     """Rewrite relative ``nav2_map`` / ``model.file`` refs to absolute paths.
 
     Only applies to scene assets.  ``package://`` / ``model://`` / ``file://``
@@ -491,6 +603,11 @@ def _normalize_scene_refs(manifest: AssetManifest, root: Path) -> None:
     """
     if manifest.kind != "scene":
         return
+    # Files are edited in a staging tree during import, but relative map/model
+    # references must point at the stable final asset directory after its
+    # atomic promotion.  Legacy direct callers retain the previous ``root``
+    # behavior by omitting this override.
+    reference_root = reference_root if reference_root is not None else root
     scenes_path = manifest.file_path(root, "scenes")
     try:
         document = yaml.safe_load(scenes_path.read_text(encoding="utf-8"))
@@ -518,12 +635,18 @@ def _normalize_scene_refs(manifest: AssetManifest, root: Path) -> None:
         names.append(scene_name)
         nav2_map = scene.get("nav2_map")
         if isinstance(nav2_map, str) and nav2_map.strip():
-            scene["nav2_map"] = _absolute_reference(root, nav2_map.strip())
+            scene["nav2_map"] = _absolute_reference(
+                reference_root,
+                nav2_map.strip(),
+            )
         model = scene.get("model")
         if isinstance(model, Mapping):
             file = model.get("file")
             if isinstance(file, str) and file.strip():
-                model["file"] = _absolute_reference(root, file.strip())
+                model["file"] = _absolute_reference(
+                    reference_root,
+                    file.strip(),
+                )
     if manifest.name not in names:
         raise AssetLibraryError(
             f"Scene asset {manifest.name}: scenes.yaml must contain a scene "

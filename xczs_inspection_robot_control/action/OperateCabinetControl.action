@@ -37,6 +37,8 @@ uint8 error_code
 string message
 float64 initial_position
 float64 final_position
+# Maximum absolute joint position observed during this operation.  This keeps
+# negative knob travel observable while remaining identical to button travel.
 float64 peak_position
 string final_state
 float64 requested_force

@@ -113,7 +113,11 @@
       <grasp_service>${cabinet_namespace}/grasp</grasp_service>
       <grasp_active_topic>${cabinet_namespace}/grasp_active</grasp_active_topic>
       <active_control_topic>${cabinet_namespace}/active_control</active_control_topic>
+      <operation_heartbeat_topic>${cabinet_namespace}/operation_heartbeat</operation_heartbeat_topic>
+      <operation_fault_topic>${cabinet_namespace}/operation_fault</operation_fault_topic>
       <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <!-- Above the 1.25 s worst normal heartbeat, below the 3 s lease TTL. -->
+      <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
 
       <xacro:control_cabinet_button_state control_id="box_1_button_1" joint_name="box_1_box_1_button_1" />
       <xacro:control_cabinet_button_state control_id="box_1_button_2" joint_name="box_1_box_1_button_2" />

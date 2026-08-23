@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Mapping, Optional
@@ -23,6 +24,7 @@ from control_gateway.inventory import MapBounds  # noqa: E402
 from control_gateway.inventory import NavigationStation  # noqa: E402
 from control_gateway.inventory import NavigationStationSpec  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
+from control_gateway.robot_adapter import load as load_robot_adapter  # noqa: E402
 from control_gateway import runner as runner_module  # noqa: E402
 from control_gateway.runner import ControlServer  # noqa: E402
 from control_gateway.task_manager import TaskManager  # noqa: E402
@@ -45,6 +47,16 @@ class _NavigationNode:
         self.joint_target_durations = []
         self.joint_target_event = threading.Event()
         self.joint_state_available = True
+        self.joint_names = (
+            "body_arm1",
+            "arm1_arm2",
+            "arm2_arm3",
+            "arm3_arm4",
+            "arm4_arm5",
+            "arm5_end",
+            "end_worklink1",
+            "end_worklink2",
+        )
         self.joint_positions: Dict[str, float] = {}
         self.joint_state_received_monotonic: Optional[float] = None
         self.navigation_mode_requests = []
@@ -208,19 +220,7 @@ class _NavigationNode:
         self.joint_target_durations.append(duration_sec)
         self.joint_positions = {
             name: position
-            for name, position in zip(
-                (
-                    "body_arm1",
-                    "arm1_arm2",
-                    "arm2_arm3",
-                    "arm3_arm4",
-                    "arm4_arm5",
-                    "arm5_end",
-                    "end_worklink1",
-                    "end_worklink2",
-                ),
-                positions,
-            )
+            for name, position in zip(self.joint_names, positions)
         }
         self.joint_state_received_monotonic = time.monotonic()
         self.joint_target_event.set()
@@ -309,8 +309,22 @@ class _CabinetClient:
         *,
         failure_code: Optional[str] = None,
         message: str = "done",
+        control_type: int = 0,
+        result: Optional[Mapping[str, Any]] = None,
     ) -> None:
         self.status.update(active=False, state=outcome)
+        result_data = {
+            "control_type": control_type,
+            "initial_position": 0.0,
+            "final_position": 0.0,
+            "peak_position": 0.00625,
+            "final_state": "released",
+            "requested_force": 5.0,
+            "estimated_force": 5.0,
+            "button_triggered": outcome == "success",
+        }
+        if result is not None:
+            result_data.update(result)
         self.listener(
             {
                 "event": "terminal",
@@ -322,15 +336,7 @@ class _CabinetClient:
                 "failure_code": failure_code,
                 "error_code": 0 if outcome == "success" else 13,
                 "message": message,
-                "result": {
-                    "initial_position": 0.0,
-                    "final_position": 0.0,
-                    "peak_position": 0.00625,
-                    "final_state": "released",
-                    "requested_force": 5.0,
-                    "estimated_force": 5.0,
-                    "button_triggered": outcome == "success",
-                },
+                "result": result_data,
             }
         )
 
@@ -463,6 +469,7 @@ class TaskRunnerTest(unittest.TestCase):
             ({"max_linear_speed": -0.1}, "max_linear_speed"),
             ({"max_angular_speed": float("nan")}, "max_angular_speed"),
             ({"command_timeout": 0.0}, "command_timeout"),
+            ({"toolset": "C"}, "toolset"),
         ):
             with self.subTest(kwargs=kwargs):
                 with self.assertRaisesRegex(ValueError, message):
@@ -637,6 +644,128 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("failed", task["status"])
         self.assertEqual("robot_joint_reset_timeout", task["failure_code"])
         self.assertEqual(0, node.navigation_goal_count)
+
+    def test_homing_targets_only_joints_mounted_by_active_toolset(self) -> None:
+        adapter_path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+        cases = {
+            "A": {
+                "count": 19,
+                "present": "r_three_cyl_finger1_joint",
+                "absent": "r_rotbtn_rotate_joint",
+            },
+            "B": {
+                "count": 18,
+                "present": "r_rotbtn_rotate_joint",
+                "absent": "r_three_cyl_finger1_joint",
+            },
+        }
+
+        for toolset, expected in cases.items():
+            with self.subTest(toolset=toolset):
+                server, node = _server()
+                adapter = load_robot_adapter(adapter_path, toolset=toolset)
+                server._robot_adapter = adapter
+                node.joint_names = adapter.manual_joint_names
+
+                result = server._home_robot_joints(None, "cabinet_a")
+
+                self.assertEqual("homed", result["status"])
+                self.assertEqual(expected["count"], result["joint_count"])
+                self.assertEqual(expected["count"], len(node.joint_targets[0]))
+                self.assertIn(expected["present"], node.joint_names)
+                self.assertNotIn(expected["absent"], node.joint_names)
+
+    def test_homing_uses_active_tool_calibration_tolerance(self) -> None:
+        """A gateway home result must satisfy the cabinet tool calibration."""
+        adapter_path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+        server, node = _server()
+        adapter = load_robot_adapter(adapter_path, toolset="A")
+        server._robot_adapter = adapter
+        node.joint_names = adapter.manual_joint_names
+        node.joint_positions = {
+            joint.name: joint.default_position for joint in adapter.manual_joints
+        }
+        # This is inside the generic 0.02 rad reset tolerance but outside the
+        # 0.001 rad calibration tolerance that the cabinet operator enforces.
+        node.joint_positions["r_three_cyl_finger1_joint"] = 0.0015
+        node.joint_state_received_monotonic = time.monotonic()
+
+        result = server._home_robot_joints(None, "cabinet_a")
+
+        self.assertEqual("homed", result["status"])
+        self.assertEqual(1, len(node.joint_targets))
+        finger_index = adapter.manual_joint_names.index(
+            "r_three_cyl_finger1_joint"
+        )
+        self.assertEqual(0.0, node.joint_targets[0][finger_index])
+
+    def test_homing_missing_active_tool_joint_state_fails_closed(self) -> None:
+        adapter_path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+        cases = {
+            "A": (
+                "r_three_cyl_finger3_joint",
+                "r_rotbtn_rotate_joint",
+            ),
+            "B": (
+                "r_rotbtn_jaw2_joint",
+                "r_three_cyl_finger1_joint",
+            ),
+        }
+
+        for toolset, (missing_name, inactive_name) in cases.items():
+            with self.subTest(toolset=toolset):
+                server, node = _server()
+                adapter = load_robot_adapter(adapter_path, toolset=toolset)
+                server._robot_adapter = replace(
+                    adapter,
+                    reset_joint_timeout_sec=0.03,
+                    reset_joint_duration_sec=0.01,
+                )
+                node.joint_names = adapter.manual_joint_names
+                real_set_joint_target = node.set_joint_target
+
+                def set_target_with_missing_state(
+                    positions: list[float],
+                    duration_sec: float = 0.5,
+                ) -> list[float]:
+                    commanded = real_set_joint_target(
+                        positions,
+                        duration_sec=duration_sec,
+                    )
+                    node.joint_positions.pop(missing_name)
+                    node.joint_state_available = False
+                    return commanded
+
+                node.set_joint_target = set_target_with_missing_state
+
+                with self.assertRaises(TaskExecutionError) as failed:
+                    server._home_robot_joints(None, "cabinet_a")
+
+                self.assertEqual(
+                    "robot_joint_reset_timeout",
+                    failed.exception.code,
+                )
+                details = failed.exception.details
+                self.assertIn(missing_name, details["joint_names"])
+                self.assertNotIn(inactive_name, details["joint_names"])
+                self.assertIsNone(
+                    details["observed_positions"][missing_name]
+                )
 
     def test_homing_timeout_uses_sim_clock_when_advancing(self) -> None:
         server, node = _server()
@@ -2402,6 +2531,47 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertEqual("success", task["status"])
         self.assertAlmostEqual(0.00625, task["result"]["actual_displacement"])
         self.assertTrue(task["result"]["button_triggered"])
+
+    def test_rotary_displacement_uses_terminal_delta_in_both_directions(self) -> None:
+        cases = (
+            (-math.pi / 4, -math.pi / 2, math.pi / 2, math.pi / 4),
+            (math.pi / 4, 0.0, math.pi / 4, math.pi / 4),
+        )
+        for initial, final, peak, expected in cases:
+            with self.subTest(initial=initial, final=final):
+                server, _node = _server()
+                client = server._cabinet_clients["cabinet_b"]
+                accepted = server.submit_operation_task(
+                    "cabinet_b",
+                    "knob_1",
+                    "set_state",
+                    "target",
+                    None,
+                    None,
+                )
+                self.assertTrue(client.submit_event.wait(timeout=1.0))
+                client.finish(
+                    "success",
+                    control_type=1,
+                    result={
+                        "initial_position": initial,
+                        "final_position": final,
+                        "peak_position": peak,
+                        "final_state": "target",
+                        "requested_force": 0.0,
+                        "estimated_force": 0.0,
+                        "button_triggered": False,
+                    },
+                )
+
+                task = server._task_manager.wait(
+                    accepted["task_id"], timeout=2.0
+                )
+                self.assertEqual("success", task["status"])
+                self.assertAlmostEqual(
+                    expected,
+                    task["result"]["actual_displacement"],
+                )
 
     def test_operation_progress_stays_monotonic_after_slow_homing(self) -> None:
         server, node = _server()

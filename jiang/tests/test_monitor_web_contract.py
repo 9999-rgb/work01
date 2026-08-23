@@ -94,6 +94,61 @@ class MonitorWebContractTest(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, msg=result.stderr)
 
+    def test_toolset_status_describes_world_preserving_hot_switch(self) -> None:
+        toolset_status = _source_block(
+            "function normalizedToolset(value)",
+            "\nfunction updateAssetControlState()",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            {toolset_status}
+
+            const ready = describeToolsetStatus({{
+              managed: true, state: 'ready', ready: true,
+              active_toolset: 'A'
+            }});
+            assert.match(ready, /套装 A/);
+            assert.match(ready, /一键切换/);
+            assert.match(ready, /Gazebo 世界/);
+            assert.match(ready, /控制栈/);
+
+            const switching = describeToolsetStatus({{
+              managed: true, state: 'switching', ready: false,
+              active_toolset: 'A', target_toolset: 'B'
+            }});
+            assert.match(switching, /套装 A/);
+            assert.match(switching, /套装 B/);
+            assert.match(switching, /所有控制已锁定/);
+            assert.doesNotMatch(switching, /重启/);
+
+            const failed = describeToolsetStatus({{
+              managed: true, state: 'failed', last_error: 'rollback failed'
+            }});
+            assert.match(failed, /控制保持锁定/);
+            assert.match(failed, /rollback failed/);
+        """))
+
+    def test_toolset_switch_is_separate_from_asset_selection_save(self) -> None:
+        save_selection = _source_block(
+            "async function saveAssetSelection()",
+            "\nconst toolsetStatusPollIntervalMs",
+        )
+        switch_toolset = _source_block(
+            "async function switchToolset()",
+            "\nasync function deleteSelectedAsset()",
+        )
+        self.assertIn("scene: assetSceneSelect.value || null", save_selection)
+        self.assertIn("cabinet: assetCabinetSelect.value || null", save_selection)
+        self.assertNotIn("toolset: assetToolsetSelect.value", save_selection)
+        self.assertNotIn("/robot/toolset/switch", save_selection)
+
+        self.assertIn("/robot/toolset/switch", switch_toolset)
+        self.assertIn("expected_generation: expectedGeneration", switch_toolset)
+        self.assertIn("accepted && accepted.toolset_status", switch_toolset)
+        self.assertIn("waitForToolsetSwitchCompletion", switch_toolset)
+        self.assertIn("refreshAfterToolsetSwitch", switch_toolset)
+        self.assertNotIn("/assets/selection", switch_toolset)
+
     def test_task_stream_overflow_closes_refreshes_and_reconnects_fresh(self) -> None:
         connect_events = _source_block(
             "function connectTaskEvents()",
@@ -395,6 +450,8 @@ class MonitorWebContractTest(unittest.TestCase):
             let cabinetResetAvailable = true;
             let cabinetAvailable = true;
             let cabinetInterlockWasActive = false;
+            let toolsetInterlockWasActive = false;
+            let toolsetLocked = false;
             let manualTakeoverState = 'idle';
             const navigationStatus = {{available: false}};
             const cabinetStatus = null;
@@ -407,6 +464,7 @@ class MonitorWebContractTest(unittest.TestCase):
             function isNavigationActive() {{ return false; }}
             function hasRetiringNavigationGoals() {{ return false; }}
             function isManualControlReady() {{ return true; }}
+            function toolsetControlLocked() {{ return toolsetLocked; }}
             function clearDirectionInputs() {{}}
             function renderBaseControlStatus() {{}}
             {update_interlocks}
@@ -437,6 +495,16 @@ class MonitorWebContractTest(unittest.TestCase):
               $('btnCabinetPress').disabled,
               true,
               'a physical operation still requires its backend action server'
+            );
+            toolsetLocked = true;
+            updateControlInterlocks();
+            assert.equal($('btnNavSend').disabled, true);
+            assert.equal($('btnManualMode').disabled, true);
+            assert.equal($('btnArmZero').disabled, true);
+            assert.equal(
+              $('btnCabinetReset').disabled,
+              true,
+              'toolset replacement locks every task/control entry point'
             );
         """))
 

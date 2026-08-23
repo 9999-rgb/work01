@@ -78,6 +78,7 @@ def _build_cabinet_actions(module, tmp_path, *, spawn_cabinet):
             "cabinet_pose_source": "static",
             "use_sim_time": "true",
             "toolset": "A",
+            "gazebo_plugin_instance_id": "initial",
         }
     )
     cabinet_xacro = tmp_path / "cabinet.urdf.xacro"
@@ -167,6 +168,7 @@ def _launch_argument_context(module):
         {name: "false" for name in module._BOOLEAN_LAUNCH_ARGUMENTS}
     )
     context.launch_configurations["spawn_z"] = "0.515"
+    context.launch_configurations["gazebo_plugin_instance_id"] = "initial"
     return context
 
 
@@ -218,12 +220,51 @@ def test_boolean_launch_arguments_are_normalized_before_use():
     actions = module._validate_launch_arguments(context)
     for action in actions:
         action.execute(context)
-
     assert all(
         context.launch_configurations[name] == "true"
         for name in module._BOOLEAN_LAUNCH_ARGUMENTS
     )
 
+
+def test_gazebo_plugin_instance_id_is_validated_before_xacro_execution():
+    module = _load_launch_module()
+    context = _launch_argument_context(module)
+    context.launch_configurations["gazebo_plugin_instance_id"] = " robot_b_12 "
+
+    actions = module._validate_launch_arguments(context)
+    for action in actions:
+        action.execute(context)
+
+    assert context.launch_configurations["gazebo_plugin_instance_id"] == "robot_b_12"
+
+    context.launch_configurations["gazebo_plugin_instance_id"] = "unsafe-id"
+    with pytest.raises(RuntimeError, match="gazebo_plugin_instance_id"):
+        module._validate_launch_arguments(context)
+
+
+def test_robot_gazebo_plugin_names_share_the_runtime_instance_id_contract():
+    root = Path(__file__).resolve().parents[2]
+    description_root = root / "xczs_inspection_robot_description" / "urdf"
+    root_xacro = (description_root / "xczs_inspection_robot.urdf.xacro").read_text(
+        encoding="utf-8"
+    )
+    assert '<xacro:arg name="gazebo_plugin_instance_id" default="initial" />' in root_xacro
+
+    expected_plugins = {
+        "components/sensors.xacro": (
+            "xczs_arm_camera_plugin",
+            "xczs_body_lidar_plugin",
+        ),
+        "components/gazebo_plugins.xacro": (
+            "xczs_planar_move",
+            "xczs_planar_stabilizer",
+        ),
+        "components/ros2_control.xacro": ("xczs_ros2_control",),
+    }
+    for relative_path, plugin_names in expected_plugins.items():
+        source = (description_root / relative_path).read_text(encoding="utf-8")
+        for plugin_name in plugin_names:
+            assert f'{plugin_name}_$(arg gazebo_plugin_instance_id)' in source
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "not-a-number"])
 def test_spawn_z_rejects_nonfinite_or_non_numeric_values(value):
@@ -282,6 +323,35 @@ def test_spawn_pose_is_verified_without_delayed_motion(tmp_path):
         and _on_process_exit_target(entity).node_executable == "spawner"
     )
     downstream = _on_process_exit_callback(controller_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+
+    assert len(downstream) == 1
+    assert isinstance(downstream[0], OpaqueFunction)
+    tool_context = LaunchContext()
+    tool_context.launch_configurations.update(
+        toolset="A",
+        robot_bringup="true",
+    )
+    tool_downstream = downstream[0].execute(tool_context)
+    assert isinstance(tool_downstream[0], RegisterEventHandler)
+    tool_spawner = tool_downstream[1]
+    assert isinstance(tool_spawner, Node)
+    assert tool_spawner.node_executable == "spawner"
+    assert tool_downstream.index(tool_downstream[0]) < tool_downstream.index(
+        tool_spawner
+    )
+
+    tool_failure_actions = _on_process_exit_callback(tool_downstream[0])(
+        SimpleNamespace(returncode=1),
+        None,
+    )
+    assert isinstance(tool_failure_actions[1], EmitEvent)
+    assert isinstance(tool_failure_actions[1].event, Shutdown)
+    assert "tool controller spawner" in tool_failure_actions[1].event.reason
+
+    downstream = _on_process_exit_callback(tool_downstream[0])(
         SimpleNamespace(returncode=0),
         None,
     )
@@ -474,6 +544,16 @@ def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
         SimpleNamespace(returncode=0),
         None,
     )
+    tool_context = LaunchContext()
+    tool_context.launch_configurations.update(
+        toolset="A",
+        robot_bringup="true",
+    )
+    tool_downstream = downstream[0].execute(tool_context)
+    downstream = _on_process_exit_callback(tool_downstream[0])(
+        SimpleNamespace(returncode=0),
+        None,
+    )
     verifier = next(
         action for action in downstream if isinstance(action, ExecuteProcess)
     )
@@ -519,6 +599,88 @@ def test_external_stack_never_includes_local_moveit_or_nav2(tmp_path):
         nav2="true",
     )
     assert move_group.condition.evaluate(local)
+
+
+def test_world_only_mode_does_not_start_duplicate_command_or_lease_nodes(
+    tmp_path,
+):
+    """The persistent Gazebo owner must not compete with its robot child."""
+    module = _load_launch_module()
+    with patch.object(
+        module,
+        "get_package_share_directory",
+        return_value=str(tmp_path),
+    ):
+        entities = list(module.generate_launch_description().entities)
+
+    controller_handler = next(
+        entity
+        for entity in entities
+        if isinstance(entity, RegisterEventHandler)
+        and isinstance(entity.event_handler, OnProcessExit)
+        and isinstance(_on_process_exit_target(entity), Node)
+        and _on_process_exit_target(entity).node_executable == "spawner"
+    )
+    tool_start = _on_process_exit_callback(controller_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+    tool_context = LaunchContext()
+    tool_context.launch_configurations.update(toolset="A", robot_bringup="true")
+    tool_actions = tool_start[0].execute(tool_context)
+    verifier_actions = _on_process_exit_callback(tool_actions[0])(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+    verifier = next(
+        action for action in verifier_actions if isinstance(action, ExecuteProcess)
+    )
+    verifier_handler = next(
+        action
+        for action in verifier_actions
+        if isinstance(action, RegisterEventHandler)
+        and _on_process_exit_target(action) is verifier
+    )
+    verified_actions = _on_process_exit_callback(verifier_handler)(
+        SimpleNamespace(returncode=0),
+        None,
+    )
+    nodes = {
+        entity.node_executable: entity
+        for entity in verified_actions
+        if isinstance(entity, Node)
+        and entity.node_executable in {
+            "base_command_router",
+            "legacy_trajectory_router",
+        }
+    }
+    assert set(nodes) == {"base_command_router", "legacy_trajectory_router"}
+    lease = next(
+        entity
+        for entity in entities
+        if isinstance(entity, Node)
+        and entity.node_executable == "operation_lease_coordinator"
+    )
+
+    world_only = LaunchContext()
+    world_only.launch_configurations.update(
+        robot_bringup="false",
+        moveit="false",
+        cabinet_bringup="false",
+    )
+    assert not nodes["base_command_router"].condition.evaluate(world_only)
+    assert not nodes["legacy_trajectory_router"].condition.evaluate(world_only)
+    assert not lease.condition.evaluate(world_only)
+
+    robot_child = LaunchContext()
+    robot_child.launch_configurations.update(
+        robot_bringup="true",
+        moveit="true",
+        cabinet_bringup="true",
+    )
+    assert nodes["base_command_router"].condition.evaluate(robot_child)
+    assert nodes["legacy_trajectory_router"].condition.evaluate(robot_child)
+    assert lease.condition.evaluate(robot_child)
 
 
 def test_runtime_exit_requests_shutdown_even_for_clean_exit():
@@ -742,3 +904,36 @@ def test_cabinet_runtime_nodes_start_directly_when_spawn_is_disabled(tmp_path):
             "cabinet_grasp_aggregator",
         ],
     )
+
+
+def test_scene_floor_spawn_failure_stops_the_world_launch(tmp_path):
+    module = _load_launch_module()
+    floor = tmp_path / "floor.sdf"
+    floor.write_text("<sdf version='1.6'/>", encoding="utf-8")
+    context = LaunchContext()
+    context.launch_configurations["gazebo"] = "true"
+    scene = {
+        "model": {
+            "file": str(floor),
+            "x": 0.0,
+            "y": 0.0,
+            "z": 0.0,
+            "roll": 0.0,
+            "pitch": 0.0,
+            "yaw": 0.0,
+        }
+    }
+    with patch.object(module, "_scene_spec", return_value=scene):
+        actions = module._scene_floor_nodes(context)
+
+    assert isinstance(actions[0], RegisterEventHandler)
+    assert isinstance(actions[1], Node)
+    assert actions[1].node_executable == "spawn_entity.py"
+    assert _on_process_exit_target(actions[0]) is actions[1]
+    failure_actions = _on_process_exit_callback(actions[0])(
+        SimpleNamespace(returncode=4),
+        None,
+    )
+    assert isinstance(failure_actions[1], EmitEvent)
+    assert isinstance(failure_actions[1].event, Shutdown)
+    assert "Gazebo scene floor spawn" in failure_actions[1].event.reason

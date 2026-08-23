@@ -38,6 +38,13 @@ class _FakeMoveItConfig:
 
 
 class _FakeMoveItConfigsBuilder:
+    def __init__(self):
+        self.robot_description_calls = []
+
+    def robot_description(self, **kwargs):
+        self.robot_description_calls.append(kwargs)
+        return self
+
     def __getattr__(self, _name):
         return lambda **_kwargs: self
 
@@ -52,6 +59,7 @@ def _launch_context():
             "robot_name": "test_robot",
             "moveit_config_package": "test_moveit_config",
             "robot_xacro": "robot.xacro",
+            "toolset": "A",
             "moveit_srdf": "robot.srdf",
             "moveit_kinematics": "kinematics.yaml",
             "moveit_joint_limits": "joint_limits.yaml",
@@ -139,6 +147,45 @@ def test_move_group_exit_during_shutdown_does_not_emit_again():
     )
 
     assert result == []
+
+
+@pytest.mark.parametrize(
+    ("configured_toolset", "expected_toolset"),
+    [
+        ("A", "A"),
+        ("B", "B"),
+        ("b", "B"),
+        (" b ", "B"),
+        ("unsupported", "A"),
+        ("", "A"),
+    ],
+)
+def test_move_group_normalizes_toolset_for_robot_description(
+    tmp_path,
+    configured_toolset,
+    expected_toolset,
+):
+    module = _load_launch_module()
+    context = _launch_context()
+    context.launch_configurations["toolset"] = configured_toolset
+    builder = _FakeMoveItConfigsBuilder()
+
+    with (
+        patch.object(
+            module,
+            "get_package_share_directory",
+            return_value=str(tmp_path),
+        ),
+        patch.object(module, "MoveItConfigsBuilder", return_value=builder),
+    ):
+        module._launch_setup(context)
+
+    assert builder.robot_description_calls == [
+        {
+            "file_path": "robot.xacro",
+            "mappings": {"toolset": expected_toolset},
+        }
+    ]
 
 
 def test_move_group_rejects_an_invalid_use_sim_time_value():

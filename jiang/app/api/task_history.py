@@ -77,7 +77,7 @@ async def list_task_history(
         Query(ge=1, le=_PAGE_SIZE_MAX, description="每页条数"),
     ] = _DEFAULT_PAGE_SIZE,
 ) -> dict[str, Any]:
-    store = _store()
+    store = await asyncio.to_thread(_store)
     total, items = await asyncio.to_thread(
         store.list_records,
         task_type=type,
@@ -108,7 +108,7 @@ async def list_task_history(
     ),
 )
 async def task_history_summary() -> dict[str, Any]:
-    store = _store()
+    store = await asyncio.to_thread(_store)
     data = await asyncio.to_thread(store.summary)
     data["labels"] = _labels_map()
     return data
@@ -120,7 +120,7 @@ async def task_history_summary() -> dict[str, Any]:
     description="返回单条任务完整记录（含 request / result 载荷）与按 id 排序的进度明细。",
 )
 async def task_history_detail(task_id: str) -> dict[str, Any]:
-    store = _store()
+    store = await asyncio.to_thread(_store)
     record = await asyncio.to_thread(store.get_record, task_id)
     if record is None:
         raise HTTPException(

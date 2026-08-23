@@ -53,6 +53,7 @@
 #include "xczs_inspection_robot_control/action/operate_cabinet_control.hpp"
 #include "xczs_inspection_robot_control/action/press_cabinet_button.hpp"
 #include "xczs_inspection_robot_control/action_terminal_policy.hpp"
+#include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_catalog.hpp"
 #include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
@@ -89,6 +90,8 @@ constexpr char kActionName[] = "press_cabinet_button";
 constexpr char kOperateActionName[] = "operate_cabinet_control";
 constexpr char kControlCatalogTopic[] = "control_catalog";
 constexpr char kActiveControlTopic[] = "active_control";
+constexpr char kOperationHeartbeatTopic[] = "operation_heartbeat";
+constexpr char kOperationFaultTopic[] = "operation_fault";
 constexpr char kResetControlsService[] = "reset_controls";
 constexpr char kEmbeddedNavigationDisabledMessage[] =
   "Embedded cabinet navigation is disabled because navigation is executed "
@@ -174,13 +177,17 @@ struct ToolProfile
 
   std::string move_group;
   std::string contact_tool_link;
-  // Link whose origin the cabinet grasp plugin should measure against the
-  // control's grasp point.  Defaults to contact_tool_link.  Pincer tools
+  // Link carrying the cabinet grasp-distance probe.  Defaults to
+  // contact_tool_link.  Pincer tools
   // (rotate_button) carry their jaws far from the contact-tool origin, so the
   // body origin can sit well outside the grasp distance threshold even when
   // the jaws are exactly on the control; the jaw-carrier link is a better
   // distance probe.
   std::string grasp_link;
+  // Exact grasp-distance probe in grasp_link coordinates.  Keeping the point
+  // separate from the MoveIt business point also supports tools whose planned
+  // contact link and Gazebo grasp link differ.
+  tf2::Vector3 grasp_point_position{0.0, 0.0, 0.0};
   std::string transport_named_target;
   ToolAxisOrientation tool_axis_orientation{ToolAxisOrientation::ALONG_OUTWARD};
   // Full 3-D position of the physical business point in contact_tool_link.
@@ -204,7 +211,7 @@ struct ButtonSnapshot
   double position{0.0};
   double velocity{0.0};
   double effort{0.0};
-  double max_position{0.0};
+  double peak_position{0.0};
   bool valid{false};
   bool in_motion{false};
   std::string state_id;
@@ -273,6 +280,13 @@ struct ButtonSpec
   std::vector<std::string> ready_joint_seed_names;
   std::vector<double> ready_joint_seed_positions;
   std::shared_ptr<ButtonRuntime> runtime{std::make_shared<ButtonRuntime>()};
+};
+
+struct ControlStabilityReference
+{
+  const ButtonSpec * control{nullptr};
+  std::string state_id;
+  double position{0.0};
 };
 
 struct ResolvedControlGeometry
@@ -646,6 +660,23 @@ public:
     active_control_publisher_ = create_publisher<std_msgs::msg::String>(
       kActiveControlTopic,
       rclcpp::QoS(1).reliable().transient_local());
+    operation_heartbeat_publisher_ =
+      create_publisher<std_msgs::msg::String>(
+      kOperationHeartbeatTopic, rclcpp::QoS(1).reliable());
+    operation_fault_subscription_ =
+      create_subscription<std_msgs::msg::String>(
+      kOperationFaultTopic, rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::String::SharedPtr message) {
+        if (message->data.empty()) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Ignoring a cabinet physics watchdog fault without a lease ID.");
+          return;
+        }
+        mark_operation_lease_lost_for_exact_lease(
+          "The cabinet physics watchdog reported this operation lease as "
+          "abandoned.", message->data);
+      });
 
     navigation_client_ = rclcpp_action::create_client<NavigateToPose>(
       this, navigation_action);
@@ -774,6 +805,20 @@ private:
       prefix + "contact_tool_link", "");
     profile.grasp_link = declare_parameter<std::string>(
       prefix + "grasp_link", profile.contact_tool_link);
+    const auto grasp_point_position = declare_parameter<std::vector<double>>(
+      prefix + "grasp_point_position", {0.0, 0.0, 0.0});
+    if (grasp_point_position.size() != 3U ||
+      std::any_of(
+        grasp_point_position.begin(), grasp_point_position.end(),
+        [](double value) {return !std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "Parameter '" + prefix +
+              "grasp_point_position' must contain three finite values.");
+    }
+    profile.grasp_point_position = tf2::Vector3(
+      grasp_point_position[0], grasp_point_position[1],
+      grasp_point_position[2]);
     profile.transport_named_target = declare_parameter<std::string>(
       prefix + "transport_named_target", "");
     const auto tool_axis_orientation = declare_parameter<std::string>(
@@ -903,6 +948,7 @@ private:
     contact_tool_link_ = profile.contact_tool_link;
     grasp_link_ = profile.grasp_link.empty() ?
       profile.contact_tool_link : profile.grasp_link;
+    grasp_point_position_ = profile.grasp_point_position;
     transport_named_target_ = profile.transport_named_target;
     tool_axis_orientation_ = profile.tool_axis_orientation;
     tool_tip_position_ = profile.tool_tip_position;
@@ -1164,10 +1210,10 @@ private:
     using Control = xczs_inspection_robot_control::msg::CabinetControl;
     if (toolset_ == "B") {
       return control_type == Control::TYPE_KNOB ||
-        control_type == Control::TYPE_SWITCH;
+             control_type == Control::TYPE_SWITCH;
     }
     return control_type == Control::TYPE_BUTTON ||
-      control_type == Control::TYPE_DOOR;
+           control_type == Control::TYPE_DOOR;
   }
 
   void configure_controls()
@@ -1453,9 +1499,9 @@ private:
       if (!button->operable && button->unavailable_reason.empty()) {
         // 控件在允许清单内但当前套装未挂载其操作工具时，原因是"套装不匹配"
         // 而非"未列入 operable_control_ids"，用专门文案避免误导 Web 目录。
-        button->unavailable_reason = in_allowlist && !tool_serves
-          ? toolset_mismatch_reason
-          : inoperable_control_reason;
+        button->unavailable_reason = in_allowlist && !tool_serves ?
+          toolset_mismatch_reason :
+          inoperable_control_reason;
       }
       const std::string station_prefix = prefix + "navigation_station.";
       const std::string station_anchor_parameter =
@@ -1545,6 +1591,14 @@ private:
         prefix + "parent_control_id", "");
       button->requires_grasp = declare_parameter<bool>(
         prefix + "requires_grasp", !is_button);
+      if (!grasp_requirement_matches_control_kind(
+          is_button, button->requires_grasp))
+      {
+        throw std::invalid_argument(
+                "Control '" + control_id + "' requires_grasp must be " +
+                (is_button ? "false for a button." :
+                "true for a knob, switch or door."));
+      }
       if (!is_button) {
         const double default_grasp_offset = is_knob ?
           grasp_outward_offset_ : (is_switch ? 0.012 : 0.015);
@@ -1750,17 +1804,89 @@ private:
 
   void publish_active_control(const std::string & control_id) noexcept
   {
+    std::string operation_lease_id;
+    {
+      std::lock_guard<std::mutex> lock(operation_heartbeat_mutex_);
+      operation_heartbeat_control_id_ = control_id;
+    }
+    if (!control_id.empty()) {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      if (operation_lease_held_.load() && !operation_lease_lost_.load()) {
+        operation_lease_id = operation_lease_id_;
+      }
+    }
+    publish_active_control_message(control_id, operation_lease_id);
+    if (!control_id.empty()) {
+      // Acquiring the lease is also a valid initial liveness event; periodic
+      // heartbeats thereafter are emitted only after successful renewals.
+      publish_operation_heartbeat();
+    }
+  }
+
+  void publish_operation_heartbeat() noexcept
+  {
+    std::string control_id;
+    std::string lease_id;
+    {
+      std::lock_guard<std::mutex> lock(operation_heartbeat_mutex_);
+      control_id = operation_heartbeat_control_id_;
+    }
+    {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      if (operation_lease_held_.load() && !operation_lease_lost_.load()) {
+        lease_id = operation_lease_id_;
+      }
+    }
+    if (control_id.empty() || lease_id.empty()) {
+      return;
+    }
+    try {
+      std_msgs::msg::String message;
+      // The active-control topic already carries the control identity.  The
+      // volatile heartbeat carries the globally unique lease identity so a
+      // delayed request/heartbeat from an older same-control operation cannot
+      // authorize a new physical grasp.
+      message.data = lease_id;
+      operation_heartbeat_publisher_->publish(message);
+    } catch (const std::exception & error) {
+      mark_operation_lease_lost_for_exact_lease(
+        std::string("Failed to publish the cabinet operation heartbeat: ") +
+        error.what(), lease_id);
+    } catch (...) {
+      mark_operation_lease_lost_for_exact_lease(
+        "Failed to publish the cabinet operation heartbeat unexpectedly.",
+        lease_id);
+    }
+  }
+
+  void publish_active_control_message(
+    const std::string & control_id,
+    const std::string & operation_lease_id) noexcept
+  {
     try {
       std_msgs::msg::String message;
       message.data = control_id;
       active_control_publisher_->publish(message);
     } catch (const std::exception & error) {
-      RCLCPP_ERROR(
-        get_logger(), "Failed to publish the active cabinet control: %s",
-        error.what());
+      if (!control_id.empty()) {
+        mark_operation_lease_lost_for_exact_lease(
+          std::string("Failed to publish the active cabinet control: ") +
+          error.what(), operation_lease_id);
+      } else {
+        RCLCPP_ERROR(
+          get_logger(), "Failed to publish the idle cabinet control: %s",
+          error.what());
+      }
     } catch (...) {
-      RCLCPP_ERROR(
-        get_logger(), "Failed to publish the active cabinet control.");
+      if (!control_id.empty()) {
+        mark_operation_lease_lost_for_exact_lease(
+          "Failed to publish the active cabinet control unexpectedly.",
+          operation_lease_id);
+      } else {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Failed to publish the idle cabinet control unexpectedly.");
+      }
     }
   }
 
@@ -1940,7 +2066,7 @@ private:
       result->error_code = PressCabinetButton::Result::NAVIGATION_FAILED;
       result->message = kEmbeddedNavigationDisabledMessage;
       result->max_travel = button ?
-        button_snapshot(*button).max_position : 0.0;
+        button_snapshot(*button).peak_position : 0.0;
       RCLCPP_WARN(get_logger(), "%s", result->message.c_str());
       finish_goal_noexcept(goal_handle, result, false);
       clear_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id());
@@ -1965,7 +2091,7 @@ private:
       if (!should_navigate_to_staging_pose) {
         publish_active_control(button->id);
       }
-      reset_max_button_travel(*button);
+      reset_peak_position(*button);
       publish_feedback(
         goal_handle,
         PressCabinetButton::Feedback::WAITING_FOR_SYSTEM,
@@ -2153,7 +2279,7 @@ private:
       result->error_code = PressCabinetButton::Result::SUCCESS;
       result->message =
         "Pressed and released " + button->id + " successfully.";
-      result->max_travel = button_snapshot(*button).max_position;
+      result->max_travel = button_snapshot(*button).peak_position;
       request_success = true;
     } catch (const OperationError & error) {
       const bool lease_available = !operation_lease_lost_.load();
@@ -2169,7 +2295,7 @@ private:
       result->error_code = error.error_code;
       result->message = error.what();
       result->max_travel = button ?
-        button_snapshot(*button).max_position : 0.0;
+        button_snapshot(*button).peak_position : 0.0;
       const bool client_canceled = is_goal_canceling_noexcept(goal_handle);
       if (client_canceled) {
         result->error_code = PressCabinetButton::Result::CANCELED;
@@ -2202,7 +2328,7 @@ private:
         "Cabinet button operation was canceled." :
         std::string("Cabinet operation failed: ") + error.what();
       result->max_travel = button ?
-        button_snapshot(*button).max_position : 0.0;
+        button_snapshot(*button).peak_position : 0.0;
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     } catch (...) {
       const bool lease_available = !operation_lease_lost_.load();
@@ -2226,7 +2352,7 @@ private:
         "Cabinet button operation was canceled." :
         "Cabinet operation failed with an unknown exception.";
       result->max_travel = button ?
-        button_snapshot(*button).max_position : 0.0;
+        button_snapshot(*button).peak_position : 0.0;
       RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
     }
 
@@ -2291,6 +2417,7 @@ private:
       control && control->navigation_station.has_value());
     std::string target_state;
     std::unordered_map<std::string, std::string> expected_parent_states;
+    std::vector<ControlStabilityReference> pregrasp_stability_references;
 
     if (!embedded_navigation_request_is_supported(
         goal_handle->get_goal()->navigate_to_staging_pose,
@@ -2425,7 +2552,7 @@ private:
         publish_active_control(control->id);
       }
       if (!validation_only) {
-        reset_max_button_travel(*control);
+        reset_peak_position(*control);
       }
       publish_operate_feedback(
         goal_handle,
@@ -2436,6 +2563,10 @@ private:
       check_cancel(goal_handle);
       const auto initial_state = button_snapshot(*control);
       result->initial_position = initial_state.position;
+      if (!is_button) {
+        pregrasp_stability_references.push_back(
+          {control.get(), initial_state.state_id, initial_state.position});
+      }
       if (control->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
       {
@@ -2444,8 +2575,14 @@ private:
       for (const auto * ancestor : control_ancestors(*control)) {
         wait_for_fresh_button_state(
           goal_handle, *ancestor, operation_started_at);
+        const auto parent_initial_state = button_snapshot(*ancestor);
         expected_parent_states.emplace(
-          ancestor->id, button_snapshot(*ancestor).state_id);
+          ancestor->id, parent_initial_state.state_id);
+        if (!is_button) {
+          pregrasp_stability_references.push_back(
+            {ancestor, parent_initial_state.state_id,
+              parent_initial_state.position});
+        }
       }
       std::tie(target_position, target_state) = resolve_operation_target(
         *control, *goal_handle->get_goal(), initial_state);
@@ -2465,6 +2602,11 @@ private:
         rotary_tool_roll_offset = control->tool_roll_offsets.at(
           rotary_transition_matrix_index(
             source_index, target_index, control->state_ids.size()));
+      }
+      if (!is_button) {
+        wait_for_pregrasp_controls_stable(
+          goal_handle, *control, pregrasp_stability_references,
+          std::chrono::steady_clock::now());
       }
       latch_cabinet_transform();
 
@@ -2679,9 +2821,9 @@ private:
                   "The button did not return to its released state.");
         }
         const auto measured_state = button_snapshot(*control);
-        result->peak_position = measured_state.max_position;
+        result->peak_position = measured_state.peak_position;
         result->estimated_force =
-          measured_state.max_position * control->spring_stiffness;
+          measured_state.peak_position * control->spring_stiffness;
         if (!button_should_trigger) {
           throw GenericOperationError(
                   OperateCabinetControl::Result::INSUFFICIENT_FORCE,
@@ -2732,6 +2874,9 @@ private:
             *move_group, goal_handle, rotary_poses.door_pregrasp_pose,
             contact_tool_link_, &result->operation_executed);
         }
+        wait_for_pregrasp_controls_stable(
+          goal_handle, *control, pregrasp_stability_references,
+          std::chrono::steady_clock::now());
         execute_cartesian_path(
           *move_group, goal_handle, {rotary_poses.grasp_pose},
           cartesian_velocity_scale_ * 0.5,
@@ -2952,14 +3097,14 @@ private:
       // mistake them for planning-only validation diagnostics.
       result->diagnostic_stage.clear();
       result->final_position = final_state.position;
-      result->peak_position = final_state.max_position;
+      result->peak_position = final_state.peak_position;
       result->final_state = final_state.state_id;
       if (is_button) {
         result->estimated_force =
-          final_state.max_position * control->spring_stiffness;
+          final_state.peak_position * control->spring_stiffness;
         result->button_triggered =
           result->button_triggered ||
-          final_state.max_position + 1.0e-9 >= control->press_threshold;
+          final_state.peak_position + 1.0e-9 >= control->press_threshold;
       }
       request_success = true;
     } catch (const GenericOperationError & error) {
@@ -3391,7 +3536,7 @@ private:
     // prepress standoff still move away from the control.
     const tf2::Vector3 tool_axis_reference =
       tool_axis_orientation_ ==
-        ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
+      ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
       -outward_zero : outward_zero;
     const tf2::Quaternion tool_zero =
       tool_rotation_from_outward(tool_axis_reference);
@@ -3582,8 +3727,24 @@ private:
     auto request = std::make_shared<
       xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
     request->control_id = control_id;
+    {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      if (attach &&
+        (!operation_lease_held_.load() || operation_lease_lost_.load() ||
+        operation_lease_id_.empty()))
+      {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::GRASP_FAILED,
+                "Cabinet grasp attach requires an active global operation "
+                "lease.");
+      }
+      request->operation_lease_id = operation_lease_id_;
+    }
     request->robot_model = robot_model_name_;
     request->robot_link = grasp_link_;
+    request->robot_grasp_point.x = grasp_point_position_.x();
+    request->robot_grasp_point.y = grasp_point_position_.y();
+    request->robot_grasp_point.z = grasp_point_position_.z();
     request->robot_base_link = grasp_brake_link_;
     request->attach = attach;
     auto future = grasp_client_->async_send_request(request);
@@ -3623,8 +3784,15 @@ private:
         auto request = std::make_shared<
           xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
         request->control_id = control_id;
+        {
+          std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+          request->operation_lease_id = operation_lease_id_;
+        }
         request->robot_model = robot_model_name_;
         request->robot_link = grasp_link_;
+        request->robot_grasp_point.x = grasp_point_position_.x();
+        request->robot_grasp_point.y = grasp_point_position_.y();
+        request->robot_grasp_point.z = grasp_point_position_.z();
         request->robot_base_link = grasp_brake_link_;
         request->attach = false;
         auto future = grasp_client_->async_send_request(request);
@@ -3653,6 +3821,96 @@ private:
       RCLCPP_ERROR(
         get_logger(), "Emergency grasp release failed: %s", error.what());
     }
+  }
+
+  template<typename GoalHandleT>
+  void wait_for_pregrasp_controls_stable(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & target_control,
+    const std::vector<ControlStabilityReference> & references,
+    std::chrono::steady_clock::time_point boundary_started_at)
+  {
+    if (references.empty()) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              "No initial physical-state reference is available for '" +
+              target_control.id + "'.");
+    }
+
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    auto stable_since = std::chrono::steady_clock::time_point{};
+    while (std::chrono::steady_clock::now() < deadline) {
+      check_cancel(goal_handle);
+      const auto now = std::chrono::steady_clock::now();
+      bool all_stable = true;
+      auto oldest_sample = std::chrono::steady_clock::time_point::max();
+      auto newest_sample = std::chrono::steady_clock::time_point::min();
+      for (const auto & reference : references) {
+        if (!reference.control) {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::NOT_READY,
+                  "A pre-grasp physical-state reference is unavailable for '" +
+                  target_control.id + "'.");
+        }
+        const auto state = button_snapshot(*reference.control);
+        const auto status = classify_pregrasp_stability_sample(
+          state.structured_received,
+          state.valid,
+          state.structured_received_at > boundary_started_at,
+          std::chrono::duration<double>(
+            now - state.structured_received_at).count() <=
+          button_state_timeout_,
+          state.state_id == reference.state_id,
+          state.in_motion,
+          state.position,
+          reference.position,
+          state.velocity,
+          target_tolerance_,
+          stable_velocity_tolerance_);
+        if (status ==
+          PregraspStabilitySampleStatus::REFERENCE_CHANGED)
+        {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::NOT_READY,
+                  "Control '" + reference.control->id +
+                  "' changed from its initial state or position before "
+                  "grasp; the operation was stopped.");
+        }
+        if (status != PregraspStabilitySampleStatus::STABLE) {
+          all_stable = false;
+          break;
+        }
+        oldest_sample = std::min(
+          oldest_sample, state.structured_received_at);
+        newest_sample = std::max(
+          newest_sample, state.structured_received_at);
+      }
+      if (all_stable) {
+        if (stable_since == std::chrono::steady_clock::time_point{}) {
+          // Start only once every stream has supplied a stable sample after
+          // this boundary.  Requiring each stream's latest sample to advance
+          // past this common point prevents a single cached sample from
+          // satisfying the continuous-stability interval.
+          stable_since = newest_sample;
+        }
+        if (oldest_sample >= stable_since &&
+          std::chrono::duration<double>(
+            oldest_sample - stable_since).count() >=
+          stable_state_duration_)
+        {
+          return;
+        }
+      } else {
+        stable_since = std::chrono::steady_clock::time_point{};
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    throw GenericOperationError(
+            OperateCabinetControl::Result::NOT_READY,
+            "Control '" + target_control.id +
+            "' and its articulated parents did not provide a continuous "
+            "fresh, valid, stationary pre-grasp state.");
   }
 
   template<typename GoalHandleT>
@@ -3960,7 +4218,7 @@ private:
     }
     const auto state = button_snapshot(*control);
     result->final_position = state.position;
-    result->peak_position = state.position;
+    result->peak_position = std::abs(state.position);
     result->final_state = state.state_id;
     if (control->control_type ==
       xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
@@ -4059,16 +4317,16 @@ private:
     if (control) {
       const auto final_state = button_snapshot(*control);
       result->final_position = final_state.position;
-      result->peak_position = final_state.max_position;
+      result->peak_position = final_state.peak_position;
       result->final_state = final_state.state_id;
       if (control->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
       {
         result->estimated_force =
-          final_state.max_position * control->spring_stiffness;
+          final_state.peak_position * control->spring_stiffness;
         result->button_triggered =
           result->button_triggered ||
-          final_state.max_position + 1.0e-9 >= control->press_threshold;
+          final_state.peak_position + 1.0e-9 >= control->press_threshold;
       }
     }
     if (operation_lease_lost_.load() && !canceled) {
@@ -4105,8 +4363,8 @@ private:
       std::lock_guard<std::mutex> lock(button.runtime->mutex);
       button.runtime->state.received = true;
       button.runtime->state.position = message.position[index];
-      button.runtime->state.max_position = std::max(
-        button.runtime->state.max_position,
+      button.runtime->state.peak_position = update_absolute_position_peak(
+        button.runtime->state.peak_position,
         button.runtime->state.position);
       button.runtime->state.received_at = std::chrono::steady_clock::now();
     }
@@ -4158,7 +4416,8 @@ private:
       state.position = message.position;
       state.velocity = message.velocity;
       state.effort = message.effort;
-      state.max_position = std::max(state.max_position, state.position);
+      state.peak_position = update_absolute_position_peak(
+        state.peak_position, state.position);
       state.in_motion = message.in_motion;
       state.state_id = message.state_id;
       state.received_at = received_at;
@@ -4176,10 +4435,10 @@ private:
     return button.runtime->state;
   }
 
-  void reset_max_button_travel(const ButtonSpec & button)
+  void reset_peak_position(const ButtonSpec & button)
   {
     std::lock_guard<std::mutex> lock(button.runtime->mutex);
-    button.runtime->state.max_position = std::max(
+    button.runtime->state.peak_position = update_absolute_position_peak(
       0.0, button.runtime->state.position);
   }
 
@@ -6165,6 +6424,11 @@ private:
         mark_operation_lease_lost(
           response && !response->message.empty() ? response->message :
           "The global operation lease renewal was rejected.");
+      } else {
+        // Reuse the successful global-lease renewal as the cabinet physics
+        // liveness heartbeat.  Only a currently published non-empty control
+        // is repeated; idle operators never arm the Gazebo watchdog.
+        publish_operation_heartbeat();
       }
     } catch (const std::exception & error) {
       mark_operation_lease_lost(
@@ -6178,10 +6442,39 @@ private:
 
   void mark_operation_lease_lost(const std::string & reason) noexcept
   {
-    if (!operation_lease_held_.load() ||
-      operation_lease_lost_.exchange(true))
-    {
+    mark_operation_lease_lost_impl(reason, nullptr);
+  }
+
+  void mark_operation_lease_lost_for_exact_lease(
+    const std::string & reason,
+    const std::string & expected_lease_id) noexcept
+  {
+    if (expected_lease_id.empty()) {
       return;
+    }
+    mark_operation_lease_lost_impl(reason, &expected_lease_id);
+  }
+
+  void mark_operation_lease_lost_impl(
+    const std::string & reason,
+    const std::string * expected_lease_id) noexcept
+  {
+    {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      const bool lease_matches = expected_lease_id ?
+        operation_fault_matches_active_lease(
+        operation_lease_held_.load(), operation_lease_id_,
+        *expected_lease_id) :
+        operation_fault_matches_active_lease(
+        operation_lease_held_.load(), operation_lease_id_,
+        operation_lease_id_);
+      if (!lease_matches || operation_lease_lost_.load()) {
+        return;
+      }
+      // Latch the exact expected lease while holding the same mutex used by
+      // release/acquire.  A delayed watchdog fault cannot pass validation for
+      // an old lease and then race into canceling its successor.
+      operation_lease_lost_.store(true);
     }
     bool owns_physical_motion_resources = false;
     {
@@ -6502,6 +6795,12 @@ private:
     control_catalog_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
     active_control_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
+    operation_heartbeat_publisher_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    operation_fault_subscription_;
+  std::mutex operation_heartbeat_mutex_;
+  std::string operation_heartbeat_control_id_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
     cabinet_pose_valid_subscription_;
   std::vector<rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr>
@@ -6557,6 +6856,7 @@ private:
   std::string toolset_;
   std::string contact_tool_link_;
   std::string grasp_link_;
+  tf2::Vector3 grasp_point_position_{0.0, 0.0, 0.0};
   std::string transport_named_target_;
   ToolProfile::ToolAxisOrientation tool_axis_orientation_{
     ToolProfile::ToolAxisOrientation::ALONG_OUTWARD};

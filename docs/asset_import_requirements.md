@@ -34,7 +34,8 @@ Web 页面完成「导入一个场景 / 柜体资产、选择本次运行组合�
 
 ### 2.2 非目标(明确不做)
 
-- 运行时热插拔 / 动态增删资产(重启生效)。
+- 运行时热插拔 / 动态增删资产。末端工具套装的选择仅在下一次人工启动时
+  应用；不会因 Web 保存选择而自动重启当前仿真。
 - 导入「整个机器人」类型(机器人含末端工具,均固定)。
 - 通用可达性自动求解(工具×柜体配对采用预写可达性表)。
 - 跨机器 / 云端资产分发仓库(目录 / zip 分发即可)。
@@ -152,7 +153,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 | 阶段 | 状态 | 落点 |
 |---|---|---|
 | **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/xczs_import_asset`(CLI 导入)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
-| **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/组合选择,重启生效提示,非管理员禁用导入/删除) |
+| **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/组合选择；末端显示当前/待生效状态，保存后不自动重启仿真；非管理员禁用导入/删除) |
 | **3 · 换柜体** | ✅ 已实现 | `scripts/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`) |
 
 存储迁移(SQLite,2026-08-19):资产目录 / 选择持久化从 `assets_catalog.yaml` /

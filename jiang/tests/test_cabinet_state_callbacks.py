@@ -562,6 +562,9 @@ class CabinetStateCallbackTest(unittest.TestCase):
     def test_generic_operation_builds_goal_and_exposes_generic_state(self) -> None:
         node = _make_node()
         _add_knob(node)
+        node._cabinet_control_states["box_03_knob_1"][
+            "current_position"
+        ] = -pi / 2
         action_client = _ActionClient()
         node._cabinet_operation_client = action_client
         node._cabinet_goal_handle = None
@@ -601,6 +604,7 @@ class CabinetStateCallbackTest(unittest.TestCase):
             {"state": None, "position": pi / 2},
             node._cabinet_state["target"],
         )
+        self.assertAlmostEqual(pi / 2, node._cabinet_state["peak_position"])
         self.assertEqual(1, len(published))
 
     def test_generic_operation_sends_unverified_control_for_validation(self) -> None:
@@ -750,6 +754,37 @@ class CabinetStateCallbackTest(unittest.TestCase):
         self.assertAlmostEqual(pi / 2, node._cabinet_state["final_position"])
         self.assertEqual("right", node._cabinet_state["current_state"])
         self.assertTrue(node._cabinet_terminal_event.is_set())
+
+    def test_generic_feedback_tracks_negative_positions_as_absolute_peak(self) -> None:
+        node = _make_node()
+        _add_knob(node)
+        node._cabinet_state.update(
+            {
+                "control_id": "box_03_knob_1",
+                "control_type": CabinetControl.TYPE_KNOB,
+                "type": CabinetControl.TYPE_KNOB,
+                "peak_position": 0.0,
+            }
+        )
+
+        for position, expected_peak in ((-0.8, 0.8), (-1.0, 1.0), (0.2, 1.0)):
+            node._cabinet_operation_feedback_callback(
+                SimpleNamespace(
+                    feedback=SimpleNamespace(
+                        phase=OperateCabinetControl.Feedback.MANIPULATING,
+                        progress=0.6,
+                        current_position=position,
+                        target_position=-pi / 2,
+                        current_state="between",
+                        message="rotating",
+                    )
+                ),
+                generation=2,
+            )
+            self.assertAlmostEqual(
+                expected_peak,
+                node._cabinet_state["peak_position"],
+            )
 
     def test_reset_service_clears_operation_target(self) -> None:
         node = _make_node()

@@ -25,12 +25,14 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.assets.store import (
     _ENGINES,
+    _SCHEMA_ENSURED,
     _SESSION_FACTORIES,
+    _STORE_INIT_LOCK,
     _set_sqlite_pragmas,
     _sync_database_url,
 )
 from app.config import settings
-from app.database.base import Base
+from app.database.migrations import migrate_database
 from app.tasks.models import TaskProgressEvent, TaskRecord
 
 logger = logging.getLogger(__name__)
@@ -41,10 +43,6 @@ _SQLITE_TIMEOUT_SEC = 10
 _TRACKED_EVENTS = frozenset({"task_accepted", "task_progress", "task_completed"})
 #: 记录的任务类型（reset 不记录）。
 _TRACKED_TYPES = frozenset({"navigate", "operate"})
-
-#: 已建表的 URL 集合（与资产库的 engine 注册表配套，建表只执行一次）。
-_TASK_SCHEMA_ENSURED: set[str] = set()
-
 
 # ── 数值 / 字典收窄工具 ──────────────────────────────────────────────
 
@@ -92,28 +90,23 @@ class TaskRecordStore:
         control_names: Optional[Mapping[str, str]] = None,
     ) -> None:
         url = _sync_database_url(database_url)
-        if url not in _ENGINES:
-            connect_args: dict = {}
-            if url.startswith("sqlite"):
+        with _STORE_INIT_LOCK:
+            if url not in _SCHEMA_ENSURED:
+                migrate_database(url)
+                _SCHEMA_ENSURED.add(url)
+            if url not in _ENGINES:
                 connect_args = {
                     "check_same_thread": False,
                     "timeout": _SQLITE_TIMEOUT_SEC,
                 }
-            engine = create_engine(url, connect_args=connect_args)
-            if url.startswith("sqlite"):
+                engine = create_engine(url, connect_args=connect_args)
                 _set_sqlite_pragmas(engine)
-            _ENGINES[url] = engine
-            _SESSION_FACTORIES[url] = sessionmaker(
-                bind=engine, expire_on_commit=False
-            )
-        self._engine = _ENGINES[url]
-        self._session_factory = _SESSION_FACTORIES[url]
-        if url not in _TASK_SCHEMA_ENSURED:
-            Base.metadata.create_all(
-                self._engine,
-                tables=[TaskRecord.__table__, TaskProgressEvent.__table__],
-            )
-            _TASK_SCHEMA_ENSURED.add(url)
+                _ENGINES[url] = engine
+                _SESSION_FACTORIES[url] = sessionmaker(
+                    bind=engine, expire_on_commit=False
+                )
+            self._engine = _ENGINES[url]
+            self._session_factory = _SESSION_FACTORIES[url]
         self._control_names: dict[str, str] = (
             dict(control_names) if control_names else {}
         )

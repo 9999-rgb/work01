@@ -59,6 +59,12 @@ def _parser() -> argparse.ArgumentParser:
             "through the sourced ament environment."
         ),
     )
+    parser.add_argument(
+        "--toolset",
+        choices=("A", "B"),
+        default="A",
+        help="active end-effector toolset used to resolve manual joints",
+    )
     return parser
 
 
@@ -71,6 +77,7 @@ def main() -> int:
             controls_path=arguments.controls,
             scene_path=arguments.scene,
             pose_path=arguments.pose,
+            toolset=arguments.toolset,
         )
         kinematics_report = validate_kinematics_plugins(arguments.kinematics)
     except (ProfileContractError, KinematicsConfigError) as error:

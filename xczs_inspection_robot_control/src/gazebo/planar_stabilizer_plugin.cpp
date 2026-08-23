@@ -39,6 +39,7 @@ public:
     update_connection_.reset();
     cmd_vel_subscription_.reset();
     grasp_active_subscription_.reset();
+    joint_hold_subscription_.reset();
 
     if (callback_lifetime) {
       std::unique_lock<std::mutex> lock(callback_lifetime->mutex);
@@ -65,6 +66,12 @@ public:
       gzerr << "Planar stabilizer grasp_active_topic must be absolute.\n";
       return;
     }
+    const auto joint_hold_topic = sdf->Get<std::string>(
+      "joint_hold_topic", "/xczs/joint_hold_enabled").first;
+    if (joint_hold_topic.empty() || joint_hold_topic.front() != '/') {
+      gzerr << "Planar stabilizer joint_hold_topic must be absolute.\n";
+      return;
+    }
     const auto cmd_vel_topic = sdf->Get<std::string>(
       "cmd_vel_topic", "/xczs/cmd_vel").first;
     if (cmd_vel_topic.empty() || cmd_vel_topic.front() != '/') {
@@ -78,6 +85,14 @@ public:
       rclcpp::QoS(1).reliable().transient_local(),
       [grasp_active](const std_msgs::msg::Bool::SharedPtr message) {
         grasp_active->store(message->data);
+      });
+    const auto joint_hold_enabled = joint_hold_enabled_;
+    joint_hold_subscription_ =
+      ros_node_->create_subscription<std_msgs::msg::Bool>(
+      joint_hold_topic,
+      rclcpp::QoS(1).reliable().transient_local(),
+      [joint_hold_enabled](const std_msgs::msg::Bool::SharedPtr message) {
+        joint_hold_enabled->store(message->data);
       });
     const auto base_command_moving = base_command_moving_;
     cmd_vel_subscription_ =
@@ -198,7 +213,23 @@ private:
       const std::string joint_name = joint_element->Get<std::string>();
       const gazebo::physics::JointPtr joint = model_->GetJoint(joint_name);
       if (joint) {
-        held_joints_.push_back(joint);
+        // ODE's SliderJoint backend cannot service the anchor update reached
+        // by Joint::SetPosition.  Tool sliders are driven through the
+        // ros2_control effort path, so they must not also be restored here on
+        // every physics cycle.  Besides being redundant, that second write
+        // floods Gazebo's server log with
+        // ``ODESliderJoint::Anchor not implemented``.
+        const bool is_slider =
+          (joint->GetType() & gazebo::physics::Base::SLIDER_JOINT) != 0U;
+        if (is_slider) {
+          RCLCPP_INFO(
+            ros_node_->get_logger(),
+            "Planar stabilizer leaves prismatic joint '%s' to "
+            "gazebo_ros2_control.",
+            joint_name.c_str());
+        } else {
+          held_joints_.push_back(joint);
+        }
       } else {
         gzerr << "Planar stabilizer could not find joint ["
               << joint_name << "].\n";
@@ -244,18 +275,40 @@ private:
       return;
     }
 
+    // ``Joint::SetPosition`` reaches ODE's anchor update path even when the
+    // requested coordinate is already the current coordinate.  ODE does not
+    // implement that path for slider joints, so unconditionally reapplying a
+    // held prismatic tool coordinate produced one warning per tool joint on
+    // every physics tick (and eventually multi-gigabyte Gazebo logs).  A
+    // snapshot is only a correction target: preserve the existing behavior
+    // when a joint actually drifts, but do not submit a no-op write to the
+    // physics backend.
+    constexpr double position_restore_tolerance = 1.0e-6;
     for (std::size_t index = 0; index < held_joints_.size(); ++index) {
-      held_joints_[index]->SetPosition(
-        0, held_joint_positions_[index], true);
+      const double current_position = held_joints_[index]->Position(0);
+      if (std::isfinite(current_position) &&
+        std::abs(current_position - held_joint_positions_[index]) >
+        position_restore_tolerance)
+      {
+        held_joints_[index]->SetPosition(
+          0, held_joint_positions_[index], true);
+      }
       held_joints_[index]->SetVelocity(0, 0.0);
     }
   }
 
   void stabilize()
   {
-    constexpr double tilt_tolerance = 1.0e-9;
-    constexpr double height_tolerance = 1.0e-9;
-    constexpr double planar_tolerance = 1.0e-9;
+    // Gazebo's solver naturally leaves sub-micrometre / sub-microradian
+    // noise after a physics update.  Treating 1e-9 as an error made this
+    // plugin call Model::SetWorldPose on virtually every 500 Hz update.  That
+    // operation recursively touches slider children and ODE logs an
+    // unsupported anchor update for each prismatic tool joint.  Ten microns
+    // (and ten microradians for attitude) remains far below the robot's
+    // mechanical/control tolerances while avoiding those no-op pose writes.
+    constexpr double tilt_tolerance = 1.0e-5;
+    constexpr double height_tolerance = 1.0e-5;
+    constexpr double planar_tolerance = 1.0e-5;
     constexpr double two_pi = 6.28318530717958647692;
 
     const ignition::math::Pose3d world_pose = model_->WorldPose();
@@ -359,10 +412,11 @@ private:
     }
     model_->SetAngularVel(angular_velocity);
 
-    // The planar mover changes the base velocity without holding child
-    // joints. Restore the positions captured after trajectory processing so
-    // the arm follows the chassis while explicit joint commands still work.
-    if (!grasp_active_->load()) {
+    // Protect the spawn pose only until verify_initial_pose confirms it and
+    // publishes joint_hold_enabled=false.  Keeping this correction enabled
+    // later races ros2_control at every physics step and cancels ordinary
+    // arm/tool trajectories; during a cabinet grasp it is likewise released.
+    if (joint_hold_enabled_->load() && !grasp_active_->load()) {
       restore_joint_positions();
     }
   }
@@ -371,10 +425,14 @@ private:
   gazebo_ros::Node::SharedPtr ros_node_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
     grasp_active_subscription_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr
+    joint_hold_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr
     cmd_vel_subscription_;
   std::shared_ptr<std::atomic<bool>> grasp_active_{
     std::make_shared<std::atomic<bool>>(false)};
+  std::shared_ptr<std::atomic<bool>> joint_hold_enabled_{
+    std::make_shared<std::atomic<bool>>(true)};
   std::shared_ptr<std::atomic<bool>> base_command_moving_{
     std::make_shared<std::atomic<bool>>(false)};
   gazebo::event::ConnectionPtr update_connection_;

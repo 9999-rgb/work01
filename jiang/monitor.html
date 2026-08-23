@@ -973,7 +973,7 @@
 
   <section class="autonomy-card asset-card">
     <div class="autonomy-header">
-      <h3>📦 资产库 · 场景 / 柜体导入与选择（重启生效）</h3>
+      <h3>📦 资产库 · 场景 / 柜体导入与选择</h3>
       <span class="autonomy-state" id="assetState">等待服务</span>
     </div>
     <div class="autonomy-body">
@@ -1009,7 +1009,7 @@
         </div>
         <div>
           <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
-            本次运行组合（启动时应用）
+            下次启动场景 / 柜体组合
           </div>
           <div class="replay-form-grid">
             <div class="form-field">
@@ -1024,21 +1024,30 @@
                 <option value="">（保持默认）</option>
               </select>
             </div>
+          </div>
+          <div class="command-row">
+            <button class="btn btn-primary" id="btnAssetApply" disabled>保存场景 / 柜体选择</button>
+          </div>
+          <div class="status-detail" id="assetLibraryRoot">
+            场景 / 柜体选择会在下次人工启动时由 <strong>./run_all.sh</strong> 应用到场景 / 导航 / 柜体配置。
+          </div>
+          <div class="section-label">
+            运行中末端工具套装
+          </div>
+          <div class="replay-form-grid">
             <div class="form-field">
-              <label for="assetToolsetSelect">末端工具套装</label>
+              <label for="assetToolsetSelect">目标末端工具套装</label>
               <select id="assetToolsetSelect" disabled>
-                <option value="">（保持默认）</option>
                 <option value="A">套装 A：三电缸(右) + 两电缸(左)，用于抽拉柜 / 按钮 / 柜门</option>
                 <option value="B">套装 B：旋转按钮(右) + 摇入摇出(左)，用于旋钮 / 摇杆开关</option>
               </select>
             </div>
           </div>
           <div class="command-row">
-            <button class="btn btn-primary" id="btnAssetApply" disabled>保存选择</button>
+            <button class="btn btn-primary" id="btnToolsetSwitch" disabled>一键切换末端</button>
           </div>
-          <div class="status-detail" id="assetLibraryRoot">
-            选择会在下次启动时由 <strong>./run_all.sh</strong> 应用到场景 / 导航 / 柜体配置。
-            切换工具套装会触发栈自动重启，并以新套装重新加载机器人模型。
+          <div class="status-detail" id="toolsetDetail">
+            正在等待末端切换监督器状态。
           </div>
         </div>
       </div>
@@ -1150,6 +1159,7 @@ let cabinetResetAvailable = false;
 let cabinetActiveFromHealth = false;
 let cabinetStatusCurrent = false;
 let cabinetInterlockWasActive = false;
+let toolsetInterlockWasActive = false;
 let cabinetInstances = [];
 let activeTaskId = null;
 let activeTaskType = null;
@@ -1230,7 +1240,9 @@ const btnAssetImport = $('btnAssetImport');
 const btnAssetRefresh = $('btnAssetRefresh');
 const btnAssetDelete = $('btnAssetDelete');
 const btnAssetApply = $('btnAssetApply');
+const btnToolsetSwitch = $('btnToolsetSwitch');
 const assetLibraryRoot = $('assetLibraryRoot');
+const toolsetDetail = $('toolsetDetail');
 
 function defaultServiceUrl(port) {
   // 自动使用当前页面的 host，不再硬编码 localhost。
@@ -2256,6 +2268,13 @@ async function testControlConnection() {
         updateControlInterlocks();
         return;
       }
+      // sessionStorage 只保存 token，不保存角色。页面刷新后重新读取角色，
+      // 否则管理员的一键末端切换与资产按钮会被错误地长期禁用。
+      if (authRequired && authToken && !currentUserRole) {
+        const user = await controlRequestWithTimeout('/auth/me', 4000);
+        currentUserRole = user && typeof user.role === 'string' ? user.role : '';
+        updateLoginStatus();
+      }
       // Fail closed until the replay service explicitly confirms an idle
       // state. This avoids a writable window when the page reconnects while
       // playback is already active in another client.
@@ -2277,6 +2296,9 @@ async function testControlConnection() {
         '/robot/capabilities'
       );
       applyRobotCapabilities(capabilities);
+      // 读取运行中末端监督器；旧部署没有该能力时仅禁用一键切换，不能让
+      // 整个控制页离线。
+      await refreshToolsetRuntimeStatus();
       try {
         applyScenes(await controlRequestWithTimeout('/scenes'));
       } catch (_) {
@@ -2397,6 +2419,10 @@ setInterval(async () => {
 async function postCmdVel(ly, az) {
   if (!ctrlConnected) return false;
   if (replayControlReadOnly) return false;
+  if (
+    typeof toolsetControlLocked === 'function' && toolsetControlLocked() &&
+    (Math.abs(Number(ly) || 0) > 0 || Math.abs(Number(az) || 0) > 0)
+  ) return false;
   try {
     const r = await fetch(ctrlBaseUrl + '/cmd_vel', {
       method: 'POST',
@@ -2428,6 +2454,10 @@ async function postCmdVel(ly, az) {
 
 async function postJointTrajectory(positions) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return false; }
+  if (typeof toolsetControlLocked === 'function' && toolsetControlLocked()) {
+    toast('末端切换中，机械臂命令已锁定', 'warn');
+    return false;
+  }
   if (replayControlReadOnly) {
     toast('回放只读模式中，机械臂命令已禁止', 'err');
     return false;
@@ -2485,6 +2515,14 @@ async function controlRequest(
   signal = null
 ) {
   if (!ctrlConnected) throw new Error('控制服务器未连接');
+  if (
+    method !== 'GET' &&
+    typeof toolsetControlLocked === 'function' &&
+    toolsetControlLocked() &&
+    path !== '/robot/toolset/switch'
+  ) {
+    throw new Error('末端切换中，机器人控制暂时锁定');
+  }
   const replayManagementPaths = new Set([
     '/replay/data/start',
     '/replay/data/pause',
@@ -3482,6 +3520,10 @@ function applyScenes(payload) {
 
 async function switchScene() {
   if (sceneSwitchInFlight) return;
+  if (typeof toolsetControlLocked === 'function' && toolsetControlLocked()) {
+    toast('末端切换中，不能切换场景', 'warn');
+    return;
+  }
   const target = sceneSelect.value;
   if (!target || target === activeSceneName) return;
   sceneSwitchInFlight = true;
@@ -3521,13 +3563,35 @@ async function switchScene() {
   }
 }
 
-// ─── 资产库（导入 / 选择，重启生效） ─────────────────────────────
+// ─── 资产库与运行中末端切换 ──────────────────────────────────
 let assetCatalog = [];
 let assetSelectionSnapshot = {scene: null, cabinet: null};
+let assetToolsetStatus = {
+  active_toolset: null,
+  pending_toolset: null,
+  applied: null,
+  manual_restart_required: false,
+  automatic_restart: false
+};
 let assetImportInFlight = false;
+let toolsetRuntimeStatus = {
+  managed: false,
+  state: 'unavailable',
+  ready: false,
+  active_toolset: null,
+  target_toolset: null,
+  generation: 0,
+  message: '尚未读取末端切换监督器状态。'
+};
+let toolsetSwitchInFlight = false;
+let toolsetSelectionDirty = false;
+// 刷新资产目录时，避免把用户尚未点击“保存选择”的本地选择覆盖掉；保存、
+// 删除成功后会清零并以服务端持久化状态重新同步。
+let assetSelectionDirty = false;
 
 function assetIsAdmin() {
-  return currentUserRole === 'admin';
+  // 鉴权关闭的部署不存在 token / role；此时服务端按管理员权限运行。
+  return !authRequired || currentUserRole === 'admin';
 }
 
 // 资产写操作不走 controlRequest：资产管理与回放只读互不干扰，
@@ -3559,7 +3623,7 @@ function assetOption(value, label) {
   return option;
 }
 
-function fillAssetSelect(select, options, selected) {
+function fillAssetSelect(select, options, selected, preserveUnsaved = false) {
   const previous = select.value;
   const nodes = [assetOption('', '（保持默认）')];
   for (const name of options) {
@@ -3567,21 +3631,147 @@ function fillAssetSelect(select, options, selected) {
     nodes.push(assetOption(name, name));
   }
   select.replaceChildren(...nodes);
-  select.value = previous && options.includes(previous)
+  select.value = preserveUnsaved && previous && options.includes(previous)
     ? previous
     : (selected || '');
 }
 
+function normalizedToolset(value) {
+  const normalized = typeof value === 'string' ? value.trim().toUpperCase() : '';
+  return ['A', 'B'].includes(normalized) ? normalized : null;
+}
+
+function normalizedToolsetRuntimeStatus(status) {
+  const source = status && typeof status === 'object' ? status : {};
+  const managed = source.managed === true;
+  const state = typeof source.state === 'string' && source.state.trim()
+    ? source.state.trim().toLowerCase()
+    : (managed ? 'starting' : 'unavailable');
+  const generation = Number.isInteger(source.generation) && source.generation >= 0
+    ? source.generation
+    : 0;
+  return {
+    managed,
+    state,
+    ready: source.ready === true,
+    active_toolset: normalizedToolset(source.active_toolset) ||
+      normalizedToolset(source.gateway_active_toolset),
+    target_toolset: normalizedToolset(source.target_toolset),
+    generation,
+    last_error: typeof source.last_error === 'string' ? source.last_error : '',
+    message: typeof source.message === 'string' ? source.message : ''
+  };
+}
+
+function toolsetControlLocked() {
+  if (toolsetSwitchInFlight) return true;
+  return Boolean(
+    toolsetRuntimeStatus.managed &&
+    (!toolsetRuntimeStatus.ready || toolsetRuntimeStatus.state !== 'ready')
+  );
+}
+
+function toolsetStatusForDisplay() {
+  if (!toolsetRuntimeStatus.managed) return assetToolsetStatus;
+  // 请求已发出、但第一帧 ROS 状态尚未到达时，也必须明确显示锁定中的
+  // 切换态，避免页面短暂误导为“仍可操作”。
+  if (toolsetSwitchInFlight && toolsetRuntimeStatus.state === 'ready') {
+    return {
+      ...toolsetRuntimeStatus,
+      state: 'switching',
+      ready: false,
+      target_toolset: normalizedToolset(assetToolsetSelect.value)
+    };
+  }
+  return toolsetRuntimeStatus;
+}
+
+function describeToolsetStatus(status) {
+  const active = normalizedToolset(status && status.active_toolset) ||
+    normalizedToolset(status && status.gateway_active_toolset);
+  const target = normalizedToolset(status && status.target_toolset);
+  const managed = Boolean(status && status.managed);
+  const state = typeof (status && status.state) === 'string'
+    ? status.state.trim().toLowerCase()
+    : '';
+  const detail = typeof (status && status.last_error) === 'string'
+    ? status.last_error
+    : (typeof (status && status.message) === 'string' ? status.message : '');
+
+  if (managed && state === 'ready' && active) {
+    return `当前已挂载套装 ${active}；可一键切换。切换时 Gazebo 世界与柜体模型保持运行，仅安全替换机器人实体及其控制栈。`;
+  }
+  if (managed && ['starting', 'switching', 'restoring'].includes(state)) {
+    const from = active ? `套装 ${active}` : '当前套装';
+    const to = target ? `套装 ${target}` : '目标套装';
+    return `正在从${from}切换到${to}；Gazebo 世界保持运行，机器人实体与控制栈正在临时替换，所有控制已锁定。`;
+  }
+  if (managed && state === 'failed') {
+    return `末端切换未完成，机器人控制保持锁定。${detail || '请检查切换监督器日志后重试。'}`;
+  }
+  if (managed) {
+    return `末端切换监督器状态：${state || '未知'}。${detail || '机器人控制将在确认就绪后恢复。'}`;
+  }
+
+  const pending = normalizedToolset(status && status.pending_toolset);
+  if (pending) {
+    const current = active ? `当前仿真为套装 ${active}` : '当前仿真套装未知';
+    return `${current}；套装 ${pending} 是旧部署的下次启动偏好，当前部署未启用运行中切换。`;
+  }
+  if (active) return `当前仿真已加载套装 ${active}；此部署未启用运行中末端切换。`;
+  return '未连接到支持运行中末端切换的监督器。';
+}
+
+function renderToolsetStatus() {
+  const status = toolsetStatusForDisplay();
+  toolsetDetail.textContent = describeToolsetStatus(status);
+  const active = normalizedToolset(
+    toolsetRuntimeStatus && toolsetRuntimeStatus.active_toolset
+  );
+  if (active && (!toolsetSelectionDirty || !normalizedToolset(assetToolsetSelect.value))) {
+    assetToolsetSelect.value = active;
+  }
+}
+
+function renderAssetSummary() {
+  const count = assetCatalog.length;
+  setAutonomyState(assetState, `${count} 项`, count ? 'ok' : '');
+  const toolsetDetailText = describeToolsetStatus(toolsetStatusForDisplay());
+  const unsavedSuffix = assetSelectionDirty ? ' 当前表单有未保存的选择。' : '';
+  assetDetail.textContent = count
+    ? `共 ${count} 项资产；${toolsetDetailText}`
+    : `尚未导入资产。管理员可上传 zip 场景 / 柜体资产包。${toolsetDetailText}`;
+  assetDetail.textContent += unsavedSuffix;
+}
+
+function applyToolsetRuntimeStatus(status) {
+  toolsetRuntimeStatus = normalizedToolsetRuntimeStatus(status);
+  renderToolsetStatus();
+  renderAssetSummary();
+  updateControlInterlocks();
+}
+
 function updateAssetControlState() {
-  const enabled = Boolean(ctrlConnected) && Boolean(authToken);
-  const admin = enabled && assetIsAdmin();
+  const enabled = Boolean(ctrlConnected) && (!authRequired || Boolean(authToken));
+  const controlsLocked = toolsetControlLocked();
+  const writable = enabled && !controlsLocked;
+  const admin = writable && assetIsAdmin();
   btnAssetImport.disabled = !admin || assetImportInFlight;
-  btnAssetRefresh.disabled = !enabled;
+  btnAssetRefresh.disabled = !writable;
   btnAssetDelete.disabled = !admin || !assetList.value || assetImportInFlight;
-  btnAssetApply.disabled = !enabled || assetImportInFlight;
-  assetSceneSelect.disabled = !enabled;
-  assetCabinetSelect.disabled = !enabled;
-  assetToolsetSelect.disabled = !enabled;
+  btnAssetApply.disabled = !writable || assetImportInFlight;
+  assetSceneSelect.disabled = !writable;
+  assetCabinetSelect.disabled = !writable;
+  const canSwitch = writable && assetIsAdmin() &&
+    toolsetRuntimeStatus.managed &&
+    toolsetRuntimeStatus.ready &&
+    toolsetRuntimeStatus.state === 'ready' &&
+    !replayControlReadOnly;
+  assetToolsetSelect.disabled = !canSwitch;
+  btnToolsetSwitch.disabled = !canSwitch || assetImportInFlight ||
+    !normalizedToolset(assetToolsetSelect.value) ||
+    normalizedToolset(assetToolsetSelect.value) ===
+      normalizedToolset(toolsetRuntimeStatus.active_toolset);
 }
 
 function applyAssets(payload) {
@@ -3589,6 +3779,9 @@ function applyAssets(payload) {
   assetSelectionSnapshot = payload && payload.selection
     ? payload.selection
     : assetSelectionSnapshot;
+  assetToolsetStatus = payload && payload.toolset_status
+    ? payload.toolset_status
+    : assetToolsetStatus;
   if (payload && payload.library_root) {
     assetLibraryRoot.textContent = `资产库目录：${payload.library_root}`;
   }
@@ -3610,23 +3803,42 @@ function applyAssets(payload) {
     assetList.selectedIndex = 0;
   }
 
-  fillAssetSelect(assetSceneSelect, scenes, assetSelectionSnapshot.scene);
-  fillAssetSelect(assetCabinetSelect, cabinets, assetSelectionSnapshot.cabinet);
-  const savedToolset = ['A', 'B'].includes(assetSelectionSnapshot.toolset)
-    ? assetSelectionSnapshot.toolset
-    : '';
-  assetToolsetSelect.value = assetToolsetSelect.value || savedToolset;
-
-  const count = assetCatalog.length;
-  setAutonomyState(assetState, `${count} 项`, count ? 'ok' : '');
-  assetDetail.textContent = count
-    ? `共 ${count} 项资产；选择在下次启动时生效（重启 ./run_all.sh）。`
-    : '尚未导入资产。管理员可上传 zip 场景 / 柜体资产包。';
+  fillAssetSelect(
+    assetSceneSelect, scenes, assetSelectionSnapshot.scene, assetSelectionDirty
+  );
+  fillAssetSelect(
+    assetCabinetSelect, cabinets, assetSelectionSnapshot.cabinet, assetSelectionDirty
+  );
+  renderToolsetStatus();
+  renderAssetSummary();
   updateAssetControlState();
 }
 
 async function refreshAssets() {
   applyAssets(await assetRequest('/assets'));
+}
+
+async function loadToolsetRuntimeStatus() {
+  const status = await controlRequestWithTimeout('/robot/toolset/status', 4000);
+  applyToolsetRuntimeStatus(status);
+  return toolsetRuntimeStatus;
+}
+
+async function refreshToolsetRuntimeStatus({preserveOnError = false} = {}) {
+  try {
+    return await loadToolsetRuntimeStatus();
+  } catch (error) {
+    if (preserveOnError) return toolsetRuntimeStatus;
+    // 兼容未使用世界保活监督器的旧启动方式；它不应令资产列表或监控页
+    // 整体离线，但一键切换入口会保持禁用。
+    applyToolsetRuntimeStatus({
+      managed: false,
+      state: 'unavailable',
+      ready: false,
+      message: `末端切换状态不可用：${error.message}`
+    });
+    return toolsetRuntimeStatus;
+  }
 }
 
 async function importAssetFile() {
@@ -3669,28 +3881,186 @@ async function importAssetFile() {
 async function saveAssetSelection() {
   const payload = {
     scene: assetSceneSelect.value || null,
-    cabinet: assetCabinetSelect.value || null,
-    toolset: assetToolsetSelect.value || null
+    cabinet: assetCabinetSelect.value || null
   };
   setAutonomyState(assetState, '保存中 ...', 'busy');
   try {
     const saved = await assetRequest('/assets/selection', 'POST', payload);
+    assetSelectionDirty = false;
     assetSelectionSnapshot = saved;
-    if (saved.restart_required) {
-      toast('工具套装已切换，栈自动重启中 ...', 'ok');
-      assetDetail.textContent =
-        '工具套装切换已保存，正在自动重启整个机器人栈（约需数十秒），' +
-        '重启后请刷新本页面查看新套装。';
-      setAutonomyState(assetState, '重启中 ...', 'busy');
-      return;
-    }
-    toast('已保存本次运行组合，重启后生效', 'ok');
+    assetToolsetStatus = saved.toolset_status || assetToolsetStatus;
+    toast('已保存场景 / 柜体选择；当前仿真未重启', 'ok');
     log('ok', `资产选择已保存：${JSON.stringify(saved)}`);
     await refreshAssets();
   } catch (error) {
     setAutonomyState(assetState, '保存失败', 'err');
     assetDetail.textContent = `保存选择失败：${error.message}`;
     toast(`保存失败：${error.message}`, 'err');
+  }
+}
+
+const toolsetStatusPollIntervalMs = 750;
+const toolsetSwitchWaitTimeoutMs = 180000;
+
+function waitForToolsetStatusDelay(delayMs) {
+  return new Promise(resolve => setTimeout(resolve, delayMs));
+}
+
+async function waitForToolsetSwitchCompletion(target, expectedGeneration) {
+  const deadline = Date.now() + toolsetSwitchWaitTimeoutMs;
+  let lastPollError = null;
+  while (Date.now() < deadline) {
+    let status;
+    try {
+      status = await loadToolsetRuntimeStatus();
+    } catch (error) {
+      lastPollError = error;
+      await waitForToolsetStatusDelay(toolsetStatusPollIntervalMs);
+      continue;
+    }
+    const active = normalizedToolset(status.active_toolset);
+    const generationReached = !Number.isInteger(expectedGeneration) ||
+      expectedGeneration <= 0 || status.generation >= expectedGeneration;
+    if (
+      generationReached && status.state === 'ready' && status.ready &&
+      active === target
+    ) {
+      return status;
+    }
+    if (generationReached && status.state === 'failed') {
+      throw new Error(status.last_error || status.message || '末端切换失败');
+    }
+    // 监督器回滚旧机器人后会回到 ready；这一分支把明确的回滚失败立即
+    // 告知操作者，而不是无意义地等完整个超时窗口。
+    if (
+      generationReached && status.state === 'ready' && active !== target &&
+      status.last_error
+    ) {
+      throw new Error(status.last_error);
+    }
+    await waitForToolsetStatusDelay(toolsetStatusPollIntervalMs);
+  }
+  const detail = lastPollError ? `；最后一次状态查询失败：${lastPollError.message}` : '';
+  throw new Error(`等待末端切换完成超时${detail}`);
+}
+
+async function refreshAfterToolsetSwitch() {
+  try {
+    applyRobotCapabilities(await controlRequestWithTimeout(
+      '/robot/capabilities', 10000
+    ));
+  } catch (error) {
+    log('warn', `末端切换后能力刷新失败：${error.message}`);
+  }
+  try {
+    applyCabinetInstances(await controlRequestWithTimeout('/cabinets', 10000));
+    await loadSelectedCabinetControls();
+  } catch (error) {
+    log('warn', `末端切换后柜体控件刷新失败：${error.message}`);
+  }
+  try {
+    applyCabinetHealth(await controlRequestWithTimeout('/health', 10000));
+  } catch (error) {
+    log('warn', `末端切换后健康状态刷新失败：${error.message}`);
+  }
+  try {
+    await refreshAssets();
+  } catch (error) {
+    log('warn', `末端切换后资产选择刷新失败：${error.message}`);
+  }
+}
+
+async function switchToolset() {
+  if (toolsetSwitchInFlight) return;
+  const target = normalizedToolset(assetToolsetSelect.value);
+  const active = normalizedToolset(toolsetRuntimeStatus.active_toolset);
+  if (!toolsetRuntimeStatus.managed) {
+    toast('当前统一启动入口未启用运行中末端切换监督器', 'warn');
+    return;
+  }
+  if (toolsetControlLocked()) {
+    toast('末端切换监督器尚未就绪，控制保持锁定', 'warn');
+    return;
+  }
+  if (!target) {
+    toast('请选择目标末端工具套装', 'warn');
+    return;
+  }
+  if (target === active) {
+    toast(`当前已挂载套装 ${target}`, 'info');
+    return;
+  }
+  if (replayControlReadOnly) {
+    toast('回放只读模式中，不能切换末端', 'warn');
+    return;
+  }
+  if (!confirm(
+    `确认将末端从套装 ${active || '未知'} 切换到套装 ${target}？\n` +
+    'Gazebo 世界和柜体模型会保持运行；机器人实体及其控制栈将短暂安全替换，期间所有控制会锁定。'
+  )) return;
+
+  // 先撤销页面侧持续速度输出，再请求网关完成任务/控制器的安全静止检查。
+  try { await clearDirectionInputs(); } catch (_) {}
+  toolsetSwitchInFlight = true;
+  setAutonomyState(assetState, `正在切换到套装 ${target} ...`, 'busy');
+  renderToolsetStatus();
+  updateControlInterlocks();
+  let switchAccepted = false;
+  try {
+    const expectedGeneration = Number.isInteger(toolsetRuntimeStatus.generation)
+      ? toolsetRuntimeStatus.generation
+      : 0;
+    const accepted = await controlRequest('/robot/toolset/switch', 'POST', {
+      toolset: target,
+      expected_generation: expectedGeneration
+    });
+    switchAccepted = true;
+    // 网关保留 service 确认字段，同时嵌入一份监督器快照；显示层必须用
+    // 后者读取 managed/ready，不能把确认响应误判为旧部署。
+    applyToolsetRuntimeStatus(
+      accepted && accepted.toolset_status ? accepted.toolset_status : accepted
+    );
+    const generation = Number.isInteger(accepted && accepted.generation)
+      ? accepted.generation
+      : expectedGeneration;
+    const completed = await waitForToolsetSwitchCompletion(target, generation);
+    toolsetSelectionDirty = false;
+    applyToolsetRuntimeStatus(completed);
+    await refreshAfterToolsetSwitch();
+    setAutonomyState(assetState, `套装 ${target} 已就绪`, 'ok');
+    toast(`末端已切换到套装 ${target}；Gazebo 世界保持运行`, 'ok');
+    log('ok', `末端工具套装已切换：${active || '?'} -> ${target}`);
+  } catch (error) {
+    const latest = await refreshToolsetRuntimeStatus({preserveOnError: true});
+    const restored = normalizedToolset(latest.active_toolset);
+    const outcomeUnconfirmed = switchAccepted && (
+      !latest.managed ||
+      (
+        latest.state === 'ready' && !latest.last_error && restored !== target
+      )
+    );
+    if (outcomeUnconfirmed) {
+      // 已获服务确认却无法确认最终状态时宁可保持 fail-closed，不能把
+      // 可能已被替换一半的机器人重新开放给手动控制。
+      applyToolsetRuntimeStatus({
+        ...latest,
+        managed: true,
+        state: 'failed',
+        ready: false,
+        last_error: `末端切换结果无法确认：${error.message}`
+      });
+    } else if (latest.state === 'ready' && restored) {
+      toolsetSelectionDirty = false;
+      assetToolsetSelect.value = restored;
+    }
+    setAutonomyState(assetState, '末端切换失败', 'err');
+    assetDetail.textContent = `末端切换失败：${error.message}`;
+    toast(`末端切换失败：${error.message}`, 'err');
+    log('err', `末端切换失败: ${error.message}`);
+  } finally {
+    toolsetSwitchInFlight = false;
+    renderToolsetStatus();
+    updateControlInterlocks();
   }
 }
 
@@ -3705,6 +4075,7 @@ async function deleteSelectedAsset() {
   setAutonomyState(assetState, '删除中 ...', 'busy');
   try {
     const result = await assetRequest(`/assets/${kind}/${name}`, 'DELETE');
+    assetSelectionDirty = false;
     assetSelectionSnapshot = result.selection || assetSelectionSnapshot;
     toast(`已删除 ${kind}/${name}`, 'ok');
     log('ok', `资产已删除：${kind}/${name}`);
@@ -3717,6 +4088,9 @@ async function deleteSelectedAsset() {
 }
 
 function applyCabinetHealth(health) {
+  if (health && health.toolset) {
+    applyToolsetRuntimeStatus(health.toolset);
+  }
   const selected = selectedCabinetName();
   const instance = health && health.cabinets && selected
     ? health.cabinets[selected]
@@ -4265,6 +4639,8 @@ function renderBaseControlStatus() {
   const navigationActive = isNavigationActive();
   const navigationMode = navigationStatus && navigationStatus.mode;
   const cabinetActive = isCabinetOperationActive();
+  const toolsetLocked = typeof toolsetControlLocked === 'function' &&
+    toolsetControlLocked();
   const dpad = $('dpad');
   const takeoverReady = Boolean(
     ctrlConnected &&
@@ -4283,6 +4659,9 @@ function renderBaseControlStatus() {
   if (!ctrlConnected) {
     modeText = '控制服务未连接';
     hintText = '等待 Web 控制服务';
+  } else if (toolsetLocked) {
+    modeText = '末端切换锁定';
+    hintText = 'Gazebo 世界保持运行，机器人实体与控制栈正在安全替换';
   } else if (replayControlReadOnly) {
     modeText = '回放只读锁定';
     hintText = '导航、底盘、机械臂与控制柜实时命令已禁止';
@@ -4689,6 +5068,8 @@ function updateControlInterlocks() {
   const navigationActive = isNavigationActive();
   const navigationRetiring = hasRetiringNavigationGoals();
   const cabinetActive = isCabinetOperationActive();
+  const toolsetLocked = typeof toolsetControlLocked === 'function' &&
+    toolsetControlLocked();
   const takingOver = manualTakeoverState === 'taking_over';
   const replayLocked =
     typeof replayControlReadOnly !== 'undefined' && replayControlReadOnly;
@@ -4697,10 +5078,17 @@ function updateControlInterlocks() {
   );
   const selectedControl = selectedCabinetControl();
 
-  if (cabinetActive && !cabinetInterlockWasActive) {
+  if (
+    (cabinetActive || toolsetLocked) &&
+    !cabinetInterlockWasActive &&
+    !(typeof toolsetInterlockWasActive !== 'undefined' && toolsetInterlockWasActive)
+  ) {
     clearDirectionInputs();
   }
   cabinetInterlockWasActive = cabinetActive;
+  if (typeof toolsetInterlockWasActive !== 'undefined') {
+    toolsetInterlockWasActive = toolsetLocked;
+  }
 
   $('btnNavSend').disabled =
     !ctrlConnected ||
@@ -4709,11 +5097,13 @@ function updateControlInterlocks() {
     navigationActive ||
     navigationRetiring ||
     cabinetActive ||
+    toolsetLocked ||
     takingOver ||
     replayLocked;
   $('btnNavCancel').disabled =
     !ctrlConnected ||
     cabinetActive ||
+    toolsetLocked ||
     takingOver ||
     replayLocked ||
     !(
@@ -4724,6 +5114,7 @@ function updateControlInterlocks() {
   $('btnManualMode').disabled =
     !ctrlConnected ||
     cabinetActive ||
+    toolsetLocked ||
     takingOver ||
     replayLocked ||
     Boolean(
@@ -4734,6 +5125,7 @@ function updateControlInterlocks() {
   const manualBlocked =
     !ctrlConnected ||
     cabinetActive ||
+    toolsetLocked ||
     replayLocked;
   document.querySelectorAll('#dpad .dpad-btn:not(.empty)').forEach(button => {
     button.disabled = manualBlocked;
@@ -4742,10 +5134,10 @@ function updateControlInterlocks() {
   $('spdAngular').disabled = manualBlocked;
 
   document.querySelectorAll('#jointSliders input').forEach(input => {
-    input.disabled = !ctrlConnected || cabinetActive || replayLocked;
+    input.disabled = !ctrlConnected || cabinetActive || toolsetLocked || replayLocked;
   });
   $('btnArmZero').disabled =
-    !ctrlConnected || cabinetActive || replayLocked ||
+    !ctrlConnected || cabinetActive || toolsetLocked || replayLocked ||
     manualJointSpecs.length === 0;
 
   $('btnCabinetPress').disabled =
@@ -4756,12 +5148,14 @@ function updateControlInterlocks() {
     !isCabinetAvailable() ||
     !cabinetOperationAvailable ||
     cabinetActive ||
+    toolsetLocked ||
     navigationActive ||
     navigationRetiring ||
     takingOver ||
     replayLocked;
   $('btnCabinetCancel').disabled =
     !ctrlConnected ||
+    toolsetLocked ||
     replayLocked ||
     !cabinetActive ||
     Boolean(cabinetStatus && cabinetStatus.state === 'resetting');
@@ -4770,16 +5164,17 @@ function updateControlInterlocks() {
     !selectedCabinetName() ||
     !cabinetResetAvailable ||
     cabinetActive ||
+    toolsetLocked ||
     navigationActive ||
     navigationRetiring ||
     takingOver ||
     replayLocked;
-  cabinetTarget.disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
-  cabinetInstance.disabled = replayLocked || cabinetActive || !cabinetInstances.length;
-  navCabinetInstance.disabled = replayLocked || cabinetActive || !cabinetInstances.length;
-  $('cabinetTargetState').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
-  $('cabinetTargetPosition').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
-  $('cabinetForce').disabled = replayLocked || cabinetActive || !cabinetCatalogReceived;
+  cabinetTarget.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
+  cabinetInstance.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetInstances.length;
+  navCabinetInstance.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetInstances.length;
+  $('cabinetTargetState').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
+  $('cabinetTargetPosition').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
+  $('cabinetForce').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
   renderBaseControlStatus();
   if (typeof updateReplayControls === 'function') updateReplayControls();
   if (typeof updateAssetControlState === 'function') updateAssetControlState();
@@ -5522,6 +5917,10 @@ function beginBaseMotion(motion) {
 
 async function startBaseMotion(motion, source) {
   if (!ctrlConnected) { toast('控制服务器未连接', 'err'); return; }
+  if (typeof toolsetControlLocked === 'function' && toolsetControlLocked()) {
+    toast('末端切换中，底盘控制已锁定', 'warn');
+    return;
+  }
   if (replayControlReadOnly) {
     toast('回放只读模式中，底盘命令已禁止', 'err');
     return;
@@ -5569,6 +5968,7 @@ function sendBaseCommand() {
   if (!baseActive || !activeMotion) return;
   if (
     !ctrlConnected ||
+    (typeof toolsetControlLocked === 'function' && toolsetControlLocked()) ||
     replayControlReadOnly ||
     isCabinetOperationActive() ||
     !isManualControlReady()
@@ -5812,7 +6212,11 @@ function buildJointSliderRow(spec, manualIndex) {
 }
 
 function onJointSlider(manualIndex, val) {
-  if (replayControlReadOnly || isCabinetOperationActive()) return;
+  if (
+    replayControlReadOnly ||
+    isCabinetOperationActive() ||
+    (typeof toolsetControlLocked === 'function' && toolsetControlLocked())
+  ) return;
   if (manualIndex < 0 || manualIndex >= manualJointSpecs.length) return;
   const parsed = Number.parseFloat(val);
   if (!Number.isFinite(parsed)) return;
@@ -5823,6 +6227,10 @@ function onJointSlider(manualIndex, val) {
 }
 
 function resetJointsToDefaults() {
+  if (typeof toolsetControlLocked === 'function' && toolsetControlLocked()) {
+    toast('末端切换中，机械臂命令已锁定', 'warn');
+    return;
+  }
   if (replayControlReadOnly) {
     toast('回放只读模式中，机械臂命令已禁止', 'err');
     return;
@@ -5873,6 +6281,18 @@ $('btnAssetRefresh').addEventListener('click', () => {
 });
 $('btnAssetDelete').addEventListener('click', deleteSelectedAsset);
 $('btnAssetApply').addEventListener('click', saveAssetSelection);
+$('btnToolsetSwitch').addEventListener('click', switchToolset);
+for (const select of [assetSceneSelect, assetCabinetSelect]) {
+  select.addEventListener('change', () => {
+    assetSelectionDirty = true;
+    setAutonomyState(assetState, '有未保存选择', '');
+  });
+}
+assetToolsetSelect.addEventListener('change', () => {
+  toolsetSelectionDirty = true;
+  renderToolsetStatus();
+  updateAssetControlState();
+});
 $('btnRecordingStart').addEventListener('click', startRecording);
 $('btnRecordingStop').addEventListener('click', stopRecording);
 $('btnRecordingsRefresh').addEventListener('click', refreshRecordings);

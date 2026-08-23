@@ -49,3 +49,68 @@ def test_operable_station_uses_explicit_base_footprint_clearance_gate() -> None:
     assert '"docking_base_footprint"' in source
     assert '"docking_base_footprint_padding"' in source
     assert "button->operable && !station_standoff_is_safe(" in source
+
+
+def test_rotary_controls_are_stable_at_both_pregrasp_boundaries() -> None:
+    """No knob/switch/door grasp may follow an unchecked state change."""
+    source = SOURCE.read_text(encoding="utf-8")
+    operate_start = source.index("  void execute_operate(")
+    operate_end = source.index(
+        "  std::pair<double, std::string> resolve_operation_target(",
+        operate_start,
+    )
+    operate = source[operate_start:operate_end]
+
+    assert operate.count("wait_for_pregrasp_controls_stable(") == 2
+    assert (
+        "{control.get(), initial_state.state_id, initial_state.position}"
+        in operate
+    )
+    assert (
+        "{ancestor, parent_initial_state.state_id,\n"
+        "              parent_initial_state.position}"
+        in operate
+    )
+
+    first_stability_gate = operate.index(
+        "wait_for_pregrasp_controls_stable("
+    )
+    first_geometry_latch = operate.index("latch_cabinet_transform();")
+    ready_motion = operate.index("rotary_poses.ready_pose")
+    second_stability_gate = operate.index(
+        "wait_for_pregrasp_controls_stable(",
+        first_stability_gate + 1,
+    )
+    door_pregrasp_motion = operate.index(
+        "rotary_poses.door_pregrasp_pose",
+        ready_motion,
+    )
+    final_cartesian_approach = operate.index(
+        "{rotary_poses.grasp_pose}",
+        second_stability_gate,
+    )
+    attach_grasp = operate.index(
+        "set_control_grasp(goal_handle, control->id, true)",
+        second_stability_gate,
+    )
+
+    assert first_stability_gate < first_geometry_latch
+    assert ready_motion < door_pregrasp_motion < second_stability_gate
+    assert second_stability_gate < final_cartesian_approach < attach_grasp
+
+
+def test_pregrasp_stability_gate_is_fresh_continuous_and_fail_closed() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    gate_start = source.index("  void wait_for_pregrasp_controls_stable(")
+    gate_end = source.index(
+        "  void wait_for_parent_controls_stable(", gate_start
+    )
+    gate = source[gate_start:gate_end]
+
+    assert "state.structured_received_at > boundary_started_at" in gate
+    assert "classify_pregrasp_stability_sample(" in gate
+    assert "state.state_id == reference.state_id" in gate
+    assert "reference.position" in gate
+    assert "stable_state_duration_" in gate
+    assert "PregraspStabilitySampleStatus::REFERENCE_CHANGED" in gate
+    assert gate.count("OperateCabinetControl::Result::NOT_READY") == 4

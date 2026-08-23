@@ -46,7 +46,6 @@ from control_gateway.asset_library import (  # noqa: E402
 from control_gateway.asset_manifest import ManifestError  # noqa: E402
 from control_gateway.asset_manifest import load_manifest  # noqa: E402
 from control_gateway.asset_validators import kind_validator  # noqa: E402
-from app.assets.store import SqlAssetStore  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -85,6 +84,11 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = _parser().parse_args()
+    # Importing the production store instantiates and validates application
+    # settings. Keep it after argparse so --help and syntax errors remain pure
+    # CLI operations even when the runtime database configuration is broken.
+    from app.assets.store import SqlAssetStore
+
     library = AssetLibrary(
         arguments.assets_dir or default_library_root(), store=SqlAssetStore()
     )

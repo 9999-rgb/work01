@@ -3,7 +3,12 @@
 上传 zip、校验 manifest、导入资产库、列出目录、选择当前运行组合。
 目录与选择持久化到 SQLite（``assets`` / ``selection`` 表，经
 :class:`app.assets.store.SqlAssetStore`）；启动时 ``start_xczs_bridge.sh`` 读入
-并映射到现有环境指针 —— 本路由不做任何运行时切换（启动时导入，重启生效）。
+并映射到现有环境指针 —— 本路由不改变已在 Gazebo 中加载的机器人模型。
+
+末端工具套装是一个例外：当前机器人 URDF、Gazebo ``ros2_control`` 和
+MoveIt 配置会在启动时共同选择 A 或 B，运行中把 Web 的选择直接应用到
+控制层会让规划关节与物理模型不一致。因此工具套装选择只保存为下一次
+人工启动时的待生效配置；绝不通过写标记触发整套仿真自动重启。
 
 校验器与 CLI（``scripts/xczs_import_asset``）共用
 :mod:`control_gateway.asset_validators`，保证 Web 与脚本两条入口行为一致。
@@ -43,6 +48,8 @@ router = APIRouter(tags=["资产"])
 #: 可导入的资产类型。
 _ASSET_KINDS = ("scene", "cabinet")
 
+_ACTIVE_TOOLSET_ENV = "XCZS_ACTIVE_TOOLSET"
+
 
 def _library() -> AssetLibrary:
     """构建资产库实例；根目录可用 ``XCZS_ASSETS_DIR`` 覆盖（与启动脚本一致）。
@@ -53,36 +60,63 @@ def _library() -> AssetLibrary:
     return AssetLibrary(root, store=SqlAssetStore())
 
 
-#: 工具套装切换的重启标记文件路径（start_xczs_bridge.sh 导出，指向本次
-#: 启动的临时目录）。未设置时（如 Web 独立运行）写标记会被跳过，但响应仍
-#: 携带 ``restart_required`` 供前端提示。
-RESTART_MARKER_ENV = "XCZS_RESTART_MARKER"
+def _normalized_toolset(value: object) -> str | None:
+    """Return a valid A/B toolset name, or ``None`` for unavailable input."""
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().upper()
+    return normalized if normalized in {"A", "B"} else None
 
 
-def _write_restart_marker() -> None:
-    """写入工具套装切换标记；watchdog 检测后以退出码 42 触发整体重启。"""
-    path = os.environ.get(RESTART_MARKER_ENV)
-    if not path:
-        return
-    try:
-        Path(path).write_text("toolset", encoding="utf-8")
-    except OSError:
-        # 写标记失败不应让保存选择失败：下次启动仍会读取新选择。
-        pass
+def _toolset_status(selection: AssetSelection) -> dict[str, object]:
+    """Describe the live-vs-persisted toolset without changing runtime state.
+
+    ``XCZS_ACTIVE_TOOLSET`` is exported only by the unified launcher after it
+    has normalized the toolset used to build the current URDF.  A standalone
+    Web process deliberately reports an unknown active set instead of claiming
+    that a merely persisted selection is mounted.
+    """
+    active = _normalized_toolset(os.environ.get(_ACTIVE_TOOLSET_ENV))
+    selected = _normalized_toolset(selection.toolset)
+    pending = (
+        selected
+        if selected is not None and (active is None or selected != active)
+        else None
+    )
+    return {
+        "active_toolset": active,
+        "pending_toolset": pending,
+        # ``None`` means that this Web process is not attached to a unified
+        # launcher, so it cannot verify which physical tool is mounted.
+        "applied": None if active is None else pending is None,
+        "manual_restart_required": pending is not None,
+        "automatic_restart": False,
+    }
 
 
 def _selection_from_request(
-    body: AssetSelectionRequest, library: AssetLibrary
+    body: AssetSelectionRequest,
+    library: AssetLibrary,
+    previous: AssetSelection,
 ) -> AssetSelection:
-    """把请求体校验为可持久化的选择；名称不合法时抛 ``AssetLibraryError``。"""
-    if body.scene is not None:
-        library.find("scene", body.scene)  # raises AssetNotFoundError
-    if body.cabinet is not None:
-        library.find("cabinet", body.cabinet)
+    """Merge a partial selection request and validate its effective assets.
+
+    ``AssetSelectionRequest`` deliberately uses ``null``/empty fields to mean
+    "leave this dimension unchanged".  Merging before validation prevents a
+    toolset-only Web save from accidentally clearing a persisted scene or
+    cabinet selection.
+    """
+    scene = body.scene if body.scene is not None else previous.scene
+    cabinet = body.cabinet if body.cabinet is not None else previous.cabinet
+    toolset = body.toolset if body.toolset is not None else previous.toolset
+    if scene is not None:
+        library.find("scene", scene)  # raises AssetNotFoundError
+    if cabinet is not None:
+        library.find("cabinet", cabinet)
     return AssetSelection(
-        scene=body.scene,
-        cabinet=body.cabinet,
-        toolset=body.toolset,
+        scene=scene,
+        cabinet=cabinet,
+        toolset=toolset,
     )
 
 
@@ -92,12 +126,15 @@ def _selection_from_request(
     description="返回已导入资产、当前选择与资产库根目录。",
 )
 async def list_assets() -> dict[str, Any]:
-    library = _library()
+    # Store 构造会执行首次 Alembic 迁移；与后续同步 SQLAlchemy 操作一样
+    # 放在线程中，避免阻塞事件循环或在运行中的 loop 内调用迁移 runner。
+    library = await asyncio.to_thread(_library)
     assets = await asyncio.to_thread(library.load_catalog)
     selection = await asyncio.to_thread(library.load_selection)
     return {
         "assets": [record.to_dict() for record in assets],
         "selection": selection.to_dict(),
+        "toolset_status": _toolset_status(selection),
         "library_root": str(library.root),
     }
 
@@ -108,7 +145,7 @@ async def list_assets() -> dict[str, Any]:
     description="返回当前选择的场景 / 柜体（可为 null）。",
 )
 async def get_selection() -> dict[str, Any]:
-    library = _library()
+    library = await asyncio.to_thread(_library)
     selection = await asyncio.to_thread(library.load_selection)
     return selection.to_dict()
 
@@ -117,17 +154,18 @@ async def get_selection() -> dict[str, Any]:
     "/assets/selection",
     summary="保存资产选择",
     description=(
-        "持久化选择组合；重启后由启动脚本消费。scene / cabinet 必须已在资产库中。"
-        "切换 toolset 会写入重启标记，栈自动重启后以新套装生效。"
+        "持久化选择组合；下次人工启动时由启动脚本消费。scene / cabinet 必须已在"
+        "资产库中。工具套装不会让当前 Gazebo 仿真自动重启；响应会返回当前、"
+        "待生效与已应用状态。"
     ),
 )
 async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
-    library = _library()
+    library = await asyncio.to_thread(_library)
 
     def _run() -> dict[str, Any]:
         previous = library.load_selection()
         try:
-            selection = _selection_from_request(body, library)
+            selection = _selection_from_request(body, library, previous)
         except AssetNotFoundError as error:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND, detail=str(error)
@@ -136,26 +174,18 @@ async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST, detail=str(error)
             ) from None
-        if selection.toolset is None:
-            # toolset 为 null 表示"不改变"（见 schemas.py）：保留上次选择，
-            # 避免把已持久化的 B 覆盖成默认 A 且不写重启标记，导致下次启动
-            # 静默回退。冻结 dataclass，需重建实例。
-            selection = AssetSelection(
-                scene=selection.scene,
-                cabinet=selection.cabinet,
-                toolset=previous.toolset,
-            )
-        toolset_changed = bool(
-            selection.toolset
-            and selection.toolset.upper() != (previous.toolset or "").upper()
-        )
         library.save_selection(selection)
         result = library.load_selection().to_dict()
-        if toolset_changed:
-            _write_restart_marker()
-            result["restart_required"] = True
-        else:
-            result["restart_required"] = False
+        # 保留 ``restart_required`` 兼容旧前端，但它现在恒为 false：当前
+        # 仿真绝不能因为持久化一次选择而被自动终止。
+        result["restart_required"] = False
+        result["toolset_status"] = _toolset_status(
+            AssetSelection(
+                scene=result["scene"],
+                cabinet=result["cabinet"],
+                toolset=result["toolset"],
+            )
+        )
         return result
 
     return await asyncio.to_thread(_run)
@@ -178,7 +208,7 @@ async def import_asset(
         bool, Form(description="跳过语义校验（仅查 manifest 结构与文件存在）")
     ] = False,
 ) -> dict[str, Any]:
-    library = _library()
+    library = await asyncio.to_thread(_library)
     try:
         data = await file.read()
     finally:
@@ -226,7 +256,7 @@ async def delete_asset(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"不支持的资产类型：{kind}（仅 scene / cabinet）。",
         )
-    library = _library()
+    library = await asyncio.to_thread(_library)
 
     def _run() -> dict[str, Any]:
         try:

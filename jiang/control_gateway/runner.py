@@ -162,6 +162,38 @@ logger = logging.getLogger(__name__)
 ExecutorFatalCallback = Callable[[str, BaseException], None]
 
 
+def _operation_actual_displacement(result: Mapping[str, Any]) -> Optional[float]:
+    """Return physical travel without treating an absolute peak as signed."""
+
+    control_type = result.get("control_type")
+    initial = result.get("initial_position")
+    if (
+        isinstance(initial, bool)
+        or not isinstance(initial, (int, float))
+        or not math.isfinite(float(initial))
+    ):
+        return None
+    if control_type == CabinetClient.BUTTON_CONTROL_TYPE:
+        peak = result.get("peak_position")
+        if (
+            isinstance(peak, bool)
+            or not isinstance(peak, (int, float))
+            or not math.isfinite(float(peak))
+        ):
+            return None
+        return max(0.0, float(peak) - float(initial))
+    if control_type in CabinetClient.ARTICULATED_CONTROL_TYPES:
+        final = result.get("final_position")
+        if (
+            isinstance(final, bool)
+            or not isinstance(final, (int, float))
+            or not math.isfinite(float(final))
+        ):
+            return None
+        return abs(float(final) - float(initial))
+    return None
+
+
 class ControlServer:
     """Run manual control and multi-cabinet task clients behind HTTP."""
 
@@ -185,7 +217,10 @@ class ControlServer:
         scenes_config_path: Optional[str] = None,
         cabinet_xacro_path: Optional[str] = None,
         robot_entity_name: str = "xczs_inspection_robot",
+        toolset: str = "A",
         initial_scene: Optional[str] = None,
+        toolset_supervisor_required: bool = False,
+        toolset_persist_callback: Optional[Callable[[str], None]] = None,
         fatal_callback: Optional[ExecutorFatalCallback] = None,
         task_record_sink: Optional[TaskRecordSink] = None,
     ) -> None:
@@ -205,6 +240,18 @@ class ControlServer:
             raise ValueError(
                 "robot_entity_name must be a non-empty string without whitespace."
             )
+        if not isinstance(toolset, str) or toolset.strip().upper() not in {
+            "A",
+            "B",
+        }:
+            raise ValueError("toolset must be either A or B.")
+        normalized_toolset = toolset.strip().upper()
+        if not isinstance(toolset_supervisor_required, bool):
+            raise ValueError("toolset_supervisor_required must be a boolean.")
+        if toolset_persist_callback is not None and not callable(
+            toolset_persist_callback
+        ):
+            raise ValueError("toolset_persist_callback must be callable or None.")
         for label, value in (
             ("max_linear_speed", max_linear_speed),
             ("max_angular_speed", max_angular_speed),
@@ -291,6 +338,15 @@ class ControlServer:
         self._scenes_config_path = scenes_path
         self._cabinet_xacro_path = cabinet_xacro
         self._cabinet_controls_path = controls_path
+        self._cabinet_instances_path = instances_path
+        self._cabinet_scene_path = scene_path
+        self._cabinet_pose_path = pose_path
+        self._cabinet_robot_adapter_path = robot_adapter_path
+        self._toolset_supervisor_required = toolset_supervisor_required
+        self._toolset_persist_callback = toolset_persist_callback
+        self._toolset_persistence_error: Optional[str] = None
+        self._toolset_runtime_lock = threading.RLock()
+        self._toolset_transition_generation: Optional[int] = None
         self._robot_entity_name = robot_entity_name.strip()
         self._scene_switch_lock = threading.Lock()
         try:
@@ -300,6 +356,7 @@ class ControlServer:
                 controls_path=controls_path,
                 scene_path=scene_path,
                 pose_path=pose_path,
+                toolset=normalized_toolset,
             )
         except ProfileContractError as error:
             raise RuntimeError(
@@ -312,7 +369,10 @@ class ControlServer:
                 f"Invalid cabinet inventory: {error}"
             ) from error
         try:
-            self._robot_adapter = load_robot_adapter(robot_adapter_path)
+            self._robot_adapter = load_robot_adapter(
+                robot_adapter_path,
+                toolset=normalized_toolset,
+            )
         except RobotAdapterError as error:
             raise RuntimeError(f"Invalid robot adapter: {error}") from error
         resolved_cmd_vel_topic = (
@@ -944,6 +1004,7 @@ class ControlServer:
     def health(self) -> Dict[str, Any]:
         """Return gateway, Nav2, cabinet, and global task availability."""
         with self._request_scope():
+            toolset = self._sync_toolset_runtime()
             navigation = self._node.navigation_snapshot()
             try:
                 self._live_map_bounds()
@@ -1033,6 +1094,7 @@ class ControlServer:
                 "cabinets": cabinet_states,
                 "replay_mode": replay["mode"],
                 "replay_read_only": replay["read_only"],
+                "toolset": toolset,
                 "executor": executor,
             }
 
@@ -1045,6 +1107,7 @@ class ControlServer:
     def robot_capabilities(self) -> Dict[str, Any]:
         """Return the ordered manual-control contract used by the Web UI."""
         with self._request_scope():
+            self._sync_toolset_runtime()
             adapter = self._robot_adapter
             joints = [
                 {
@@ -1081,6 +1144,60 @@ class ControlServer:
                 ],
                 "manual_joints": joints,
             }
+
+    def toolset_status(self) -> Dict[str, Any]:
+        """Return the supervisor-backed A/B toolset transition status."""
+        with self._request_scope():
+            return self._sync_toolset_runtime()
+
+    def request_toolset_switch(
+        self,
+        toolset: str,
+        *,
+        expected_generation: int = 0,
+    ) -> Dict[str, Any]:
+        """Safely admit a world-preserving end-effector change.
+
+        The actual model replacement runs in the ROS supervisor.  This method
+        is the gateway-side safety boundary: it rejects live tasks/replay,
+        validates the target A/B profile before stopping the old robot, and
+        serializes the request with every other motion mutation.
+        """
+        if not isinstance(toolset, str) or toolset.strip().upper() not in {
+            "A",
+            "B",
+        }:
+            raise ControlRequestError("toolset must be A or B.", 400)
+        target = toolset.strip().upper()
+        with self._request_scope():
+            with self._task_interlock_scope(check_toolset_ready=False):
+                status = self._sync_toolset_runtime()
+                if not status.get("managed"):
+                    raise ControlRequestError(
+                        "World-preserving toolset switching is unavailable in "
+                        "this deployment.",
+                        503,
+                    )
+                if status.get("state") != "ready" or not status.get("ready"):
+                    raise ControlRequestError(
+                        "Robot toolset is not ready for a new switch.",
+                        409,
+                        details={"toolset_status": status},
+                    )
+                self._validate_runtime_toolset(target)
+                self._ensure_backend_quiescent("End-effector switch")
+                self._quiesce_manual_outputs()
+                accepted = self._node.request_toolset_switch(
+                    target,
+                    expected_generation=expected_generation,
+                )
+                self._toolset_transition_generation = int(
+                    accepted["generation"]
+                )
+                return {
+                    **accepted,
+                    "toolset_status": self._sync_toolset_runtime(),
+                }
 
     def scenes(self) -> Dict[str, Any]:
         """Return the scene catalog and the currently active scene."""
@@ -2268,6 +2385,22 @@ class ControlServer:
         )
         tolerance = float(adapter.reset_joint_tolerance)
 
+        def _joint_tolerance(name: str) -> float:
+            configured = getattr(adapter, "reset_tolerance_for_joint", None)
+            if not callable(configured):
+                return tolerance
+            try:
+                value = float(configured(name))
+            except (TypeError, ValueError):
+                return tolerance
+            return value if math.isfinite(value) and value > 0.0 else tolerance
+
+        def _within_tolerance(errors: Mapping[str, float]) -> bool:
+            return all(
+                error <= _joint_tolerance(name)
+                for name, error in errors.items()
+            )
+
         def _errors(snapshot: Mapping[str, Any]) -> Optional[Dict[str, float]]:
             positions = snapshot.get("positions")
             if snapshot.get("available") is not True or not isinstance(
@@ -2292,7 +2425,7 @@ class ControlServer:
         # The fast path must not trust a snapshot that has gone stale: a stalled
         # joint-state broadcaster would otherwise report the arm as already home
         # and let navigation/operation proceed on a frozen backend.
-        if errors and fresh_snapshot and max(errors.values()) <= tolerance:
+        if errors and fresh_snapshot and _within_tolerance(errors):
             return {
                 "status": "already_home",
                 "joint_count": len(names),
@@ -2348,7 +2481,7 @@ class ControlServer:
                 errors
                 and isinstance(received_at, (int, float))
                 and float(received_at) >= command_started
-                and max(errors.values()) <= tolerance
+                and _within_tolerance(errors)
             ):
                 return {
                     "status": "homed",
@@ -2384,6 +2517,9 @@ class ControlServer:
                     "joint_names": list(names),
                     "target_positions": list(commanded),
                     "tolerance_rad": tolerance,
+                    "joint_tolerances_rad": {
+                        name: _joint_tolerance(name) for name in names
+                    },
                     "timeout_seconds": float(adapter.reset_joint_timeout_sec),
                     "joint_state_available": bool(
                         last_snapshot.get("available")
@@ -3972,15 +4108,9 @@ class ControlServer:
                             "duration_seconds": time.monotonic() - started,
                         }
                     )
-                    initial = result.get("initial_position")
-                    peak = result.get("peak_position")
-                    if isinstance(initial, (int, float)) and isinstance(
-                        peak, (int, float)
-                    ):
-                        result["actual_displacement"] = max(
-                            0.0,
-                            float(peak) - float(initial),
-                        )
+                    actual_displacement = _operation_actual_displacement(result)
+                    if actual_displacement is not None:
+                        result["actual_displacement"] = actual_displacement
                     outcome = str(event.get("outcome", "failed"))
                     if timed_out:
                         if timeout_reported:
@@ -4373,8 +4503,209 @@ class ControlServer:
                 except Exception:  # noqa: BLE001
                     continue
 
+    def _runtime_toolset_snapshot(self) -> Dict[str, Any]:
+        """Read the optional supervisor state without breaking legacy tests."""
+        status_reader = getattr(self._node, "toolset_switch_snapshot", None)
+        if not callable(status_reader):
+            active = getattr(self._robot_adapter, "active_toolset", None)
+            return {
+                "managed": False,
+                "state": "unavailable",
+                "stage": "unavailable",
+                "ready": False,
+                "active_toolset": active,
+                "target_toolset": None,
+                "generation": 0,
+                "operation_id": None,
+                "last_operation_id": None,
+                "last_error": None,
+                "message": "No toolset supervisor is attached.",
+                "updated_at": None,
+            }
+        snapshot = status_reader()
+        if not isinstance(snapshot, Mapping):
+            raise ControlRequestError(
+                "The toolset supervisor returned an invalid status.",
+                503,
+            )
+        return dict(snapshot)
+
+    def _load_runtime_toolset_adapter(self, toolset: str):
+        """Validate and load a target A/B adapter before any model teardown."""
+        try:
+            validate_profile(
+                robot_adapter_path=self._cabinet_robot_adapter_path,
+                instances_path=self._cabinet_instances_path,
+                controls_path=self._cabinet_controls_path,
+                scene_path=self._cabinet_scene_path,
+                pose_path=self._cabinet_pose_path,
+                toolset=toolset,
+            )
+            candidate = load_robot_adapter(
+                self._cabinet_robot_adapter_path,
+                toolset=toolset,
+            )
+        except (ProfileContractError, RobotAdapterError) as error:
+            raise ControlRequestError(
+                f"Toolset {toolset} profile is invalid: {error}",
+                409,
+            ) from error
+        current = self._robot_adapter
+        invariant_fields = (
+            "manual_cmd_vel_topic",
+            "joint_trajectory_topic",
+            "joint_state_topic",
+            "manual_linear_axis",
+            "planning_frame",
+            "pose_parent_frame",
+            "navigation_frame",
+            "navigation_base_frame",
+            "navigation_action",
+            "navigation_readiness_service",
+            "navigation_mode_service",
+            "navigation_mode_topic",
+            "map_topic",
+            "localization_pose_topic",
+        )
+        changed = [
+            field
+            for field in invariant_fields
+            if getattr(candidate, field) != getattr(current, field)
+        ]
+        if changed:
+            raise ControlRequestError(
+                "A/B toolset adapters must preserve live gateway interfaces; "
+                "mismatch: " + ", ".join(changed),
+                409,
+            )
+        return candidate
+
+    def _validate_runtime_toolset(self, toolset: str) -> None:
+        """Run target profile preflight while the current robot is untouched."""
+        self._load_runtime_toolset_adapter(toolset)
+
+    def _sync_toolset_runtime(self) -> Dict[str, Any]:
+        """Synchronize Web joint capabilities after a supervisor success."""
+        runtime_lock = getattr(self, "_toolset_runtime_lock", None)
+        if runtime_lock is None:
+            runtime_lock = threading.RLock()
+            self._toolset_runtime_lock = runtime_lock
+        with runtime_lock:
+            status = self._runtime_toolset_snapshot()
+            managed = bool(status.get("managed"))
+            if not managed:
+                if getattr(self, "_toolset_supervisor_required", False):
+                    status["gateway_error"] = (
+                        "The required toolset supervisor status is unavailable."
+                    )
+                status["gateway_active_toolset"] = getattr(
+                    self._robot_adapter,
+                    "active_toolset",
+                    None,
+                )
+                status["gateway_synced"] = not getattr(
+                    self,
+                    "_toolset_supervisor_required",
+                    False,
+                )
+                return status
+
+            generation = status.get("generation")
+            pending_generation = getattr(
+                self,
+                "_toolset_transition_generation",
+                None,
+            )
+            if (
+                isinstance(generation, int)
+                and pending_generation is not None
+                and generation >= pending_generation
+                and status.get("state") in {"ready", "failed"}
+            ):
+                self._toolset_transition_generation = None
+
+            if status.get("state") == "ready" and status.get("ready"):
+                active = status.get("active_toolset")
+                if active not in {"A", "B"}:
+                    raise ControlRequestError(
+                        "Toolset supervisor reported a ready state without a "
+                        "valid active toolset.",
+                        503,
+                    )
+                if active != self._robot_adapter.active_toolset:
+                    candidate = self._load_runtime_toolset_adapter(active)
+                    reconfigure = getattr(
+                        self._node,
+                        "reconfigure_manual_joints",
+                        None,
+                    )
+                    if not callable(reconfigure):
+                        raise ControlRequestError(
+                            "Gateway cannot adopt the changed toolset contract.",
+                            503,
+                        )
+                    try:
+                        reconfigure(candidate.manual_joints)
+                    except Exception as error:  # noqa: BLE001
+                        raise ControlRequestError(
+                            "Gateway failed to adopt the changed toolset joint "
+                            f"contract: {error}",
+                            503,
+                        ) from error
+                    self._robot_adapter = candidate
+                    persist = getattr(self, "_toolset_persist_callback", None)
+                    if persist is not None:
+                        try:
+                            persist(active)
+                        except Exception as error:  # noqa: BLE001
+                            self._toolset_persistence_error = (
+                                "Active toolset was mounted but could not be "
+                                f"persisted for the next startup: {error}"
+                            )
+                        else:
+                            self._toolset_persistence_error = None
+            status["gateway_active_toolset"] = self._robot_adapter.active_toolset
+            status["gateway_synced"] = (
+                status.get("state") == "ready"
+                and status.get("ready") is True
+                and status.get("active_toolset")
+                == self._robot_adapter.active_toolset
+            )
+            status["persistence_error"] = getattr(
+                self,
+                "_toolset_persistence_error",
+                None,
+            )
+            return status
+
+    def _ensure_toolset_motion_ready(self) -> None:
+        """Fail closed while a managed robot topology is being replaced."""
+        status = self._sync_toolset_runtime()
+        required = bool(getattr(self, "_toolset_supervisor_required", False))
+        pending_generation = getattr(self, "_toolset_transition_generation", None)
+        if not status.get("managed"):
+            if required:
+                raise ControlRequestError(
+                    "The required robot toolset supervisor is unavailable.",
+                    503,
+                    details={"toolset_status": status},
+                )
+            return
+        if pending_generation is not None or (
+            status.get("state") != "ready" or not status.get("ready")
+        ):
+            raise ControlRequestError(
+                "Robot motion is locked while the end-effector toolset changes.",
+                409,
+                details={"toolset_status": status},
+            )
+
     @contextmanager
-    def _task_interlock_scope(self) -> Iterator[None]:
+    def _task_interlock_scope(
+        self,
+        *,
+        check_toolset_ready: bool = True,
+    ) -> Iterator[None]:
         """Serialize global-task admission with conflicting ROS mutations."""
         if getattr(self, "_task_manager", None) is None:
             # Compatibility with lifecycle tests and old embedded users that
@@ -4387,21 +4718,28 @@ class ControlServer:
             # servers always create the lock eagerly.
             lock = threading.RLock()
             self._task_interlock_lock = lock
+        runtime_lock = getattr(self, "_toolset_runtime_lock", None)
+        if runtime_lock is None:
+            runtime_lock = threading.RLock()
+            self._toolset_runtime_lock = runtime_lock
         with lock:
-            if (
-                self._replay_read_only()
-                and not self._replay_internal_authorized()
-            ):
-                status = self._replay_status_snapshot()
-                raise ControlRequestError(
-                    "Live control is disabled while replay is active.",
-                    409,
-                    details={
-                        "replay_mode": status["mode"],
-                        "read_only": True,
-                    },
-                )
-            yield
+            with runtime_lock:
+                if (
+                    self._replay_read_only()
+                    and not self._replay_internal_authorized()
+                ):
+                    status = self._replay_status_snapshot()
+                    raise ControlRequestError(
+                        "Live control is disabled while replay is active.",
+                        409,
+                        details={
+                            "replay_mode": status["mode"],
+                            "read_only": True,
+                        },
+                    )
+                if check_toolset_ready:
+                    self._ensure_toolset_motion_ready()
+                yield
 
     def _replay_read_only(self) -> bool:
         recording_manager = getattr(self, "_recording_manager", None)

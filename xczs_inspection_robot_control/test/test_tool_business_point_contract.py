@@ -24,6 +24,18 @@ TOOLS_XACRO = (
     / "components"
     / "tools.xacro"
 )
+MANIPULATOR_XACRO = TOOLS_XACRO.with_name("dual_arm_manipulator.xacro")
+ROBOT_JOINT_XACROS = (MANIPULATOR_XACRO, TOOLS_XACRO)
+TOOLSET_SRDFS = (
+    ROOT
+    / "xczs_inspection_robot_moveit_config"
+    / "config"
+    / "xczs_inspection_robot_toolset_A.srdf",
+    ROOT
+    / "xczs_inspection_robot_moveit_config"
+    / "config"
+    / "xczs_inspection_robot_toolset_B.srdf",
+)
 FINGER_MESH = (
     ROOT
     / "xczs_inspection_robot_description"
@@ -33,6 +45,8 @@ FINGER_MESH = (
     / "endllink1.STL"
 )
 OPERATOR = PACKAGE / "src" / "cabinet_button_operator.cpp"
+PLUGIN = PACKAGE / "src" / "gazebo" / "cabinet_state_plugin.cpp"
+GRASP_SERVICE = PACKAGE / "srv" / "SetCabinetGrasp.srv"
 
 
 def _operator_parameters(path: Path) -> dict[str, object]:
@@ -86,6 +100,52 @@ def test_three_cylinder_business_point_matches_zero_pose_mesh() -> None:
     )
 
 
+def test_robot_joint_soft_limits_stay_within_hard_limits() -> None:
+    """Every declared safety interval must be contained by its hard limit."""
+
+    checked_joints = set()
+    for path in ROBOT_JOINT_XACROS:
+        root = ElementTree.parse(path).getroot()
+        for joint in root.findall(".//joint"):
+            hard_limit = joint.find("limit")
+            soft_limit = joint.find("safety_controller")
+            if hard_limit is None or soft_limit is None:
+                continue
+
+            joint_name = joint.attrib["name"]
+            hard_lower = float(hard_limit.attrib["lower"])
+            hard_upper = float(hard_limit.attrib["upper"])
+            soft_lower = float(soft_limit.attrib["soft_lower_limit"])
+            soft_upper = float(soft_limit.attrib["soft_upper_limit"])
+            assert hard_lower <= soft_lower <= soft_upper <= hard_upper, (
+                f"{path.name}:{joint_name} safety interval "
+                f"[{soft_lower}, {soft_upper}] is outside hard interval "
+                f"[{hard_lower}, {hard_upper}]"
+            )
+            checked_joints.add(joint_name)
+
+    assert {
+        "${prefix}_rotbtn_jaw1_joint",
+        "${prefix}_rotbtn_jaw2_joint",
+    }.issubset(checked_joints)
+
+
+@pytest.mark.parametrize("srdf_path", TOOLSET_SRDFS, ids=lambda path: path.stem)
+def test_toolset_srdf_collision_pairs_are_unique(srdf_path: Path) -> None:
+    """A collision pair is unordered and must be declared only once."""
+
+    root = ElementTree.parse(srdf_path).getroot()
+    seen = set()
+    for entry in root.findall("disable_collisions"):
+        pair = frozenset((entry.attrib["link1"], entry.attrib["link2"]))
+        assert len(pair) == 2
+        assert pair not in seen, (
+            f"{srdf_path.name} declares duplicate collision pair "
+            f"{sorted(pair)}"
+        )
+        seen.add(pair)
+
+
 def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
     builtin = _operator_parameters(ADAPTERS[0])
     sample = _operator_parameters(ADAPTERS[1])
@@ -105,6 +165,34 @@ def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
         assert profile["calibration_joint_names"] == expected_joints
         assert profile["calibration_joint_positions"] == [0.0, 0.0, 0.0]
         assert "tool_tip_offset" not in profile
+
+    # Door grasp distance is measured at the same calibrated physical finger
+    # tip.  Measuring the three-cylinder base-link origin would be about
+    # 0.394 m away and can never pass the plugin's 0.12 m attach threshold.
+    door = builtin["tool_profiles"]["door"]
+    assert door["grasp_point_position"] == pytest.approx(
+        door["tool_tip_position"]
+    )
+    assert math.dist(door["grasp_point_position"], [0.0, 0.0, 0.0]) > 0.12
+    for control_type in ("button", "knob", "switch"):
+        assert builtin["tool_profiles"][control_type].get(
+            "grasp_point_position", [0.0, 0.0, 0.0]
+        ) == pytest.approx([0.0, 0.0, 0.0])
+
+
+def test_grasp_service_carries_one_link_local_probe_through_attach_and_restore() -> None:
+    schema = GRASP_SERVICE.read_text(encoding="utf-8")
+    operator = OPERATOR.read_text(encoding="utf-8")
+    plugin = PLUGIN.read_text(encoding="utf-8")
+
+    assert "geometry_msgs/Point robot_grasp_point" in schema
+    assert "string operation_lease_id" in schema
+    assert operator.count(
+        "request->robot_grasp_point.x = grasp_point_position_.x();"
+    ) == 2
+    assert "robot_pose.Rot().RotateVector(request.robot_grasp_point)" in plugin
+    assert "control.collision_restore_robot_grasp_point" in plugin
+    assert "robot_grasp_point_is_finite(" in plugin
 
 
 def test_operator_places_and_revalidates_the_physical_business_point() -> None:

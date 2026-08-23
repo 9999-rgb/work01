@@ -35,6 +35,7 @@ from xczs_inspection_robot_control.action import PressCabinetButton
 from xczs_inspection_robot_control.msg import CabinetControl
 from xczs_inspection_robot_control.msg import CabinetControlCatalog
 from xczs_inspection_robot_control.msg import CabinetControlState
+from xczs_inspection_robot_control.srv import SwitchToolset
 from tf2_ros import Buffer
 from tf2_ros import TransformException
 from tf2_ros import TransformListener
@@ -43,6 +44,12 @@ from .inventory import NavigationStation
 from .inventory import NavigationStationSpec
 from .robot_adapter import ManualJointConfig
 from .velocity_profile import VelocityProfile
+
+
+TOOLSET_SWITCH_SERVICE = "/xczs/toolset/switch"
+TOOLSET_STATUS_TOPIC = "/xczs/toolset/status"
+TOOLSET_SWITCH_REQUEST_TIMEOUT_SEC = 5.0
+_TOOLSET_STATES = frozenset({"starting", "switching", "ready", "failed"})
 
 
 class ControlRequestError(RuntimeError):
@@ -257,6 +264,10 @@ class RosControlNode(Node):
             Trigger,
             "/xczs/cabinet/reset_controls",
         )
+        self._toolset_switch_client = self.create_client(
+            SwitchToolset,
+            TOOLSET_SWITCH_SERVICE,
+        )
         transient_qos = QoSProfile(
             depth=1,
             reliability=ReliabilityPolicy.RELIABLE,
@@ -266,6 +277,12 @@ class RosControlNode(Node):
             Bool,
             navigation_mode_topic,
             self._navigation_mode_callback,
+            transient_qos,
+        )
+        self.create_subscription(
+            String,
+            TOOLSET_STATUS_TOPIC,
+            self._toolset_status_callback,
             transient_qos,
         )
         self.create_subscription(
@@ -341,6 +358,24 @@ class RosControlNode(Node):
         self._map_error = "Nav2 occupancy map has not been received."
         self._robot_pose: Optional[Dict[str, Any]] = None
         self._robot_pose_sequence = 0
+        # ``managed`` remains false for direct/legacy launches that do not
+        # install the world-preserving toolset supervisor.  Such deployments
+        # retain their historical static-toolset behavior; once a valid
+        # transient status arrives it becomes the authoritative runtime state.
+        self._toolset_status: Dict[str, Any] = {
+            "managed": False,
+            "state": "unavailable",
+            "stage": "unavailable",
+            "ready": False,
+            "active_toolset": None,
+            "target_toolset": None,
+            "generation": 0,
+            "operation_id": None,
+            "last_operation_id": None,
+            "last_error": None,
+            "message": "No toolset supervisor status has been received.",
+            "updated_at": None,
+        }
 
         self._cabinet_goal_handle: Any = None
         self._cabinet_cancel_requested = False
@@ -567,6 +602,123 @@ class RosControlNode(Node):
                 "positions": dict(state["positions"]),
                 "stamp_ros_nanoseconds": state["stamp_ros_nanoseconds"],
                 "received_monotonic": state["received_monotonic"],
+            }
+
+    def toolset_switch_snapshot(self) -> Dict[str, Any]:
+        """Return the last validated supervisor status without mutating it."""
+        with self._lock:
+            return dict(self._toolset_status)
+
+    def request_toolset_switch(
+        self,
+        toolset: str,
+        *,
+        expected_generation: int = 0,
+        timeout_sec: float = TOOLSET_SWITCH_REQUEST_TIMEOUT_SEC,
+    ) -> Dict[str, Any]:
+        """Ask the ROS supervisor to replace the robot child asynchronously.
+
+        The service response only acknowledges admission.  Clients must poll
+        :meth:`toolset_switch_snapshot` until it reports ``state=ready`` or a
+        failure/rollback.  Waiting on the future's event is safe here because
+        the gateway's executor spins on its dedicated thread.
+        """
+        if not isinstance(toolset, str) or toolset.strip().upper() not in {
+            "A",
+            "B",
+        }:
+            raise ControlRequestError("toolset must be A or B.", 400)
+        if (
+            isinstance(expected_generation, bool)
+            or not isinstance(expected_generation, int)
+            or expected_generation < 0
+        ):
+            raise ControlRequestError(
+                "expected_generation must be a non-negative integer.",
+                400,
+            )
+        if (
+            isinstance(timeout_sec, bool)
+            or not isinstance(timeout_sec, (int, float))
+            or not math.isfinite(float(timeout_sec))
+            or float(timeout_sec) <= 0.0
+        ):
+            raise ControlRequestError(
+                "toolset switch timeout must be a positive finite number.",
+                400,
+            )
+        client = self._toolset_switch_client
+        if not self._service_ready(client):
+            raise ControlRequestError(
+                "The robot toolset supervisor service is unavailable.",
+                503,
+            )
+        request = SwitchToolset.Request()
+        request.toolset = toolset.strip().upper()
+        request.expected_generation = expected_generation
+        try:
+            future = client.call_async(request)
+        except Exception as error:  # noqa: BLE001
+            raise ControlRequestError(
+                f"Failed to request a toolset switch: {error}",
+                503,
+            ) from error
+        completed = threading.Event()
+        future.add_done_callback(lambda _future: completed.set())
+        if not completed.wait(timeout=float(timeout_sec)):
+            raise ControlRequestError(
+                "Toolset supervisor did not acknowledge the request in time.",
+                503,
+            )
+        try:
+            response = future.result()
+        except Exception as error:  # noqa: BLE001
+            raise ControlRequestError(
+                f"Toolset supervisor request failed: {error}",
+                503,
+            ) from error
+        result = {
+            "accepted": bool(response.accepted),
+            "state": str(response.state),
+            "active_toolset": str(response.active_toolset) or None,
+            "target_toolset": str(response.target_toolset) or None,
+            "generation": int(response.generation),
+            "message": str(response.message),
+        }
+        if not result["accepted"]:
+            raise ControlRequestError(
+                result["message"] or "Toolset switch was rejected.",
+                409,
+                details={"toolset_status": self.toolset_switch_snapshot()},
+            )
+        return result
+
+    def reconfigure_manual_joints(
+        self,
+        manual_joints: Sequence[ManualJointConfig],
+    ) -> None:
+        """Atomically adopt the active toolset's manual joint contract.
+
+        The ROS topic names do not change between A/B.  Only their ordered
+        tool-joint subset changes, so rebuilding the whole gateway node would
+        unnecessarily interrupt Web/SSE clients.  Any queued trajectory and
+        previous joint sample are invalid for the new physical model and are
+        discarded before the new contract becomes visible.
+        """
+        joints = tuple(manual_joints)
+        if not joints:
+            raise ValueError("manual_joints must not be empty.")
+        with self._lock:
+            self._manual_joints = joints
+            self._pending_trajectory = None
+            self._pending_trajectory_repeats = 0
+            self._pending_trajectory_duration_sec = 0.0
+            self._manual_trajectory_active_until = 0.0
+            self._robot_joint_state = {
+                "available": False,
+                "positions": {},
+                "stamp_ros_nanoseconds": None,
+                "received_monotonic": None,
             }
 
     def navigation_snapshot(self) -> Dict[str, Any]:
@@ -1153,7 +1305,11 @@ class RosControlNode(Node):
                     "max_travel": 0.0,
                     "initial_position": current_position,
                     "final_position": None,
-                    "peak_position": current_position,
+                    "peak_position": (
+                        abs(float(current_position))
+                        if current_position is not None
+                        else None
+                    ),
                     "final_state": None,
                     "success": None,
                     "error_code": None,
@@ -2603,12 +2759,11 @@ class RosControlNode(Node):
             ):
                 return
             previous_peak = self._cabinet_state.get("peak_position")
-            peak_position = current_position
+            peak_position = (
+                abs(current_position) if current_position is not None else None
+            )
             if current_position is not None and previous_peak is not None:
-                peak_position = max(
-                    float(previous_peak),
-                    current_position,
-                )
+                peak_position = max(abs(float(previous_peak)), abs(current_position))
             update = {
                 "phase": int(feedback.phase),
                 "progress": float(feedback.progress),
@@ -3388,6 +3543,94 @@ class RosControlNode(Node):
         with self._lock:
             if cabinet in self._cabinet_pose_validity:
                 self._cabinet_pose_validity[cabinet] = bool(message.data)
+
+    def _toolset_status_callback(self, message: String) -> None:
+        """Accept only a complete, finite supervisor status publication."""
+        try:
+            document = json.loads(message.data)
+        except (TypeError, json.JSONDecodeError):
+            self.get_logger().warning("Ignoring malformed toolset supervisor status.")
+            return
+        if not isinstance(document, dict):
+            self.get_logger().warning("Ignoring non-object toolset supervisor status.")
+            return
+        state = document.get("state")
+        stage = document.get("stage")
+        ready = document.get("ready")
+        managed = document.get("managed")
+        generation = document.get("generation")
+        if (
+            state not in _TOOLSET_STATES
+            or not isinstance(stage, str)
+            or not isinstance(ready, bool)
+            or managed is not True
+            or isinstance(generation, bool)
+            or not isinstance(generation, int)
+            or generation < 1
+        ):
+            self.get_logger().warning("Ignoring invalid toolset supervisor status.")
+            return
+
+        def _toolset(field: str) -> Optional[str]:
+            value = document.get(field)
+            if value is None:
+                return None
+            if not isinstance(value, str):
+                raise ValueError(field)
+            normalized = value.strip().upper()
+            if normalized not in {"A", "B"}:
+                raise ValueError(field)
+            return normalized
+
+        try:
+            active_toolset = _toolset("active_toolset")
+            target_toolset = _toolset("target_toolset")
+        except ValueError:
+            self.get_logger().warning(
+                "Ignoring toolset supervisor status with invalid toolset name."
+            )
+            return
+        if state == "ready" and (not ready or active_toolset is None):
+            self.get_logger().warning(
+                "Ignoring contradictory ready toolset supervisor status."
+            )
+            return
+        updated_at = document.get("updated_at")
+        if (
+            isinstance(updated_at, bool)
+            or not isinstance(updated_at, (int, float))
+            or not math.isfinite(float(updated_at))
+        ):
+            self.get_logger().warning(
+                "Ignoring toolset supervisor status with invalid timestamp."
+            )
+            return
+
+        def _optional_string(field: str) -> Optional[str]:
+            value = document.get(field)
+            if value is None:
+                return None
+            return value if isinstance(value, str) else None
+
+        status = {
+            "managed": True,
+            "state": state,
+            "stage": stage,
+            "ready": ready,
+            "active_toolset": active_toolset,
+            "target_toolset": target_toolset,
+            "generation": generation,
+            "operation_id": _optional_string("operation_id"),
+            "last_operation_id": _optional_string("last_operation_id"),
+            "last_error": _optional_string("last_error"),
+            "message": _optional_string("message") or "",
+            "updated_at": float(updated_at),
+        }
+        with self._lock:
+            previous_generation = int(self._toolset_status.get("generation", 0))
+            if generation < previous_generation:
+                return
+            self._toolset_status = status
 
     def _robot_joint_state_callback(self, message: JointState) -> None:
         """Store only finite positions for the configured manual joints."""

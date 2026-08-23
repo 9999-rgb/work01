@@ -55,6 +55,9 @@ using SetCabinetGrasp =
   xczs_inspection_robot_control::srv::SetCabinetGrasp;
 
 constexpr auto kPhysicsRequestTimeout = std::chrono::seconds(2);
+constexpr auto kWatchdogReleaseRetryDelay = std::chrono::milliseconds(100);
+constexpr auto kWatchdogReleaseLogPeriod = std::chrono::seconds(1);
+constexpr std::size_t kExpiredLeaseHistoryLimit = 64U;
 constexpr char kRuntimeGraspJointName[] = "xczs_cabinet_runtime_grasp";
 constexpr char kRuntimeBaseBrakeJointName[] =
   "xczs_cabinet_runtime_base_brake";
@@ -224,6 +227,7 @@ public:
     reset_service_.reset();
     grasp_service_.reset();
     active_control_subscription_.reset();
+    operation_heartbeat_subscription_.reset();
     update_connection_.reset();
     fail_requests(
       pending_requests, "Cabinet state plugin is shutting down.");
@@ -238,6 +242,9 @@ public:
       }
       restore_all_actuation_collisions();
     }
+    // on_update may publish a watchdog fault.  Reset its publisher only after
+    // disconnecting and joining the physics callback through the mutex above.
+    operation_fault_publisher_.reset();
 
     if (callback_lifetime) {
       std::unique_lock<std::mutex> lock(callback_lifetime->mutex);
@@ -275,6 +282,12 @@ public:
         throw std::invalid_argument(
                 "Cabinet grasp_distance_threshold must be positive.");
       }
+      operation_watchdog_timeout_ = optional_double(
+        sdf, "operation_watchdog_timeout", 2.0);
+      if (!operation_watchdog_timeout_is_valid(operation_watchdog_timeout_)) {
+        throw std::invalid_argument(
+                "Cabinet operation_watchdog_timeout must be positive.");
+      }
       reset_service_name_ = sdf->Get<std::string>(
         "reset_service", "/xczs/cabinet/reset_physics").first;
       grasp_service_name_ = sdf->Get<std::string>(
@@ -283,10 +296,20 @@ public:
         "grasp_active_topic", "/xczs/cabinet/grasp_active").first;
       active_control_topic_ = sdf->Get<std::string>(
         "active_control_topic", "/xczs/cabinet/active_control").first;
+      operation_heartbeat_topic_ = sdf->Get<std::string>(
+        "operation_heartbeat_topic",
+        "/xczs/cabinet/operation_heartbeat").first;
+      operation_fault_topic_ = sdf->Get<std::string>(
+        "operation_fault_topic",
+        "/xczs/cabinet/operation_fault").first;
       require_absolute_topic(reset_service_name_, "reset_service");
       require_absolute_topic(grasp_service_name_, "grasp_service");
       require_absolute_topic(grasp_active_topic_, "grasp_active_topic");
       require_absolute_topic(active_control_topic_, "active_control_topic");
+      require_absolute_topic(
+        operation_heartbeat_topic_, "operation_heartbeat_topic");
+      require_absolute_topic(
+        operation_fault_topic_, "operation_fault_topic");
       configure_controls(sdf);
     } catch (const std::exception & error) {
       RCLCPP_ERROR(ros_node_->get_logger(), "%s", error.what());
@@ -301,6 +324,9 @@ public:
       ros_node_->create_publisher<std_msgs::msg::Bool>(
       grasp_active_topic_, rclcpp::QoS(1).reliable().transient_local());
     publish_grasp_active(false);
+    operation_fault_publisher_ =
+      ros_node_->create_publisher<std_msgs::msg::String>(
+      operation_fault_topic_, rclcpp::QoS(1).reliable());
     active_control_subscription_ =
       ros_node_->create_subscription<std_msgs::msg::String>(
       active_control_topic_, rclcpp::QoS(1).reliable().transient_local(),
@@ -310,19 +336,18 @@ public:
           return;
         }
         ServiceCallbackLease lease(callback_lifetime);
-        std::lock_guard<std::mutex> lock(owner->active_control_mutex_);
-        owner->active_control_received_ = true;
-        if (owner->active_operation_control_ != message->data) {
-          owner->pregrasp_disturbance_detected_ = false;
-          owner->pregrasp_disturbance_control_.clear();
-          owner->pregrasp_max_position_error_ = 0.0;
-          owner->pregrasp_max_velocity_ = 0.0;
-          // A changed active control starts a fresh pre-grasp phase: any prior
-          // grasp-engage state from the previous operation must not suppress
-          // disturbance detection for the new approach.
-          owner->grasp_engaged_during_operation_ = false;
+        owner->receive_active_control(message->data);
+      });
+    operation_heartbeat_subscription_ =
+      ros_node_->create_subscription<std_msgs::msg::String>(
+      operation_heartbeat_topic_, rclcpp::QoS(1).reliable(),
+      [callback_lifetime](const std_msgs::msg::String::SharedPtr message) {
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          return;
         }
-        owner->active_operation_control_ = message->data;
+        ServiceCallbackLease lease(callback_lifetime);
+        owner->receive_operation_heartbeat(message->data);
       });
     reset_service_ = ros_node_->create_service<std_srvs::srv::Trigger>(
       reset_service_name_,
@@ -338,7 +363,7 @@ public:
         }
         ServiceCallbackLease lease(callback_lifetime);
         const auto outcome = owner->submit_physics_request(
-          PhysicsRequest::Kind::kReset, {}, {}, {}, {}, false);
+          PhysicsRequest::Kind::kReset, {}, {}, {}, {}, {}, {}, false);
         response->success = outcome.success;
         response->message = outcome.message;
       });
@@ -360,8 +385,13 @@ public:
         const auto outcome = owner->submit_physics_request(
           PhysicsRequest::Kind::kGrasp,
           request->control_id,
+          request->operation_lease_id,
           request->robot_model,
           request->robot_link,
+          ignition::math::Vector3d(
+            request->robot_grasp_point.x,
+            request->robot_grasp_point.y,
+            request->robot_grasp_point.z),
           request->robot_base_link,
           request->attach);
         response->success = outcome.success;
@@ -439,7 +469,10 @@ private:
     double actuation_collision_restore_distance{0.5};
     double collision_restore_not_before{0.0};
     gazebo::physics::LinkPtr collision_restore_robot_link;
+    ignition::math::Vector3d collision_restore_robot_grasp_point{
+      0.0, 0.0, 0.0};
     bool actuation_collision_suppressed{false};
+    std::string actuation_collision_operation_lease_id;
     double detent_hysteresis{0.0};
     double press_threshold{0.006};
     double release_threshold{0.003};
@@ -476,8 +509,11 @@ private:
     enum class State {kPending, kExecuting, kCanceled, kCompleted};
     Kind kind{Kind::kReset};
     std::string control_id;
+    std::string operation_lease_id;
+    std::uint64_t active_control_generation{0U};
     std::string robot_model;
     std::string robot_link;
+    ignition::math::Vector3d robot_grasp_point{0.0, 0.0, 0.0};
     std::string robot_base_link;
     bool attach{false};
     std::promise<PhysicsOutcome> promise;
@@ -781,6 +817,7 @@ private:
     if (shutting_down_.load()) {
       return;
     }
+    enforce_operation_watchdog();
     process_physics_requests();
     if (grasp_joint_ && active_control_link_ && active_robot_link_ptr_) {
       const auto relative_pose =
@@ -920,23 +957,388 @@ private:
     return static_cast<bool>(grasp_joint_) || compliant_grasp_active_;
   }
 
+  void reset_pregrasp_tracking_locked() noexcept
+  {
+    pregrasp_disturbance_detected_ = false;
+    pregrasp_disturbance_control_.clear();
+    pregrasp_max_position_error_ = 0.0;
+    pregrasp_max_velocity_ = 0.0;
+    grasp_engaged_during_operation_ = false;
+  }
+
+  void receive_active_control(const std::string & control_id)
+  {
+    std::lock_guard<std::mutex> lock(active_control_mutex_);
+    active_control_received_ = true;
+    if (active_operation_control_ != control_id) {
+      // Retire the old lease before clearing its heartbeat.  A delayed
+      // heartbeat or queued same-control grasp request from that session must
+      // never become valid again after an idle boundary/new generation.
+      remember_expired_operation_lease_locked(
+        operation_heartbeat_lease_id_);
+      ++active_control_generation_;
+      reset_pregrasp_tracking_locked();
+      operation_heartbeat_received_ = false;
+      operation_heartbeat_lease_id_.clear();
+      operation_last_heartbeat_ = std::chrono::steady_clock::time_point{};
+      ++operation_heartbeat_sequence_;
+    }
+    active_operation_control_ = control_id;
+  }
+
+  void receive_operation_heartbeat(const std::string & operation_lease_id)
+  {
+    std::lock_guard<std::mutex> lock(active_control_mutex_);
+    if (operation_lease_id.empty() || active_operation_control_.empty() ||
+      expired_operation_lease_ids_.count(operation_lease_id) != 0U)
+    {
+      return;
+    }
+    if (operation_heartbeat_lease_id_ != operation_lease_id) {
+      // A same-control successor lease supersedes its predecessor even if an
+      // idle active-control sample was lost.  Permanently reject delayed
+      // traffic from the predecessor within the bounded replay window.
+      remember_expired_operation_lease_locked(
+        operation_heartbeat_lease_id_);
+    }
+    operation_heartbeat_received_ = true;
+    operation_heartbeat_lease_id_ = operation_lease_id;
+    operation_last_heartbeat_ = std::chrono::steady_clock::now();
+    ++operation_heartbeat_sequence_;
+  }
+
+  void remember_expired_operation_lease_locked(
+    const std::string & operation_lease_id)
+  {
+    if (operation_lease_id.empty() ||
+      !expired_operation_lease_ids_.insert(operation_lease_id).second)
+    {
+      return;
+    }
+    expired_operation_lease_history_.push_back(operation_lease_id);
+    while (expired_operation_lease_history_.size() >
+      kExpiredLeaseHistoryLimit)
+    {
+      expired_operation_lease_ids_.erase(
+        expired_operation_lease_history_.front());
+      expired_operation_lease_history_.pop_front();
+    }
+  }
+
+  bool operation_heartbeat_authorizes_grasp_locked(
+    const PhysicsRequest & request) const
+  {
+    if (!active_control_received_ ||
+      request.active_control_generation != active_control_generation_ ||
+      !operation_heartbeat_received_ ||
+      expired_operation_lease_ids_.count(request.operation_lease_id) != 0U ||
+      !operation_session_matches(
+        request.control_id, request.operation_lease_id,
+        active_operation_control_, operation_heartbeat_lease_id_))
+    {
+      return false;
+    }
+    // Take now only after the heartbeat snapshot while holding the callback
+    // mutex.  A newer callback can therefore never produce a future timestamp
+    // and spuriously trip the fail-closed elapsed-time policy.
+    const auto now = std::chrono::steady_clock::now();
+    const double elapsed = std::chrono::duration<double>(
+      now - operation_last_heartbeat_).count();
+    return !operation_watchdog_has_expired(
+      true, false, elapsed, operation_watchdog_timeout_);
+  }
+
+  Control * first_suppressed_control() noexcept
+  {
+    const auto found = std::find_if(
+      controls_.begin(), controls_.end(),
+      [](const Control & control) {
+        return control.actuation_collision_suppressed;
+      });
+    return found == controls_.end() ? nullptr : &*found;
+  }
+
+  void log_watchdog_release_failure(
+    const std::string & reason,
+    std::chrono::steady_clock::time_point now) noexcept
+  {
+    watchdog_release_retry_not_before_ = now + kWatchdogReleaseRetryDelay;
+    if (watchdog_last_release_error_log_ !=
+      std::chrono::steady_clock::time_point{} &&
+      now - watchdog_last_release_error_log_ < kWatchdogReleaseLogPeriod)
+    {
+      return;
+    }
+    watchdog_last_release_error_log_ = now;
+    RCLCPP_ERROR(
+      ros_node_->get_logger(),
+      "Watchdog could not fully release the cabinet grasp; it will retry "
+      "on the Gazebo update thread: %s", reason.c_str());
+  }
+
+  void publish_operation_fault(const std::string & operation_lease_id) noexcept
+  {
+    if (!operation_fault_publisher_ || operation_lease_id.empty()) {
+      return;
+    }
+    try {
+      std_msgs::msg::String message;
+      message.data = operation_lease_id;
+      operation_fault_publisher_->publish(message);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        ros_node_->get_logger(),
+        "Could not publish the cabinet watchdog lease fault: %s",
+        error.what());
+    } catch (...) {
+      RCLCPP_ERROR(
+        ros_node_->get_logger(),
+        "Could not publish the cabinet watchdog lease fault.");
+    }
+  }
+
+  void clear_watchdog_recovery() noexcept
+  {
+    watchdog_recovery_pending_ = false;
+    watchdog_release_completed_ = false;
+    watchdog_recovery_control_.clear();
+    watchdog_recovery_lease_id_.clear();
+    watchdog_release_retry_not_before_ =
+      std::chrono::steady_clock::time_point{};
+    watchdog_last_release_error_log_ =
+      std::chrono::steady_clock::time_point{};
+    watchdog_monitor_started_at_ =
+      std::chrono::steady_clock::time_point{};
+    watchdog_last_valid_heartbeat_ =
+      std::chrono::steady_clock::time_point{};
+    watchdog_activity_control_.clear();
+    watchdog_activity_lease_id_.clear();
+  }
+
+  void continue_watchdog_recovery(
+    std::chrono::steady_clock::time_point now) noexcept
+  {
+    if (!watchdog_recovery_pending_) {
+      return;
+    }
+    if (!watchdog_release_completed_) {
+      if (now < watchdog_release_retry_not_before_) {
+        return;
+      }
+      try {
+        const auto release = release_grasp_constraint();
+        if (!release.success) {
+          log_watchdog_release_failure(release.message, now);
+          return;
+        }
+        watchdog_release_completed_ = true;
+      } catch (const std::exception & error) {
+        log_watchdog_release_failure(error.what(), now);
+        return;
+      } catch (...) {
+        log_watchdog_release_failure("unknown Gazebo release exception", now);
+        return;
+      }
+      // release_grasp_constraint schedules the normal collision restoration.
+      // Keep its real tool-clearance gate: after a crash the tool may remain
+      // geometrically overlapped, so automatically waiving clearance could
+      // re-enable ODE contact with an unsafe impulse.  The recovery interlock
+      // rejects every new attach until the tool actually moves clear (or an
+      // explicit reset restores the masks).
+    }
+
+    const auto control_it = control_indices_.find(watchdog_recovery_control_);
+    if (control_it != control_indices_.end() &&
+      controls_[control_it->second].actuation_collision_suppressed)
+    {
+      return;
+    }
+    RCLCPP_INFO(
+      ros_node_->get_logger(),
+      "Cabinet watchdog recovery for '%s' completed; grasp, base brake and "
+      "collision policy are safe for a later lease.",
+      watchdog_recovery_control_.empty() ? "<unknown>" :
+      watchdog_recovery_control_.c_str());
+    clear_watchdog_recovery();
+  }
+
+  void enforce_operation_watchdog()
+  {
+    bool heartbeat_received = false;
+    std::string active_control;
+    std::string heartbeat_lease_id;
+    auto heartbeat = std::chrono::steady_clock::time_point{};
+    std::uint64_t active_control_generation = 0U;
+    std::uint64_t heartbeat_sequence = 0U;
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      heartbeat_received = operation_heartbeat_received_;
+      active_control = active_operation_control_;
+      heartbeat_lease_id = operation_heartbeat_lease_id_;
+      heartbeat = operation_last_heartbeat_;
+      active_control_generation = active_control_generation_;
+      heartbeat_sequence = operation_heartbeat_sequence_;
+    }
+    // Taking now after the synchronized snapshot guarantees heartbeat <= now.
+    const auto now = std::chrono::steady_clock::now();
+    if (watchdog_recovery_pending_) {
+      continue_watchdog_recovery(now);
+      return;
+    }
+
+    const bool active_grasp = grasp_is_active() ||
+      static_cast<bool>(base_brake_joint_);
+    auto * suppressed_control = first_suppressed_control();
+    std::string activity_control;
+    std::string activity_lease_id;
+    if (active_grasp) {
+      activity_control = active_grasp_control_;
+      activity_lease_id = active_grasp_lease_id_;
+    } else if (suppressed_control) {
+      activity_control = suppressed_control->id;
+      activity_lease_id =
+        suppressed_control->actuation_collision_operation_lease_id;
+    } else {
+      activity_control = active_control;
+      activity_lease_id = heartbeat_lease_id;
+    }
+    const bool activity_exists = !active_control.empty() || active_grasp ||
+      suppressed_control != nullptr;
+    if (!activity_exists) {
+      watchdog_monitor_started_at_ =
+        std::chrono::steady_clock::time_point{};
+      watchdog_last_valid_heartbeat_ =
+        std::chrono::steady_clock::time_point{};
+      watchdog_activity_control_.clear();
+      watchdog_activity_lease_id_.clear();
+      return;
+    }
+
+    if (watchdog_activity_control_ != activity_control ||
+      watchdog_activity_lease_id_ != activity_lease_id)
+    {
+      watchdog_activity_control_ = activity_control;
+      watchdog_activity_lease_id_ = activity_lease_id;
+      watchdog_monitor_started_at_ = now;
+      watchdog_last_valid_heartbeat_ =
+        std::chrono::steady_clock::time_point{};
+    }
+    if (watchdog_monitor_started_at_ ==
+      std::chrono::steady_clock::time_point{})
+    {
+      watchdog_monitor_started_at_ = now;
+    }
+
+    const bool heartbeat_matches_activity = heartbeat_received &&
+      operation_session_matches(
+      activity_control, activity_lease_id,
+      active_control, heartbeat_lease_id);
+    if (heartbeat_matches_activity &&
+      heartbeat > watchdog_last_valid_heartbeat_)
+    {
+      watchdog_last_valid_heartbeat_ = heartbeat;
+    }
+    const auto reference_time = std::max(
+      watchdog_monitor_started_at_, watchdog_last_valid_heartbeat_);
+    const double elapsed =
+      std::chrono::duration<double>(now - reference_time).count();
+    const bool physical_session_was_revoked = active_grasp &&
+      active_grasp_control_generation_ != active_control_generation;
+    if (!physical_session_was_revoked &&
+      !operation_watchdog_has_expired(
+        !active_control.empty(), active_grasp || suppressed_control,
+        elapsed, operation_watchdog_timeout_))
+    {
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      // Only a newer heartbeat for this exact monitored session may defeat a
+      // timeout.  Unrelated lease traffic must not postpone release of an
+      // abandoned physical session.  For a pre-attach operation with no
+      // physical hazard, a control-generation change is re-evaluated next tick.
+      const bool current_session_heartbeat = operation_session_matches(
+        activity_control, activity_lease_id,
+        active_operation_control_, operation_heartbeat_lease_id_);
+      if ((active_control_generation_ != active_control_generation ||
+        operation_heartbeat_sequence_ != heartbeat_sequence) &&
+        current_session_heartbeat)
+      {
+        watchdog_last_valid_heartbeat_ = operation_last_heartbeat_;
+        return;
+      }
+      if (!active_grasp && !suppressed_control &&
+        active_control_generation_ != active_control_generation)
+      {
+        return;
+      }
+      active_control_received_ = true;
+      active_operation_control_.clear();
+      ++active_control_generation_;
+      operation_heartbeat_received_ = false;
+      operation_heartbeat_lease_id_.clear();
+      operation_last_heartbeat_ =
+        std::chrono::steady_clock::time_point{};
+      ++operation_heartbeat_sequence_;
+      remember_expired_operation_lease_locked(activity_lease_id);
+      reset_pregrasp_tracking_locked();
+    }
+
+    watchdog_recovery_pending_ = true;
+    watchdog_release_completed_ = false;
+    watchdog_recovery_control_ = activity_control;
+    watchdog_recovery_lease_id_ = activity_lease_id;
+    watchdog_release_retry_not_before_ = now;
+    RCLCPP_ERROR(
+      ros_node_->get_logger(),
+      physical_session_was_revoked ?
+      "Cabinet operation session for '%s' was explicitly revoked; starting "
+      "fail-safe physical recovery (last heartbeat %.3f s ago)." :
+      "Cabinet operation lease heartbeat for '%s' timed out after %.3f s; "
+      "starting fail-safe physical recovery.",
+      activity_control.empty() ? "<unknown>" : activity_control.c_str(),
+      elapsed);
+    // Notify a surviving operator before physical release.  It accepts the
+    // fault only if this exact global lease is still current, then stops
+    // MoveIt/Nav2/controller goals.  The physics-thread release below remains
+    // independent so a dead operator cannot block recovery.
+    publish_operation_fault(activity_lease_id);
+    continue_watchdog_recovery(now);
+  }
+
   bool actuation_tool_is_clear(const Control & control) const
   {
     if (!control.collision_restore_robot_link) {
-      return true;
+      // A suppressed collision without an observable robot probe cannot prove
+      // clearance and therefore fails closed.  This also protects partial
+      // attach failures whose Gazebo bookkeeping never reached full commit.
+      return false;
     }
     const auto control_pose = control.link->WorldPose();
     const auto grasp_position = control_pose.Pos() +
       control_pose.Rot().RotateVector(control.grasp_point);
-    const double distance =
-      control.collision_restore_robot_link->WorldPose().Pos().Distance(
-      grasp_position);
+    const auto robot_pose =
+      control.collision_restore_robot_link->WorldPose();
+    const auto robot_grasp_position = robot_pose.Pos() +
+      robot_pose.Rot().RotateVector(
+      control.collision_restore_robot_grasp_point);
+    const double distance = robot_grasp_position.Distance(grasp_position);
     return std::isfinite(distance) &&
            distance >= control.actuation_collision_restore_distance;
   }
 
-  bool actuation_operation_is_complete(const Control &) const
+  bool actuation_operation_is_complete(const Control & control) const
   {
+    if (watchdog_recovery_pending_ &&
+      watchdog_release_completed_ &&
+      watchdog_recovery_control_ == control.id)
+    {
+      // A later lease heartbeat must not keep an abandoned collision mask
+      // disabled forever.  The recovery interlock rejects new attachment until
+      // this control's configured delay and physical settle gates complete.
+      return true;
+    }
     std::lock_guard<std::mutex> lock(active_control_mutex_);
     return active_control_received_ && active_operation_control_.empty();
   }
@@ -952,14 +1354,6 @@ private:
     {
       return;
     }
-    // A grasp has already been attached during this operation, so the control
-    // is no longer in its pre-grasp phase.  The detent snap on release and any
-    // settling motion while the operator retreats are the operation's physical
-    // outcome, not a robot bump, so they must not latch a disturbance that
-    // would block a later grasp attach.
-    if (grasp_engaged_during_operation_) {
-      return;
-    }
     const double detent_position =
       control.detents[control.detent_target_index];
     if (!pregrasp_detent_is_disturbed(
@@ -972,7 +1366,10 @@ private:
     bool first_disturbance = false;
     {
       std::lock_guard<std::mutex> lock(active_control_mutex_);
-      if (!active_control_received_ ||
+      // A grasp has already been attached during this operation, so the
+      // control is no longer in its pre-grasp phase.  The detent snap on
+      // release and settling motion belong to the physical outcome.
+      if (grasp_engaged_during_operation_ || !active_control_received_ ||
         active_operation_control_ != control.id)
       {
         return;
@@ -1157,6 +1554,8 @@ private:
     if (enabled) {
       control.collision_restore_not_before = 0.0;
       control.collision_restore_robot_link.reset();
+      control.collision_restore_robot_grasp_point.Set(0.0, 0.0, 0.0);
+      control.actuation_collision_operation_lease_id.clear();
     }
     if (ros_node_) {
       RCLCPP_INFO(
@@ -1167,10 +1566,13 @@ private:
     }
   }
 
-  void suppress_actuation_collision(Control & control)
+  void suppress_actuation_collision(
+    Control & control,
+    const std::string & operation_lease_id)
   {
     set_actuation_collision_enabled(control, false);
     if (control.actuation_collision_suppressed) {
+      control.actuation_collision_operation_lease_id = operation_lease_id;
       control.collision_restore_not_before =
         std::numeric_limits<double>::infinity();
     }
@@ -1178,7 +1580,8 @@ private:
 
   void schedule_actuation_collision_restore(
     const std::string & control_id,
-    const gazebo::physics::LinkPtr & robot_link)
+    const gazebo::physics::LinkPtr & robot_link,
+    const ignition::math::Vector3d & robot_grasp_point)
   {
     const auto control_it = control_indices_.find(control_id);
     if (control_it == control_indices_.end()) {
@@ -1189,6 +1592,7 @@ private:
       control.collision_restore_not_before = world_->SimTime().Double() +
         control.actuation_collision_restore_delay;
       control.collision_restore_robot_link = robot_link;
+      control.collision_restore_robot_grasp_point = robot_grasp_point;
     }
   }
 
@@ -1218,7 +1622,21 @@ private:
         release.message,
         std::numeric_limits<double>::quiet_NaN()};
     }
+    if (watchdog_recovery_pending_) {
+      for (const auto & control : controls_) {
+        if (control.actuation_collision_suppressed &&
+          !actuation_tool_is_clear(control))
+        {
+          return {false,
+            "Cabinet watchdog recovery is latched for '" + control.id +
+            "'. Move the robot tool beyond the configured clearance before "
+            "resetting collision masks.",
+            std::numeric_limits<double>::quiet_NaN()};
+        }
+      }
+    }
     restore_all_actuation_collisions();
+    clear_watchdog_recovery();
     {
       std::lock_guard<std::mutex> lock(active_control_mutex_);
       pregrasp_disturbance_detected_ = false;
@@ -1299,18 +1717,26 @@ private:
   PhysicsOutcome submit_physics_request(
     PhysicsRequest::Kind kind,
     std::string control_id,
+    std::string operation_lease_id,
     std::string robot_model,
     std::string robot_link,
+    ignition::math::Vector3d robot_grasp_point,
     std::string robot_base_link,
     bool attach)
   {
     auto request = std::make_shared<PhysicsRequest>();
     request->kind = kind;
     request->control_id = std::move(control_id);
+    request->operation_lease_id = std::move(operation_lease_id);
     request->robot_model = std::move(robot_model);
     request->robot_link = std::move(robot_link);
+    request->robot_grasp_point = robot_grasp_point;
     request->robot_base_link = std::move(robot_base_link);
     request->attach = attach;
+    if (kind == PhysicsRequest::Kind::kGrasp && attach) {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      request->active_control_generation = active_control_generation_;
+    }
     auto result = request->promise.get_future();
     {
       std::lock_guard<std::mutex> lock(request_mutex_);
@@ -1375,8 +1801,97 @@ private:
     }
   }
 
+  PhysicsOutcome recover_failed_grasp_attach(
+    Control & control,
+    const PhysicsRequest & request,
+    const gazebo::physics::LinkPtr & robot_link,
+    const std::string & failure,
+    double distance) noexcept
+  {
+    bool release_completed = false;
+    std::string cleanup_failure;
+    try {
+      const auto release = release_grasp_constraint();
+      release_completed = release.success;
+      if (!release.success) {
+        cleanup_failure = release.message;
+      }
+    } catch (const std::exception & error) {
+      cleanup_failure = error.what();
+    } catch (...) {
+      cleanup_failure = "unknown Gazebo release exception";
+    }
+
+    if (!release_completed && grasp_is_active()) {
+      // If a partially-created joint remains, keep/establish the same narrow
+      // actuation-collision suppression used by a normal grasp.  Never restore
+      // that mask while the failed physical constraint may still form an ODE
+      // closed loop.
+      try {
+        suppress_actuation_collision(control, request.operation_lease_id);
+      } catch (const std::exception & error) {
+        cleanup_failure += "; collision suppression also failed: ";
+        cleanup_failure += error.what();
+      } catch (...) {
+        cleanup_failure +=
+          "; collision suppression also failed unexpectedly";
+      }
+    }
+    if (control.actuation_collision_suppressed) {
+      // Init() can throw before active_robot_link_ptr_ is committed, or release
+      // can remove the grasp joint and then fail on the base brake.  Preserve
+      // the already-resolved request probe explicitly so a later successful
+      // retry can still prove real clearance and complete collision recovery.
+      schedule_actuation_collision_restore(
+        control.id, robot_link, request.robot_grasp_point);
+    }
+
+    if (!release_completed || control.actuation_collision_suppressed) {
+      const auto now = std::chrono::steady_clock::now();
+      // The caller holds active_control_mutex_ across the attach commit and
+      // this cleanup path.  Permanently reject this failed lease session before
+      // publishing its fault so delayed heartbeats/requests cannot resurrect
+      // a partially recovered grasp.
+      remember_expired_operation_lease_locked(request.operation_lease_id);
+      active_control_received_ = true;
+      active_operation_control_.clear();
+      ++active_control_generation_;
+      operation_heartbeat_received_ = false;
+      operation_heartbeat_lease_id_.clear();
+      operation_last_heartbeat_ =
+        std::chrono::steady_clock::time_point{};
+      ++operation_heartbeat_sequence_;
+      reset_pregrasp_tracking_locked();
+      watchdog_recovery_pending_ = true;
+      watchdog_release_completed_ = release_completed;
+      watchdog_recovery_control_ = control.id;
+      watchdog_recovery_lease_id_ = request.operation_lease_id;
+      watchdog_release_retry_not_before_ = release_completed ?
+        std::chrono::steady_clock::time_point{} :
+      now + kWatchdogReleaseRetryDelay;
+      if (!release_completed) {
+        log_watchdog_release_failure(cleanup_failure, now);
+      }
+      publish_operation_fault(request.operation_lease_id);
+    }
+
+    return {false,
+      "Failed to create cabinet grasp constraint: " + failure +
+      (cleanup_failure.empty() ? "" :
+      "; fail-safe cleanup is pending: " + cleanup_failure),
+      distance};
+  }
+
   PhysicsOutcome handle_grasp_request(const PhysicsRequest & request)
   {
+    if (!robot_grasp_point_is_finite(
+        request.robot_grasp_point.X(), request.robot_grasp_point.Y(),
+        request.robot_grasp_point.Z()))
+    {
+      return {false,
+        "Robot grasp point must contain three finite link-local coordinates.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
     const auto control_it = control_indices_.find(request.control_id);
     if (control_it == control_indices_.end()) {
       return {false, "Unknown cabinet grasp control: " + request.control_id,
@@ -1398,19 +1913,58 @@ private:
           active_grasp_control_,
           std::numeric_limits<double>::quiet_NaN()};
       }
+      if (!operation_session_matches(
+          active_grasp_control_, active_grasp_lease_id_, control.id,
+          request.operation_lease_id))
+      {
+        return {false,
+          "Cabinet grasp release requires the exact active operation lease "
+          "identity.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
       return release_grasp_constraint();
     }
 
-    if (grasp_is_active() || base_brake_joint_) {
-      if (active_grasp_control_ == control.id &&
-        active_robot_model_ == request.robot_model &&
-        active_robot_link_ == request.robot_link)
-      {
-        return {true, "Cabinet grasp is already attached.", 0.0};
-      }
+    if (request.operation_lease_id.empty()) {
       return {false,
-        "Another cabinet grasp is active: " + active_grasp_control_,
+        "Cabinet grasp attach requires a non-empty operation lease identity.",
         std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (watchdog_recovery_pending_) {
+      return {false,
+        "Cabinet watchdog recovery is still releasing the previous physical "
+        "operation; a new grasp is not yet safe.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (!grasp_is_active() && !base_brake_joint_ &&
+      first_suppressed_control())
+    {
+      return {false,
+        "A prior cabinet grasp is still restoring its collision policy; a "
+        "new grasp is not yet safe.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      if (!operation_heartbeat_authorizes_grasp_locked(request)) {
+        return {false,
+          "Cabinet grasp attach requires a fresh heartbeat from the exact "
+          "active control and global operation lease session.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      if (grasp_is_active() || base_brake_joint_) {
+        if (active_grasp_control_ == control.id &&
+          active_grasp_lease_id_ == request.operation_lease_id &&
+          active_robot_model_ == request.robot_model &&
+          active_robot_link_ == request.robot_link)
+        {
+          return {true, "Cabinet grasp is already attached.", 0.0};
+        }
+        return {false,
+          "Another cabinet grasp or operation lease is active: " +
+          active_grasp_control_,
+          std::numeric_limits<double>::quiet_NaN()};
+      }
     }
     if (request.robot_model.empty() || request.robot_link.empty() ||
       request.robot_base_link.empty())
@@ -1470,11 +2024,13 @@ private:
     const auto target_pose = control.link->WorldPose();
     const auto target_point = target_pose.Pos() +
       target_pose.Rot().RotateVector(control.grasp_point);
-    const double distance =
-      robot_link->WorldPose().Pos().Distance(target_point);
+    const auto robot_pose = robot_link->WorldPose();
+    const auto robot_grasp_point = robot_pose.Pos() +
+      robot_pose.Rot().RotateVector(request.robot_grasp_point);
+    const double distance = robot_grasp_point.Distance(target_point);
     if (!std::isfinite(distance) || distance > grasp_distance_threshold_) {
       return {false,
-        "Robot link is outside the cabinet grasp distance threshold.",
+        "Robot grasp point is outside the cabinet grasp distance threshold.",
         distance};
     }
     auto grasp_axis_world = control.joint->GlobalAxis(0);
@@ -1487,6 +2043,15 @@ private:
     }
     grasp_axis_world.Normalize();
 
+    // Revalidate immediately before the irreversible Gazebo operations and
+    // hold the short session lock through commit.  An active-control change or
+    // same-control lease replacement can therefore never race CreateJoint.
+    std::unique_lock<std::mutex> active_session_lock(active_control_mutex_);
+    if (!operation_heartbeat_authorizes_grasp_locked(request)) {
+      return {false,
+        "Cabinet grasp lease/heartbeat changed before physical attachment.",
+        distance};
+    }
     try {
       // A real mobile manipulator engages its wheel brakes before exerting
       // cabinet forces. Anchor the chassis for the lifetime of the physical
@@ -1510,11 +2075,9 @@ private:
         grasp_joint_ = model_->CreateJoint(
           kRuntimeGraspJointName, "fixed", control.link, robot_link);
         if (!grasp_joint_) {
-          const auto release = release_grasp_constraint();
-          return {false,
-            "Gazebo could not create the cabinet grasp joint." +
-            (release.success ? "" : " Cleanup failed: " + release.message),
-            distance};
+          return recover_failed_grasp_attach(
+            control, request, robot_link,
+            "Gazebo could not create the cabinet grasp joint.", distance);
         }
         // Model::CreateJoint loads the current relative pose; Init activates
         // it without teleporting either model or writing a control angle.
@@ -1533,8 +2096,11 @@ private:
       max_grasp_angle_error_ = 0.0;
       max_grasp_coupling_effort_ = 0.0;
       active_grasp_control_ = control.id;
+      active_grasp_lease_id_ = request.operation_lease_id;
+      active_grasp_control_generation_ = request.active_control_generation;
       active_robot_model_ = request.robot_model;
       active_robot_link_ = request.robot_link;
+      active_robot_grasp_point_ = request.robot_grasp_point;
       publish_grasp_active(true);
       // Once a grasp attaches, the control leaves its pre-grasp phase: the
       // operation's release-settle motion is its own outcome, not an unsafe
@@ -1544,15 +2110,14 @@ private:
       // contact loop when the panel sweeps through the robot. Suppress only
       // the configured moving panel while it is robot-guided; the revolute
       // joint, spring force and grasp constraint remain fully physical.
-      suppress_actuation_collision(control);
+      suppress_actuation_collision(control, request.operation_lease_id);
     } catch (const std::exception & error) {
-      const auto release = release_grasp_constraint();
-      set_actuation_collision_enabled(control, true);
-      return {false,
-        "Failed to create cabinet grasp constraint: " +
-        std::string(error.what()) +
-        (release.success ? "" : "; cleanup failed: " + release.message),
-        distance};
+      return recover_failed_grasp_attach(
+        control, request, robot_link, error.what(), distance);
+    } catch (...) {
+      return recover_failed_grasp_attach(
+        control, request, robot_link,
+        "unknown Gazebo attach exception", distance);
     }
     return {true, "Cabinet grasp attached.", distance};
   }
@@ -1561,6 +2126,7 @@ private:
   {
     const auto released_control = active_grasp_control_;
     const auto released_robot_link = active_robot_link_ptr_;
+    const auto released_robot_grasp_point = active_robot_grasp_point_;
     if (!released_control.empty()) {
       RCLCPP_INFO(
         ros_node_->get_logger(),
@@ -1603,8 +2169,11 @@ private:
       base_brake_joint_.reset();
     }
     active_grasp_control_.clear();
+    active_grasp_lease_id_.clear();
+    active_grasp_control_generation_ = 0U;
     active_robot_model_.clear();
     active_robot_link_.clear();
+    active_robot_grasp_point_.Set(0.0, 0.0, 0.0);
     active_control_link_.reset();
     active_robot_link_ptr_.reset();
     max_grasp_linear_error_ = 0.0;
@@ -1617,7 +2186,7 @@ private:
     max_grasp_coupling_effort_ = 0.0;
     publish_grasp_active(false);
     schedule_actuation_collision_restore(
-      released_control, released_robot_link);
+      released_control, released_robot_link, released_robot_grasp_point);
     return {true, "Cabinet grasp released.", 0.0};
   }
 
@@ -1656,13 +2225,20 @@ private:
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr grasp_active_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     active_control_subscription_;
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
+    operation_heartbeat_subscription_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
+    operation_fault_publisher_;
   std::string reset_service_name_;
   std::string grasp_service_name_;
   std::string grasp_active_topic_;
   std::string active_control_topic_;
+  std::string operation_heartbeat_topic_;
+  std::string operation_fault_topic_;
   double publish_period_{0.05};
   double last_publish_time_{0.0};
   double grasp_distance_threshold_{0.12};
+  double operation_watchdog_timeout_{2.0};
   std::shared_ptr<ServiceCallbackLifetime> callback_lifetime_;
   std::mutex physics_callback_mutex_;
   std::mutex request_mutex_;
@@ -1671,6 +2247,13 @@ private:
   mutable std::mutex active_control_mutex_;
   bool active_control_received_{false};
   std::string active_operation_control_;
+  std::uint64_t active_control_generation_{0U};
+  bool operation_heartbeat_received_{false};
+  std::string operation_heartbeat_lease_id_;
+  std::chrono::steady_clock::time_point operation_last_heartbeat_{};
+  std::uint64_t operation_heartbeat_sequence_{0U};
+  std::unordered_set<std::string> expired_operation_lease_ids_;
+  std::deque<std::string> expired_operation_lease_history_;
   bool pregrasp_disturbance_detected_{false};
   std::string pregrasp_disturbance_control_;
   double pregrasp_max_position_error_{0.0};
@@ -1680,6 +2263,16 @@ private:
   // disturbance detector for the rest of the operation so the post-release
   // detent settle is never misreported as an unsafe approach bump.
   bool grasp_engaged_during_operation_{false};
+  std::chrono::steady_clock::time_point watchdog_monitor_started_at_{};
+  std::chrono::steady_clock::time_point watchdog_last_valid_heartbeat_{};
+  std::string watchdog_activity_control_;
+  std::string watchdog_activity_lease_id_;
+  bool watchdog_recovery_pending_{false};
+  bool watchdog_release_completed_{false};
+  std::string watchdog_recovery_control_;
+  std::string watchdog_recovery_lease_id_;
+  std::chrono::steady_clock::time_point watchdog_release_retry_not_before_{};
+  std::chrono::steady_clock::time_point watchdog_last_release_error_log_{};
 
   gazebo::physics::JointPtr grasp_joint_;
   bool compliant_grasp_active_{false};
@@ -1698,8 +2291,11 @@ private:
   double max_grasp_angle_error_{0.0};
   double max_grasp_coupling_effort_{0.0};
   std::string active_grasp_control_;
+  std::string active_grasp_lease_id_;
+  std::uint64_t active_grasp_control_generation_{0U};
   std::string active_robot_model_;
   std::string active_robot_link_;
+  ignition::math::Vector3d active_robot_grasp_point_{0.0, 0.0, 0.0};
 };
 
 GZ_REGISTER_MODEL_PLUGIN(CabinetStatePlugin)

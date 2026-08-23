@@ -118,7 +118,7 @@
           </noise>
         </camera>
         <plugin
-          name="xczs_arm_camera_plugin"
+          name="xczs_arm_camera_plugin_$(arg gazebo_plugin_instance_id)"
           filename="libgazebo_ros_camera.so">
           <ros>
             <namespace>/xczs/camera</namespace>
@@ -186,7 +186,7 @@
           </noise>
         </ray>
         <plugin
-          name="xczs_body_lidar_plugin"
+          name="xczs_body_lidar_plugin_$(arg gazebo_plugin_instance_id)"
           filename="libgazebo_ros_ray_sensor.so">
           <ros>
             <namespace>/xczs/lidar</namespace>

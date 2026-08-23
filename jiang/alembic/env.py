@@ -1,7 +1,7 @@
 """Alembic 迁移环境：异步引擎 + 应用 metadata。
 
-数据库连接串统一从 ``app.config.settings.database_url`` 读取，与运行时一致，
-保证 SQLite（默认）与 PostgreSQL 两种方言下迁移行为相同。
+数据库连接串统一从 ``app.config.settings.database_url`` 读取，与运行时一致。
+当前配置层只接受文件型 SQLite。
 """
 
 from __future__ import annotations
@@ -25,10 +25,13 @@ from app.tasks.models import TaskProgressEvent, TaskRecord  # noqa: F401
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # 迁移也会在 FastAPI/CLI 进程内程序化执行；不得禁用应用已经配置好的
+    # logger（fileConfig 默认会把它们全部 disabled）。
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
-# 覆盖 alembic.ini 中的 sqlalchemy.url，统一使用应用配置。
-config.set_main_option("sqlalchemy.url", settings.database_url)
+# 程序化迁移可显式传入测试/CLI 数据库；命令行调用仍使用应用配置。
+database_url = str(config.attributes.get("database_url", settings.database_url))
+config.set_main_option("sqlalchemy.url", database_url.replace("%", "%%"))
 
 target_metadata = Base.metadata
 
@@ -61,15 +64,16 @@ async def run_async_migrations() -> None:
         poolclass=pool.NullPool,
         connect_args=(
             {"check_same_thread": False}
-            if settings.database_url.startswith("sqlite")
+            if database_url.startswith("sqlite")
             else {}
         ),
     )
 
-    async with connectable.connect() as connection:
-        await connection.run_sync(_run_migrations)
-
-    await connectable.dispose()
+    try:
+        async with connectable.connect() as connection:
+            await connection.run_sync(_run_migrations)
+    finally:
+        await connectable.dispose()
 
 
 def run_migrations_online() -> None:

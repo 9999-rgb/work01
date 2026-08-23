@@ -23,6 +23,14 @@
     MoveItConfigsBuilder 的 mappings 传入。
   -->
   <xacro:arg name="toolset" default="A" />
+  <!--
+    Gazebo Classic may finish tearing down a replaced model's plugins after
+    DeleteEntity has returned.  The runtime toolset supervisor supplies a new
+    validated value for every robot child so each Gazebo ROS plugin receives a
+    distinct private node name.  This does not affect links, geometry,
+    collision, materials, entity name or topic names.
+  -->
+  <xacro:arg name="gazebo_plugin_instance_id" default="initial" />
 
   <!-- Shared definitions. -->
   <xacro:include filename="components/properties.xacro" />

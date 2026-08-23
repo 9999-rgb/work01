@@ -143,9 +143,23 @@ def _parser() -> argparse.ArgumentParser:
         help="Gazebo 机器人实体名；场景切换时用于 teleport 机器人。",
     )
     parser.add_argument(
+        "--toolset",
+        choices=("A", "B"),
+        default="A",
+        help="当前 URDF/ros2_control 加载的末端工具套装。",
+    )
+    parser.add_argument(
         "--initial-scene",
         default=None,
         help="启动时的活动场景（默认取 scenes.yaml 首个场景）。",
+    )
+    parser.add_argument(
+        "--toolset-supervisor",
+        action="store_true",
+        help=(
+            "要求 /xczs/toolset/status 的世界保活末端切换监督器；"
+            "缺失或切换中时锁住所有运动写入。"
+        ),
     )
     # ── 子系统（三合一） ───────────────────────────────────────────
     parser.add_argument(
@@ -212,6 +226,37 @@ def _build_zenoh_source(args: argparse.Namespace):
         return None
 
 
+def _persist_active_toolset_selection(toolset: str) -> None:
+    """Persist a supervisor-confirmed toolset without touching scene/cabinet.
+
+    The callback is deliberately invoked only after the gateway has adopted a
+    ``ready`` runtime status.  A failed target launch therefore cannot leave a
+    future startup configured for a toolset that was never physically mounted.
+    """
+    normalized = toolset.strip().upper()
+    if normalized not in {"A", "B"}:
+        raise ValueError("toolset must be A or B")
+    from app.assets.store import SqlAssetStore
+    from control_gateway.asset_library import (
+        AssetLibrary,
+        AssetSelection,
+        default_library_root,
+    )
+
+    root = os.environ.get("XCZS_ASSETS_DIR") or default_library_root()
+    library = AssetLibrary(root, store=SqlAssetStore())
+    current = library.load_selection()
+    if current.toolset == normalized:
+        return
+    library.save_selection(
+        AssetSelection(
+            scene=current.scene,
+            cabinet=current.cabinet,
+            toolset=normalized,
+        )
+    )
+
+
 def main() -> None:
     """解析参数、构造子系统、创建 FastAPI app 并启动 uvicorn。"""
     args = _parser().parse_args()
@@ -244,7 +289,12 @@ def main() -> None:
         scenes_config_path=args.scenes_config,
         cabinet_xacro_path=args.cabinet_xacro,
         robot_entity_name=args.robot_entity,
+        toolset=args.toolset,
         initial_scene=args.initial_scene,
+        toolset_supervisor_required=bool(
+            getattr(args, "toolset_supervisor", False)
+        ),
+        toolset_persist_callback=_persist_active_toolset_selection,
         allowed_origins=allowed_origins,
         fatal_callback=fatal_callback,
         task_record_sink=task_record_store,

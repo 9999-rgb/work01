@@ -94,6 +94,17 @@ class _FakeControlServer:
         self.sse_last_event_id: Optional[str] = None
         self.timeline_request: Optional[tuple[str, int, int]] = None
         self.sse_error: Optional[BaseException] = None
+        self.toolset_switch_requests: list[tuple[str, int]] = []
+        self.toolset_runtime = {
+            "managed": True,
+            "state": "ready",
+            "stage": "ready",
+            "ready": True,
+            "active_toolset": "A",
+            "target_toolset": None,
+            "generation": 7,
+            "last_error": None,
+        }
 
     def health(self) -> Dict[str, Any]:
         self.health_calls += 1
@@ -146,6 +157,34 @@ class _FakeControlServer:
             "topics": {},
             "joint_count": 3,
             "manual_joints": [],
+        }
+
+    def toolset_status(self) -> Dict[str, Any]:
+        return dict(self.toolset_runtime)
+
+    def request_toolset_switch(
+        self,
+        toolset: str,
+        *,
+        expected_generation: int = 0,
+    ) -> Dict[str, Any]:
+        self.toolset_switch_requests.append((toolset, expected_generation))
+        self.toolset_runtime.update(
+            {
+                "state": "switching",
+                "stage": "queued",
+                "ready": False,
+                "target_toolset": toolset,
+                "generation": self.toolset_runtime["generation"] + 1,
+            }
+        )
+        return {
+            "accepted": True,
+            "state": "switching",
+            "active_toolset": "A",
+            "target_toolset": toolset,
+            "generation": self.toolset_runtime["generation"],
+            "message": "toolset switch accepted",
         }
 
     def publish_cmd_vel(self, linear_y: float, angular_z: float) -> Tuple[float, float]:
@@ -524,6 +563,28 @@ class FastAPIAppContractTest(unittest.TestCase):
         response = self.client.get("/robot/capabilities")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["schema_version"], 1)
+
+    def test_toolset_status_and_switch_work_when_auth_is_disabled(self) -> None:
+        status = self.client.get("/robot/toolset/status")
+        self.assertEqual(status.status_code, 200, status.text)
+        self.assertTrue(status.json()["managed"])
+        self.assertEqual(status.json()["generation"], 7)
+
+        switched = self.client.post(
+            "/robot/toolset/switch",
+            json={"toolset": "B", "expected_generation": 7},
+        )
+        self.assertEqual(switched.status_code, 202, switched.text)
+        self.assertEqual(self.fake.toolset_switch_requests, [("B", 7)])
+        self.assertEqual(switched.json()["state"], "switching")
+
+    def test_toolset_switch_validates_optimistic_generation_shape(self) -> None:
+        response = self.client.post(
+            "/robot/toolset/switch",
+            json={"toolset": "B", "expected_generation": -1},
+        )
+        self.assertEqual(response.status_code, 400, response.text)
+        self.assertEqual(self.fake.toolset_switch_requests, [])
 
     def test_task_navigate_returns_202(self) -> None:
         response = self.client.post(
@@ -1136,6 +1197,28 @@ class FastAPIAuthGateTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["auth_required"])
 
+    def test_toolset_status_is_public_for_runtime_liveness(self) -> None:
+        response = self.client.get("/robot/toolset/status")
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertTrue(response.json()["managed"])
+
+    def test_history_page_is_public_for_its_login_flow_but_history_api_is_not(
+        self,
+    ) -> None:
+        from fastapi.testclient import TestClient
+
+        from app.main import create_app
+
+        app = create_app(
+            control_server=_FakeControlServer(),
+            enable_db=False,
+            auth_enabled=True,
+            static_dir=JIANG_DIR,
+        )
+        client = TestClient(app)
+        self.assertEqual(client.get("/history.html").status_code, 200)
+        self.assertEqual(client.get("/task/history").status_code, 401)
+
     def test_admin_creates_operator(self) -> None:
         token = self._login()
         response = self.client.post(
@@ -1250,6 +1333,30 @@ class FastAPIAuthGateTest(unittest.TestCase):
             "/users", headers={"Authorization": f"Bearer {op_token}"}
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_operator_cannot_switch_robot_toolset(self) -> None:
+        admin_token = self._login()
+        created = self.client.post(
+            "/users",
+            json={
+                "username": "toolset_operator",
+                "password": "operator-pass",
+                "role": "operator",
+            },
+            headers={"Authorization": f"Bearer {admin_token}"},
+        )
+        self.assertEqual(created.status_code, 201, created.text)
+        operator_token = self.client.post(
+            "/auth/login",
+            json={"username": "toolset_operator", "password": "operator-pass"},
+        ).json()["access_token"]
+
+        response = self.client.post(
+            "/robot/toolset/switch",
+            json={"toolset": "B"},
+            headers={"Authorization": f"Bearer {operator_token}"},
+        )
+        self.assertEqual(response.status_code, 403, response.text)
 
     def _login(self) -> str:
         response = self.client.post(
@@ -1486,6 +1593,7 @@ class SecurityConfigUnitTest(unittest.TestCase):
             scenes_config="scenes.yaml",
             cabinet_xacro="cabinet.urdf.xacro",
             robot_entity="xczs_inspection_robot",
+            toolset="B",
             initial_scene=None,
             camera_topic="/camera/image_raw",
             lidar_topic="/scan",
@@ -1520,6 +1628,7 @@ class SecurityConfigUnitTest(unittest.TestCase):
             server_cls.call_args.kwargs["fatal_callback"],
             fatal_callback,
         )
+        self.assertEqual("B", server_cls.call_args.kwargs["toolset"])
         build_sensors.assert_called_once_with(args, fatal_callback)
         self.assertIs(run.call_args.args[0], app)
         self.assertFalse(run.call_args.kwargs["access_log"])

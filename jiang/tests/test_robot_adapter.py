@@ -262,7 +262,7 @@ class RobotAdapterTest(unittest.TestCase):
             / "cabinet_robot_adapter.yaml"
         )
 
-        adapter = load(path)
+        adapter = load(path, toolset="A")
 
         self.assertEqual("odom", adapter.planning_frame)
         self.assertEqual("map", adapter.navigation_frame)
@@ -273,28 +273,23 @@ class RobotAdapterTest(unittest.TestCase):
                 "right_arm",
                 "three_cylinder",
                 "two_cylinder",
-                "rocker",
-                "rotate_button",
             ),
             adapter.joint_group_names,
         )
-        self.assertEqual(6, len(adapter.controller_groups))
-        self.assertEqual(23, len(adapter.manual_joints))
+        self.assertEqual("A", adapter.active_toolset)
+        self.assertEqual(4, len(adapter.controller_groups))
+        self.assertEqual(19, len(adapter.manual_joints))
         self.assertEqual(
             "/xczs/left_arm_controller/joint_trajectory",
             adapter.controller_topic_for_group("left_arm"),
         )
-        self.assertEqual(
-            "/xczs/rotate_button_controller/follow_joint_trajectory/"
-            "_action/status",
-            adapter.status_topic_for_group("rotate_button"),
-        )
+        self.assertIsNone(adapter.status_topic_for_group("rotate_button"))
         self.assertEqual(7, len(adapter.joint_names_for_group("left_arm")))
         self.assertEqual(7, len(adapter.joint_names_for_group("right_arm")))
         self.assertEqual(3, len(adapter.joint_names_for_group("three_cylinder")))
         self.assertEqual(2, len(adapter.joint_names_for_group("two_cylinder")))
-        self.assertEqual(1, len(adapter.joint_names_for_group("rocker")))
-        self.assertEqual(3, len(adapter.joint_names_for_group("rotate_button")))
+        self.assertEqual(0, len(adapter.joint_names_for_group("rocker")))
+        self.assertEqual(0, len(adapter.joint_names_for_group("rotate_button")))
         self.assertEqual("map", adapter.reset_base_pose.frame_id)
         self.assertEqual(0.0, adapter.reset_base_pose.x)
         self.assertEqual(0.0, adapter.reset_base_pose.y)
@@ -306,7 +301,24 @@ class RobotAdapterTest(unittest.TestCase):
             joint.name: joint.default_position for joint in adapter.manual_joints
         }
         self.assertEqual(0.0, defaults["r_three_cyl_finger3_joint"])
-        self.assertEqual(0.0, defaults["l_rocker_rotor_joint"])
+        self.assertNotIn("l_rocker_rotor_joint", defaults)
+        self.assertEqual(
+            (
+                ("r_three_cyl_finger1_joint", 0.0),
+                ("r_three_cyl_finger2_joint", 0.0),
+                ("r_three_cyl_finger3_joint", 0.0),
+            ),
+            adapter.calibration_joint_targets,
+        )
+        self.assertEqual(0.001, adapter.calibration_joint_tolerance)
+        self.assertEqual(
+            0.001,
+            adapter.reset_tolerance_for_joint("r_three_cyl_finger1_joint"),
+        )
+        self.assertEqual(
+            0.02,
+            adapter.reset_tolerance_for_joint("l_arm_0_joint"),
+        )
         stations = dict(adapter.control_navigation_stations)
         self.assertEqual(33, len(stations))
         rear_door = stations["cabinet_rear_door"]
@@ -323,6 +335,53 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(rear_door.base_yaw_offset, switch.base_yaw_offset)
         self.assertEqual(0.780, switch.standoff)
         self.assertLess(switch.standoff, rear_door.standoff)
+
+    def test_project_adapter_selects_only_toolset_b_joints(self) -> None:
+        path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+
+        adapter = load(path, toolset="b")
+
+        self.assertEqual("B", adapter.active_toolset)
+        self.assertEqual(
+            ("left_arm", "right_arm", "rocker", "rotate_button"),
+            adapter.joint_group_names,
+        )
+        self.assertEqual(18, len(adapter.manual_joints))
+        self.assertIn("l_rocker_rotor_joint", adapter.manual_joint_names)
+        self.assertIn("r_rotbtn_jaw2_joint", adapter.manual_joint_names)
+        self.assertNotIn(
+            "r_three_cyl_finger1_joint",
+            adapter.manual_joint_names,
+        )
+        self.assertNotIn(
+            "l_two_cyl_finger1_joint",
+            adapter.manual_joint_names,
+        )
+        self.assertEqual((), adapter.calibration_joint_targets)
+        self.assertEqual(0.001, adapter.calibration_joint_tolerance)
+
+    def test_toolset_aware_adapter_requires_explicit_valid_selection(
+        self,
+    ) -> None:
+        path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+
+        with self.assertRaisesRegex(RobotAdapterError, "active toolset"):
+            load(path)
+        with self.assertRaisesRegex(
+            RobotAdapterError,
+            "Unknown active toolset",
+        ):
+            load(path, toolset="C")
 
     def test_navigation_frame_defaults_to_map(self) -> None:
         parameters = _parameters()
@@ -485,7 +544,7 @@ class RobotAdapterTest(unittest.TestCase):
             patch(
                 "control_gateway.runner.load_robot_adapter",
                 return_value=adapter,
-            ),
+            ) as load_adapter_mock,
             patch(
                 "control_gateway.runner.Context",
                 return_value=SimpleNamespace(),
@@ -502,6 +561,7 @@ class RobotAdapterTest(unittest.TestCase):
                 ControlServer(
                     cmd_vel_topic="/legacy/cmd_vel",
                     joint_trajectory_topic="/legacy/joints",
+                    toolset="b",
                 )
 
         self.assertEqual("/adapter/cmd_vel", captured[0][0])
@@ -509,6 +569,20 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("/legacy/cmd_vel", captured[1][0])
         self.assertEqual("/legacy/joints", captured[1][1])
         self.assertEqual(2, validate_profile_mock.call_count)
+        self.assertEqual(
+            ["A", "B"],
+            [
+                call.kwargs["toolset"]
+                for call in validate_profile_mock.call_args_list
+            ],
+        )
+        self.assertEqual(
+            ["A", "B"],
+            [
+                call.kwargs["toolset"]
+                for call in load_adapter_mock.call_args_list
+            ],
+        )
         self.assertEqual(
             "world_map",
             captured_keywords[0]["navigation_frame"],

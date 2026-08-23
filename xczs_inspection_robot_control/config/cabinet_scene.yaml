@@ -9,6 +9,8 @@
     collision_object_prefix: ""
     require_pose_valid: true
     pose_valid_topic: pose_valid
+    # 与 Gazebo 插件一致：高于 1.25 s 最坏正常续约间隔，低于 3 s 租约 TTL。
+    operation_watchdog_timeout: 2.0
 
     # 柜体局部坐标中的导航工位几何。Web inventory 会用完整 RPY
     # 变换 anchor/outward_axis，再沿外法线退让 standoff 得到目标位姿。

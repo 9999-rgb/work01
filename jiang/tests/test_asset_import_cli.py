@@ -54,7 +54,9 @@ def _write_scene_asset(source: Path, name: str = "cli_scene") -> Path:
     (asset / "maps" / "inspection_map.yaml").write_text(
         yaml.safe_dump(MAP_FIELDS, sort_keys=False), encoding="utf-8"
     )
-    (asset / "maps" / "inspection_map.pgm").write_bytes(b"\x00")
+    (asset / "maps" / "inspection_map.pgm").write_bytes(
+        b"P5\n200 200\n255\n" + b"\xfe" * (200 * 200)
+    )
     (asset / "scenes.yaml").write_text(
         yaml.safe_dump(_scene_document(name), sort_keys=False), encoding="utf-8"
     )
@@ -114,6 +116,18 @@ class AssetImportCliTest(unittest.TestCase):
                 "SELECT scene, cabinet FROM selection WHERE id=1"
             ).fetchone()
         return (None, None) if row is None else tuple(row)
+
+    def test_help_does_not_depend_on_runtime_database_configuration(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(CLI), "--help"],
+            capture_output=True,
+            text=True,
+            cwd=str(WORKSPACE),
+            env={**os.environ, "XCZS_DATABASE_URL": "postgresql://invalid"},
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("usage:", result.stdout)
 
     def test_import_select_print_env_end_to_end(self) -> None:
         source = _write_scene_asset(self.directory / "source")

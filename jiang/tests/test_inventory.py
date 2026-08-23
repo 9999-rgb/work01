@@ -226,7 +226,10 @@ class CabinetInventoryTest(unittest.TestCase):
             config / "cabinet_instances.yaml",
             config / "cabinet_scene.yaml",
         )
-        adapter = load_robot_adapter(config / "cabinet_robot_adapter.yaml")
+        adapter = load_robot_adapter(
+            config / "cabinet_robot_adapter.yaml",
+            toolset="A",
+        )
         instances = {instance.name: instance for instance in inventory}
 
         expected_y = {

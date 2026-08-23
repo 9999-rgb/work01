@@ -1,8 +1,9 @@
 """FastAPI 应用配置。
 
 使用 pydantic-settings 从环境变量读取，前缀 ``XCZS_`` 覆盖默认值。
-数据库连接串通过 ``XCZS_DATABASE_URL`` 注入，默认 SQLite (WAL)；切换
-PostgreSQL 仅需修改该变量，无需改代码。
+数据库连接串通过 ``XCZS_DATABASE_URL`` 注入。当前运行时明确支持文件型
+SQLite（WAL）；其他数据库方言在同步资产/任务 store 与迁移锁完成适配前拒绝
+启动，避免配置看似生效但运行到一半才失败。
 """
 
 from __future__ import annotations
@@ -12,14 +13,55 @@ import secrets
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 # ``jiang/`` 目录（本文件所在目录的上一级即为工作区根目录的相对基准）。
 _JIANG_DIR = Path(__file__).resolve().parents[1]
 _WORKSPACE = _JIANG_DIR.parent
 
 logger = logging.getLogger(__name__)
+
+
+def validate_sqlite_file_url(
+    value: str,
+    *,
+    allow_sync_driver: bool = False,
+) -> str:
+    """Validate the exact SQLite URL subset supported by this project."""
+
+    try:
+        parsed = make_url(value)
+    except Exception as error:
+        raise ValueError("XCZS_DATABASE_URL 不是有效的 SQLAlchemy URL") from error
+    allowed_drivers = {"sqlite+aiosqlite"}
+    if allow_sync_driver:
+        allowed_drivers.add("sqlite")
+    if parsed.drivername not in allowed_drivers:
+        raise ValueError(
+            "当前仅支持 sqlite+aiosqlite 文件数据库"
+            + ("（迁移器也接受 sqlite）" if allow_sync_driver else "")
+            + "；PostgreSQL 尚未完成同步 store 与跨进程迁移锁适配"
+        )
+    if any(
+        part is not None
+        for part in (parsed.host, parsed.username, parsed.password, parsed.port)
+    ):
+        raise ValueError(
+            "XCZS_DATABASE_URL 必须使用无 authority 的普通文件型 SQLite URL"
+        )
+    if (
+        not parsed.database
+        or parsed.database == ":memory:"
+        or parsed.database.startswith("file:")
+        or bool(parsed.query)
+    ):
+        raise ValueError(
+            "XCZS_DATABASE_URL 必须指向普通文件型 SQLite 数据库，"
+            "不支持内存库、SQLite URI 或 URL 查询参数"
+        )
+    return value
 
 
 def _generate_ephemeral_secret_key() -> str:
@@ -45,8 +87,13 @@ class Settings(BaseSettings):
     )
 
     # ── 数据库 ──────────────────────────────────────────────────────
-    # 默认 SQLite WAL；PostgreSQL 只需改为 postgresql+asyncpg://...
+    # 当前仅支持文件型 SQLite；异步 Web 引擎要求 aiosqlite 驱动。
     database_url: str = f"sqlite+aiosqlite:///{_JIANG_DIR / 'data' / 'xczs.db'}"
+
+    @field_validator("database_url")
+    @classmethod
+    def _supported_database_url(cls, value: str) -> str:
+        return validate_sqlite_file_url(value)
 
     # ── 认证 ────────────────────────────────────────────────────────
     # 未配置时为当前进程生成强随机密钥，避免使用可预测的开发

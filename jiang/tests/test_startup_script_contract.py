@@ -38,13 +38,31 @@ class StartupScriptContractTests(unittest.TestCase):
         preflight_exit = self.startup_source.index(
             'if [ "$PREFLIGHT_ONLY" = "true" ]'
         )
-        contract_check = self.startup_source.index("check_adapter_contract")
+        adapter_check = self.startup_source.index("check_adapter_contract")
+        cabinet_model_check = self.startup_source.index("check_cabinet_model")
+        scene_config_check = self.startup_source.index("check_scene_config")
         port_check = self.startup_source.index(
             '_require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_TCP_PORT"'
         )
 
-        self.assertLess(contract_check, preflight_exit)
+        self.assertLess(adapter_check, cabinet_model_check)
+        self.assertLess(cabinet_model_check, scene_config_check)
+        self.assertLess(scene_config_check, preflight_exit)
         self.assertLess(port_check, preflight_exit)
+        cabinet_model_command = self.startup_source[
+            cabinet_model_check:scene_config_check
+        ]
+        adapter_command = self.startup_source[
+            adapter_check:cabinet_model_check
+        ]
+        scene_config_command = self.startup_source[
+            scene_config_check:preflight_exit
+        ]
+        self.assertIn('--toolset "$_toolset_contract"', cabinet_model_command)
+        self.assertIn('--toolset "$_toolset_contract"', adapter_command)
+        self.assertIn('TOOLSET_CONTRACTS=(A B)', self.startup_source)
+        self.assertIn('--scenes "$SCENES_CONFIG"', scene_config_command)
+        self.assertIn('--nav2-params "$NAV2_PARAMS_FILE"', scene_config_command)
         self.assertIn(
             'if [ "$ZENOH_REQUIRED" = "true" ] && '
             '[ ! -x "$ZENOH_BRIDGE" ]',
@@ -52,6 +70,11 @@ class StartupScriptContractTests(unittest.TestCase):
         )
         self.assertIn("create_app", self.startup_source)
         self.assertIn("from control_gateway import ControlServer", self.startup_source)
+        web_start = self.startup_source.index(
+            'control_server.py \\\n'
+        )
+        web_start_block = self.startup_source[web_start:web_start + 1800]
+        self.assertIn('--toolset "$TOOLSET"', web_start_block)
         for package in (
             "xczs_inspection_robot_control",
             "xczs_inspection_robot_description",
@@ -74,6 +97,106 @@ class StartupScriptContractTests(unittest.TestCase):
         self.assertIn(
             'if [ "$NAV2_ENABLED" = "true" ]', self.startup_source
         )
+
+    def test_web_local_gazebo_uses_a_world_preserving_toolset_supervisor(self) -> None:
+        launch_section = self.startup_source[
+            self.startup_source.index("# ── 6. 启动 Gazebo + 机器人"):
+        ]
+        managed_start = launch_section.index(
+            'if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then'
+        )
+        managed_end = launch_section.index("else\n    # Legacy/special-mode", managed_start)
+        managed = launch_section[managed_start:managed_end]
+
+        self.assertIn(
+            'TOOLSET_HOTSWAP_REQUESTED="${XCZS_TOOLSET_HOTSWAP:-true}"',
+            self.startup_source,
+        )
+        self.assertIn('TOOLSET_HOTSWAP_ACTIVE="true"', self.startup_source)
+        self.assertIn('WORLD_LAUNCH_PID=""', self.startup_source)
+        self.assertIn('TOOLSET_SUPERVISOR_PID=""', self.startup_source)
+        self.assertIn('"gazebo:=true"', managed)
+        self.assertIn('"robot_bringup:=false"', managed)
+        self.assertIn('"cabinet_bringup:=false"', managed)
+        self.assertIn('"spawn_cabinet:=false"', managed)
+        self.assertIn("_read_cabinet_operation_actions()", self.startup_source)
+        self.assertIn("--cabinet-action", managed)
+        self.assertIn(
+            '_start_managed_process WORLD_LAUNCH_PID "Gazebo 世界 launch"',
+            managed,
+        )
+        self.assertIn(
+            '_start_managed_process TOOLSET_SUPERVISOR_PID "末端工具集监督器"',
+            managed,
+        )
+        self.assertIn('--initial-spawn-cabinet "$SPAWN_CABINET"', managed)
+        self.assertIn('--cabinet-bringup "$CABINET_BRINGUP"', managed)
+        self.assertIn('--require-nav2', managed)
+        self.assertIn('--require-cabinet-action', managed)
+        self.assertIn(
+            '"moveit_srdf:=$MOVEIT_SRDF_TEMPLATE"', launch_section
+        )
+        self.assertIn(
+            '"moveit_joint_limits:=$MOVEIT_JOINT_LIMITS_TEMPLATE"',
+            launch_section,
+        )
+        self.assertIn(
+            '"moveit_controllers:=$MOVEIT_CONTROLLERS_TEMPLATE"',
+            launch_section,
+        )
+        self.assertIn('"${toolset_supervisor_args[@]}"', self.startup_source)
+        self.assertIn('toolset_supervisor_args=(--toolset-supervisor)', self.startup_source)
+
+    def test_gazebo_logs_are_per_run_and_runtime_health_allows_switch_window(self) -> None:
+        self.assertIn("_configure_gazebo_log_directory()", self.startup_source)
+        self.assertIn('GAZEBO_LOG_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY/gazebo_logs"', self.startup_source)
+        self.assertIn('export GAZEBO_LOG_PATH="$GAZEBO_LOG_DIRECTORY"', self.startup_source)
+        self.assertIn('_configure_gazebo_log_directory', self.startup_source)
+        self.assertIn("_toolset_transition_is_active()", self.startup_source)
+        monitor_start = self.startup_source.index("_monitor_managed_processes()")
+        monitor_end = self.startup_source.index("_start_bridge()", monitor_start)
+        monitor = self.startup_source[monitor_start:monitor_end]
+        self.assertIn("_toolset_transition_is_active", monitor)
+        self.assertIn("/robot/toolset/status", monitor)
+        self.assertLess(
+            monitor.index("/robot/toolset/status"),
+            monitor.index('"http://${_READY_URL_HOST}:$CONTROL_PORT/health"'),
+        )
+
+    def test_asset_selection_database_errors_are_not_silenced(self) -> None:
+        selection_start = self.startup_source.index('if ! ASSET_SELECTION_LINES="$(')
+        selection_end = self.startup_source.index(
+            'while IFS=\'=\' read -r _asset_key', selection_start
+        )
+        selection_block = self.startup_source[selection_start:selection_end]
+
+        self.assertIn("--print-env", selection_block)
+        self.assertNotIn("|| true", selection_block)
+        self.assertNotIn("2>/dev/null", selection_block)
+        self.assertIn("数据库迁移失败", selection_block)
+
+    def test_help_and_invalid_arguments_are_handled_before_database_access(self) -> None:
+        argument_preflight = self.startup_source.index(
+            'for _startup_argument in "$@"'
+        )
+        selection_start = self.startup_source.index('if ! ASSET_SELECTION_LINES="$(')
+        self.assertLess(argument_preflight, selection_start)
+        preflight = self.startup_source[argument_preflight:selection_start]
+        self.assertIn('-h|--help)', preflight)
+        self.assertIn('未知选项', preflight)
+
+    def test_toolset_selection_never_requests_an_automatic_restart(self) -> None:
+        run_all_source = (ROOT / "run_all.sh").read_text(encoding="utf-8")
+
+        self.assertIn('export XCZS_ACTIVE_TOOLSET="$TOOLSET"', self.startup_source)
+        self.assertNotIn("XCZS_RESTART_MARKER", self.startup_source)
+        self.assertNotIn("restart.marker", self.startup_source)
+        self.assertNotIn("return 42", self.startup_source)
+        self.assertIn(
+            'exec "$SCRIPT_DIR/jiang/start_xczs_bridge.sh" "$@"',
+            run_all_source,
+        )
+        self.assertNotIn("工具套装已切换，自动重启", run_all_source)
 
     def test_network_isolation_is_explicit_and_consistent(self) -> None:
         self.assertIn(

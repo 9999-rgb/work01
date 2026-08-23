@@ -98,6 +98,7 @@
     <input type="text" id="loginUser" placeholder="用户名" autocomplete="username">
     <input type="password" id="loginPass" placeholder="密码" autocomplete="current-password">
     <button id="loginBtn" class="btn-primary">登录</button>
+    <button id="logoutBtn" hidden>退出登录</button>
     <span class="status-line" id="loginStatus">未登录</span>
   </div>
 </header>
@@ -166,6 +167,7 @@
   })();
 
   let authToken = sessionStorage.getItem('xczs_token') || '';
+  let authRequired = true;
   let currentPage = 1;
   const PAGE_SIZE = 20;
 
@@ -185,6 +187,7 @@
       authToken = '';
       sessionStorage.removeItem('xczs_token');
       updateLoginStatus();
+      clearRenderedHistory();
       throw new Error('登录已失效，请重新登录');
     }
     if (!response.ok) {
@@ -217,8 +220,19 @@
 
   function updateLoginStatus() {
     const el = $('loginStatus');
-    if (authToken) { el.textContent = '已登录'; el.classList.add('logged-in'); }
-    else { el.textContent = '未登录'; el.classList.remove('logged-in'); }
+    const loggedIn = Boolean(authToken);
+    const noAuth = !authRequired;
+    if (loggedIn || noAuth) {
+      el.textContent = loggedIn ? '已登录' : '鉴权未启用';
+      el.classList.add('logged-in');
+    } else {
+      el.textContent = '未登录';
+      el.classList.remove('logged-in');
+    }
+    $('loginUser').hidden = noAuth || loggedIn;
+    $('loginPass').hidden = noAuth || loggedIn;
+    $('loginBtn').hidden = noAuth || loggedIn;
+    $('logoutBtn').hidden = !loggedIn;
   }
 
   async function login() {
@@ -239,6 +253,24 @@
     authToken = '';
     sessionStorage.removeItem('xczs_token');
     updateLoginStatus();
+    clearRenderedHistory();
+  }
+
+  function element(tag, text, className) {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = String(text);
+    return node;
+  }
+
+  function clearRenderedHistory() {
+    $('summaryCards').replaceChildren();
+    $('rows').replaceChildren();
+    $('pageInfo').textContent = '';
+    $('prevBtn').disabled = true;
+    $('nextBtn').disabled = true;
+    $('detailBody').replaceChildren();
+    $('detailOverlay').classList.remove('open');
   }
 
   // ── 摘要卡 ─────────────────────────────────────────────────
@@ -253,9 +285,14 @@
       { k: '平均耗时 导航', v: avgNav !== undefined ? `${avgNav.toFixed(1)}s` : '—', cls: 'cyan' },
       { k: '平均耗时 操作', v: avgOp !== undefined ? `${avgOp.toFixed(1)}s` : '—', cls: 'cyan' },
     ];
-    $('summaryCards').innerHTML = cards.map(c =>
-      `<div class="card"><div class="k">${c.k}</div><div class="v ${c.cls}">${c.v}</div></div>`
-    ).join('');
+    const fragment = document.createDocumentFragment();
+    cards.forEach((card) => {
+      const root = element('div', undefined, 'card');
+      root.append(element('div', card.k, 'k'));
+      root.append(element('div', card.v, `v ${card.cls}`.trim()));
+      fragment.append(root);
+    });
+    $('summaryCards').replaceChildren(fragment);
   }
 
   // ── 列表 ───────────────────────────────────────────────────
@@ -278,27 +315,36 @@
     const data = await api('/task/history?' + currentFilters());
     const tbody = $('rows');
     if (!data.items || !data.items.length) {
-      tbody.innerHTML = '<tr><td colspan="9" class="empty">暂无任务记录</td></tr>';
+      const row = document.createElement('tr');
+      const cell = element('td', '暂无任务记录', 'empty');
+      cell.colSpan = 9;
+      row.append(cell);
+      tbody.replaceChildren(row);
     } else {
-      tbody.innerHTML = data.items.map((it) => {
+      const fragment = document.createDocumentFragment();
+      data.items.forEach((it) => {
         const failure = it.failure_code_name
           ? `${it.failure_code_name}${it.failure_reason ? '：' + it.failure_reason : ''}`
           : '—';
-        return `<tr>
-          <td>${fmtTime(it.created_at)}</td>
-          <td>${it.type_name || it.type}</td>
-          <td class="${statusClass(it.status)}">${it.status_name || it.status}</td>
-          <td>${it.cabinet || '—'}</td>
-          <td>${it.control_id ? (it.control_name || it.control_id) : '—'}</td>
-          <td>${it.command_name || it.command || '—'}</td>
-          <td>${failure}</td>
-          <td>${fmtDuration(it.duration_seconds)}</td>
-          <td><button class="btn-outline" data-task="${it.task_id}">详情</button></td>
-        </tr>`;
-      }).join('');
-      tbody.querySelectorAll('button[data-task]').forEach((btn) => {
-        btn.addEventListener('click', () => openDetail(btn.dataset.task));
+        const row = document.createElement('tr');
+        row.append(
+          element('td', fmtTime(it.created_at)),
+          element('td', it.type_name || it.type || '—'),
+          element('td', it.status_name || it.status || '—', statusClass(it.status)),
+          element('td', it.cabinet || '—'),
+          element('td', it.control_id ? (it.control_name || it.control_id) : '—'),
+          element('td', it.command_name || it.command || '—'),
+          element('td', failure),
+          element('td', fmtDuration(it.duration_seconds)),
+        );
+        const detailCell = document.createElement('td');
+        const detailButton = element('button', '详情', 'btn-outline');
+        detailButton.addEventListener('click', () => openDetail(it.task_id));
+        detailCell.append(detailButton);
+        row.append(detailCell);
+        fragment.append(row);
       });
+      tbody.replaceChildren(fragment);
     }
     $('pageInfo').textContent = `第 ${data.page} / ${data.total_pages || 1} 页 · 共 ${data.total} 条`;
     $('prevBtn').disabled = data.page <= 1;
@@ -319,23 +365,49 @@
       ['失败码', r.failure_code_name || r.failure_code || '—'],
       ['失败原因', r.failure_reason || '—'],
     ];
-    const events = (detail.progress_events || []).map((e) => `
-      <div class="tl-row">
-        <span class="t">${fmtTime(e.timestamp)}</span>
-        <span class="phase">${e.phase}</span>
-        <span class="bar">${(e.progress * 100).toFixed(0)}%</span>
-        <span class="msg">${e.message || ''}</span>
-      </div>`).join('');
-    $('detailBody').innerHTML = `
-      <div class="kv">${kv.map(([k, v]) => `<div><span class="k">${k}</span><span class="v">${v || '—'}</span></div>`).join('')}</div>
-      <h3 style="color:var(--text-dim);font-size:13px;margin:6px 0">请求</h3>
-      <pre class="payload">${r.request ? JSON.stringify(r.request, null, 2) : '—'}</pre>
-      <h3 style="color:var(--text-dim);font-size:13px;margin:6px 0">结果</h3>
-      <pre class="payload">${r.result ? JSON.stringify(r.result, null, 2) : '—'}</pre>
-      <div class="timeline">
-        <h3>进度明细（${detail.progress_events ? detail.progress_events.length : 0}）</h3>
-        ${events || '<div class="empty">无进度事件</div>'}
-      </div>`;
+    const body = document.createDocumentFragment();
+    const keyValues = element('div', undefined, 'kv');
+    kv.forEach(([key, value]) => {
+      const row = document.createElement('div');
+      row.append(
+        element('span', key, 'k'),
+        element('span', value || '—', 'v'),
+      );
+      keyValues.append(row);
+    });
+    body.append(keyValues);
+
+    const appendPayload = (title, value) => {
+      const heading = element('h3', title);
+      heading.style.cssText = 'color:var(--text-dim);font-size:13px;margin:6px 0';
+      const payload = element('pre', undefined, 'payload');
+      payload.textContent = value ? JSON.stringify(value, null, 2) : '—';
+      body.append(heading, payload);
+    };
+    appendPayload('请求', r.request);
+    appendPayload('结果', r.result);
+
+    const timeline = element('div', undefined, 'timeline');
+    const events = Array.isArray(detail.progress_events) ? detail.progress_events : [];
+    timeline.append(element('h3', `进度明细（${events.length}）`));
+    if (!events.length) {
+      timeline.append(element('div', '无进度事件', 'empty'));
+    } else {
+      events.forEach((event) => {
+        const progress = Number(event.progress);
+        const progressText = Number.isFinite(progress) ? `${(progress * 100).toFixed(0)}%` : '—';
+        const row = element('div', undefined, 'tl-row');
+        row.append(
+          element('span', fmtTime(event.timestamp), 't'),
+          element('span', event.phase || '—', 'phase'),
+          element('span', progressText, 'bar'),
+          element('span', event.message || '', 'msg'),
+        );
+        timeline.append(row);
+      });
+    }
+    body.append(timeline);
+    $('detailBody').replaceChildren(body);
   }
 
   async function openDetail(taskId) {
@@ -358,6 +430,7 @@
   }
 
   $('loginBtn').addEventListener('click', login);
+  $('logoutBtn').addEventListener('click', logout);
   $('loginPass').addEventListener('keydown', (e) => { if (e.key === 'Enter') login(); });
   $('refreshBtn').addEventListener('click', () => { currentPage = 1; refresh(); });
   $('prevBtn').addEventListener('click', () => { if (currentPage > 1) { currentPage -= 1; loadList(); } });
@@ -370,8 +443,20 @@
     if (e.key === 'Escape') $('detailOverlay').classList.remove('open');
   });
 
-  updateLoginStatus();
-  if (authToken) refresh();
+  async function initialize() {
+    try {
+      const response = await fetch(ctrlBaseUrl + '/health');
+      const health = response.ok ? await response.json() : null;
+      authRequired = !health || health.auth_required !== false;
+    } catch (_) {
+      // 保持默认的 fail-closed 登录状态；查询按钮仍可在网络恢复后重试。
+      authRequired = true;
+    }
+    updateLoginStatus();
+    if (!authRequired || authToken) refresh();
+  }
+
+  initialize();
 })();
 </script>
 </body>

@@ -9,6 +9,7 @@ from xml.etree import ElementTree
 from control_msgs.action import FollowJointTrajectory
 import pytest
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
 import xacro
 import yaml
 
@@ -44,6 +45,7 @@ class _Node:
         self.logger = _Logger()
         self.destroyed = False
         self.message = message
+        self.publishers = []
 
     def get_logger(self):
         return self.logger
@@ -56,8 +58,23 @@ class _Node:
             callback(self.message)
         return object()
 
+    def create_publisher(self, message_type, topic, _qos):
+        assert message_type is Bool
+        assert topic.startswith("/")
+        publisher = _Publisher()
+        self.publishers.append((topic, publisher))
+        return publisher
+
     def destroy_node(self):
         self.destroyed = True
+
+
+class _Publisher:
+    def __init__(self):
+        self.messages = []
+
+    def publish(self, message):
+        self.messages.append(message)
 
 
 class _Client:
@@ -78,6 +95,12 @@ def _joint_state(positions):
     return message
 
 
+def _mounted_joint_state(module, arm_positions, toolset="A"):
+    positions = dict(arm_positions)
+    positions.update({name: 0.0 for name in module.TOOLSET_JOINTS[toolset]})
+    return _joint_state(positions)
+
+
 def _ready_clients(_node, action_type, _action_name):
     assert action_type is FollowJointTrajectory
     return _Client()
@@ -86,7 +109,7 @@ def _ready_clients(_node, action_type, _action_name):
 def test_verifies_measured_pose_without_sending_a_trajectory():
     module = _load_module()
     expected = {joint: float(index) / 10.0 for index, joint in enumerate(module.ARM_JOINTS)}
-    node = _Node(_joint_state(expected))
+    node = _Node(_mounted_joint_state(module, expected))
     with patch.object(module, "ActionClient", side_effect=_ready_clients):
         module.verify_initial_pose(node, expected, timeout_sec=0.0)
 
@@ -101,7 +124,7 @@ def test_missing_controller_is_a_startup_failure():
     with patch.object(module, "ActionClient", side_effect=client):
         with pytest.raises(module.InitialPoseError, match="left arm"):
             module.verify_initial_pose(
-                _Node(_joint_state(expected)),
+                _Node(_mounted_joint_state(module, expected)),
                 expected,
                 timeout_sec=0.0,
             )
@@ -115,9 +138,69 @@ def test_pose_mismatch_is_a_startup_failure():
     with patch.object(module, "ActionClient", side_effect=_ready_clients):
         with pytest.raises(module.InitialPoseError, match="r_arm_6_joint"):
             module.verify_initial_pose(
+                _Node(_mounted_joint_state(module, measured)),
+                expected,
+                timeout_sec=0.0,
+            )
+
+
+def test_successful_verification_releases_spawn_only_joint_hold():
+    module = _load_module()
+    node = _Node()
+
+    with patch.object(module.rclpy, "spin_once") as spin_once:
+        publisher = module.release_startup_joint_hold(node)
+
+    assert node.publishers == [(module.DEFAULT_JOINT_HOLD_TOPIC, publisher)]
+    assert len(publisher.messages) == 1
+    assert publisher.messages[0].data is False
+    spin_once.assert_called_once_with(
+        node,
+        timeout_sec=module.POLL_INTERVAL_SEC,
+    )
+
+
+def test_toolset_b_requires_only_its_own_tool_actions_and_joint_state():
+    module = _load_module()
+    expected = {joint: 0.0 for joint in module.ARM_JOINTS}
+    node = _Node(_mounted_joint_state(module, expected, toolset="B"))
+    observed_actions = []
+
+    def client(_node, _action_type, action_name):
+        observed_actions.append(action_name)
+        return _Client()
+
+    with patch.object(module, "ActionClient", side_effect=client):
+        module.verify_initial_pose(
+            node,
+            expected,
+            timeout_sec=0.0,
+            toolset="B",
+        )
+
+    assert set(observed_actions) == {
+        action for _label, action in module.ARM_CONTROLLERS
+    } | {
+        action for _label, action in module.TOOLSET_CONTROLLERS["B"]
+    }
+
+
+def test_missing_mounted_tool_joint_is_a_startup_failure():
+    module = _load_module()
+    expected = {joint: 0.0 for joint in module.ARM_JOINTS}
+    # Build the mapping directly so the missing-joint assertion names the
+    # physical B tool rather than an unrelated arm joint.
+    measured = dict(expected)
+    measured.update({name: 0.0 for name in module.TOOLSET_JOINTS["B"]})
+    missing = module.TOOLSET_JOINTS["B"][0]
+    measured.pop(missing)
+    with patch.object(module, "ActionClient", side_effect=_ready_clients):
+        with pytest.raises(module.InitialPoseError, match=missing):
+            module.verify_initial_pose(
                 _Node(_joint_state(measured)),
                 expected,
                 timeout_sec=0.0,
+                toolset="B",
             )
 
 

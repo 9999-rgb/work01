@@ -100,7 +100,10 @@
       - r_three_cyl_finger2_joint
       - r_three_cyl_finger3_joint
     command_interfaces:
-      - position
+      # Keep position goals at the public JointTrajectory boundary. The JTC
+      # maps its tracking error to effort, avoiding Gazebo Classic's
+      # prismatic SetPosition Anchor spam while preserving real motion.
+      - effort
     state_interfaces:
       - position
       - velocity
@@ -115,6 +118,22 @@
       r_three_cyl_finger1_joint: {trajectory: 0.10, goal: 0.05}
       r_three_cyl_finger2_joint: {trajectory: 0.10, goal: 0.05}
       r_three_cyl_finger3_joint: {trajectory: 0.02, goal: 0.01}
+    gains:
+      r_three_cyl_finger1_joint:
+        p: 200.0
+        d: 4.0
+        i: 0.0
+        i_clamp: 0.0
+      r_three_cyl_finger2_joint:
+        p: 200.0
+        d: 4.0
+        i: 0.0
+        i_clamp: 0.0
+      r_three_cyl_finger3_joint:
+        p: 200.0
+        d: 4.0
+        i: 0.0
+        i_clamp: 0.0
 
 /xczs/two_cylinder_controller:
   ros__parameters:
@@ -123,7 +142,7 @@
       - l_two_cyl_finger1_joint
       - l_two_cyl_finger2_joint
     command_interfaces:
-      - position
+      - effort
     state_interfaces:
       - position
       - velocity
@@ -137,3 +156,14 @@
       stopped_velocity_tolerance: 0.05
       l_two_cyl_finger1_joint: {trajectory: 0.10, goal: 0.05}
       l_two_cyl_finger2_joint: {trajectory: 0.10, goal: 0.05}
+    gains:
+      l_two_cyl_finger1_joint:
+        p: 200.0
+        d: 4.0
+        i: 0.0
+        i_clamp: 0.0
+      l_two_cyl_finger2_joint:
+        p: 200.0
+        d: 4.0
+        i: 0.0
+        i_clamp: 0.0

@@ -39,12 +39,12 @@
     reset_joint_tolerance: 0.02
     reset_joint_timeout_sec: 15.0
     reset_joint_duration_sec: 5.0
-    # 双臂机器人共有 6 个 JointTrajectoryController：左/右七轴机械臂，
-    # 以及四个末端工具。控制器输入/状态话题按 ros2_control 约定由
+    # 双臂机器人共支持 6 个 JointTrajectoryController：左/右七轴机械臂，
+    # 以及两套互斥的末端工具。控制器输入/状态话题按 ros2_control 约定由
     # <controller_namespace>/<group>_controller 统一推导，无需逐组重复。
     controller_namespace: /xczs
-    # 有序的分组名决定 Web 手动关节载荷与 reset 轨迹的展平顺序，必须与
-    # 下方 manual_joint_groups 的键一一对应。
+    # 完整的有序分组目录，必须与下方 manual_joint_groups 的键
+    # 一一对应；运行时 Web/reset 顺序由后面的 toolset 子集决定。
     manual_joint_group_names:
       - left_arm
       - right_arm
@@ -82,7 +82,21 @@
         - r_rotbtn_rotate_joint
         - r_rotbtn_jaw1_joint
         - r_rotbtn_jaw2_joint
-    # Web 手动关节命令按上方顺序传递；每个范围都是适配器合同的一部分，
+    # URDF 与 ros2_control 每次只加载一套末端。Web 手动控制、复位目标和
+    # JointState 完整性检查必须使用相同的活动分组，不能等待未安装套装的
+    # 关节。两臂为公共分组，末端分组与各 toolset controller 配置一致。
+    manual_joint_groups_by_toolset:
+      A:
+        - left_arm
+        - right_arm
+        - three_cylinder
+        - two_cylinder
+      B:
+        - left_arm
+        - right_arm
+        - rocker
+        - rotate_button
+    # Web 手动关节命令按活动 toolset 顺序传递；每个范围都是适配器合同的一部分，
     # 控制层不得再根据位置或关节名称猜测机械臂/工具限位。
     manual_joint_limits:
       l_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
@@ -209,6 +223,9 @@
       door:
         move_group: right_arm
         contact_tool_link: r_three_cyl_base
+        # Gazebo must measure the calibrated physical finger tip, not the
+        # three-cylinder base-link origin 0.394 m behind it.
+        grasp_point_position: [0.0265, -0.061735, -0.3885]
         transport_named_target: home
         tool_tip_position: [0.0265, -0.061735, -0.3885]
         calibration_joint_names:

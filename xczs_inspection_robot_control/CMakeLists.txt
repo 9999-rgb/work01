@@ -37,7 +37,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CabinetControlState.msg"
   "srv/ManageOperationLease.srv"
   "srv/SetCabinetGrasp.srv"
-  DEPENDENCIES std_msgs
+  "srv/SwitchToolset.srv"
+  DEPENDENCIES geometry_msgs std_msgs
 )
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
@@ -238,6 +239,7 @@ ament_target_dependencies(
   xczs_cabinet_state
   gazebo_dev
   gazebo_ros
+  geometry_msgs
   rclcpp
   sensor_msgs
   std_msgs

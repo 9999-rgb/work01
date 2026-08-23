@@ -1392,6 +1392,28 @@ def main() -> int:
                 "Robot adapter manual_joint_groups must cover exactly the "
                 "dual-arm joint topology."
             )
+        configured_toolsets = robot_parameters.get(
+            "manual_joint_groups_by_toolset"
+        )
+        expected_toolsets = {
+            "A": [
+                "left_arm",
+                "right_arm",
+                "three_cylinder",
+                "two_cylinder",
+            ],
+            "B": [
+                "left_arm",
+                "right_arm",
+                "rocker",
+                "rotate_button",
+            ],
+        }
+        if configured_toolsets != expected_toolsets:
+            fail(
+                "Robot adapter manual_joint_groups_by_toolset must match "
+                "the mutually exclusive A/B URDF and controller groups."
+            )
         configured_absolute_ros_name(robot_parameters, "controller_namespace")
         if robot_parameters.get("controller_namespace") != "/xczs":
             fail("Robot adapter controller_namespace must be /xczs.")
@@ -2512,22 +2534,22 @@ def main() -> int:
         expected_tool_mounts = {
             "r_three_cyl_base": (
                 "r_arm_6",
-                [0.004, 0.0, -0.2185],
+                [0.005, 0.0, -0.2185],
                 [0.0, 0.0, 0.0],
             ),
             "l_two_cyl_base": (
                 "l_arm_6",
-                [0.004, 0.0, 0.2185],
+                [0.005, 0.0, 0.2185],
                 [0.0, math.pi, 0.0],
             ),
             "r_rotbtn_body": (
                 "r_arm_6",
-                [0.004, 0.0, -0.2185],
+                [0.005, 0.0, -0.2185],
                 [0.0, math.pi, 0.0],
             ),
             "l_rocker_body": (
                 "l_arm_6",
-                [0.004, 0.0, 0.2185],
+                [0.005, 0.0, 0.2185],
                 [0.0, 0.0, 0.0],
             ),
         }
@@ -2710,14 +2732,26 @@ def main() -> int:
                     f"Robot adapter {control_type} transport target must be home."
                 )
             # Pincer tools (knob / switch) carry their jaws/rotor on local +Z,
-            # so +Z must face the control (toward_control) and the grasp
-            # distance probe must be the jaw/rotor carrier (the body origin
-            # sits 0.19-0.27 m behind the business point).  The three-cylinder
-            # tools default to along_outward and probe their own contact link.
+            # so +Z must face the control (toward_control) and their zero-point
+            # grasp probe must use the jaw/rotor carrier.  The door keeps the
+            # three-cylinder base as grasp_link but probes the calibrated
+            # off-axis finger tip in that link, rather than its distant origin.
             expected_grasp_link = {
                 "knob": "r_rotbtn_rotate",
                 "switch": "l_rocker_rotor",
             }.get(control_type)
+            expected_grasp_point = (
+                expected_tip if control_type == "door" else [0.0, 0.0, 0.0]
+            )
+            grasp_point = numbers(
+                profile.get("grasp_point_position", [0.0, 0.0, 0.0]),
+                f"tool_profiles.{control_type}.grasp_point_position",
+            )
+            if not close_lists(grasp_point, expected_grasp_point):
+                fail(
+                    f"Robot adapter {control_type} grasp probe must be "
+                    f"{expected_grasp_point} in grasp_link coordinates."
+                )
             if expected_grasp_link is not None:
                 if profile.get("grasp_link") != expected_grasp_link:
                     fail(
@@ -2761,22 +2795,22 @@ def main() -> int:
             expected_mounts = {
                 "r_three_cyl_base": (
                     "r_arm_6",
-                    [0.004, 0.0, -0.2185],
+                    [0.005, 0.0, -0.2185],
                     [0.0, 0.0, 0.0],
                 ),
                 "l_two_cyl_base": (
                     "l_arm_6",
-                    [0.004, 0.0, 0.2185],
+                    [0.005, 0.0, 0.2185],
                     [0.0, math.pi, 0.0],
                 ),
                 "r_rotbtn_body": (
                     "r_arm_6",
-                    [0.004, 0.0, -0.2185],
+                    [0.005, 0.0, -0.2185],
                     [0.0, math.pi, 0.0],
                 ),
                 "l_rocker_body": (
                     "l_arm_6",
-                    [0.004, 0.0, 0.2185],
+                    [0.005, 0.0, 0.2185],
                     [0.0, 0.0, 0.0],
                 ),
             }
@@ -3081,6 +3115,11 @@ def main() -> int:
                 "Planar stabilizer must consume the aggregated grasp-active "
                 "topic."
             )
+        if text(stabilizer, "joint_hold_topic") != "/xczs/joint_hold_enabled":
+            fail(
+                "Planar stabilizer must expose the startup-only joint-hold "
+                "topic."
+            )
         if text(stabilizer, "cmd_vel_topic") != "/xczs/cmd_vel":
             fail(
                 "Planar stabilizer must consume the routed base command so "
@@ -3109,12 +3148,32 @@ def main() -> int:
             fail("Planar stabilizer ROS/Gazebo build dependencies are incomplete.")
         stabilizer_source = PLANAR_STABILIZER.read_text(encoding="utf-8")
         if not re.search(
-            r"if\s*\(!grasp_active_->load\(\)\)\s*\{\s*"
+            r"if\s*\(\s*joint_hold_enabled_->load\(\)\s*&&\s*"
+            r"!grasp_active_->load\(\)\s*\)\s*\{\s*"
             r"restore_joint_positions\(\);",
             stabilizer_source,
             re.DOTALL,
         ):
-            fail("Planar stabilizer does not pause joint restore while grasping.")
+            fail(
+                "Planar stabilizer must restore joints only during its "
+                "startup hold and never while grasping."
+            )
+        if "joint_hold_subscription_" not in stabilizer_source:
+            fail("Planar stabilizer is missing the startup joint-hold subscription.")
+        initial_pose_source = (
+            ROOT
+            / "xczs_inspection_robot_control"
+            / "scripts"
+            / "verify_initial_pose.py"
+        ).read_text(encoding="utf-8")
+        if (
+            "release_startup_joint_hold" not in initial_pose_source
+            or "DEFAULT_JOINT_HOLD_TOPIC" not in initial_pose_source
+        ):
+            fail(
+                "Initial-pose verification must release the startup-only "
+                "joint hold after success."
+            )
         for stop_lock_requirement in (
             "cmd_vel_subscription_",
             "base_command_moving_",

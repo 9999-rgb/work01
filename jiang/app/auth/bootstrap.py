@@ -65,8 +65,8 @@ async def bootstrap_admin(session: AsyncSession) -> None:
     try:
         await session.commit()
     except IntegrityError:
-        # PostgreSQL 在空表上无法通过行锁串行化首次引导。唯一用户名约束
-        # 会选出一个赢家；输家回滚后只在确有 active admin 时安全返回。
+        # 唯一用户名约束是最后一道并发仲裁；输家回滚后只在确有 active
+        # admin 时安全返回，避免掩盖其他完整性错误。
         await session.rollback()
         winner = await session.execute(
             select(func.count())

@@ -15,6 +15,7 @@ import types
 import unittest
 from pathlib import Path
 from typing import Any, Dict
+from unittest.mock import patch
 
 import yaml
 
@@ -217,6 +218,80 @@ class AssetLibraryTest(unittest.TestCase):
         catalog = self.library.load_catalog()
         self.assertEqual(1, len(catalog))
         self.assertEqual("2.0.0", catalog[0].version)
+
+    def test_force_validation_failure_preserves_the_previous_asset_tree(self) -> None:
+        source = _write_scene_asset(self.directory / "source", name="scene_a")
+        (source / "old-only.txt").write_text("keep", encoding="utf-8")
+        self.library.import_asset(source)
+
+        replacement = _write_scene_asset(
+            self.directory / "replacement", name="scene_a"
+        )
+        (replacement / "manifest.yaml").write_text(
+            (replacement / "manifest.yaml").read_text(encoding="utf-8").replace(
+                "1.0.0", "2.0.0"
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaises(AssetLibraryError):
+            self.library.import_asset(
+                replacement,
+                force=True,
+                validate=lambda _manifest, _root: (_ for _ in ()).throw(
+                    ValueError("reject replacement")
+                ),
+            )
+
+        installed = self.library.root / "scene" / "scene_a"
+        self.assertEqual("keep", (installed / "old-only.txt").read_text())
+        self.assertEqual("1.0.0", self.library.find("scene", "scene_a").version)
+
+    def test_force_replace_drops_files_that_are_not_in_the_new_asset(self) -> None:
+        source = _write_scene_asset(self.directory / "source", name="scene_a")
+        (source / "obsolete.txt").write_text("old", encoding="utf-8")
+        self.library.import_asset(source)
+
+        replacement = _write_scene_asset(
+            self.directory / "replacement", name="scene_a"
+        )
+        (replacement / "manifest.yaml").write_text(
+            (replacement / "manifest.yaml").read_text(encoding="utf-8").replace(
+                "1.0.0", "2.0.0"
+            ),
+            encoding="utf-8",
+        )
+        self.library.import_asset(replacement, force=True)
+
+        self.assertFalse(
+            (self.library.root / "scene" / "scene_a" / "obsolete.txt").exists()
+        )
+
+    def test_force_index_failure_restores_previous_tree_and_catalog(self) -> None:
+        source = _write_scene_asset(self.directory / "source", name="scene_a")
+        (source / "old-only.txt").write_text("keep", encoding="utf-8")
+        self.library.import_asset(source)
+        replacement = _write_scene_asset(
+            self.directory / "replacement", name="scene_a"
+        )
+        (replacement / "manifest.yaml").write_text(
+            (replacement / "manifest.yaml").read_text(encoding="utf-8").replace(
+                "1.0.0", "2.0.0"
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.object(
+            self.library._store,
+            "put_asset",
+            side_effect=[OSError("catalog unavailable"), None],
+        ):
+            with self.assertRaises(AssetLibraryError, msg="catalog unavailable"):
+                self.library.import_asset(replacement, force=True)
+
+        installed = self.library.root / "scene" / "scene_a"
+        self.assertEqual("keep", (installed / "old-only.txt").read_text())
+        self.assertEqual("1.0.0", self.library.find("scene", "scene_a").version)
 
     def test_import_rejects_non_asset_and_invalid_manifest(self) -> None:
         plain = self.directory / "plain"

@@ -178,4 +178,25 @@ def require_role(*roles: str):
     return _dependency
 
 
-require_admin = require_role(ROLE_ADMIN)
+async def require_admin(request: Request) -> User | None:
+    """Require an administrator only when application authentication is on.
+
+    ``XCZS_AUTH_ENABLED=false`` is documented as a complete compatibility
+    switch, not merely as a way to bypass the middleware.  The old
+    ``require_role`` alias still resolved a bearer token for asset writes, so
+    a no-auth deployment could view the panel but could neither manage assets
+    nor use the new one-click toolset switch.  Resolve credentials lazily here
+    so a deliberately database-free no-auth test/deployment does not create a
+    needless session either.
+    """
+    if not bool(getattr(request.app.state, "auth_enabled", True)):
+        return None
+    credentials = await _bearer(request)  # type: ignore[arg-type]
+    async with async_session() as session:
+        user = await _resolve_user(credentials, session)
+    if user.role != ROLE_ADMIN:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"需要角色 {ROLE_ADMIN}，当前为 {user.role}。",
+        )
+    return user

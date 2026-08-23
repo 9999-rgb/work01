@@ -520,6 +520,10 @@ class CabinetClientTest(unittest.TestCase):
         self.assertEqual(4.0, terminal["result"]["estimated_force"])
         self.assertFalse(terminal["result"]["button_triggered"])
         self.assertEqual(0.005, terminal["result"]["peak_position"])
+        self.assertEqual(
+            client.BUTTON_CONTROL_TYPE,
+            terminal["result"]["control_type"],
+        )
 
     def test_omitted_force_uses_catalog_default(self) -> None:
         client, action = self._client("cabinet_a", [])

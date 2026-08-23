@@ -344,3 +344,24 @@ class AssetSelectionRequest(BaseModel):
         if normalized not in ("A", "B"):
             raise ValueError("toolset 只能是 A 或 B")
         return normalized
+
+
+class ToolsetSwitchRequest(BaseModel):
+    """POST /robot/toolset/switch 的乐观并发切换请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    toolset: StrictStr = Field(description="目标末端工具套装 A 或 B")
+    expected_generation: StrictInt = Field(
+        default=0,
+        ge=0,
+        description="最近一次 /robot/toolset/status 的 generation；0 表示不校验",
+    )
+
+    @field_validator("toolset")
+    @classmethod
+    def _toolset(cls, value: str) -> str:
+        normalized = nonempty_string(value, "toolset").upper()
+        if normalized not in {"A", "B"}:
+            raise ValueError("toolset 只能是 A 或 B")
+        return normalized

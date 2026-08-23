@@ -151,8 +151,13 @@ class _AssetWebTestCase(unittest.TestCase):
         self.db_path = self.scratch / "assets.db"
         self._previous_env = os.environ.get("XCZS_ASSETS_DIR")
         self._previous_db_url = os.environ.get("XCZS_DATABASE_URL")
+        self._previous_active_toolset = os.environ.get("XCZS_ACTIVE_TOOLSET")
         os.environ["XCZS_ASSETS_DIR"] = str(self.assets_dir)
         os.environ["XCZS_DATABASE_URL"] = f"sqlite+aiosqlite:///{self.db_path}"
+        # Unit tests start the Web API without the unified launcher.  Make
+        # that state explicit instead of inheriting a toolset from the outer
+        # test process.
+        os.environ.pop("XCZS_ACTIVE_TOOLSET", None)
 
     def tearDown(self) -> None:
         if self._client_entered:
@@ -165,6 +170,10 @@ class _AssetWebTestCase(unittest.TestCase):
             os.environ.pop("XCZS_DATABASE_URL", None)
         else:
             os.environ["XCZS_DATABASE_URL"] = self._previous_db_url
+        if self._previous_active_toolset is None:
+            os.environ.pop("XCZS_ACTIVE_TOOLSET", None)
+        else:
+            os.environ["XCZS_ACTIVE_TOOLSET"] = self._previous_active_toolset
         self._temporary_directory.cleanup()
 
     # ── SQLite 目录 / 选择断言辅助 ───────────────────────────────────
@@ -212,6 +221,16 @@ class AssetWebReadContractTest(_AssetWebTestCase):
             {"scene": None, "cabinet": None, "toolset": None},
             data["selection"],
         )
+        self.assertEqual(
+            {
+                "active_toolset": None,
+                "pending_toolset": None,
+                "applied": None,
+                "manual_restart_required": False,
+                "automatic_restart": False,
+            },
+            data["toolset_status"],
+        )
         self.assertEqual(str(self.assets_dir), data["library_root"])
 
     def test_get_selection_initial(self) -> None:
@@ -229,22 +248,51 @@ class AssetWebReadContractTest(_AssetWebTestCase):
         self.assertEqual(404, unknown.status_code, unknown.text)
 
     def test_selection_roundtrip(self) -> None:
-        # Valid scene selection persists and clears other fields.
+        # An empty partial update preserves an initially empty selection.
         saved = self.client.post("/assets/selection", json={"scene": ""})
         self.assertEqual(200, saved.status_code, saved.text)
         self.assertIsNone(saved.json()["scene"])
 
     def test_toolset_null_preserves_previous_selection(self) -> None:
         # toolset 为 null 表示"不改变"（schemas.py）：必须保留已持久化的 B，
-        # 而不是覆盖成默认 A 且不写重启标记，导致下次启动静默回退。
+        # 而不是覆盖成默认 A，导致下次人工启动时静默回退。Web 只保存待生效
+        # 状态，绝不能写重启标记或终止正在运行的仿真。
+        os.environ["XCZS_ACTIVE_TOOLSET"] = "A"
         first = self.client.post("/assets/selection", json={"toolset": "B"})
         self.assertEqual(200, first.status_code, first.text)
-        self.assertTrue(first.json()["restart_required"])
+        self.assertFalse(first.json()["restart_required"])
+        self.assertEqual(
+            {
+                "active_toolset": "A",
+                "pending_toolset": "B",
+                "applied": False,
+                "manual_restart_required": True,
+                "automatic_restart": False,
+            },
+            first.json()["toolset_status"],
+        )
 
         second = self.client.post("/assets/selection", json={"toolset": None})
         self.assertEqual(200, second.status_code, second.text)
         self.assertFalse(second.json()["restart_required"])
         self.assertEqual("B", second.json()["toolset"])
+        self.assertEqual("B", second.json()["toolset_status"]["pending_toolset"])
+
+        # 选回当前已加载的套装只更新持久化选择；同样不会触发重启，且待
+        # 生效状态会消失。
+        applied = self.client.post("/assets/selection", json={"toolset": "A"})
+        self.assertEqual(200, applied.status_code, applied.text)
+        self.assertFalse(applied.json()["restart_required"])
+        self.assertEqual(
+            {
+                "active_toolset": "A",
+                "pending_toolset": None,
+                "applied": True,
+                "manual_restart_required": False,
+                "automatic_restart": False,
+            },
+            applied.json()["toolset_status"],
+        )
 
 
 class AssetWebImportContractTest(_AssetWebTestCase):
@@ -451,6 +499,45 @@ class AssetWebImportContractTest(_AssetWebTestCase):
             "/assets", headers=self.admin_headers
         ).json()
         self.assertEqual(record["name"], listing["selection"]["scene"])
+
+    def test_partial_selection_update_preserves_other_dimensions(self) -> None:
+        """Changing only a toolset must not clear saved scene/cabinet assets."""
+        scene = self._import_scene("preserved_scene")
+        cabinet_response = self.client.post(
+            "/assets/import",
+            headers=self.admin_headers,
+            files={
+                "file": (
+                    "preserved_cabinet.zip",
+                    _cabinet_zip_bytes("preserved_cabinet"),
+                    "application/zip",
+                )
+            },
+            data={"skip_validate": "true"},
+        )
+        self.assertEqual(201, cabinet_response.status_code, cabinet_response.text)
+        cabinet = cabinet_response.json()["asset"]
+
+        initial = self.client.post(
+            "/assets/selection",
+            json={
+                "scene": scene["name"],
+                "cabinet": cabinet["name"],
+                "toolset": "A",
+            },
+            headers=self.admin_headers,
+        )
+        self.assertEqual(200, initial.status_code, initial.text)
+
+        toolset_only = self.client.post(
+            "/assets/selection",
+            json={"scene": None, "cabinet": "", "toolset": "B"},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(200, toolset_only.status_code, toolset_only.text)
+        self.assertEqual(scene["name"], toolset_only.json()["scene"])
+        self.assertEqual(cabinet["name"], toolset_only.json()["cabinet"])
+        self.assertEqual("B", toolset_only.json()["toolset"])
 
     def test_delete_removes_asset_and_clears_selection(self) -> None:
         record = self._import_scene()

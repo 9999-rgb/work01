@@ -99,7 +99,10 @@
       - r_rotbtn_jaw1_joint
       - r_rotbtn_jaw2_joint
     command_interfaces:
-      - position
+      # Keep the existing JointTrajectory API while driving both jaws through
+      # effort/PID.  Direct position writes on a Gazebo Classic SliderJoint
+      # emit an ODE warning every physics tick and can grow server logs to GB.
+      - effort
     state_interfaces:
       - position
       - velocity
@@ -109,11 +112,30 @@
     allow_nonzero_velocity_at_trajectory_end: false
     open_loop_control: false
     constraints:
-      goal_time: 1.0
+      goal_time: 2.0
       stopped_velocity_tolerance: 0.05
-      r_rotbtn_rotate_joint: {trajectory: 0.10, goal: 0.05}
-      r_rotbtn_jaw1_joint: {trajectory: 0.10, goal: 0.05}
-      r_rotbtn_jaw2_joint: {trajectory: 0.10, goal: 0.05}
+      r_rotbtn_rotate_joint: {trajectory: 0.25, goal: 0.05}
+      r_rotbtn_jaw1_joint: {trajectory: 0.02, goal: 0.005}
+      r_rotbtn_jaw2_joint: {trajectory: 0.02, goal: 0.005}
+    gains:
+      r_rotbtn_rotate_joint:
+        # CAD-scale rotor inertia is in the e-6 kg·m² range.  A high generic
+        # PID gain aliases at the 100 Hz control rate and injects unbounded
+        # torque, so use a discrete-time-stable rotary gain instead.
+        p: 0.04
+        d: 0.001
+        i: 0.0
+        i_clamp: 0.0
+      r_rotbtn_jaw1_joint:
+        p: 5.0
+        d: 0.3
+        i: 0.0
+        i_clamp: 0.0
+      r_rotbtn_jaw2_joint:
+        p: 5.0
+        d: 0.3
+        i: 0.0
+        i_clamp: 0.0
 
 /xczs/rocker_controller:
   ros__parameters:
@@ -121,7 +143,7 @@
     joints:
       - l_rocker_rotor_joint
     command_interfaces:
-      - position
+      - effort
     state_interfaces:
       - position
       - velocity
@@ -131,6 +153,12 @@
     allow_nonzero_velocity_at_trajectory_end: false
     open_loop_control: false
     constraints:
-      goal_time: 1.0
+      goal_time: 2.0
       stopped_velocity_tolerance: 0.05
-      l_rocker_rotor_joint: {trajectory: 0.10, goal: 0.05}
+      l_rocker_rotor_joint: {trajectory: 0.25, goal: 0.05}
+    gains:
+      l_rocker_rotor_joint:
+        p: 0.04
+        d: 0.001
+        i: 0.0
+        i_clamp: 0.0
