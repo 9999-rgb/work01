@@ -4505,7 +4505,11 @@ class ControlServer:
 
     def _runtime_toolset_snapshot(self) -> Dict[str, Any]:
         """Read the optional supervisor state without breaking legacy tests."""
-        status_reader = getattr(self._node, "toolset_switch_snapshot", None)
+        status_reader = getattr(
+            getattr(self, "_node", None),
+            "toolset_switch_snapshot",
+            None,
+        )
         if not callable(status_reader):
             active = getattr(self._robot_adapter, "active_toolset", None)
             return {

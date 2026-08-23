@@ -2645,13 +2645,16 @@ def main() -> int:
                     "tool_tip_calibration_joint_tolerance", float("nan")
                 )
             ),
-            0.001,
+            # 0.001 rad 低于 Gazebo 位置控制下三电缸手指可稳定达到的
+            # 稳态误差（约 0.0015 rad）；0.003 为其留 2 倍裕量，同时仍比
+            # 通用归位容差 0.02 严格约 7 倍。
+            0.003,
             rel_tol=0.0,
             abs_tol=1.0e-12,
         ):
             fail(
                 "Robot adapter tool tip calibration joint tolerance must "
-                "remain 0.001."
+                "remain 0.003."
             )
         tool_profiles = robot_parameters.get("tool_profiles")
         if not isinstance(tool_profiles, dict) or set(tool_profiles) != set(

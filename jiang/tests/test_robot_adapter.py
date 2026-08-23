@@ -310,9 +310,9 @@ class RobotAdapterTest(unittest.TestCase):
             ),
             adapter.calibration_joint_targets,
         )
-        self.assertEqual(0.001, adapter.calibration_joint_tolerance)
+        self.assertEqual(0.003, adapter.calibration_joint_tolerance)
         self.assertEqual(
-            0.001,
+            0.003,
             adapter.reset_tolerance_for_joint("r_three_cyl_finger1_joint"),
         )
         self.assertEqual(
@@ -363,7 +363,7 @@ class RobotAdapterTest(unittest.TestCase):
             adapter.manual_joint_names,
         )
         self.assertEqual((), adapter.calibration_joint_targets)
-        self.assertEqual(0.001, adapter.calibration_joint_tolerance)
+        self.assertEqual(0.003, adapter.calibration_joint_tolerance)
 
     def test_toolset_aware_adapter_requires_explicit_valid_selection(
         self,

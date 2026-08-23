@@ -696,8 +696,8 @@ class TaskRunnerTest(unittest.TestCase):
             joint.name: joint.default_position for joint in adapter.manual_joints
         }
         # This is inside the generic 0.02 rad reset tolerance but outside the
-        # 0.001 rad calibration tolerance that the cabinet operator enforces.
-        node.joint_positions["r_three_cyl_finger1_joint"] = 0.0015
+        # 0.003 rad calibration tolerance that the cabinet operator enforces.
+        node.joint_positions["r_three_cyl_finger1_joint"] = 0.01
         node.joint_state_received_monotonic = time.monotonic()
 
         result = server._home_robot_joints(None, "cabinet_a")

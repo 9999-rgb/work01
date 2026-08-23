@@ -150,7 +150,10 @@ def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
     builtin = _operator_parameters(ADAPTERS[0])
     sample = _operator_parameters(ADAPTERS[1])
     assert builtin == sample
-    assert builtin["tool_tip_calibration_joint_tolerance"] == 0.001
+    # 0.001 rad 低于 Gazebo 位置控制可稳定达到的三电缸手指稳态误差
+    # （约 0.0015 rad，对应指尖约 0.6 mm 偏移），归位/标定永远无法通过。
+    # 0.003 为稳态误差留 2 倍裕量，同时仍比通用归位容差 0.02 严格约 7 倍。
+    assert builtin["tool_tip_calibration_joint_tolerance"] == 0.003
 
     expected_joints = [
         "r_three_cyl_finger1_joint",

@@ -361,16 +361,25 @@ class AssetLibrary:
         promoted = False
         try:
             _copy_asset_tree(source, staging)
+            # Semantic validation runs against the unreferenced staging tree,
+            # so refs must first resolve inside staging (the final destination
+            # is not promoted yet).  They are re-pointed at the stable
+            # destination right before the atomic promotion below.
             _normalize_scene_refs(
                 manifest,
                 staging,
-                reference_root=destination,
+                reference_root=staging,
             )
 
             validated = False
             if validate is not None:
                 validate(manifest, staging)
                 validated = True
+            _normalize_scene_refs(
+                manifest,
+                staging,
+                reference_root=destination,
+            )
             record = AssetRecord(
                 kind=manifest.kind,
                 name=manifest.name,
@@ -636,6 +645,7 @@ def _normalize_scene_refs(
         nav2_map = scene.get("nav2_map")
         if isinstance(nav2_map, str) and nav2_map.strip():
             scene["nav2_map"] = _absolute_reference(
+                root,
                 reference_root,
                 nav2_map.strip(),
             )
@@ -644,6 +654,7 @@ def _normalize_scene_refs(
             file = model.get("file")
             if isinstance(file, str) and file.strip():
                 model["file"] = _absolute_reference(
+                    root,
                     reference_root,
                     file.strip(),
                 )
@@ -658,13 +669,26 @@ def _normalize_scene_refs(
     )
 
 
-def _absolute_reference(root: Path, reference: str) -> str:
+def _absolute_reference(root: Path, reference_root: Path, reference: str) -> str:
+    """Root a plain reference inside ``reference_root``.
+
+    ``package://`` / ``model://`` / ``file://`` URIs and plain absolute paths
+    outside ``root`` are left untouched (they are already self-contained or
+    resolved by the host machinery).  A plain absolute path that already points
+    inside ``root`` is re-rooted onto ``reference_root`` — this re-points a
+    staging-tree reference at the stable destination right before the atomic
+    promotion.
+    """
     if reference.startswith(_URI_PREFIXES):
         return reference
     path = Path(reference).expanduser()
     if path.is_absolute():
-        return str(path)
-    return str((root / path).resolve())
+        try:
+            relative = path.relative_to(root)
+        except ValueError:
+            return str(path)
+        return str((reference_root / relative).resolve())
+    return str((reference_root / path).resolve())
 
 
 def _record_from_mapping(value: Mapping[str, Any]) -> AssetRecord:
