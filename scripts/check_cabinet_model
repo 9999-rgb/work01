@@ -69,12 +69,6 @@ BASE_COMMAND_ROUTER = (
     / "src"
     / "base_command_router.cpp"
 )
-ROS2_CONTROLLERS = (
-    ROOT
-    / "xczs_inspection_robot_description"
-    / "config"
-    / "ros2_controllers.yaml"
-)
 INITIAL_POSITIONS = (
     ROOT
     / "xczs_inspection_robot_description"
@@ -82,10 +76,7 @@ INITIAL_POSITIONS = (
     / "initial_positions.yaml"
 )
 MOVEIT_CONFIG = ROOT / "xczs_inspection_robot_moveit_config" / "config"
-MOVEIT_CONTROLLERS = MOVEIT_CONFIG / "moveit_controllers.yaml"
-JOINT_LIMITS = MOVEIT_CONFIG / "joint_limits.yaml"
 OMPL_PLANNING = MOVEIT_CONFIG / "ompl_planning.yaml"
-SRDF = MOVEIT_CONFIG / "xczs_inspection_robot.srdf"
 NAV2_CONFIG = ROOT / "xczs_inspection_robot_nav2" / "config" / "nav2_params.yaml"
 SIMULATION_WORLD = (
     ROOT
@@ -185,6 +176,12 @@ SRDF_TOOLSET = {
     "A": MOVEIT_CONFIG / "xczs_inspection_robot_toolset_A.srdf",
     "B": MOVEIT_CONFIG / "xczs_inspection_robot_toolset_B.srdf",
 }
+# Module-level checks default to toolset A; ``main`` replaces these aliases
+# after parsing ``--toolset`` so every validation reads one coherent profile.
+ROS2_CONTROLLERS = ROS2_CONTROLLERS_TOOLSET[TOOLSET]
+MOVEIT_CONTROLLERS = MOVEIT_CONTROLLERS_TOOLSET[TOOLSET]
+JOINT_LIMITS = JOINT_LIMITS_TOOLSET[TOOLSET]
+SRDF = SRDF_TOOLSET[TOOLSET]
 
 
 def active_joint_groups() -> Dict[str, list]:
@@ -2524,32 +2521,28 @@ def main() -> int:
             if joint.find("child") is not None
         }
 
-        # Tools mount under the robot's native wrist boss (the model's
-        # end-effector interface): each SolidWorks z=0 base face is centred on
-        # the boss axis and seated just below the wrist ball tip, so the boss
-        # nests into the tool top with no fabricated carrier plate and no
-        # lateral offset.  xyz is the measured boss-centred seat in the arm_6
-        # link frame; rpy encodes the per-arm downstream orientation (working
-        # end pointing away from the wrist).
+        # All four native sockets share a 21.5 mm quick-coupler depth.  The
+        # insertable wrist stem is 20.0 mm long, so a 0.135 mm shoulder gap
+        # fully encloses every detent while retaining 1.635 mm bottom margin.
         expected_tool_mounts = {
             "r_three_cyl_base": (
                 "r_arm_6",
-                [0.005, 0.0, -0.2185],
+                [0.004, 0.0, -0.1984],
                 [0.0, 0.0, 0.0],
             ),
             "l_two_cyl_base": (
                 "l_arm_6",
-                [0.005, 0.0, 0.2185],
+                [0.004, 0.0001, 0.1984],
                 [0.0, math.pi, 0.0],
             ),
             "r_rotbtn_body": (
                 "r_arm_6",
-                [0.005, 0.0, -0.2185],
+                [0.004, 0.0, -0.1984],
                 [0.0, math.pi, 0.0],
             ),
             "l_rocker_body": (
                 "l_arm_6",
-                [0.005, 0.0, 0.2185],
+                [0.004, 0.0001, 0.1984],
                 [0.0, 0.0, 0.0],
             ),
         }
@@ -2608,10 +2601,58 @@ def main() -> int:
             ):
                 fail(
                     f"{tool_name} must be fixed at the {wrist_name} "
-                    f"boss-centred seat below the wrist ball tip "
+                    f"boss-centred socket seat "
                     f"(xyz {expected_xyz}, rpy {expected_rpy})."
                 )
 
+        expected_tool_materials = {
+            "A": {
+                "r_three_cyl_base": ("graphite_black", "Gazebo/DarkGrey"),
+                "r_three_cyl_finger1": ("industrial_navy", "Gazebo/Blue"),
+                "r_three_cyl_finger2": ("industrial_navy", "Gazebo/Blue"),
+                "r_three_cyl_finger3": ("industrial_navy", "Gazebo/Blue"),
+                "l_two_cyl_base": ("graphite_black", "Gazebo/DarkGrey"),
+                "l_two_cyl_finger1": ("industrial_navy", "Gazebo/Blue"),
+                "l_two_cyl_finger2": ("industrial_navy", "Gazebo/Blue"),
+            },
+            "B": {
+                "r_rotbtn_body": ("graphite_black", "Gazebo/DarkGrey"),
+                "r_rotbtn_rotate": ("safety_orange", "Gazebo/Orange"),
+                "r_rotbtn_jaw1": ("safety_orange", "Gazebo/Orange"),
+                "r_rotbtn_jaw2": ("safety_orange", "Gazebo/Orange"),
+                "l_rocker_body": ("graphite_black", "Gazebo/DarkGrey"),
+                "l_rocker_rotor": ("safety_orange", "Gazebo/Orange"),
+            },
+        }[TOOLSET]
+        gazebo_by_reference = {
+            element.attrib.get("reference", ""): element
+            for element in robot_root.findall("./gazebo")
+        }
+        for link_name, (urdf_material, gazebo_material) in (
+            expected_tool_materials.items()
+        ):
+            visual_material = robot_links[link_name].find("visual/material")
+            actual_urdf_material = (
+                ""
+                if visual_material is None
+                else visual_material.attrib.get("name", "")
+            )
+            gazebo_properties = gazebo_by_reference.get(link_name)
+            actual_gazebo_material = (
+                ""
+                if gazebo_properties is None
+                else (gazebo_properties.findtext("material") or "").strip()
+            )
+            if actual_urdf_material != urdf_material:
+                fail(
+                    f"{link_name} must use URDF material {urdf_material}; "
+                    f"got {actual_urdf_material or 'none'}."
+                )
+            if actual_gazebo_material != gazebo_material:
+                fail(
+                    f"{link_name} must use Gazebo material {gazebo_material}; "
+                    f"got {actual_gazebo_material or 'none'}."
+                )
 
         # Tool profiles must describe the unchanged fixed hardware.  The
         # three-cylinder's working finger is off-axis, so button/door poses
@@ -2790,30 +2831,27 @@ def main() -> int:
                     f"Expanded robot is missing tool link {contact_link} for "
                     f"toolset {TOOLSET}."
                 )
-            wrist = "r_arm_6" if contact_link.startswith("r_") else "l_arm_6"
-            # Tools mount under the native wrist boss.  Each SolidWorks z=0
-            # base face is centred on the boss axis, seated just below the
-            # wrist ball tip (measured in the arm_6 link frame), with the
-            # working end pointing downstream.  No fabricated carrier plate.
+            # Tools enclose the native 20.0 mm wrist stem with a 0.135 mm
+            # shoulder rendering gap and 1.635 mm socket-bottom margin.
             expected_mounts = {
                 "r_three_cyl_base": (
                     "r_arm_6",
-                    [0.005, 0.0, -0.2185],
+                    [0.004, 0.0, -0.1984],
                     [0.0, 0.0, 0.0],
                 ),
                 "l_two_cyl_base": (
                     "l_arm_6",
-                    [0.005, 0.0, 0.2185],
+                    [0.004, 0.0001, 0.1984],
                     [0.0, math.pi, 0.0],
                 ),
                 "r_rotbtn_body": (
                     "r_arm_6",
-                    [0.005, 0.0, -0.2185],
+                    [0.004, 0.0, -0.1984],
                     [0.0, math.pi, 0.0],
                 ),
                 "l_rocker_body": (
                     "l_arm_6",
-                    [0.005, 0.0, 0.2185],
+                    [0.004, 0.0001, 0.1984],
                     [0.0, 0.0, 0.0],
                 ),
             }
@@ -2851,10 +2889,9 @@ def main() -> int:
             ):
                 fail(
                     f"Unchanged tool link {contact_link} must remain fixed at "
-                    f"the {expected_wrist} boss-centred seat below the wrist "
-                    f"ball tip (xyz {expected_xyz}, rpy {expected_rpy})."
+                    f"the {expected_wrist} boss-centred socket seat "
+                    f"(xyz {expected_xyz}, rpy {expected_rpy})."
                 )
-
 
         robot_sensors = {
             sensor.attrib.get("name", ""): sensor
@@ -3004,6 +3041,23 @@ def main() -> int:
             link.attrib.get("name", ""): link
             for link in sdf_root.findall("./model/link")
         }
+        for link_name, (_urdf_material, gazebo_material) in (
+            expected_tool_materials.items()
+        ):
+            sdf_link = sdf_links.get(link_name)
+            sdf_materials = (
+                set()
+                if sdf_link is None
+                else {
+                    (visual.findtext("material/script/name") or "").strip()
+                    for visual in sdf_link.findall("visual")
+                }
+            )
+            if sdf_materials != {gazebo_material}:
+                fail(
+                    f"Gazebo SDF link {link_name} must resolve exactly to "
+                    f"{gazebo_material}; got {sorted(sdf_materials)}."
+                )
         if forbidden_lift_links & set(sdf_links):
             fail("Gazebo SDF still contains an arm-lift link.")
         body_sdf = sdf_links.get("body")
@@ -3269,14 +3323,23 @@ def main() -> int:
             if controller_name not in controller_manager:
                 fail(f"ros2_control must register {controller_name}.")
             controller_key = f"/xczs/{controller_name}"
-            configured_joints = controller_config.get(controller_key, {}).get(
+            controller_parameters = controller_config.get(controller_key, {}).get(
                 "ros__parameters", {}
-            ).get("joints")
+            )
+            configured_joints = controller_parameters.get("joints")
             if configured_joints != joint_names:
                 fail(
                     f"ros2_control {controller_name} joint order differs from "
                     "the dual-arm topology."
                 )
+            if controller_parameters.get("command_interfaces") == ["effort"]:
+                gains = controller_parameters.get("gains", {})
+                for joint_name in joint_names:
+                    if gains.get(joint_name, {}).get("ff_velocity_scale") != 0.0:
+                        fail(
+                            f"ros2_control {controller_name} must explicitly "
+                            f"disable velocity feed-forward for {joint_name}."
+                        )
         for arm_controller in ("left_arm_controller", "right_arm_controller"):
             if controller_config[f"/xczs/{arm_controller}"][
                 "ros__parameters"
@@ -3649,7 +3712,8 @@ def main() -> int:
             "Cabinet model valid: 33 controls, 20 prismatic buttons, "
             "11 knobs, 1 switch, 1 articulated rear door, unique state "
             "topics and per-instance plugin names, a dual-arm MoveIt robot "
-            "with four unchanged fixed hardware tools, and the "
+            "with four unchanged fixed hardware tools enclosing every wrist "
+            "detent and using distinct A/B materials, and the "
             "low-friction supported wheels, 500/20 Hz planar, "
             "640x640@15 Hz camera, 360@20 Hz lidar simulation performance "
             "contract."

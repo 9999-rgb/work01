@@ -26,11 +26,9 @@ class _Config:
 
 
 class WebAuxiliaryContractTest(unittest.TestCase):
-    def test_standalone_http_servers_default_to_loopback(self) -> None:
-        from sensor_bridge.runner import _build_argument_parser as sensor_parser
+    def test_standalone_sse_server_defaults_to_loopback(self) -> None:
         from sse_bridge import _build_argument_parser as sse_parser
 
-        self.assertEqual(sensor_parser().parse_args([]).host, "127.0.0.1")
         self.assertEqual(sse_parser().parse_args([]).host, "127.0.0.1")
         self.assertEqual(
             sse_parser().parse_args(["--host", "192.0.2.10"]).host,
@@ -594,45 +592,6 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self.assertEqual(events, ["add", "response:200", "remove"])
         source.remove_listener.assert_called_once()
         replacement.remove_listener.assert_not_called()
-
-    def test_sensor_app_setup_failure_stops_started_ros_runtime(self) -> None:
-        import sensor_bridge.runner as sensor_runner
-
-        parser = MagicMock()
-        parser.parse_args.return_value = argparse.Namespace(
-            host="127.0.0.1",
-            port=18003,
-            camera_topic="/camera",
-            lidar_topic="/scan",
-            jpeg_quality=80,
-            camera_fps=10.0,
-            lidar_fps=10.0,
-        )
-        runtime = MagicMock()
-        runtime_builder = MagicMock()
-        runtime_builder.return_value.start.return_value = runtime
-        ros_node = types.ModuleType("sensor_bridge.ros_node")
-        ros_node.SensorRosRuntime = runtime_builder
-        state_module = types.ModuleType("sensor_bridge.state")
-        state_module.SensorStreamState = MagicMock
-        web_server = types.ModuleType("sensor_bridge.web_server")
-        web_server.create_sensor_app = MagicMock(
-            side_effect=RuntimeError("app setup failed")
-        )
-        with (
-            patch.object(sensor_runner, "_build_argument_parser", return_value=parser),
-            patch.dict(
-                sys.modules,
-                {
-                    "sensor_bridge.ros_node": ros_node,
-                    "sensor_bridge.state": state_module,
-                    "sensor_bridge.web_server": web_server,
-                },
-            ),
-            self.assertRaisesRegex(RuntimeError, "app setup failed"),
-        ):
-            sensor_runner.main()
-        runtime.stop.assert_called_once_with()
 
     def test_proxy_runner_is_client_only_without_multicast_scouting(self) -> None:
         import zenoh

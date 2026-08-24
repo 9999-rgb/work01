@@ -335,7 +335,6 @@ class ControlServer:
         except SceneNotFoundError as error:
             raise RuntimeError(f"Unknown initial scene: {active_scene}") from error
         self._active_scene = active_scene
-        self._scenes_config_path = scenes_path
         self._cabinet_xacro_path = cabinet_xacro
         self._cabinet_controls_path = controls_path
         self._cabinet_instances_path = instances_path
@@ -424,6 +423,7 @@ class ControlServer:
                 self._robot_adapter.localization_pose_topic
             ),
             manual_linear_axis=self._robot_adapter.manual_linear_axis,
+            manual_linear_sign=self._robot_adapter.manual_linear_sign,
             manual_joints=self._robot_adapter.manual_joints,
             joint_state_topic=self._robot_adapter.joint_state_topic,
             cabinet_pose_valid_topics={
@@ -1123,6 +1123,7 @@ class ControlServer:
             return {
                 "schema_version": 1,
                 "manual_linear_axis": adapter.manual_linear_axis,
+                "manual_linear_sign": adapter.manual_linear_sign,
                 "frames": {
                     "planning": adapter.planning_frame,
                     "navigation": adapter.navigation_frame,
@@ -1184,13 +1185,85 @@ class ControlServer:
                         409,
                         details={"toolset_status": status},
                     )
+                if getattr(self, "_toolset_transition_generation", None) is not None:
+                    raise ControlRequestError(
+                        "A toolset switch result is still pending confirmation.",
+                        409,
+                        details={"toolset_status": status},
+                    )
+                if (
+                    isinstance(expected_generation, bool)
+                    or not isinstance(expected_generation, int)
+                    or expected_generation < 0
+                ):
+                    raise ControlRequestError(
+                        "expected_generation must be a non-negative integer.",
+                        400,
+                    )
+                current_generation = status.get("generation")
+                if (
+                    isinstance(current_generation, bool)
+                    or not isinstance(current_generation, int)
+                    or current_generation < 0
+                ):
+                    raise ControlRequestError(
+                        "Toolset supervisor reported an invalid generation.",
+                        503,
+                        details={"toolset_status": status},
+                    )
+                if (
+                    expected_generation
+                    and expected_generation != current_generation
+                ):
+                    raise ControlRequestError(
+                        "Toolset status generation is stale; refresh status "
+                        "and retry.",
+                        409,
+                        details={"toolset_status": status},
+                    )
                 self._validate_runtime_toolset(target)
                 self._ensure_backend_quiescent("End-effector switch")
                 self._quiesce_manual_outputs()
-                accepted = self._node.request_toolset_switch(
-                    target,
-                    expected_generation=expected_generation,
-                )
+                # Set a fail-closed marker *before* dispatch.  The supervisor
+                # may accept and begin replacing the robot even if the service
+                # response is lost or arrives after the gateway's timeout.
+                # Until a terminal status for this next generation arrives,
+                # every motion path must remain interlocked.
+                provisional_generation = current_generation + 1
+                self._toolset_transition_generation = provisional_generation
+                try:
+                    accepted = self._node.request_toolset_switch(
+                        target,
+                        expected_generation=expected_generation,
+                    )
+                except ControlRequestError as error:
+                    details = dict(getattr(error, "details", {}) or {})
+                    response = details.get("toolset_response")
+                    confirmed_unchanged = bool(
+                        details.get("admission_uncertain") is False
+                        and isinstance(response, Mapping)
+                        and response.get("state") == "ready"
+                        and response.get("generation") == current_generation
+                        and response.get("active_toolset")
+                        == status.get("active_toolset")
+                    )
+                    definitely_not_dispatched = bool(
+                        details.get("admission_uncertain") is False
+                        and response is None
+                    )
+                    if confirmed_unchanged or definitely_not_dispatched:
+                        self._toolset_transition_generation = None
+                    elif isinstance(response, Mapping):
+                        response_generation = response.get("generation")
+                        if (
+                            isinstance(response_generation, int)
+                            and not isinstance(response_generation, bool)
+                            and response_generation > provisional_generation
+                        ):
+                            self._toolset_transition_generation = (
+                                response_generation
+                            )
+                    raise
                 self._toolset_transition_generation = int(
                     accepted["generation"]
                 )
@@ -1254,7 +1327,7 @@ class ControlServer:
                 target = self._scene_catalog.get(name.strip())
             except SceneNotFoundError as error:
                 raise ControlRequestError(str(error), 404) from error
-            self._await_canceling_task_quiescence("Scene switch")
+            self._await_canceling_task_quiescence()
             with self._task_interlock_scope():
                 self._ensure_backend_quiescent("Scene switch")
                 with self._scene_switch_lock:
@@ -1369,9 +1442,9 @@ class ControlServer:
         if robot_spawn is None:
             return
         # ``base_link`` is a fixed child of the root ``body`` link rotated
-        # +pi/2 about Z.  To point base_link at ``yaw`` in the map/world frame
-        # the body must be rotated back by that offset.
-        body_yaw = robot_spawn.yaw - math.pi / 2.0
+        # -pi/2 about Z.  To point base_link at ``yaw`` in the map/world frame
+        # the body must be rotated forward by pi/2.
+        body_yaw = robot_spawn.yaw + math.pi / 2.0
         self._gazebo_client.set_entity_state(
             self._robot_entity_name,
             x=robot_spawn.x,
@@ -4274,7 +4347,7 @@ class ControlServer:
             "task_replay": task_replay,
         }
 
-    def _await_canceling_task_quiescence(self, operation: str) -> None:
+    def _await_canceling_task_quiescence(self) -> None:
         """Wait briefly for a manual-takeover cancel to fully drain.
 
         A manual takeover cancels the owning navigation task *and* asks Nav2
@@ -4511,7 +4584,11 @@ class ControlServer:
             None,
         )
         if not callable(status_reader):
-            active = getattr(self._robot_adapter, "active_toolset", None)
+            active = getattr(
+                getattr(self, "_robot_adapter", None),
+                "active_toolset",
+                None,
+            )
             return {
                 "managed": False,
                 "state": "unavailable",
@@ -4560,6 +4637,7 @@ class ControlServer:
             "joint_trajectory_topic",
             "joint_state_topic",
             "manual_linear_axis",
+            "manual_linear_sign",
             "planning_frame",
             "pose_parent_frame",
             "navigation_frame",

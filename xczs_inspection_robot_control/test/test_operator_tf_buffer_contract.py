@@ -114,3 +114,39 @@ def test_pregrasp_stability_gate_is_fresh_continuous_and_fail_closed() -> None:
     assert "stable_state_duration_" in gate
     assert "PregraspStabilitySampleStatus::REFERENCE_CHANGED" in gate
     assert gate.count("OperateCabinetControl::Result::NOT_READY") == 4
+
+
+def test_toolset_mismatch_finishes_before_any_moveit_profile_change() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    operate_start = source.index("  void execute_operate(")
+    operate_end = source.index(
+        "  std::pair<double, std::string> resolve_operation_target(",
+        operate_start,
+    )
+    operate = source[operate_start:operate_end]
+
+    mismatch = operate.index("if (!tool_serves_control(control->control_type))")
+    profile_change = operate.index("apply_tool_profile(control->control_type)")
+    assert mismatch < profile_change
+    assert "OperateCabinetControl::Result::TOOLSET_MISMATCH" in operate
+    assert 'result->diagnostic_stage = "toolset_validation"' in operate
+    assert "result->operation_executed = false" in operate
+
+
+def test_articulated_noop_is_an_explicit_terminal_failure() -> None:
+    source = SOURCE.read_text(encoding="utf-8")
+    operate_start = source.index("  void execute_operate(")
+    operate_end = source.index(
+        "  std::pair<double, std::string> resolve_operation_target(",
+        operate_start,
+    )
+    operate = source[operate_start:operate_end]
+
+    target_resolution = operate.index("resolve_operation_target(")
+    noop_gate = operate.index(
+        "std::abs(target_position - initial_state.position) <="
+    )
+    geometry_latch = operate.index("latch_cabinet_transform();")
+    assert target_resolution < noop_gate < geometry_latch
+    assert "is already at requested" in operate
+    assert "select a different physical detent" in operate

@@ -51,7 +51,6 @@
     background: var(--text-dim);
   }
   .status-dot.connected { background: var(--green); box-shadow: 0 0 8px var(--green); }
-  .status-dot.connecting { background: var(--yellow); animation: blink 0.8s infinite; }
   .status-dot.error { background: var(--red); }
   @keyframes blink { 50% { opacity: 0.3; } }
 
@@ -416,9 +415,6 @@
 .field-grid.navigation-target-grid {
   grid-template-columns: minmax(180px, 1fr);
 }
-.field-grid.quaternion-grid {
-  grid-template-columns: repeat(3, minmax(72px, 1fr));
-}
 .form-field { display: flex; flex-direction: column; gap: 4px; }
 .form-field label {
   font-size: 10px; color: var(--text-dim);
@@ -631,9 +627,9 @@
 <!-- ─── Connection Bar ─── -->
 <div class="connect-bar">
   <label>SSE API</label>
-  <input type="text" id="restUrl" placeholder="http://localhost:8001" style="width:190px">
+  <input type="text" id="restUrl" placeholder="http://localhost:8090" style="width:190px">
   <label>传感器 API</label>
-  <input type="text" id="sensorUrl" placeholder="http://localhost:8003" style="width:190px">
+  <input type="text" id="sensorUrl" placeholder="http://localhost:8090" style="width:190px">
   <button class="btn btn-primary" id="btnConnect" onclick="doConnect()">连接</button>
   <button class="btn btn-danger" id="btnDisconnect" onclick="doDisconnect()" disabled>断开</button>
   <span style="color:var(--text-dim);font-size:12px;margin-left:auto" id="sessionInfo"></span>
@@ -2152,8 +2148,11 @@ function applyTaskSnapshot(task) {
       progress: task.progress,
       ...business,
       ...result,
-      success: task.status === 'success',
-      error_code: task.failure_code
+      // A queued/running task has no business outcome yet.  Keeping this
+      // tri-state prevents the UI from briefly presenting an in-progress
+      // operation as a failed one before its terminal result arrives.
+      success: terminal ? task.status === 'success' : null,
+      error_code: terminal ? task.failure_code : null
     };
     if (taskCabinet) cabinetStatusByName.set(taskCabinet, nextStatus);
     if (!taskCabinet || taskCabinet === selectedCabinetName()) {
@@ -3919,8 +3918,20 @@ async function waitForToolsetSwitchCompletion(target, expectedGeneration) {
       continue;
     }
     const active = normalizedToolset(status.active_toolset);
-    const generationReached = !Number.isInteger(expectedGeneration) ||
-      expectedGeneration <= 0 || status.generation >= expectedGeneration;
+    const generationTracked = Number.isInteger(expectedGeneration) &&
+      expectedGeneration > 0;
+    const observedGeneration = Number(status.generation);
+    if (
+      generationTracked && Number.isInteger(observedGeneration) &&
+      observedGeneration > expectedGeneration
+    ) {
+      throw new Error(
+        `末端切换结果已被后续操作取代（等待代次 ${expectedGeneration}，` +
+        `当前代次 ${observedGeneration}）`
+      );
+    }
+    const generationReached = !generationTracked ||
+      observedGeneration === expectedGeneration;
     if (
       generationReached && status.state === 'ready' && status.ready &&
       active === target
@@ -4378,13 +4389,22 @@ function renderCabinetTarget() {
       option.textContent = stateLabelsForControl[index] || stateId;
       stateSelect.appendChild(option);
     });
+    const stateIsAvailable = stateId => Array.from(stateSelect.options).some(
+      option => option.value === stateId
+    );
+    const currentStateIndex = stateIds.indexOf(control.current_state);
+    // For a newly selected articulated control, choose the next calibrated
+    // detent instead of its current detent.  A user-selected value is always
+    // retained across live catalog/state refreshes.
+    const nextState = currentStateIndex >= 0 && stateIds.length > 1
+      ? stateIds[(currentStateIndex + 1) % stateIds.length]
+      : stateIds[0];
     const preferredState = [
       previousStateSelection,
+      nextState,
       control.current_state,
       stateIds[0]
-    ].find(stateId => Array.from(stateSelect.options).some(option => (
-      option.value === stateId
-    )));
+    ].find(stateIsAvailable);
     if (preferredState) stateSelect.value = preferredState;
     stateField.hidden = false;
   }
@@ -5734,6 +5754,62 @@ async function sendCabinetOperation() {
       );
     }
     refreshAutonomyStatus();
+    const operationResult = await waitForCabinetWorkflowTaskRelease(
+      workflow,
+      operationTask.task_id
+    );
+    if (
+      workflow.cancelRequested ||
+      operationResult.status === 'canceled'
+    ) {
+      workflow.stage = 'canceled';
+      const reason = operationResult.failure_reason ||
+        operationResult.message || '控件操作已取消。';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'canceled',
+        phase: String(operationResult.phase || 'canceled').replace(
+          /^operation_/, ''
+        ),
+        progress: Number(operationResult.progress) || 0,
+        active: false,
+        success: false,
+        errorCode: operationResult.failure_code || 'canceled',
+        message: reason
+      });
+      toast(`控件操作已取消: ${reason}`, 'ok');
+      return;
+    }
+    if (operationResult.status !== 'success') {
+      workflow.stage = 'operation_failed';
+      const reason = operationResult.failure_reason ||
+        operationResult.message || '控件操作失败';
+      updateCabinetWorkflowStatus(workflow, {
+        state: 'failed',
+        phase: String(operationResult.phase || 'failed').replace(
+          /^operation_/, ''
+        ),
+        progress: Number(operationResult.progress) || 0,
+        active: false,
+        success: false,
+        errorCode: operationResult.failure_code || 'operation_failed',
+        message: reason
+      });
+      toast(`控件操作失败: ${reason}`, 'err');
+      return;
+    }
+    workflow.stage = 'completed';
+    updateCabinetWorkflowStatus(workflow, {
+      state: 'succeeded',
+      phase: String(operationResult.phase || 'completed').replace(
+        /^operation_/, ''
+      ),
+      progress: 1,
+      active: false,
+      success: true,
+      errorCode: null,
+      message: operationResult.message || `${target.display_name} 操作成功。`
+    });
+    toast(`控件操作成功: ${target.display_name}`, 'ok');
   } catch (error) {
     const canceled = workflow.cancelRequested;
     workflow.stage = canceled ? 'canceled' : 'failed';

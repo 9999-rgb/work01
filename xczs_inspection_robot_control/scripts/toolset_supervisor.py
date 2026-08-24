@@ -23,7 +23,6 @@ import argparse
 import json
 import math
 import os
-from pathlib import Path
 import re
 import signal
 import subprocess
@@ -34,7 +33,7 @@ from typing import Any, Iterable, Mapping
 from uuid import uuid4
 
 from control_msgs.action import FollowJointTrajectory
-from gazebo_msgs.srv import DeleteEntity, GetEntityState
+from gazebo_msgs.srv import DeleteEntity, GetEntityState, GetModelList
 from nav2_msgs.action import NavigateToPose
 import rclpy
 from rclpy.action import ActionClient
@@ -389,6 +388,10 @@ class ToolsetSupervisor(Node):
             GetEntityState,
             "/get_entity_state",
         )
+        self._get_model_list_client = self.create_client(
+            GetModelList,
+            "/get_model_list",
+        )
         self._global_args_guard_client = self.create_client(
             Trigger,
             "/xczs/global_args_guard/reset",
@@ -677,6 +680,7 @@ class ToolsetSupervisor(Node):
     ) -> None:
         pose: dict[str, float] | None = None
         target_started = False
+        old_stack_mutation_started = False
         try:
             self._ensure_not_stopping()
             self._set_switch_stage(generation, "capturing_pose", "Capturing robot pose.")
@@ -686,6 +690,11 @@ class ToolsetSupervisor(Node):
                 "stopping_old_stack",
                 f"Stopping the {previous} robot control stack.",
             )
+            # Everything before this point is a read-only preflight.  Record
+            # the irreversible boundary immediately before signalling the old
+            # child so a pose/service failure can never trigger a destructive
+            # rollback against an otherwise healthy robot.
+            old_stack_mutation_started = True
             self._stop_current_robot_child()
             self._set_switch_stage(
                 generation,
@@ -711,6 +720,52 @@ class ToolsetSupervisor(Node):
                 return
             failure = f"Toolset {target} could not become ready: {error}"
             self.get_logger().error(failure)
+            if not old_stack_mutation_started:
+                try:
+                    self._wait_for_robot_ready(previous)
+                    previous_ready = True
+                    readiness_error = None
+                except Exception as readiness_failure:  # noqa: BLE001
+                    previous_ready = False
+                    readiness_error = str(readiness_failure)
+                with self._lock:
+                    if self._stopping:
+                        return
+                    if previous_ready:
+                        self._set_status_locked(
+                            state="ready",
+                            stage="preflight_failed",
+                            ready=True,
+                            active_toolset=previous,
+                            target_toolset=None,
+                            operation_id=None,
+                            last_operation_id=operation_id,
+                            last_error=failure,
+                            message=(
+                                f"Toolset {target} switch failed before the "
+                                f"robot was modified; toolset {previous} "
+                                "remains ready."
+                            ),
+                        )
+                    else:
+                        fatal = (
+                            failure
+                            + "; the unchanged previous robot stack could not "
+                            + f"be verified ready: {readiness_error}"
+                        )
+                        self._fatal_error = fatal
+                        self._set_status_locked(
+                            state="failed",
+                            stage="preflight_failed",
+                            ready=False,
+                            active_toolset=previous or None,
+                            target_toolset=None,
+                            operation_id=None,
+                            last_operation_id=operation_id,
+                            last_error=fatal,
+                            message=fatal,
+                        )
+                return
             restored = self._rollback(previous, pose, target_started, generation)
             with self._lock:
                 if self._stopping:
@@ -798,7 +853,13 @@ class ToolsetSupervisor(Node):
                 "rolling_back",
                 f"Restoring previous toolset {previous}.",
             )
-            if target_started:
+            with self._lock:
+                current_child = self._child_process
+            # A child may have been assigned just before its startup helper
+            # raised, leaving ``target_started`` false.  Always stop any
+            # residual child before deleting the entity and respawning the
+            # previous topology.
+            if target_started or current_child is not None:
                 self._stop_current_robot_child()
             self._delete_robot_entity(ignore_missing=True)
             self._start_robot_child(previous, pose=pose, spawn_cabinet=False)
@@ -1072,9 +1133,9 @@ class ToolsetSupervisor(Node):
         if not all(math.isfinite(value) for value in (x, y, z)):
             raise ToolsetSupervisorError("Gazebo returned a non-finite robot position")
         # ``spawn_entity`` receives the body/root yaw while scenes express the
-        # base_link yaw.  The launch file applies the inverse -pi/2 transform,
+        # base_link yaw.  The launch file applies the inverse +pi/2 transform,
         # so convert it back here to preserve the robot's real map heading.
-        base_yaw = _quaternion_yaw(pose.orientation) + math.pi / 2.0
+        base_yaw = _quaternion_yaw(pose.orientation) - math.pi / 2.0
         return {"x": x, "y": y, "z": z, "yaw": base_yaw}
 
     def _delete_robot_entity(self, *, ignore_missing: bool = False) -> None:
@@ -1114,36 +1175,39 @@ class ToolsetSupervisor(Node):
         consecutive absent observations spans at least one poll interval and
         gives Gazebo's deletion queue a deterministic handoff point.
 
-        ``gazebo_ros_state`` reports a missing entity as ``success=false``
-        with an *empty* ``status_message`` — it logs the reason but never
-        fills the field (verified in gazebo_ros_pkgs ``gazebo_ros_state.cpp``).
-        With ``reference_frame="world"`` that is the only failure mode a
-        GetEntityState response can have, so a non-success response is treated
-        as the entity being absent rather than as an unverifiable fault.
+        Query the model list instead of deliberately calling
+        ``/get_entity_state`` for a missing model.  ``gazebo_ros_state`` logs
+        every such negative lookup as an ERROR even though absence is the
+        expected post-delete state; ``/get_model_list`` represents the same
+        check without manufacturing an alarming runtime error.
         """
         deadline = time.monotonic() + self._service_timeout_sec
         consecutive_absent = 0
-        request = GetEntityState.Request()
-        request.name = self._robot_name
-        request.reference_frame = "world"
+        request = GetModelList.Request()
         while True:
             self._ensure_not_stopping()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise ToolsetSupervisorError(
+                    f"Gazebo did not remove robot '{self._robot_name}' before timeout"
+                )
             response = self._call_service(
-                self._get_entity_state_client,
+                self._get_model_list_client,
                 request,
                 "verify robot entity removal",
+                timeout_sec=remaining,
             )
-            if bool(getattr(response, "success", False)):
+            if not bool(getattr(response, "success", False)):
+                raise ToolsetSupervisorError(
+                    "Gazebo could not list models while verifying removal of "
+                    f"robot '{self._robot_name}'"
+                )
+            model_names = {
+                str(name) for name in getattr(response, "model_names", ())
+            }
+            if self._robot_name in model_names:
                 consecutive_absent = 0
             else:
-                # A missing entity yields success=false with no message.
-                # Only a non-empty, non-absent message is an unexpected fault.
-                detail = str(getattr(response, "status_message", "")).strip()
-                if detail and not self._entity_status_means_absent(detail):
-                    raise ToolsetSupervisorError(
-                        "Gazebo reported an unexpected status while verifying "
-                        f"removal of robot '{self._robot_name}': {detail}"
-                    )
                 consecutive_absent += 1
                 if consecutive_absent >= ENTITY_REMOVAL_STABLE_CYCLES:
                     return
@@ -1552,7 +1616,10 @@ def _install_shutdown_signal_handlers(supervisor: ToolsetSupervisor) -> None:
 
 def main(args: list[str] | None = None) -> int:
     options = _parser().parse_args(args)
-    rclpy.init()
+    # All supported CLI options belong to this script and have already been
+    # parsed.  Do not let launch arguments such as ``use_sim_time:=true`` leak
+    # into rcl as deprecated global remap rules.
+    rclpy.init(args=[])
     supervisor: ToolsetSupervisor | None = None
     try:
         supervisor = ToolsetSupervisor(

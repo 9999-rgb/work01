@@ -1167,7 +1167,7 @@ private:
     bool heartbeat_received = false;
     std::string active_control;
     std::string heartbeat_lease_id;
-    auto heartbeat = std::chrono::steady_clock::time_point{};
+    std::chrono::steady_clock::time_point heartbeat;
     std::uint64_t active_control_generation = 0U;
     std::uint64_t heartbeat_sequence = 0U;
     {

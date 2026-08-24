@@ -1313,10 +1313,14 @@ class FastAPIAuthGateTest(unittest.TestCase):
 
     def test_operator_cannot_manage_users(self) -> None:
         admin_token = self._login()
+        # conftest intentionally shares one SQLite database across all test
+        # modules; keep this identity distinct from test_asset_web's ``op1`` so
+        # the result does not depend on module execution order.
+        username = "gateway_op1"
         create_response = self.client.post(
             "/users",
             json={
-                "username": "op1",
+                "username": username,
                 "password": "operator-pass",
                 "role": "operator",
             },
@@ -1325,7 +1329,7 @@ class FastAPIAuthGateTest(unittest.TestCase):
         self.assertEqual(create_response.status_code, 201)
         op_login = self.client.post(
             "/auth/login",
-            json={"username": "op1", "password": "operator-pass"},
+            json={"username": username, "password": "operator-pass"},
         )
         self.assertEqual(op_login.status_code, 200)
         op_token = op_login.json()["access_token"]

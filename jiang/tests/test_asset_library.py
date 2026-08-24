@@ -9,6 +9,7 @@ pointers that the launch and gateway already consume.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import types
@@ -180,6 +181,24 @@ class AssetLibraryTest(unittest.TestCase):
             "package://some_pkg/maps/a.yaml", scenes["scenes"][0]["nav2_map"]
         )
 
+    def test_import_keeps_external_absolute_symlink_reference_verbatim(self) -> None:
+        source = _write_scene_asset(self.directory / "source")
+        loop = self.directory / "external-loop"
+        loop.symlink_to(loop)
+        (source / "scenes.yaml").write_text(
+            yaml.safe_dump(
+                _scene_document("scene_a", nav2_map=str(loop)),
+                sort_keys=False,
+            ),
+            encoding="utf-8",
+        )
+
+        self.library.import_asset(source)
+
+        root = self.library.root / "scene" / "scene_a"
+        scenes = yaml.safe_load((root / "scenes.yaml").read_text())
+        self.assertEqual(str(loop), scenes["scenes"][0]["nav2_map"])
+
     def test_import_with_validation_sets_validated_flag(self) -> None:
         source = _write_scene_asset(self.directory / "source")
 
@@ -189,6 +208,39 @@ class AssetLibraryTest(unittest.TestCase):
 
         record = self.library.import_asset(source, validate=validate)
         self.assertTrue(record.validated)
+
+    def test_relative_library_root_repoints_validated_staging_refs(self) -> None:
+        source = _write_scene_asset(self.directory / "source")
+        relative_root = Path(
+            os.path.relpath(self.directory / "relative-assets", Path.cwd())
+        )
+        library = AssetLibrary(relative_root)
+        validated_refs: list[Path] = []
+
+        def validate(_manifest, root: Path) -> None:
+            scenes = yaml.safe_load((root / "scenes.yaml").read_text())
+            scene = scenes["scenes"][0]
+            validated_refs.extend(
+                (Path(scene["nav2_map"]), Path(scene["model"]["file"]))
+            )
+            for reference in validated_refs:
+                self.assertTrue(reference.is_file())
+                self.assertTrue(reference.is_relative_to(root.resolve()))
+
+        library.import_asset(source, validate=validate)
+
+        installed = (relative_root / "scene" / "scene_a").resolve()
+        scenes = yaml.safe_load((installed / "scenes.yaml").read_text())
+        scene = scenes["scenes"][0]
+        self.assertEqual(
+            str(installed / "maps" / "a.yaml"),
+            scene["nav2_map"],
+        )
+        self.assertEqual(
+            str(installed / "worlds" / "floor.sdf"),
+            scene["model"]["file"],
+        )
+        self.assertTrue(all(not path.exists() for path in validated_refs))
 
     def test_import_validation_failure_leaves_no_trace(self) -> None:
         source = _write_scene_asset(self.directory / "source")
@@ -292,6 +344,78 @@ class AssetLibraryTest(unittest.TestCase):
         installed = self.library.root / "scene" / "scene_a"
         self.assertEqual("keep", (installed / "old-only.txt").read_text())
         self.assertEqual("1.0.0", self.library.find("scene", "scene_a").version)
+
+    def test_remove_rejects_catalog_path_outside_library(self) -> None:
+        victim = self.directory / "victim"
+        victim.mkdir()
+        marker = victim / "keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+        record = AssetRecord(
+            kind="scene",
+            name="scene_a",
+            version="1.0.0",
+            description="",
+            path="../victim",
+            files={"scenes": "scenes.yaml"},
+            references={"cabinet": None},
+            imported_at="2026-08-24T00:00:00+00:00",
+            validated=False,
+        )
+        self.library._store.put_asset(record)
+
+        with self.assertRaises(AssetLibraryError):
+            self.library.remove_asset("scene", "scene_a")
+
+        self.assertEqual("keep", marker.read_text(encoding="utf-8"))
+        self.assertEqual(record, self.library.find("scene", "scene_a"))
+
+    def test_asset_root_rejects_invalid_and_redirected_catalog_paths(self) -> None:
+        valid = AssetRecord(
+            kind="scene",
+            name="not_installed_yet",
+            version="1.0.0",
+            description="",
+            path="scene/not_installed_yet",
+            files={"scenes": "scenes.yaml"},
+            references={"cabinet": None},
+            imported_at="2026-08-24T00:00:00+00:00",
+            validated=False,
+        )
+        self.assertEqual(
+            (self.library.root / valid.path).resolve(),
+            self.library.asset_root(valid),
+        )
+
+        invalid = AssetRecord(
+            **{
+                **valid.__dict__,
+                "name": "bad\0path",
+                "path": "scene/bad\0path",
+            }
+        )
+        with self.assertRaises(AssetLibraryError):
+            self.library.asset_root(invalid)
+
+        self.library.root.mkdir(parents=True, exist_ok=True)
+        marker = self.library.root / "keep.txt"
+        marker.write_text("keep", encoding="utf-8")
+        redirected = AssetRecord(
+            **{
+                **valid.__dict__,
+                "name": "redirected",
+                "path": "scene/redirected",
+            }
+        )
+        redirected_path = self.library.root / redirected.path
+        redirected_path.parent.mkdir(parents=True)
+        redirected_path.symlink_to(self.library.root, target_is_directory=True)
+        self.library._store.put_asset(redirected)
+
+        with self.assertRaises(AssetLibraryError):
+            self.library.remove_asset("scene", "redirected")
+
+        self.assertEqual("keep", marker.read_text(encoding="utf-8"))
+        self.assertEqual(redirected, self.library.find("scene", "redirected"))
 
     def test_import_rejects_non_asset_and_invalid_manifest(self) -> None:
         plain = self.directory / "plain"

@@ -155,6 +155,10 @@ def test_each_robot_child_gets_a_unique_valid_gazebo_plugin_instance_id():
             module.ToolsetSupervisor,
             "_reset_nav2_lifecycle_probe_locked",
         ),
+        patch.object(
+            module.ToolsetSupervisor,
+            "_reset_gazebo_global_args",
+        ) as reset_global_args,
     ):
         supervisor._start_robot_child("B", pose=None, spawn_cabinet=False)
         # Model the first child after a completed stop.  A rollback may restore
@@ -169,6 +173,50 @@ def test_each_robot_child_gets_a_unique_valid_gazebo_plugin_instance_id():
     assert "gazebo_plugin_instance_id:=robot_b_2" in second_command
     assert module._GAZEBO_PLUGIN_INSTANCE_ID_PATTERN.fullmatch("robot_b_1")
     assert module._GAZEBO_PLUGIN_INSTANCE_ID_PATTERN.fullmatch("robot_b_2")
+    assert [call.kwargs for call in reset_global_args.call_args_list] == [
+        {"required": True},
+        {"required": True},
+    ]
+
+
+def test_global_args_guard_is_required_for_a_toolset_switch():
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._global_args_guard_client = object()
+    supervisor._service_timeout_sec = 4.0
+
+    with patch.object(
+        module.ToolsetSupervisor,
+        "_call_service",
+        side_effect=module.ToolsetSupervisorError("guard unavailable"),
+    ) as call_service:
+        with pytest.raises(module.ToolsetSupervisorError, match="guard unavailable"):
+            supervisor._reset_gazebo_global_args(required=True)
+
+    assert call_service.call_count == 1
+    assert call_service.call_args.kwargs["timeout_sec"] == 4.0
+
+
+def test_initial_spawn_can_continue_before_global_args_guard_is_ready():
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._global_args_guard_client = object()
+    supervisor._service_timeout_sec = 4.0
+    warnings = []
+    supervisor.get_logger = lambda: SimpleNamespace(
+        warn=lambda *args: warnings.append(args)
+    )
+
+    with patch.object(
+        module.ToolsetSupervisor,
+        "_call_service",
+        side_effect=module.ToolsetSupervisorError("guard unavailable"),
+    ) as call_service:
+        supervisor._reset_gazebo_global_args(required=False)
+
+    assert call_service.call_count == 1
+    assert call_service.call_args.kwargs["timeout_sec"] == module.GUARD_INITIAL_WAIT_SEC
+    assert warnings
 
 
 def test_entity_removal_requires_two_consecutive_absent_observations():
@@ -176,13 +224,16 @@ def test_entity_removal_requires_two_consecutive_absent_observations():
     supervisor = object.__new__(module.ToolsetSupervisor)
     supervisor._service_timeout_sec = 1.0
     supervisor._robot_name = "xczs_inspection_robot"
-    supervisor._get_entity_state_client = object()
+    supervisor._get_model_list_client = object()
     supervisor._ensure_not_stopping = lambda: None
 
     responses = (
-        SimpleNamespace(success=True, status_message=""),
-        SimpleNamespace(success=False, status_message="entity does not exist"),
-        SimpleNamespace(success=False, status_message="entity does not exist"),
+        SimpleNamespace(
+            success=True,
+            model_names=("ground_plane", "xczs_inspection_robot"),
+        ),
+        SimpleNamespace(success=True, model_names=("ground_plane",)),
+        SimpleNamespace(success=True, model_names=("ground_plane",)),
     )
     with (
         patch.object(
@@ -199,41 +250,166 @@ def test_entity_removal_requires_two_consecutive_absent_observations():
     for invocation in call_service.call_args_list:
         assert invocation.args[2] == "verify robot entity removal"
         request = invocation.args[1]
-        assert request.name == "xczs_inspection_robot"
-        assert request.reference_frame == "world"
+        assert isinstance(request, module.GetModelList.Request)
+        assert 0.0 < invocation.kwargs["timeout_sec"] <= 1.0
 
 
-def test_entity_removal_treats_empty_status_message_as_absent():
-    """gazebo_ros_state leaves status_message empty for a missing entity.
-
-    ``success=false`` with no message is the normal post-delete response, not
-    an unverifiable fault; otherwise every toolset switch would abort right
-    after a successful DeleteEntity and cascade into a full stack teardown.
-    """
+def test_entity_removal_rejects_a_failed_model_list_query():
     module = _load_module()
     supervisor = object.__new__(module.ToolsetSupervisor)
     supervisor._service_timeout_sec = 1.0
     supervisor._robot_name = "xczs_inspection_robot"
-    supervisor._get_entity_state_client = object()
+    supervisor._get_model_list_client = object()
     supervisor._ensure_not_stopping = lambda: None
 
-    responses = (
-        # First poll still sees the entity, then two empty-message absences.
-        SimpleNamespace(success=True, status_message=""),
-        SimpleNamespace(success=False, status_message=""),
-        SimpleNamespace(success=False, status_message=""),
-    )
+    with patch.object(
+        module.ToolsetSupervisor,
+        "_call_service",
+        return_value=SimpleNamespace(success=False, model_names=()),
+    ):
+        with pytest.raises(module.ToolsetSupervisorError, match="could not list"):
+            supervisor._wait_for_robot_entity_absent()
+
+
+def test_entity_removal_accepts_an_empty_successful_model_list():
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._service_timeout_sec = 1.0
+    supervisor._robot_name = "xczs_inspection_robot"
+    supervisor._get_model_list_client = object()
+    supervisor._ensure_not_stopping = lambda: None
+
     with (
         patch.object(
             module.ToolsetSupervisor,
             "_call_service",
-            side_effect=responses,
+            side_effect=(
+                SimpleNamespace(success=True, model_names=()),
+                SimpleNamespace(success=True, model_names=()),
+            ),
         ) as call_service,
         patch.object(module.time, "sleep"),
     ):
         supervisor._wait_for_robot_entity_absent()
 
-    assert call_service.call_count == 3
+    assert call_service.call_count == 2
+
+
+def test_pose_capture_failure_preserves_the_unchanged_previous_stack():
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._stopping = False
+    supervisor._stop_requested = threading.Event()
+    supervisor._fatal_error = None
+    supervisor._status = {
+        "generation": 8,
+        "state": "switching",
+        "stage": "queued",
+        "ready": False,
+        "active_toolset": "A",
+        "target_toolset": "B",
+    }
+    supervisor._status_publisher = SimpleNamespace(publish=lambda _message: None)
+    supervisor.get_logger = lambda: SimpleNamespace(
+        error=lambda _message: None,
+    )
+
+    with (
+        patch.object(
+            module.ToolsetSupervisor,
+            "_capture_robot_pose",
+            side_effect=module.ToolsetSupervisorError("pose service timed out"),
+        ),
+        patch.object(
+            module.ToolsetSupervisor,
+            "_wait_for_robot_ready",
+        ) as wait_ready,
+        patch.object(
+            module.ToolsetSupervisor,
+            "_stop_current_robot_child",
+        ) as stop_child,
+        patch.object(
+            module.ToolsetSupervisor,
+            "_delete_robot_entity",
+        ) as delete_entity,
+        patch.object(
+            module.ToolsetSupervisor,
+            "_start_robot_child",
+        ) as start_child,
+        patch.object(module.ToolsetSupervisor, "_rollback") as rollback,
+    ):
+        supervisor._switch_worker("A", "B", 8, "toolset-test")
+
+    wait_ready.assert_called_once_with("A")
+    stop_child.assert_not_called()
+    delete_entity.assert_not_called()
+    start_child.assert_not_called()
+    rollback.assert_not_called()
+    assert supervisor._fatal_error is None
+    assert supervisor._status["state"] == "ready"
+    assert supervisor._status["stage"] == "preflight_failed"
+    assert supervisor._status["ready"] is True
+    assert supervisor._status["active_toolset"] == "A"
+    assert supervisor._status["target_toolset"] is None
+    assert "pose service timed out" in supervisor._status["last_error"]
+
+
+def test_rollback_stops_a_residual_child_even_before_target_started_flag():
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._lock = threading.RLock()
+    supervisor._stopping = False
+    supervisor._stop_requested = threading.Event()
+    supervisor._child_process = object()
+    events = []
+    supervisor.get_logger = lambda: SimpleNamespace(error=lambda _message: None)
+
+    with (
+        patch.object(
+            module.ToolsetSupervisor,
+            "_set_switch_stage",
+            side_effect=lambda *_args: events.append("stage"),
+        ),
+        patch.object(
+            module.ToolsetSupervisor,
+            "_stop_current_robot_child",
+            side_effect=lambda: events.append("stop"),
+        ) as stop_child,
+        patch.object(
+            module.ToolsetSupervisor,
+            "_delete_robot_entity",
+            side_effect=lambda **_kwargs: events.append("delete"),
+        ),
+        patch.object(
+            module.ToolsetSupervisor,
+            "_start_robot_child",
+            side_effect=lambda *_args, **_kwargs: events.append("start"),
+        ),
+        patch.object(
+            module.ToolsetSupervisor,
+            "_wait_for_robot_ready",
+            side_effect=lambda *_args: events.append("ready"),
+        ),
+    ):
+        restored = supervisor._rollback(
+            "A",
+            {"x": 0.0, "y": 0.0, "z": 0.58, "yaw": 0.0},
+            False,
+            9,
+        )
+
+    assert restored is True
+    stop_child.assert_called_once_with()
+    assert events == ["stage", "stop", "delete", "start", "ready"]
+
+
+def test_supervisor_does_not_forward_child_launch_arguments_to_rcl():
+    source = (
+        CONTROL_ROOT / "scripts" / "toolset_supervisor.py"
+    ).read_text(encoding="utf-8")
+
+    assert "rclpy.init(args=[])" in source
 
 
 def test_stopping_child_reaps_the_launch_leader_before_group_check():

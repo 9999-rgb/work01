@@ -177,6 +177,7 @@ class _Result:
     CONTACT_DETECTION_TIMEOUT = 15
     RESOURCE_BUSY = 16
     LEASE_LOST = 17
+    TOOLSET_MISMATCH = 18
 
 
 class _Feedback:
@@ -551,6 +552,10 @@ class CabinetClientTest(unittest.TestCase):
         self.assertEqual(
             "lease_lost",
             CabinetClient._error_code_name(_Result.LEASE_LOST),
+        )
+        self.assertEqual(
+            "toolset_mismatch",
+            CabinetClient._error_code_name(_Result.TOOLSET_MISMATCH),
         )
 
     def test_policy_limited_control_is_sent_for_live_validation(self) -> None:

@@ -17,7 +17,7 @@ from typing import Optional
 
 from sqlalchemy import create_engine, event, select
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import sessionmaker
 
 from app.assets.models import Asset, Selection
 from app.config import settings

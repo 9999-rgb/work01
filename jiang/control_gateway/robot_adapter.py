@@ -22,6 +22,7 @@ _DEFAULT_CONTROLLER_NAMESPACE = "/xczs"
 _LEGACY_DEFAULTS = {
     "planning_frame": "odom",
     "manual_linear_axis": "y",
+    "manual_linear_sign": 1.0,
     "navigation_velocity_yaw_offset": 1.57079632679,
     "navigation_action": "/navigate_to_pose",
     "navigation_readiness_service": (
@@ -131,6 +132,7 @@ class RobotAdapterConfig:
     planning_frame: str
     pose_parent_frame: str
     manual_linear_axis: str
+    manual_linear_sign: float
     navigation_velocity_yaw_offset: float
     navigation_frame: str
     navigation_base_frame: str
@@ -930,6 +932,15 @@ def load(
     )
     if manual_linear_axis_value not in {"x", "y"}:
         raise RobotAdapterError("manual_linear_axis must be either x or y.")
+    manual_linear_sign = _finite_number(
+        parameters.get(
+            "manual_linear_sign",
+            _LEGACY_DEFAULTS["manual_linear_sign"],
+        ),
+        "manual_linear_sign",
+    )
+    if manual_linear_sign not in {-1.0, 1.0}:
+        raise RobotAdapterError("manual_linear_sign must be either -1 or 1.")
     all_controller_groups = _controller_groups(parameters, legacy)
     all_manual_joints = _manual_joints(
         all_controller_groups,
@@ -1003,6 +1014,7 @@ def load(
         planning_frame=planning_frame,
         pose_parent_frame=pose_parent_frame,
         manual_linear_axis=manual_linear_axis_value,
+        manual_linear_sign=manual_linear_sign,
         navigation_velocity_yaw_offset=_finite_number(
             _required(
                 parameters,

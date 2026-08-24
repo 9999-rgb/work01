@@ -39,6 +39,12 @@ MANAGED_PGIDS=()
 MANAGED_LABELS=()
 LAUNCH_RUNTIME_DIRECTORY=""
 GAZEBO_LOG_DIRECTORY=""
+# Capture the caller's intent before any ROS/Gazebo environment hook runs.
+# An explicitly supplied URI remains supported; otherwise this project uses
+# only its installed/local models and never waits on the retired remote model
+# database during cold start.
+GAZEBO_MODEL_DATABASE_URI_EXPLICIT="${GAZEBO_MODEL_DATABASE_URI+x}"
+GAZEBO_MODEL_DATABASE_URI_REQUESTED="${GAZEBO_MODEL_DATABASE_URI-}"
 
 # ── 路径配置 ──────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -1085,6 +1091,22 @@ if ! command -v ros2 >/dev/null 2>&1; then
     echo "ERROR: source 环境后仍找不到 ros2 命令。"
     exit 1
 fi
+if [ "$GAZEBO_MODEL_DATABASE_URI_EXPLICIT" = "x" ]; then
+    export GAZEBO_MODEL_DATABASE_URI="$GAZEBO_MODEL_DATABASE_URI_REQUESTED"
+    GAZEBO_MODEL_DATABASE_LABEL="保留用户配置"
+else
+    export GAZEBO_MODEL_DATABASE_URI=""
+    GAZEBO_MODEL_DATABASE_LABEL="禁用远程库（仅使用本地模型）"
+fi
+GAZEBO_SYSTEM_MODEL_PATH="/usr/share/gazebo-11/models"
+if [ -d "$GAZEBO_SYSTEM_MODEL_PATH" ]; then
+    case ":${GAZEBO_MODEL_PATH:-}:" in
+        *":$GAZEBO_SYSTEM_MODEL_PATH:"*) ;;
+        *)
+            export GAZEBO_MODEL_PATH="$GAZEBO_SYSTEM_MODEL_PATH${GAZEBO_MODEL_PATH:+:$GAZEBO_MODEL_PATH}"
+            ;;
+    esac
+fi
 
 REQUIRED_ROS_PACKAGES=(
     xczs_inspection_robot_control
@@ -1142,9 +1164,9 @@ if [ "$CONTROL_MODE" = "web" ]; then
 import sys
 
 try:
-    import aiohttp, alembic, aiosqlite, bcrypt, cryptography, fastapi
+    import alembic, aiosqlite, bcrypt, cryptography, fastapi
     import jose, multipart, passlib, pydantic, pydantic_settings
-    import sqlalchemy, sse_starlette, uvicorn, yaml, zenoh
+    import sqlalchemy, uvicorn, yaml, zenoh
     from PIL import Image
     from app.main import _normalize_allowed_origins, create_app
     from control_gateway import ControlServer
@@ -1181,7 +1203,7 @@ PY
 fi
 if [ "$WITH_PROXY" = "true" ]; then
     if ! env PYTHONPATH="$JIANG_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-        "$PYTHON_BIN" -c 'import aiohttp, run_xczs_proxy, zenoh'; then
+        "$PYTHON_BIN" -c 'import run_xczs_proxy, zenoh'; then
         echo "ERROR: CDR→JSON 代理的 Python 依赖导入失败。"
         exit 1
     fi
@@ -1265,6 +1287,7 @@ if [ "$CONTROL_MODE" = "web" ]; then
 fi
 echo "  Gazebo URI: $GAZEBO_MASTER_URI"
 echo "  Gazebo 检查: $GAZEBO_PREFLIGHT_LABEL"
+echo "  Gazebo 模型库: $GAZEBO_MODEL_DATABASE_LABEL"
 echo "  末端热切换: $TOOLSET_HOTSWAP_LABEL"
 if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "false" ]; then
     NAV2_LABEL="由外部机器人栈提供"
@@ -1457,6 +1480,43 @@ print(json.dumps(summary, ensure_ascii=False, separators=(",", ":")))
     else
         echo "       需要 Nav2 Action 和有效 occupancy map 可用。" >&2
     fi
+    exit 1
+}
+
+_wait_for_gazebo_factory_service() {
+    # A live gzserver process is not enough: during first start Gazebo may
+    # still fetch model metadata before gazebo_ros_factory advertises
+    # /spawn_entity.  Starting the toolset supervisor earlier causes every
+    # robot/cabinet spawn to fail, even though Gazebo itself remains alive.
+    local deadline=$((SECONDS + ROBOT_READY_TIMEOUT_SEC))
+    while (( SECONDS < deadline )); do
+        _assert_managed_processes_running
+        if "$PYTHON_BIN" - <<'PY' 2>/dev/null
+import rclpy
+from gazebo_msgs.srv import SpawnEntity
+
+rclpy.init(args=None)
+node = None
+try:
+    node = rclpy.create_node("xczs_gazebo_factory_readiness_probe")
+    client = node.create_client(SpawnEntity, "/spawn_entity")
+    for _ in range(3):
+        rclpy.spin_once(node, timeout_sec=0.1)
+        if client.service_is_ready():
+            raise SystemExit(0)
+    raise SystemExit(1)
+finally:
+    if node is not None:
+        node.destroy_node()
+    rclpy.shutdown()
+PY
+        then
+            return 0
+        fi
+        sleep 0.5
+    done
+    echo "ERROR: Gazebo 工厂服务 /spawn_entity 未在 ${ROBOT_READY_TIMEOUT_SEC}s 内就绪。" >&2
+    echo "       gzserver 仍在运行，但尚不能安全生成机器人或控制柜实体。" >&2
     exit 1
 }
 
@@ -1727,9 +1787,10 @@ if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
     _start_managed_process WORLD_LAUNCH_PID "Gazebo 世界 launch" \
         ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
         "${WORLD_LAUNCH_ARGS[@]}"
-    # Each check is 200 ms.  Give gzserver/factory and the static floor spawn
-    # ten seconds to settle before the supervisor asks Gazebo for services.
+    # Fixed waiting only catches immediate child-process failures.  The
+    # service gate below owns actual Gazebo factory readiness.
     _wait_for_stable_processes 50
+    _wait_for_gazebo_factory_service
 
     TOOLSET_SUPERVISOR_ARGS=(
         --toolset "$TOOLSET"

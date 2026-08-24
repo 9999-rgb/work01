@@ -69,7 +69,7 @@ class SensorStreamNode(Node):
     # exactly with a RELIABLE reader: a BEST_EFFORT reader against a RELIABLE
     # writer depends on CycloneDDS' lenient cross-reliability matching, which
     # delivers only intermittently here (frames flow in isolation but stall
-    # once the aiohttp web server shares the process).
+    # once the FastAPI web service shares the process).
     CAMERA_QOS = QoSProfile(
         depth=10,
         reliability=ReliabilityPolicy.RELIABLE,
@@ -94,7 +94,6 @@ class SensorStreamNode(Node):
         self._unsupported_encoding: Optional[str] = None
         self._camera_frame_count = 0
         self._camera_error_count = 0
-        self._lidar_frame_count = 0
         self._active_camera_topic: Optional[str] = None
         self._camera_watchdog_frame_count = 0
         self._camera_topic = camera_topic

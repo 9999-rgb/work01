@@ -536,7 +536,7 @@ public:
     const bool legacy_yaw_offset_overridden =
       parameter_overrides.count("base_link_yaw_offset") != 0U;
     const double configured_navigation_yaw_offset = finite_parameter(
-      "navigation_velocity_yaw_offset", 1.57079632679);
+      "navigation_velocity_yaw_offset", -1.57079632679);
     const double legacy_yaw_offset = finite_parameter(
       "base_link_yaw_offset", configured_navigation_yaw_offset);
     navigation_velocity_yaw_offset_ =
@@ -1203,8 +1203,8 @@ private:
   // operates buttons and doors, Set B (rotate-button + rocker) operates
   // knobs and switches.  The shared adapter allowlist may span both
   // toolsets, so the catalog must report only the mounted set as
-  // physically operable; the per-operation configure_move_group() check
-  // still rejects the unmounted set before any TF lookup.
+  // physically operable; execute_operate() rejects the unmounted set before
+  // changing a MoveIt profile or looking up TF.
   bool tool_serves_control(std::uint8_t control_type) const
   {
     using Control = xczs_inspection_robot_control::msg::CabinetControl;
@@ -1214,6 +1214,17 @@ private:
     }
     return control_type == Control::TYPE_BUTTON ||
            control_type == Control::TYPE_DOOR;
+  }
+
+  std::string required_toolset_for_control(std::uint8_t control_type) const
+  {
+    using Control = xczs_inspection_robot_control::msg::CabinetControl;
+    if (control_type == Control::TYPE_KNOB ||
+      control_type == Control::TYPE_SWITCH)
+    {
+      return "B";
+    }
+    return "A";
   }
 
   void configure_controls()
@@ -1231,14 +1242,16 @@ private:
       "inoperable_control_reason",
       "The control has not passed this robot adapter's complete physical "
       "operation and recovery validation.");
-    // A control that IS in operable_control_ids but whose operating tool is
-    // not mounted in the current end-effector toolset (e.g. Set A cannot
-    // rotate a knob) is not "outside the allowlist" -- report the toolset
-    // mismatch instead of the generic inoperable reason.
+    // A control whose operating tool is not mounted in the current
+    // end-effector toolset (e.g. Set A cannot rotate a knob) must report the
+    // toolset mismatch before the generic planning-only policy.  This gives
+    // the Web client a concrete corrective action even when the control is
+    // not part of the physical-operation allowlist.
     const auto toolset_mismatch_reason = declare_parameter<std::string>(
       "toolset_mismatch_reason",
       "The control's operating tool is not mounted in the current end-effector "
-      "toolset; the control keeps status display and planning validation only.");
+      "toolset; status display remains available, but valid MoveIt planning "
+      "and physical execution require switching to the matching toolset.");
     const std::unordered_set<std::string> operable_controls(
       operable_control_ids.begin(), operable_control_ids.end());
     if (operable_controls.size() != operable_control_ids.size() ||
@@ -1497,9 +1510,9 @@ private:
                 "' must not declare an unavailable_reason.");
       }
       if (!button->operable && button->unavailable_reason.empty()) {
-        // 控件在允许清单内但当前套装未挂载其操作工具时，原因是"套装不匹配"
-        // 而非"未列入 operable_control_ids"，用专门文案避免误导 Web 目录。
-        button->unavailable_reason = in_allowlist && !tool_serves ?
+        // 当前套装未挂载其操作工具时，先报告“套装不匹配”，而非笼统地报告
+        // 未列入物理操作清单；切换到正确套装后才可能进入规划验证路径。
+        button->unavailable_reason = !tool_serves ?
           toolset_mismatch_reason :
           inoperable_control_reason;
       }
@@ -2439,6 +2452,28 @@ private:
                 OperateCabinetControl::Result::INVALID_CONTROL,
                 "The accepted cabinet control is no longer configured.");
       }
+      if (!tool_serves_control(control->control_type)) {
+        const std::string required_toolset =
+          required_toolset_for_control(control->control_type);
+        result->success = false;
+        result->error_code =
+          OperateCabinetControl::Result::TOOLSET_MISMATCH;
+        result->message = "Control '" + control->id +
+          "' requires end-effector toolset " + required_toolset +
+          ", but the mounted toolset is " + toolset_ + ".";
+        result->validation_performed = false;
+        result->operation_executed = false;
+        result->diagnostic_stage = "toolset_validation";
+        result->policy_reason = control->unavailable_reason.empty() ?
+          "Switch to end-effector toolset " + required_toolset +
+          " before operating this control." :
+          control->unavailable_reason;
+        RCLCPP_WARN(get_logger(), "%s", result->message.c_str());
+        finish_operate_goal_noexcept(goal_handle, result, false);
+        clear_active_goal(ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+        operation_active_.store(false);
+        return;
+      }
       // Bind this operation's arm group, tip link, contact tool link and
       // transport target to the control's type before any MoveIt planning.
       apply_tool_profile(control->control_type);
@@ -2588,6 +2623,14 @@ private:
         *control, *goal_handle->get_goal(), initial_state);
       if (is_button) {
         target_position = button_press_depth;
+      } else if (std::abs(target_position - initial_state.position) <=
+        target_tolerance_)
+      {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::UNSUPPORTED_COMMAND,
+                "Control '" + control->id + "' is already at requested "
+                "state '" + target_state +
+                "'; select a different physical detent.");
       } else if (control->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
       {
@@ -6902,7 +6945,7 @@ private:
   double docking_max_angular_speed_{0.45};
   double docking_linear_gain_{0.8};
   double docking_angular_gain_{1.2};
-  double navigation_velocity_yaw_offset_{1.57079632679};
+  double navigation_velocity_yaw_offset_{-1.57079632679};
   double press_detection_timeout_{3.0};
   double release_detection_timeout_{3.0};
   double press_hold_seconds_{0.5};

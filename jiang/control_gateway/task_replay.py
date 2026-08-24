@@ -148,7 +148,7 @@ class TaskReplayOrchestrator:
             }
             worker = threading.Thread(
                 target=self._run,
-                args=(recording_id, steps),
+                args=(steps,),
                 name=f"xczs-task-replay-{recording_id}",
                 daemon=True,
             )
@@ -211,10 +211,8 @@ class TaskReplayOrchestrator:
 
     def _run(
         self,
-        recording_id: str,
         steps: Tuple[Dict[str, Any], ...],
     ) -> None:
-        del recording_id
         started = _finite_time(self._monotonic_clock(), "monotonic clock")
         try:
             for index, step in enumerate(steps):

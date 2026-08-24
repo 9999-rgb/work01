@@ -12,7 +12,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 import yaml
 
@@ -306,9 +306,6 @@ class NavigationStation:
             "z": self.z,
             "yaw": self.yaw,
         }
-
-
-BoundaryPredicate = Callable[[float, float], bool]
 
 
 class CabinetInventory:

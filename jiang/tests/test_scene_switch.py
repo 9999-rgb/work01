@@ -215,7 +215,11 @@ class SceneSwitchTest(unittest.TestCase):
         return server, server._gazebo_client, server._node
 
     def test_switch_to_model_scene_orders_geometry_map_pose(self) -> None:
-        cabinet = _spec("cabinet_operation", True, robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963))
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
         plant = _spec(
             "generator_plant",
             False,
@@ -255,17 +259,21 @@ class SceneSwitchTest(unittest.TestCase):
             ["/tmp/maps/plant.yaml"],
             node.loaded_maps,
         )
-        # base_link is a fixed +pi/2 child of the root body link, so the body
-        # yaw is the requested map-frame yaw minus that offset.
+        # base_link is a fixed -pi/2 child of the root body link, so the body
+        # yaw is the requested map-frame yaw plus pi/2.
         teleport = gazebo.calls[5]
         self.assertEqual("xczs_inspection_robot", teleport[1])
         self.assertAlmostEqual(2.0, teleport[2])
         self.assertAlmostEqual(3.0, teleport[3])
-        self.assertAlmostEqual(0.0 - math.pi / 2.0, teleport[5])
+        self.assertAlmostEqual(0.0 + math.pi / 2.0, teleport[5])
         self.assertEqual([(2.0, 3.0, 0.0, "map")], node.initial_poses)
 
     def test_switch_homes_arm_before_teleport(self) -> None:
-        cabinet = _spec("cabinet_operation", True, robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963))
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
         plant = _spec(
             "generator_plant",
             False,
@@ -289,7 +297,11 @@ class SceneSwitchTest(unittest.TestCase):
         self.assertEqual("xczs_inspection_robot", teleports[0][1])
 
     def test_switching_back_spawns_cabinets_and_deletes_floor(self) -> None:
-        cabinet = _spec("cabinet_operation", True, robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963))
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
         plant = _spec(
             "generator_plant",
             False,

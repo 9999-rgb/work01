@@ -149,6 +149,78 @@ class MonitorWebContractTest(unittest.TestCase):
         self.assertIn("refreshAfterToolsetSwitch", switch_toolset)
         self.assertNotIn("/assets/selection", switch_toolset)
 
+    def test_toolset_switch_wait_executes_all_terminal_generation_branches(self) -> None:
+        wait_source = _source_block(
+            "const toolsetStatusPollIntervalMs",
+            "\nasync function refreshAfterToolsetSwitch()",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            let statuses = [];
+            async function loadToolsetRuntimeStatus() {{
+              assert.ok(statuses.length, 'unexpected extra status poll');
+              return statuses.shift();
+            }}
+            function normalizedToolset(value) {{
+              const normalized = String(value || '').trim().toUpperCase();
+              return normalized === 'A' || normalized === 'B' ? normalized : '';
+            }}
+            {wait_source}
+
+            (async () => {{
+              statuses = [{{
+                generation: 4, state: 'ready', ready: true,
+                active_toolset: 'B', last_error: null
+              }}];
+              const success = await waitForToolsetSwitchCompletion('B', 4);
+              assert.equal(success.active_toolset, 'B');
+
+              statuses = [{{
+                generation: 5, state: 'failed', ready: false,
+                active_toolset: 'A', last_error: 'target startup failed'
+              }}];
+              await assert.rejects(
+                waitForToolsetSwitchCompletion('B', 5),
+                /target startup failed/
+              );
+
+              statuses = [{{
+                generation: 6, state: 'ready', ready: true,
+                active_toolset: 'A', last_error: 'toolset B rolled back'
+              }}];
+              await assert.rejects(
+                waitForToolsetSwitchCompletion('B', 6),
+                /toolset B rolled back/
+              );
+
+              statuses = [{{
+                generation: 8, state: 'switching', ready: false,
+                active_toolset: 'A', last_error: null
+              }}];
+              await assert.rejects(
+                waitForToolsetSwitchCompletion('B', 7),
+                /后续操作取代/
+              );
+            }})().catch(error => {{
+              console.error(error);
+              process.exitCode = 1;
+            }});
+        """))
+
+    def test_connection_placeholders_use_the_unified_web_port(self) -> None:
+        html = MONITOR_PATH.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'id="restUrl" placeholder="http://localhost:8090"',
+            html,
+        )
+        self.assertIn(
+            'id="sensorUrl" placeholder="http://localhost:8090"',
+            html,
+        )
+        self.assertNotIn('placeholder="http://localhost:8001"', html)
+        self.assertNotIn('placeholder="http://localhost:8003"', html)
+
     def test_task_stream_overflow_closes_refreshes_and_reconnects_fresh(self) -> None:
         connect_events = _source_block(
             "function connectTaskEvents()",
@@ -556,7 +628,9 @@ class MonitorWebContractTest(unittest.TestCase):
             }}
             function applyTaskSnapshot() {{}}
             function requestCabinetWorkflowCancellation() {{ return Promise.resolve(); }}
-            function waitForCabinetWorkflowTaskRelease() {{
+            const waitedTaskIds = [];
+            function waitForCabinetWorkflowTaskRelease(workflow, taskId) {{
+              waitedTaskIds.push(taskId);
               return Promise.resolve({{status: 'success', progress: 1}});
             }}
             function refreshAutonomyStatus() {{}}
@@ -583,6 +657,11 @@ class MonitorWebContractTest(unittest.TestCase):
               assert.equal(requests[0].body.control_id, 'limited_button');
               assert.equal(requests[1].body.control_id, 'limited_button');
               assert.equal(requests[1].body.force, 5);
+              assert.deepEqual(
+                waitedTaskIds,
+                ['navigation_1', 'operation_1'],
+                'Web workflow must wait for both terminal task results'
+              );
               assert.equal(cabinetOperationWorkflow, null);
             }})().catch(error => {{ console.error(error); process.exitCode = 1; }});
         """))

@@ -13,17 +13,19 @@
       rocker          (left)  - rock the rotor to toggle a switch
       rotate_button   (right) - clamp a round knob while the wrist rotates it
 
-    Each tool mounts under its arm's native wrist boss (the model's native
+    Each tool mounts over its arm's native wrist boss (the model's native
     end-effector interface), centred on the boss axis with the tool's
-    SolidWorks z=0 base flange seated just below the wrist ball tip, so the
-    tool body extends straight downstream from the flange with no fabricated
-    carrier plate and no lateral offset.  The boss axis (centre of the clasp
-    collar / ball tip) was measured from the arm_6 meshes, in the arm_6 link
-    frame
-      right wrist (r_arm_6) boss axis at link (0.005, 0.000), ball tip to -0.218
-      left  wrist (l_arm_6) boss axis at link (0.005, 0.000), ball tip to +0.218
-    The base flange z=0 plane sits at z = ±0.2185, so the boss ball nests into
-    the tool top (no hover, no lateral offset).  A tool whose working end
+    SolidWorks socket seated over the wrist column.  The tool body extends
+    straight downstream with no fabricated carrier plate and no lateral
+    offset.  The boss axes were measured from the arm_6 visual and collision
+    meshes in the arm_6 link frame.
+      right wrist (r_arm_6) axis at link (0.0040, 0.0000)
+      left  wrist (l_arm_6) axis at link (0.0040, 0.0001)
+    The wrist's insertable quick-coupler stem is 20.0 mm long while every
+    native tool socket is 21.5 mm deep.  The base flange therefore sits at
+    z = ±0.1984; all spherical detents enter the socket, the shoulder retains
+    0.135 mm rendering clearance, and the stem keeps 1.635 mm bottom clearance.
+    A tool whose working end
     (fingers / jaws / rotor) points along its own -Z bolts without rotation on
     the right and flipped R_y(pi) on the left, so the working end always faces
     downstream (away from the wrist toward the cabinet).  The operator
@@ -33,31 +35,31 @@
   -->
 
   <!--
-    Per-tool native flange pose (xyz = boss-axis-centred seat at the ball-tip
-    clearance plane; rpy = working-end-downstream rotation).
+    Per-tool native flange pose (xyz = boss-axis-centred socket seat; rpy =
+    working-end-downstream rotation).
 
     The wrist balls extend along link -Z (right) / +Z (left), so a tool whose
     working end lies on its own -Z (three_cyl, two_cyl) bolts identity on the
     right and R_y(pi) on the left; a tool whose working end lies on its own +Z
     (rocker, rotate_button) bolts identity on the left and R_y(pi) on the
-    right.  Every tool's body therefore hangs downstream of the flange, flush
-    with the wrist, and its calibrated business point reaches the cabinet
+    right.  Every tool's socket therefore fits over the wrist boss, and its
+    calibrated business point reaches the cabinet
     along the contact-link -Z while +Z stays outward per the operator
     contract.  The small -12.8 mm lip on the rotate_button base seats into the
-    wrist shell (a real flange socket) and is excluded from MoveIt collision
-    as an adjacent pair.
+    wrist shell as part of the native flange socket and is excluded from
+    MoveIt collision as an adjacent pair.
   -->
   <xacro:property name="three_cyl_mount_rpy" value="0 0 0" />
   <xacro:property name="two_cyl_mount_rpy" value="0 3.14159265359 0" />
   <xacro:property name="rocker_mount_rpy" value="0 0 0" />
   <xacro:property name="rotate_button_mount_rpy" value="0 3.14159265359 0" />
-  <!-- Align every native tool flange with the measured wrist-boss axis.  This
-       is a 1 mm placement correction only: meshes, materials, collision
-       geometry and the physical link topology remain exactly unchanged. -->
-  <xacro:property name="three_cyl_mount_xyz" value="0.005 0.000 -0.2185" />
-  <xacro:property name="rotate_button_mount_xyz" value="0.005 0.000 -0.2185" />
-  <xacro:property name="two_cyl_mount_xyz" value="0.005 0.000 0.2185" />
-  <xacro:property name="rocker_mount_xyz" value="0.005 0.000 0.2185" />
+  <!-- Align every native tool socket with the measured wrist-coupler axis and
+       insert 19.865 mm of the nominal 20.0 mm stem.  The remaining 0.135 mm
+       shoulder gap prevents coplanar flicker without exposing the detents. -->
+  <xacro:property name="three_cyl_mount_xyz" value="0.0040 0.0000 -0.1984" />
+  <xacro:property name="rotate_button_mount_xyz" value="0.0040 0.0000 -0.1984" />
+  <xacro:property name="two_cyl_mount_xyz" value="0.0040 0.0001 0.1984" />
+  <xacro:property name="rocker_mount_xyz" value="0.0040 0.0001 0.1984" />
 
   <!--
     Three electric cylinders (right hand).  Three prismatic fingers; finger3 is
@@ -93,7 +95,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endbody3.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="graphite_black" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -120,7 +122,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink1.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="industrial_navy" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -159,7 +161,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink2.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="industrial_navy" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -195,7 +197,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/three_cylinder/endllink3.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="industrial_navy" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -243,7 +245,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endBody4.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="graphite_black" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -270,7 +272,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink1.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="industrial_navy" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -306,7 +308,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/two_cylinder/endlink2.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="industrial_navy" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -354,7 +356,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endbody2.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="graphite_black" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -381,7 +383,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rocker/endrotatelink.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="safety_orange" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -437,7 +439,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endbody.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="graphite_black" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -464,7 +466,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/rotate.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="safety_orange" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -500,7 +502,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink1.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="safety_orange" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -536,7 +538,7 @@
         <geometry>
           <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink2.STL" />
         </geometry>
-        <material name="solidworks_white" />
+        <material name="safety_orange" />
       </visual>
       <collision>
         <origin xyz="0 0 0" rpy="0 0 0" />

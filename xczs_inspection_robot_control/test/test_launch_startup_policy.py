@@ -46,6 +46,9 @@ class _FakeMoveItConfigsBuilder:
     def planning_pipelines(self, **_kwargs):
         return self
 
+    def trajectory_execution(self, **_kwargs):
+        return self
+
     def to_moveit_configs(self):
         return SimpleNamespace(
             robot_description={},
@@ -70,6 +73,7 @@ def _build_cabinet_actions(module, tmp_path, *, spawn_cabinet):
             "moveit_srdf": "test.srdf",
             "moveit_kinematics": "kinematics.yaml",
             "moveit_joint_limits": "joint_limits.yaml",
+            "moveit_controllers": "controllers.yaml",
             "cabinet_instances": "instances.yaml",
             "cabinet_controls": "controls.yaml",
             "cabinet_scene": "scene.yaml",
@@ -265,6 +269,7 @@ def test_robot_gazebo_plugin_names_share_the_runtime_instance_id_contract():
         source = (description_root / relative_path).read_text(encoding="utf-8")
         for plugin_name in plugin_names:
             assert f'{plugin_name}_$(arg gazebo_plugin_instance_id)' in source
+
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "not-a-number"])
 def test_spawn_z_rejects_nonfinite_or_non_numeric_values(value):

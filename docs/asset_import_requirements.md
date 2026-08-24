@@ -2,7 +2,7 @@
 
 > 状态:已确认 · 版本:v1 · 日期:2026-08-17
 > 关联设计:三层适配架构(通用任务层 / 机器人适配层 / 场景适配层),
-> 现有链路见 `docs/control_cabinet_simulation.md` 与本仓库 CLAUDE.md。
+> 现有链路见本仓库 CLAUDE.md、统一启动脚本与各适配配置。
 
 ---
 
@@ -27,15 +27,16 @@ Web 页面完成「导入一个场景 / 柜体资产、选择本次运行组合�
 |---|---|---|
 | R1 | 可导入「场景」资产 | 换地图、柜体摆放、场地模型与机器人出生位;机器人 + 柜体不变 |
 | R2 | 可导入「柜体」资产 | 换柜体类型(新控件目录 / 新几何 / 新物理参数) |
-| R3 | 机器人本体 + 末端工具固定 | 底座 + 双臂 + 四个固定末端工具 + MoveIt 各组 + ros2_control 不在导入范围 |
+| R3 | 机器人本体 + 预定义末端套装不属于导入资产 | 底座 + 双臂固定；末端只允许套装 A/B，MoveIt 各组与 ros2_control 均不在资产导入范围 |
 | R4 | 启动时导入 | 资产在启动前导入 / 校验 / 选择,启动进程消费选中结果 |
 | R5 | Web 页面入口 | 在现有 8090 控制台加「资产」区块:上传、列表、校验、选择、应用 |
 | R6 | 场景即组合根 | 场景资产 manifest 引用它需要的柜体资产 |
 
 ### 2.2 非目标(明确不做)
 
-- 运行时热插拔 / 动态增删资产。末端工具套装的选择仅在下一次人工启动时
-  应用；不会因 Web 保存选择而自动重启当前仿真。
+- 当前仿真中的场景 / 柜体实体不做运行时热插拔；Web 导入或删除只更新资产库，
+  选择结果仍在下一次人工启动时应用。末端套装 A/B 是明确例外：Web 可一键
+  切换，只替换机器人实体及其控制子栈，Gazebo 世界与柜体保持运行。
 - 导入「整个机器人」类型(机器人含末端工具,均固定)。
 - 通用可达性自动求解(工具×柜体配对采用预写可达性表)。
 - 跨机器 / 云端资产分发仓库(目录 / zip 分发即可)。
@@ -44,7 +45,7 @@ Web 页面完成「导入一个场景 / 柜体资产、选择本次运行组合�
 
 | 资产 | 处理方式 | 内容(映射现有文件) |
 |---|---|---|
-| 机器人本体(底座+双臂+四固定末端工具) | 固定 | 双臂 + MoveIt 各组 + `ros2_controllers.yaml` + 固定末端工具(右:三电缸 + 旋转按钮;左:两电缸 + 摇入摇出) |
+| 机器人本体(底座+双臂+预定义末端套装) | 固定 | 双臂 + MoveIt 各组 + `ros2_controllers_toolset_{A,B}.yaml`;套装 A(右三电缸、左两电缸)与套装 B(右旋转按钮、左摇入摇出)可在运行中受控切换 |
 | **柜体** | ✅ 可导入 | `cabinet_controls.yaml` + `cabinet_scene.yaml` + `cabinet_pose.yaml` + `control_cabinet.urdf.xacro` + `meshes/control_cabinet/*` |
 | **场景** | ✅ 可导入 | `scenes.yaml` 条目 + Nav2 地图(yaml+pgm)+ 场地 SDF/mesh + 摆放(`cabinet_instances.yaml` + `robot_spawn`) |
 
@@ -153,7 +154,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 | 阶段 | 状态 | 落点 |
 |---|---|---|
 | **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/xczs_import_asset`(CLI 导入)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
-| **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/组合选择；末端显示当前/待生效状态，保存后不自动重启仿真；非管理员禁用导入/删除) |
+| **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/场景与柜体组合选择；末端 A/B 另设运行态和一键切换；非管理员禁用写操作) |
 | **3 · 换柜体** | ✅ 已实现 | `scripts/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`) |
 
 存储迁移(SQLite,2026-08-19):资产目录 / 选择持久化从 `assets_catalog.yaml` /
@@ -168,8 +169,8 @@ SQLAlchemy 栈与 `XCZS_DATABASE_URL`)。`AssetLibrary` 改为 store 注入
 阶段4 移除(2026-08-19):
 
 阶段4「多夹爪变体重构」的 `gripper_variant` 选择层作为死代码整体移除。双臂机器人
-替换后,末端改为每臂两个固定工具(右:三电缸 + 旋转按钮;左:两电缸 + 摇入摇出),
-不再存在「夹爪变体选择」;且原 `GRIPPER_VARIANT` 环境变量经 `selection_to_env`
+替换后,末端收敛为两个受控套装(A:右三电缸 + 左两电缸；B:右旋转按钮 + 左摇入摇出),
+不再存在资产层的「夹爪变体选择」;且原 `GRIPPER_VARIANT` 环境变量经 `selection_to_env`
 输出后从未被 launch / xacro 消费,相关 manifest 字段、API 校验、DB 列、Web 下拉
 与适配层 `gripper_variants` 段均为死代码,一并删除。资产选择的组合维度收敛为
 「场景 + 柜体」,manifest `references` 仅保留 `cabinet`。
@@ -191,7 +192,7 @@ SQLAlchemy 栈与 `XCZS_DATABASE_URL`)。`AssetLibrary` 改为 store 注入
   - 删除资产 → 200 且目录/catalog 移除、选中字段同步清空;未知 → 404、非法类型 → 400;
   - auth 门禁:匿名 401、operator 403、admin 放行(导入/删除挂 `require_admin`,与 `/users` 同姿态)。
 - 端到端:CLI 导入样例场景 → 选择 → `selection_to_env` 输出正确指针 → `XCZS_PREFLIGHT_ONLY` 预检通过;复位选择为空后默认路径( `cabinet_operation`)预检同样通过,默认行为不变。
-- 前端 `monitor.html`「资产库」卡片:`refreshAssets` 在连接成功时加载,导入/删除按 `currentUserRole==='admin'` 显隐可用,组合选择保存后提示「重启后生效」;JS 语法经 `node --check` 校验。
+- 前端 `monitor.html`「资产库」卡片:`refreshAssets` 在连接成功时加载,导入/删除按 `currentUserRole==='admin'` 显隐可用；场景/柜体选择在下次人工启动生效，末端 A/B 通过独立按钮运行中切换；JS 语法经 `node --check` 校验。
 
 阶段1 验证结果(2026-08-17):
 

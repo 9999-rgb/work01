@@ -346,7 +346,6 @@ class EventHub:
     def __init__(self, *, capacity: int = 512) -> None:
         if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:
             raise ValueError("Event capacity must be a positive integer.")
-        self._capacity = capacity
         self._events: Deque[Dict[str, Any]] = deque(maxlen=capacity)
         self._subscriptions: Dict[int, _SubscriptionBuffer] = {}
         self._next_subscription_id = 1
@@ -410,8 +409,6 @@ class EventHub:
         for notify in pending_notifies:
             _SubscriptionBuffer.run_notify(notify)
         return copy.deepcopy(event)
-
-    emit = publish
 
     def subscribe(
         self,

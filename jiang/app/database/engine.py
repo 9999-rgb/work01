@@ -15,17 +15,11 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.engine import Engine
 
 from app.config import settings
 
 _SQLITE_TIMEOUT_SEC = 10
 _SQLITE_BUSY_TIMEOUT_MS = 5000
-
-
-def _is_sqlite(url: str) -> bool:
-    return url.startswith("sqlite")
-
 
 # aiosqlite 的 check_same_thread：FastAPI 的 session 可能跨线程复用
 # （事件循环线程池），保持 False 兼容。

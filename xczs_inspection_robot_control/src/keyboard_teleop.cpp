@@ -174,6 +174,14 @@ public:
     gripper_open_angle_ = positive_parameter("gripper_open_angle", 0.35);
     joint_command_rate_ = positive_parameter("joint_command_rate", 20.0);
     command_timeout_ = positive_parameter("command_timeout", 0.75);
+    manual_linear_sign_ = declare_parameter<double>(
+      "manual_linear_sign", -1.0);
+    if (!std::isfinite(manual_linear_sign_) ||
+      (manual_linear_sign_ != -1.0 && manual_linear_sign_ != 1.0))
+    {
+      throw std::invalid_argument(
+              "Parameter 'manual_linear_sign' must be either -1 or 1.");
+    }
 
     joint_command_repeats_ = declare_parameter<int>("joint_command_repeats", 5);
     if (joint_command_repeats_ <= 0) {
@@ -409,12 +417,13 @@ private:
     std::string status;
     switch (motion) {
       case BaseMotion::kForward:
-        // The imported model's visual front points along body +Y.
-        target_base_command_.linear.y = linear_speed_;
+        // Positive user intent means physical forward; the adapter maps that
+        // intent onto the imported model's signed body axis.
+        target_base_command_.linear.y = manual_linear_sign_ * linear_speed_;
         status = "底盘：前进";
         break;
       case BaseMotion::kBackward:
-        target_base_command_.linear.y = -linear_speed_;
+        target_base_command_.linear.y = -manual_linear_sign_ * linear_speed_;
         status = "底盘：后退";
         break;
       case BaseMotion::kTurnLeft:
@@ -577,6 +586,7 @@ private:
   double gripper_open_angle_{0.35};
   double joint_command_rate_{20.0};
   double command_timeout_{0.75};
+  double manual_linear_sign_{-1.0};
   double base_publish_period_{0.02};
   double joint_publish_period_{0.05};
 

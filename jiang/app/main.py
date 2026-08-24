@@ -28,7 +28,6 @@ from app.auth.bootstrap import bootstrap_admin
 from app.auth.middleware import AuthMiddleware
 from app.auth.router import router as auth_router
 from app.config import settings
-from app.database.base import Base  # noqa: F401  (注册所有模型)
 from app.database.engine import async_session, engine, init_database
 
 logger = logging.getLogger(__name__)
@@ -195,8 +194,6 @@ def create_app(
 
     _attach_lifespan(
         app,
-        control_server=control_server,
-        sensor_runtime=sensor_runtime,
         zenoh_source=zenoh_source,
         enable_db=enable_db,
     )
@@ -276,8 +273,6 @@ def _normalize_allowed_origins(origins: Iterable[str]) -> list[str]:
 def _attach_lifespan(
     app: FastAPI,
     *,
-    control_server: Any,
-    sensor_runtime: Any,
     zenoh_source: Any,
     enable_db: bool,
 ) -> None:

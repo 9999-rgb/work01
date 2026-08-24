@@ -16,7 +16,7 @@ Note:
 from .registry import TopicRegistry, TopicRegistration, get_registry
 from .loader import load_message_type, add_message_path, load_bulk_mapping, list_cached_types
 
-# Lazy imports for modules that require rclpy / zenoh at runtime
+# Lazy imports for modules that require rclpy at runtime.
 # Use the module-level getters below instead of direct imports.
 
 
@@ -29,18 +29,6 @@ def _get_converter():
 def _get_handler():
     """Lazy-load the handler module (requires rclpy for register_standard_types)."""
     from . import handler as _m
-    return _m
-
-
-def _get_subscriber():
-    """Lazy-load the subscriber module (requires zenoh)."""
-    from . import subscriber as _m
-    return _m
-
-
-def _get_runner():
-    """Lazy-load the runner module (requires zenoh)."""
-    from . import runner as _m
     return _m
 
 

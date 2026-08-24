@@ -1,6 +1,5 @@
 """传感器流 FastAPI 路由：MJPEG 相机流、LiDAR WebSocket、健康检查。
 
-从 aiohttp 迁移，行为与旧版 ``sensor_bridge/web_server.py`` 一致。
 传感器数据只读，但与控制 API 共用鉴权。HTTP/MJPEG 可使用
 Bearer Header 或 ``?token=``；浏览器 WebSocket 使用 ``?token=``。
 """

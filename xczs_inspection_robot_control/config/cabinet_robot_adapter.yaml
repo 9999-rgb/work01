@@ -7,10 +7,12 @@
     # 同一父坐标系。导航工位需要 map 时再通过实时 TF 转换，避免 AMCL
     # 的 map→odom 高度修正把规划碰撞体与 Gazebo 实体分离。
     pose_parent_frame: odom
-    # Web 前后控制只暴露一个标量；当前全向底盘的模型前向为 +Y。
+    # Web 前后控制只暴露一个正向为“向前”的标量。底盘物理正面
+    # 为 body -Y，所以发布到模型 Y 轴时取反号。
     manual_linear_axis: y
-    # Nav2 使用常规 +X 前向，路由到当前 +Y 前向模型时旋转速度坐标。
-    navigation_velocity_yaw_offset: 1.57079632679
+    manual_linear_sign: -1.0
+    # Nav2 使用常规 +X 前向，路由到 body -Y 前向模型时旋转速度坐标。
+    navigation_velocity_yaw_offset: -1.57079632679
     # Nav2 工位由通用任务层统一计算和执行；底层 Action 不再按控件位置
     # 另算一套工位。只有兼容旧客户端时才应显式开启内嵌导航。
     allow_embedded_navigation: false
@@ -157,7 +159,7 @@
     # 足迹做面板法向安全包络校验。坐标位于 navigation_base_frame，padding
     # 与 Nav2 local/global costmap 保持一致；任何可执行工位若小于该外廓会
     # 在机械臂运动前 fail closed。
-    docking_base_footprint: [0.42, 0.42, 0.42, -0.42, -0.55, -0.42, -0.55, 0.42]
+    docking_base_footprint: [-0.42, -0.42, -0.42, 0.42, 0.55, 0.42, 0.55, -0.42]
     docking_base_footprint_padding: 0.03
     grasp_brake_link: body
     # 每种控件类型复用同一套「单臂 + 单一工具」运动闭环：按钮由右臂
@@ -343,7 +345,7 @@
           base_yaw_offset: 0.0
           frame_id: map
       box_3_button_1:
-        # 顶排左列按钮（y=1.547）。seeded prepress 固定 r_arm_4≈-0.39 分支，
+        # 第二排左列按钮（y=1.547）。seeded prepress 固定 r_arm_4≈-0.39 分支，
         # 与 box_4 共用种子，fixed-lease 3 轮 chain+OMPL 验证通过。
         navigation_station:
           local_anchor: [0.470000, 1.115, 0.000]
@@ -394,7 +396,7 @@
             - 1.1576
             - 3.1108
       box_4_button_1:
-        # 顶排右列按钮（y=1.547）。seeded prepress 固定 r_arm_4≈-0.39 分支，
+        # 第二排右列按钮（y=1.547）。seeded prepress 固定 r_arm_4≈-0.39 分支，
         # 与 box_3 共用种子，fixed-lease 3 轮 chain+OMPL 验证通过。
         navigation_station:
           local_anchor: [0.799000, 1.115, 0.000]
@@ -507,7 +509,7 @@
         # local_position.x + 0.35，即 dock Y = -0.469），standoff 1.10 把 dock
         # 置于 (0.900,-0.469)。此处 + prepress_distance 0.12 下，seeded prepress
         # 无碰撞，OMPL 路径连续 3 轮 ×10 次采样全部通过真实 move_group plan()
-        # 校验（cart_probe dock=0.90,y=-0.469 组合：in3=3/3, tot=10/10）。
+        # 离线实测（dock=0.90,y=-0.469 组合：in3=3/3, tot=10/10）。
         navigation_station:
           local_anchor: [0.799000, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
@@ -898,15 +900,16 @@
       现工位退距下的可达工作空间，OMPL 无法为 prepress 目标采样有效解。
       其余 knob（box_3/4/6/7/8/9/10/11 等）尚未完成带安全退距的旋转到档
       验收。按钮与 box_5_knob 已通过 seeded prepress 的 fixed-lease 链式
-      （approch/manip/retreat=1.000 + OMPL home→J）与物理到档验收；
+      （approach/manip/retreat=1.000 + OMPL home→J）与物理到档验收；
       box_7/10 需 tool_roll_offset=-π/4 规避下方旋钮/邻件干涉，box_5 需
       退距 1.10。总开关已通过 0.780 m 退距下的左臂 + rocker 物理到档验收，
       见 cabinet_main_switch。
     toolset_mismatch_reason: >-
       该控件在 operable_control_ids 允许清单内，但当前工具套装未挂载其
       操作工具（套装 A：三电缸/两电缸；套装 B：旋转按钮/摇杆）。控件仍保留
-      状态显示和实时规划验证，不下发机械臂、抓取或柜体写入命令；切换套装
-      并重启后即可操作。
+      状态显示，但在对应工具未挂载时无法进行有效 MoveIt 规划，也不下发机械臂、
+      抓取或柜体写入命令；在 Web 一键切换到对应末端套装后即可操作，
+      无需重启 Gazebo 世界。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

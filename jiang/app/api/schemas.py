@@ -22,9 +22,6 @@ from pydantic import (
 
 from app.api.validators import finite_number, nonempty_string
 
-# 数值字段使用 StrictFloat：接受 int/float，拒绝 bool（旧版语义）。
-_NUM = StrictFloat
-
 
 class NavigateRequest(BaseModel):
     """POST /task/navigate 请求体。"""

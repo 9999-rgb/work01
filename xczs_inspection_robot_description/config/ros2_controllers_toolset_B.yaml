@@ -126,16 +126,19 @@
         d: 0.001
         i: 0.0
         i_clamp: 0.0
+        ff_velocity_scale: 0.0
       r_rotbtn_jaw1_joint:
         p: 5.0
         d: 0.3
         i: 0.0
         i_clamp: 0.0
+        ff_velocity_scale: 0.0
       r_rotbtn_jaw2_joint:
         p: 5.0
         d: 0.3
         i: 0.0
         i_clamp: 0.0
+        ff_velocity_scale: 0.0
 
 /xczs/rocker_controller:
   ros__parameters:
@@ -162,3 +165,4 @@
         d: 0.001
         i: 0.0
         i_clamp: 0.0
+        ff_velocity_scale: 0.0

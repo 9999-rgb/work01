@@ -144,6 +144,7 @@ class RosControlNode(Node):
         map_load_service: str = "/map_server/load_map",
         initial_pose_topic: str = "/initialpose",
         manual_linear_axis: str = "y",
+        manual_linear_sign: float = 1.0,
         manual_joints: Sequence[ManualJointConfig] = (),
         joint_state_topic: str = "/xczs/joint_states",
         cabinet_pose_valid_topics: Optional[Mapping[str, str]] = None,
@@ -185,7 +186,15 @@ class RosControlNode(Node):
             raise ValueError("joint_state_topic must be a non-empty ROS name.")
         if manual_linear_axis not in {"x", "y"}:
             raise ValueError("manual_linear_axis must be either x or y.")
+        if (
+            isinstance(manual_linear_sign, bool)
+            or not isinstance(manual_linear_sign, (int, float))
+            or not math.isfinite(float(manual_linear_sign))
+            or float(manual_linear_sign) not in {-1.0, 1.0}
+        ):
+            raise ValueError("manual_linear_sign must be either -1 or 1.")
         self._manual_linear_axis = manual_linear_axis
+        self._manual_linear_sign = float(manual_linear_sign)
         self._robot_joint_state: Dict[str, Any] = {
             "available": False,
             "positions": {},
@@ -652,6 +661,7 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "The robot toolset supervisor service is unavailable.",
                 503,
+                details={"admission_uncertain": False},
             )
         request = SwitchToolset.Request()
         request.toolset = toolset.strip().upper()
@@ -662,6 +672,7 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 f"Failed to request a toolset switch: {error}",
                 503,
+                details={"admission_uncertain": False},
             ) from error
         completed = threading.Event()
         future.add_done_callback(lambda _future: completed.set())
@@ -669,6 +680,7 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "Toolset supervisor did not acknowledge the request in time.",
                 503,
+                details={"admission_uncertain": True},
             )
         try:
             response = future.result()
@@ -676,6 +688,7 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 f"Toolset supervisor request failed: {error}",
                 503,
+                details={"admission_uncertain": True},
             ) from error
         result = {
             "accepted": bool(response.accepted),
@@ -689,7 +702,11 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 result["message"] or "Toolset switch was rejected.",
                 409,
-                details={"toolset_status": self.toolset_switch_snapshot()},
+                details={
+                    "admission_uncertain": False,
+                    "toolset_response": result,
+                    "toolset_status": self.toolset_switch_snapshot(),
+                },
             )
         return result
 
@@ -1941,10 +1958,13 @@ class RosControlNode(Node):
                 # Publish while holding the state lock so a cabinet goal
                 # cannot become active between the active check and send.
                 command = Twist()
+                model_linear = linear_y * getattr(
+                    self, "_manual_linear_sign", 1.0
+                )
                 if self._manual_linear_axis == "x":
-                    command.linear.x = linear_y
+                    command.linear.x = model_linear
                 else:
-                    command.linear.y = linear_y
+                    command.linear.y = model_linear
                 command.angular.z = angular_z
                 self._cmd_vel_publisher.publish(command)
                 if trajectory is not None:

@@ -107,8 +107,8 @@
   <disable_collisions link1="r_arm_6" link2="r_camera" reason="Adjacent" />
   <disable_collisions link1="r_arm_6" link2="arm_camera_link" reason="Adjacent" />
 
-  <!-- Tools mount flush on the native wrist flange (arm_6 ball end face).
-       Only directly connected fixed pairs are excluded. -->
+  <!-- Each native tool socket is seated over its arm_6 wrist boss.  Only
+       directly connected fixed pairs are excluded. -->
   <disable_collisions link1="r_arm_6" link2="r_three_cyl_base" reason="Adjacent" />
   <disable_collisions link1="l_arm_6" link2="l_two_cyl_base" reason="Adjacent" />
 

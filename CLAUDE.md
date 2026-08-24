@@ -49,7 +49,7 @@ source /opt/ros/humble/setup.bash
 colcon build --symlink-install
 source install/setup.bash
 
-# Python 依赖（aiohttp / eclipse-zenoh / Pillow / PyYAML）
+# Python 依赖（FastAPI / eclipse-zenoh / Pillow / PyYAML）
 pip install -r jiang/requirements.txt
 ```
 
@@ -103,7 +103,7 @@ python3 -m pytest jiang/tests/test_inventory.py -q   # 单个文件
 
 C++ 节点位于 `xczs_inspection_robot_control/src/`（`include/` 存放可复用的纯逻辑头文件），包括底盘路由 `base_command_router`、手动轨迹路由、规划场景适配 `cabinet_planning_scene`、位姿权威 `cabinet_pose_authority`、按钮 operator、`operation_lease_coordinator`（防并发租约）、`cabinet_grasp_aggregator`，以及 Gazebo 插件 `src/gazebo/planar_stabilizer_plugin.cpp` 与 `cabinet_state_plugin.cpp`。自定义接口定义于 `action/`、`msg/`、`srv/`。
 
-机器人模型在 `xczs_inspection_robot_description/`（URDF/Xacro、STL 网格、worlds、`config/ros2_controllers.yaml`）；`xczs_inspection_robot_moveit_config/` 与 `xczs_inspection_robot_nav2/` 为对应配置包。
+机器人模型在 `xczs_inspection_robot_description/`（URDF/Xacro、STL 网格、worlds、`config/ros2_controllers_toolset_{A,B}.yaml`）；`xczs_inspection_robot_moveit_config/` 与 `xczs_inspection_robot_nav2/` 为对应配置包。
 
 ### 多柜体实例
 
@@ -117,4 +117,4 @@ C++ 节点位于 `xczs_inspection_robot_control/src/`（`include/` 存放可复�
 - **录制/回放只读互锁**：回放活跃时拒绝一切写操作（409）；回放 topic 全部重映射到 `/xczs/replay/<id>/`；任务重演通过重提交语义任务而非重放运动命令。
 - **导航与操作分离**：`/task/navigate` 与 `/task/operate` 是两个独立任务，operate 绝不隐式导航；Nav2 失败时诚实返回 `target_unreachable`。
 
-详细设计与验收边界见 `docs/control_cabinet_simulation.md`（控制柜多实例仿真与 Web 任务）。
+资产、适配与验收边界见 `docs/asset_import_requirements.md`。

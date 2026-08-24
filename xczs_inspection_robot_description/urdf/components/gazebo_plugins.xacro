@@ -47,27 +47,27 @@
 
     <!-- Right tools - toolset A (three_cylinder) / toolset B (rotate_button). -->
     <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
-      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_base" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger1" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger2" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger3" material="Gazebo/White" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger1" material="Gazebo/Blue" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger2" material="Gazebo/Blue" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_three_cyl_finger3" material="Gazebo/Blue" gravity="false" friction="0.8" />
     </xacro:if>
     <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
-      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_body" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_rotate" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw1" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw2" material="Gazebo/White" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_rotate" material="Gazebo/Orange" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw1" material="Gazebo/Orange" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="r_rotbtn_jaw2" material="Gazebo/Orange" gravity="false" friction="0.8" />
     </xacro:if>
 
     <!-- Left tools - toolset A (two_cylinder) / toolset B (rocker). -->
     <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
-      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_base" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger1" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger2" material="Gazebo/White" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_base" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger1" material="Gazebo/Blue" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_two_cyl_finger2" material="Gazebo/Blue" gravity="false" friction="0.8" />
     </xacro:if>
     <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
-      <xacro:xczs_gazebo_link_properties link_name="l_rocker_body" material="Gazebo/White" gravity="false" friction="0.8" />
-      <xacro:xczs_gazebo_link_properties link_name="l_rocker_rotor" material="Gazebo/White" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_rocker_body" material="Gazebo/DarkGrey" gravity="false" friction="0.8" />
+      <xacro:xczs_gazebo_link_properties link_name="l_rocker_rotor" material="Gazebo/Orange" gravity="false" friction="0.8" />
     </xacro:if>
 
     <!-- Passive visual sensor housings.  The body-mounted laser housings

@@ -110,12 +110,12 @@ TEST(OperationValidationPolicy, EngagementFlagsConservativelyRequireRecovery)
 TEST(StagingSafetyPolicy, UsesAsymmetricFootprintInCabinetDirection)
 {
   const std::vector<PlanarFootprintPoint> footprint{
-    {0.42, 0.42}, {0.42, -0.42}, {-0.55, -0.42}, {-0.55, 0.42}};
+    {-0.42, -0.42}, {-0.42, 0.42}, {0.55, 0.42}, {0.55, -0.42}};
 
-  EXPECT_NEAR(cabinet_facing_footprint_extent(footprint, 0.0), 0.42, 1.0e-12);
+  EXPECT_NEAR(cabinet_facing_footprint_extent(footprint, 0.0), 0.55, 1.0e-12);
   EXPECT_NEAR(
     cabinet_facing_footprint_extent(footprint, std::acos(-1.0)),
-    0.55, 1.0e-12);
+    0.42, 1.0e-12);
   EXPECT_NEAR(
     cabinet_facing_footprint_extent(footprint, 0.5 * std::acos(-1.0)),
     0.42, 1.0e-12);
@@ -124,10 +124,10 @@ TEST(StagingSafetyPolicy, UsesAsymmetricFootprintInCabinetDirection)
 TEST(StagingSafetyPolicy, IncludesPaddingAndWorstDockingError)
 {
   const std::vector<PlanarFootprintPoint> footprint{
-    {0.42, 0.42}, {0.42, -0.42}, {-0.55, -0.42}, {-0.55, 0.42}};
+    {-0.42, -0.42}, {-0.42, 0.42}, {0.55, 0.42}, {0.55, -0.42}};
   constexpr double yaw_tolerance = 0.07;
   const double expected_rotated_extent =
-    0.42 * (std::cos(yaw_tolerance) + std::sin(yaw_tolerance));
+    0.55 * std::cos(yaw_tolerance) + 0.42 * std::sin(yaw_tolerance);
   EXPECT_NEAR(
     worst_cabinet_facing_footprint_extent(
       footprint, 0.0, yaw_tolerance),

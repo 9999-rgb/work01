@@ -48,6 +48,7 @@ _PUBLIC_PATHS: frozenset[str] = frozenset(
     }
 )
 
+
 def _is_public(path: str) -> bool:
     return path in _PUBLIC_PATHS
 
@@ -104,8 +105,3 @@ class AuthMiddleware(BaseHTTPMiddleware):
             if query_token:
                 return query_token
         return None
-
-
-def create_auth_middleware(app: Any) -> None:
-    """把鉴权中间件挂到 app。"""
-    app.add_middleware(AuthMiddleware)

@@ -60,7 +60,7 @@ public:
     const auto navigation_mode_service = absolute_ros_name_parameter(
       "navigation_mode_service", "/xczs/set_navigation_mode", true);
     navigation_velocity_yaw_offset_ = finite_parameter(
-      "navigation_velocity_yaw_offset", 1.57079632679);
+      "navigation_velocity_yaw_offset", -1.57079632679);
     navigation_enabled_ = declare_parameter<bool>(
       "navigation_enabled", false);
     command_timeout_ = positive_parameter("command_timeout", 0.5);
@@ -297,7 +297,7 @@ private:
   double publish_rate_{50.0};
   double max_linear_speed_{0.5};
   double max_angular_speed_{1.2};
-  double navigation_velocity_yaw_offset_{1.57079632679};
+  double navigation_velocity_yaw_offset_{-1.57079632679};
   bool navigation_enabled_{false};
   bool has_manual_command_{false};
   bool has_navigation_command_{false};

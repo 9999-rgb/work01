@@ -101,6 +101,16 @@ def test_move_group_watchdog_is_registered_before_required_node(tmp_path):
     assert isinstance(actions[0].event_handler, OnProcessExit)
     assert isinstance(actions[1], Node)
     assert actions[1].node_executable == "move_group"
+    # The executable already owns the public /move_group name.  A launch-level
+    # __node remap would also rename MoveIt's internal controller-manager node
+    # and create a duplicate /move_group in the ROS graph.
+    launch_source = (
+        Path(__file__).resolve().parents[1] / "launch" / "move_group.launch.py"
+    ).read_text(encoding="utf-8")
+    move_group_node = launch_source.split("move_group = Node(", 1)[1].split(
+        "moveit_rviz = Node(", 1
+    )[0]
+    assert 'name="move_group"' not in move_group_node
     assert _on_process_exit_target(actions[0]) is actions[1]
     assert isinstance(actions[2], Node)
     assert actions[2].node_executable == "rviz2"

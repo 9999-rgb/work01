@@ -724,6 +724,9 @@ def _cabinet_nodes(context, *, cabinet_xacro):
         moveit_joint_limits = LaunchConfiguration(
             "moveit_joint_limits"
         ).perform(context)
+        moveit_controllers = LaunchConfiguration(
+            "moveit_controllers"
+        ).perform(context)
         moveit_client_config = (
             MoveItConfigsBuilder(
                 robot_name,
@@ -742,6 +745,13 @@ def _cabinet_nodes(context, *, cabinet_xacro):
             .planning_pipelines(
                 default_planning_pipeline="ompl",
                 pipelines=["ompl"],
+            )
+            # Cabinet operators consume only the descriptions/limits below,
+            # but ``to_moveit_configs`` otherwise performs an implicit
+            # controller-file guess and emits a misleading startup warning.
+            .trajectory_execution(
+                file_path=moveit_controllers,
+                moveit_manage_controllers=False,
             )
             .to_moveit_configs()
         )
@@ -1107,11 +1117,11 @@ def _active_robot_spawn(context):
 def _robot_spawn_node(context, *, controllers=None):
     """Spawn the robot at the active scene's ``robot_spawn``.
 
-    ``spawn_entity`` places the root ``body`` link, whose +Y is the physical
-    forward direction.  ``base_link`` is a fixed +pi/2 child of ``body`` (see
+    ``spawn_entity`` places the root ``body`` link, whose -Y is the physical
+    forward direction.  ``base_link`` is a fixed -pi/2 child of ``body`` (see
     ``dual_arm_body.xacro``), so to point ``base_link`` at ``robot_spawn.yaw`` in
-    the map frame the body must be rotated back by pi/2 -- the same convention
-    used by ``runner._teleport_robot`` on scene switch.
+    the map frame the body must be rotated forward by pi/2 -- the same
+    convention used by ``runner._teleport_robot`` on scene switch.
 
     When ``controllers`` is supplied, the returned action also chains the
     controller spawner behind the robot spawn.  ``OnProcessExit`` must target
@@ -1119,7 +1129,7 @@ def _robot_spawn_node(context, *, controllers=None):
     ``OpaqueFunction``, so the event handler is built inside this function.
     """
     spawn = _active_robot_spawn(context)
-    body_yaw = spawn["yaw"] - math.pi / 2.0
+    body_yaw = spawn["yaw"] + math.pi / 2.0
     spawn_node = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",

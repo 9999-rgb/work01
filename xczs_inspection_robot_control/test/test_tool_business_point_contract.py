@@ -183,6 +183,19 @@ def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
         ) == pytest.approx([0.0, 0.0, 0.0])
 
 
+def test_toolset_mismatch_guides_the_web_hot_switch_without_world_restart() -> None:
+    builtin = _operator_parameters(ADAPTERS[0])
+    sample = _operator_parameters(ADAPTERS[1])
+    assert builtin == sample
+
+    reason = builtin["toolset_mismatch_reason"]
+    assert "Web 一键切换" in reason
+    assert "无需重启 Gazebo 世界" in reason
+    assert "无法进行有效 MoveIt 规划" in reason
+    assert "实时规划验证" not in reason
+    assert "并重启后" not in reason
+
+
 def test_grasp_service_carries_one_link_local_probe_through_attach_and_restore() -> None:
     schema = GRASP_SERVICE.read_text(encoding="utf-8")
     operator = OPERATOR.read_text(encoding="utf-8")

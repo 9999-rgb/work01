@@ -295,7 +295,40 @@ class AssetLibrary:
         return self._store.get_asset(kind, name)
 
     def asset_root(self, record: AssetRecord) -> Path:
-        return self.root / record.path
+        try:
+            relative = Path(record.path)
+            expected_parts = (record.kind, record.name)
+        except TypeError as error:
+            raise AssetLibraryError(
+                f"Asset catalog entry has an invalid path: {record.path!r}."
+            ) from error
+        if relative.is_absolute() or relative.parts != expected_parts:
+            expected_path = f"{record.kind}/{record.name}"
+            raise AssetLibraryError(
+                f"Asset catalog entry {record.kind}/{record.name} has invalid "
+                f"path {record.path!r}; expected "
+                f"{expected_path!r}."
+            )
+        root = self.root.resolve()
+        expected = root / relative
+        try:
+            candidate = expected.resolve()
+            candidate.relative_to(root)
+        except (OSError, RuntimeError, ValueError) as error:
+            raise AssetLibraryError(
+                f"Asset catalog entry {record.kind}/{record.name} path "
+                f"{record.path!r} cannot be resolved safely: {error}."
+            ) from error
+        if candidate != expected:
+            # Imported asset directories are real directories.  Reject a
+            # canonical-looking catalog entry redirected by a symlink even if
+            # its target remains inside the library: removal must never delete
+            # the root itself or a different asset tree.
+            raise AssetLibraryError(
+                f"Asset catalog entry {record.kind}/{record.name} resolves "
+                f"away from its canonical directory: {candidate}."
+            )
+        return candidate
 
     def asset_manifest(self, record: AssetRecord) -> AssetManifest:
         return load_manifest(self.asset_root(record) / MANIFEST_FILENAME)
@@ -684,7 +717,11 @@ def _absolute_reference(root: Path, reference_root: Path, reference: str) -> str
     path = Path(reference).expanduser()
     if path.is_absolute():
         try:
-            relative = path.relative_to(root)
+            # ``mkdtemp(dir=...)`` preserves a relative ``dir`` while the first
+            # pass emits an absolute path.  Canonicalize only our trusted root
+            # so the second pass can rebase it without resolving an unrelated
+            # external path (which may itself be a broken/cyclic symlink).
+            relative = path.relative_to(root.resolve())
         except ValueError:
             return str(path)
         return str((reference_root / relative).resolve())

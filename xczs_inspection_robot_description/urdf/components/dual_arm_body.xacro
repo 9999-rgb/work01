@@ -4,10 +4,11 @@
     Body + base_link + mecanum-style wheel set + body-mounted lidar housings,
     converted from the LinkForge export model/双臂机器人/双臂机器人urdf.urdf.
 
-    The chassis coordinate frame matches the legacy robot - SolidWorks +Y is the
-    physical forward direction, so base_link (Nav2 REP-105 frame) is attached to
-    body with the same +90-degree yaw used by the original mobile_base.  Wheels
-    are continuous joints and remain state-only in ros2_control; the
+    The migrated dual-arm chassis faces SolidWorks -Y (the arm layout and
+    asymmetric shell identify that side as the physical front).  base_link
+    (Nav2 REP-105 frame) is therefore attached to body with a -90-degree yaw so
+    its +X points through the robot front.  Wheels are continuous joints and
+    remain state-only in ros2_control; the
     gazebo_ros_planar_move plugin provides planar holonomic motion, so the exact
     wheel axis convention only affects visuals, not navigation.
 
@@ -99,10 +100,10 @@
       </collision>
     </link>
 
-    <!-- Nav2 base frame, same REP-105 yaw convention as the legacy chassis. -->
+    <!-- Nav2 base frame +X follows the dual-arm chassis physical front (-Y). -->
     <link name="base_link" />
     <joint name="body_base_link" type="fixed">
-      <origin xyz="0 0 0" rpy="0 0 1.57079632679" />
+      <origin xyz="0 0 0" rpy="0 0 -1.57079632679" />
       <parent link="body" />
       <child link="base_link" />
     </joint>

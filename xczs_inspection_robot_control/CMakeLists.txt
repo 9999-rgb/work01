@@ -60,7 +60,6 @@ add_executable(
 )
 add_executable(base_command_router src/base_command_router.cpp)
 add_executable(cabinet_grasp_aggregator src/cabinet_grasp_aggregator.cpp)
-add_executable(cart_probe src/cart_probe.cpp)
 add_library(
   xczs_planar_stabilizer
   SHARED
@@ -168,18 +167,6 @@ target_link_libraries(
   cabinet_button_operator
   "${cabinet_button_operator_typesupport}"
 )
-
-target_compile_features(cart_probe PUBLIC cxx_std_17)
-ament_target_dependencies(
-  cart_probe
-  geometry_msgs
-  moveit_core
-  moveit_msgs
-  moveit_ros_planning_interface
-  rclcpp
-  tf2_geometry_msgs
-)
-
 
 target_compile_features(operation_lease_coordinator PUBLIC cxx_std_17)
 target_include_directories(
@@ -438,6 +425,10 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     tool_business_point_contract_test
     test/test_tool_business_point_contract.py
+  )
+  ament_add_pytest_test(
+    toolset_supervisor_test
+    test/test_toolset_supervisor.py
   )
 endif()
 

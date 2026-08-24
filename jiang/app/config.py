@@ -134,10 +134,5 @@ class Settings(BaseSettings):
         origins = [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
         return origins or ["http://localhost:8090"]
 
-    @property
-    def is_production(self) -> bool:
-        """启发式判断：生产模式关闭可写文档等暴露面。"""
-        return len(self.secret_key) >= 32
-
 
 settings = Settings()

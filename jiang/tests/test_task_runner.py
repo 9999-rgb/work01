@@ -461,6 +461,15 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertTrue(ControlServer._is_loopback_host("localhost"))
         self.assertFalse(ControlServer._is_loopback_host("192.0.2.10"))
 
+    def test_runtime_toolset_snapshot_tolerates_partial_legacy_server(self) -> None:
+        server = object.__new__(ControlServer)
+
+        snapshot = server._runtime_toolset_snapshot()
+
+        self.assertFalse(snapshot["managed"])
+        self.assertEqual("unavailable", snapshot["state"])
+        self.assertIsNone(snapshot["active_toolset"])
+
     def test_constructor_rejects_invalid_network_and_motion_limits(self) -> None:
         for kwargs, message in (
             ({"port": 0}, "port"),
@@ -708,6 +717,28 @@ class TaskRunnerTest(unittest.TestCase):
             "r_three_cyl_finger1_joint"
         )
         self.assertEqual(0.0, node.joint_targets[0][finger_index])
+
+    def test_homing_accepts_active_tool_at_calibration_tolerance(self) -> None:
+        adapter_path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+        server, node = _server()
+        adapter = load_robot_adapter(adapter_path, toolset="A")
+        server._robot_adapter = adapter
+        node.joint_names = adapter.manual_joint_names
+        node.joint_positions = {
+            joint.name: joint.default_position for joint in adapter.manual_joints
+        }
+        node.joint_positions["r_three_cyl_finger1_joint"] = 0.003
+        node.joint_state_received_monotonic = time.monotonic()
+
+        result = server._home_robot_joints(None, "cabinet_a")
+
+        self.assertEqual("already_home", result["status"])
+        self.assertEqual([], node.joint_targets)
 
     def test_homing_missing_active_tool_joint_state_fails_closed(self) -> None:
         adapter_path = (

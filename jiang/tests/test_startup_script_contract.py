@@ -129,6 +129,14 @@ class StartupScriptContractTests(unittest.TestCase):
             '_start_managed_process TOOLSET_SUPERVISOR_PID "末端工具集监督器"',
             managed,
         )
+        self.assertIn("_wait_for_gazebo_factory_service", managed)
+        self.assertLess(
+            managed.index("_wait_for_gazebo_factory_service"),
+            managed.index(
+                '_start_managed_process TOOLSET_SUPERVISOR_PID '
+                '"末端工具集监督器"'
+            ),
+        )
         self.assertIn('--initial-spawn-cabinet "$SPAWN_CABINET"', managed)
         self.assertIn('--cabinet-bringup "$CABINET_BRINGUP"', managed)
         self.assertIn('--require-nav2', managed)
@@ -149,7 +157,10 @@ class StartupScriptContractTests(unittest.TestCase):
 
     def test_gazebo_logs_are_per_run_and_runtime_health_allows_switch_window(self) -> None:
         self.assertIn("_configure_gazebo_log_directory()", self.startup_source)
-        self.assertIn('GAZEBO_LOG_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY/gazebo_logs"', self.startup_source)
+        self.assertIn(
+            'GAZEBO_LOG_DIRECTORY="$LAUNCH_RUNTIME_DIRECTORY/gazebo_logs"',
+            self.startup_source,
+        )
         self.assertIn('export GAZEBO_LOG_PATH="$GAZEBO_LOG_DIRECTORY"', self.startup_source)
         self.assertIn('_configure_gazebo_log_directory', self.startup_source)
         self.assertIn("_toolset_transition_is_active()", self.startup_source)
@@ -162,6 +173,32 @@ class StartupScriptContractTests(unittest.TestCase):
             monitor.index("/robot/toolset/status"),
             monitor.index('"http://${_READY_URL_HOST}:$CONTROL_PORT/health"'),
         )
+
+    def test_gazebo_remote_model_database_is_offline_safe_by_default(self) -> None:
+        self.assertIn(
+            'GAZEBO_MODEL_DATABASE_URI_EXPLICIT="${GAZEBO_MODEL_DATABASE_URI+x}"',
+            self.startup_source,
+        )
+        self.assertIn(
+            'GAZEBO_MODEL_DATABASE_URI_REQUESTED="${GAZEBO_MODEL_DATABASE_URI-}"',
+            self.startup_source,
+        )
+        self.assertIn(
+            'export GAZEBO_MODEL_DATABASE_URI=""', self.startup_source
+        )
+        self.assertIn(
+            'export GAZEBO_MODEL_DATABASE_URI="$GAZEBO_MODEL_DATABASE_URI_REQUESTED"',
+            self.startup_source,
+        )
+        self.assertIn(
+            'GAZEBO_SYSTEM_MODEL_PATH="/usr/share/gazebo-11/models"',
+            self.startup_source,
+        )
+        self.assertIn(
+            'export GAZEBO_MODEL_PATH="$GAZEBO_SYSTEM_MODEL_PATH',
+            self.startup_source,
+        )
+        self.assertIn("仅使用本地模型", self.startup_source)
 
     def test_asset_selection_database_errors_are_not_silenced(self) -> None:
         selection_start = self.startup_source.index('if ! ASSET_SELECTION_LINES="$(')
@@ -264,6 +301,21 @@ class StartupScriptContractTests(unittest.TestCase):
             end = self.startup_source.index(next_name, start)
             function = self.startup_source[start:end]
             self.assertIn("curl -fsS --connect-timeout 1 --max-time 2", function)
+
+    def test_toolset_supervisor_waits_for_the_gazebo_factory_service(self) -> None:
+        readiness_start = self.startup_source.index(
+            "_wait_for_gazebo_factory_service()"
+        )
+        readiness_end = self.startup_source.index(
+            "_wait_for_stable_processes()", readiness_start
+        )
+        readiness = self.startup_source[readiness_start:readiness_end]
+
+        self.assertIn('from gazebo_msgs.srv import SpawnEntity', readiness)
+        self.assertIn('node.create_client(SpawnEntity, "/spawn_entity")', readiness)
+        self.assertIn("client.service_is_ready()", readiness)
+        self.assertIn("ROBOT_READY_TIMEOUT_SEC", readiness)
+        self.assertIn("_assert_managed_processes_running", readiness)
 
     def test_zenoh_and_web_start_after_ros_stack_stabilizes(self) -> None:
         stable_wait = self.startup_source.index(

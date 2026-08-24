@@ -23,22 +23,6 @@ MIN_STREAM_AUTH_RECHECK_SECONDS = 0.05
 _bearer = HTTPBearer(auto_error=False)
 
 
-async def _sse_credentials(
-    request: Request,
-) -> HTTPAuthorizationCredentials | None:
-    """Header 优先，回退查询参数 ``token=``（EventSource 场景）。
-
-    EventSource 无法携带自定义 Header，SSE 端点用 ``?token=`` 传递凭证。
-    """
-    credentials = await _bearer(request)  # type: ignore[arg-type]
-    if credentials is not None:
-        return credentials
-    token = request.query_params.get("token")
-    if token:
-        return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
-    return None
-
-
 async def _resolve_user(
     credentials: HTTPAuthorizationCredentials | None,
     session: AsyncSession,
@@ -153,41 +137,13 @@ async def get_current_user(
     return await _resolve_user(credentials, session)
 
 
-async def get_current_user_sse(
-    credentials: Annotated[
-        HTTPAuthorizationCredentials | None,
-        Depends(_sse_credentials),
-    ],
-    session: Annotated[AsyncSession, Depends(get_db)],
-) -> User:
-    """Header + 查询参数兜底鉴权依赖（SSE/事件流端点）。"""
-    return await _resolve_user(credentials, session)
-
-
-def require_role(*roles: str):
-    """生成角色门禁依赖：当前用户必须是给定角色之一。"""
-
-    async def _dependency(user: Annotated[User, Depends(get_current_user)]) -> User:
-        if user.role not in roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"需要角色 {', '.join(roles)} 之一，当前为 {user.role}。",
-            )
-        return user
-
-    return _dependency
-
-
 async def require_admin(request: Request) -> User | None:
     """Require an administrator only when application authentication is on.
 
     ``XCZS_AUTH_ENABLED=false`` is documented as a complete compatibility
-    switch, not merely as a way to bypass the middleware.  The old
-    ``require_role`` alias still resolved a bearer token for asset writes, so
-    a no-auth deployment could view the panel but could neither manage assets
-    nor use the new one-click toolset switch.  Resolve credentials lazily here
-    so a deliberately database-free no-auth test/deployment does not create a
-    needless session either.
+    switch, not merely as a way to bypass the middleware.  Resolve credentials
+    lazily here so a deliberately database-free no-auth test/deployment does
+    not create a needless session either.
     """
     if not bool(getattr(request.app.state, "auth_enabled", True)):
         return None

@@ -12,14 +12,13 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
+from sqlalchemy import Boolean, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.base import Base
 
 ROLE_ADMIN = "admin"
 ROLE_OPERATOR = "operator"
-VALID_ROLES = frozenset({ROLE_ADMIN, ROLE_OPERATOR})
 
 
 class User(Base):

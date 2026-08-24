@@ -140,7 +140,6 @@ def _launch_setup(context):
     move_group = Node(
         package="moveit_ros_move_group",
         executable="move_group",
-        name="move_group",
         output="screen",
         remappings=[("joint_states", joint_state_topic)],
         parameters=[

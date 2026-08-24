@@ -62,18 +62,6 @@ class CabinetClient(Node):
         "toggle": OperateCabinetControl.Goal.COMMAND_TOGGLE,
     }
     COMMAND_NAMES = {value: key for key, value in COMMANDS.items()}
-    COMMAND_SUPPORT = {
-        OperateCabinetControl.Goal.COMMAND_PRESS: CabinetControl.SUPPORT_PRESS,
-        OperateCabinetControl.Goal.COMMAND_SET_STATE: (
-            CabinetControl.SUPPORT_SET_STATE
-        ),
-        OperateCabinetControl.Goal.COMMAND_SET_POSITION: (
-            CabinetControl.SUPPORT_SET_POSITION
-        ),
-        OperateCabinetControl.Goal.COMMAND_TOGGLE: (
-            CabinetControl.SUPPORT_TOGGLE
-        ),
-    }
     CONTROL_TYPES = frozenset(
         {
             CabinetControl.TYPE_BUTTON,
@@ -1332,6 +1320,7 @@ class CabinetClient(Node):
             ("CONTACT_DETECTION_TIMEOUT", "contact_detection_timeout"),
             ("RESOURCE_BUSY", "resource_busy"),
             ("LEASE_LOST", "lease_lost"),
+            ("TOOLSET_MISMATCH", "toolset_mismatch"),
         )
         for constant, name in names:
             if getattr(OperateCabinetControl.Result, constant, None) == code:
