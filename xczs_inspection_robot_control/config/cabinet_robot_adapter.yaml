@@ -873,7 +873,7 @@
           frame_id: map
     # 物理执行能力采用正向清单，避免新增或漏列控件被默认开放。
     # 每个完成可达、碰撞、接触、状态、无串扰和恢复闭环验收的
-    # 控件才可加入该清单，未列控件一律只做实时规划验证。
+    # 控件才可加入该清单，未列控件一律只做实时规划验证，绝不写入柜体状态。
     # 清单为空时按 ROS 2 参数规则省略该键；节点声明的空 vector 默认值
     # 表示所有控件均为 planning-only，避免 YAML 空数组成为 NOT_SET。
     operable_control_ids:
@@ -894,22 +894,23 @@
       - box_5_knob
       - cabinet_main_switch
     inoperable_control_reason: >-
-      未列入 operable_control_ids 的控件仅保留状态显示和实时规划验证，
-      不下发机械臂、抓取或柜体写入命令。1/2 号柜按钮（顶部，press 工具点
+      未列入 operable_control_ids 的控件仅保留状态显示和实时规划验证；流程会明确
+      标记“未完成物理验收”，不会执行抓取或柜体写入。1/2 号柜按钮（顶部，press 工具点
       高约 1.27 m）与 11 号柜按钮（底部，press 工具点贴近地面）超出右臂在
       现工位退距下的可达工作空间，OMPL 无法为 prepress 目标采样有效解。
       其余 knob（box_3/4/6/7/8/9/10/11 等）尚未完成带安全退距的旋转到档
-      验收。按钮与 box_5_knob 已通过 seeded prepress 的 fixed-lease 链式
+      验收；cabinet_rear_door 尚未完成开合到位、释放、回收和无串扰闭环，
+      因此当前仅规划验证。按钮与 box_5_knob 已通过 seeded prepress 的 fixed-lease 链式
       （approach/manip/retreat=1.000 + OMPL home→J）与物理到档验收；
       box_7/10 需 tool_roll_offset=-π/4 规避下方旋钮/邻件干涉，box_5 需
       退距 1.10。总开关已通过 0.780 m 退距下的左臂 + rocker 物理到档验收，
       见 cabinet_main_switch。
     toolset_mismatch_reason: >-
-      该控件在 operable_control_ids 允许清单内，但当前工具套装未挂载其
-      操作工具（套装 A：三电缸/两电缸；套装 B：旋转按钮/摇杆）。控件仍保留
-      状态显示，但在对应工具未挂载时无法进行有效 MoveIt 规划，也不下发机械臂、
-      抓取或柜体写入命令；在 Web 一键切换到对应末端套装后即可操作，
-      无需重启 Gazebo 世界。
+      当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；套装 B：
+      旋转按钮/摇杆）。控件仍保留状态显示；错套装请求会在导航和机械臂归位前
+      直接失败并返回 toolset_mismatch，无法进行有效 MoveIt 规划。可在 Web 一键切换
+      末端套装；切换到对应末端套装后，若控件已完成适配器验收才可物理执行，否则
+      仍只做规划验证；无需重启 Gazebo 世界。
 
 /xczs_operation_lease_coordinator:
   ros__parameters:

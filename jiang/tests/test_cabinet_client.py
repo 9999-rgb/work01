@@ -469,6 +469,24 @@ class CabinetClientTest(unittest.TestCase):
         self.assertEqual(1, len(controls))
         self.assertFalse(controls[0]["operable"])
 
+    def test_malformed_catalog_entry_is_ignored_without_dropping_valid_entries(self) -> None:
+        client, _ = self._client("cabinet_a", [])
+        malformed = _control()
+        malformed.control_id = "bad"
+        malformed.default_force = "not-a-number"
+
+        client._catalog_callback(
+            SimpleNamespace(controls=[malformed, _control()])
+        )
+
+        controls = client.snapshot_controls()["controls"]
+        self.assertEqual(["button_1"], [item["control_id"] for item in controls])
+
+    def test_catalog_without_controls_field_is_ignored(self) -> None:
+        client, _ = self._client("cabinet_a", [])
+        client._catalog_callback(SimpleNamespace())
+        self.assertFalse(client.snapshot_controls()["catalog_received"])
+
     def test_force_goal_feedback_and_insufficient_force_result(self) -> None:
         events: List[Dict[str, Any]] = []
         client, action = self._client("cabinet_a", events)
@@ -610,49 +628,39 @@ class CabinetClientTest(unittest.TestCase):
         self.assertEqual(1, terminal["result"]["moveit_error_code"])
         self.assertEqual(reason, terminal["result"]["policy_reason"])
 
-    def test_non_button_ignores_web_force_and_reports_zero_force(self) -> None:
+    def test_non_button_rejects_web_force_with_a_structured_reason(self) -> None:
         events: List[Dict[str, Any]] = []
         client, action = self._client("cabinet_a", events)
         client._catalog_callback(
             SimpleNamespace(controls=[_knob_control()])
         )
 
-        accepted = client.submit_operation(
+        response = client.submit_operation(
             "knob_1",
             "set_state",
             target_state="right",
             force=99.0,
         )
 
-        self.assertEqual("accepted", accepted["status"])
-        self.assertEqual(0.0, accepted["force"])
-        self.assertEqual(0.0, action.sent[0].force)
-        handle = _GoalHandle()
-        action.goal_futures[0].complete(handle)
-        handle.result_future.complete(
-            SimpleNamespace(
-                status=4,
-                result=SimpleNamespace(
-                    success=True,
-                    error_code=_Result.SUCCESS,
-                    message="旋钮操作成功",
-                    initial_position=0.0,
-                    final_position=1.0,
-                    peak_position=1.0,
-                    final_state="right",
-                    requested_force=0.0,
-                    estimated_force=0.0,
-                    button_triggered=False,
-                ),
-            )
-        )
-
+        self.assertEqual("failed", response["status"])
+        self.assertEqual("invalid_force", response["failure_code"])
+        self.assertIn("only valid for the press", response["failure_reason"])
+        self.assertEqual([], action.sent)
         terminal = events[-1]
-        self.assertEqual("success", terminal["outcome"])
-        self.assertEqual(0.0, terminal["result"]["requested_force"])
-        self.assertEqual(0.0, terminal["result"]["estimated_force"])
-        self.assertFalse(terminal["result"]["button_triggered"])
-        self.assertEqual("right", terminal["result"]["final_state"])
+        self.assertEqual("failed", terminal["outcome"])
+        self.assertEqual("invalid_force", terminal["failure_code"])
+
+    def test_non_button_press_with_force_is_rejected_before_dispatch(self) -> None:
+        events: List[Dict[str, Any]] = []
+        client, action = self._client("cabinet_a", events)
+        client._catalog_callback(SimpleNamespace(controls=[_knob_control()]))
+
+        response = client.submit_operation("knob_1", "press", force=2.0)
+
+        self.assertEqual("failed", response["status"])
+        self.assertEqual("invalid_force", response["failure_code"])
+        self.assertIn("only valid for the press", response["failure_reason"])
+        self.assertEqual([], action.sent)
 
     def test_cancel_and_old_generation_result_do_not_mutate_new_goal(self) -> None:
         events: List[Dict[str, Any]] = []

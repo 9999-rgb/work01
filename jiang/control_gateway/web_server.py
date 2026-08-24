@@ -723,10 +723,34 @@ class ControlHandler(BaseHTTPRequestHandler):
         status = getattr(error, "status", 500)
         if isinstance(status, bool) or not isinstance(status, int):
             status = 500
-        payload = {"error": str(error)}
+        message = str(error)
         details = getattr(error, "details", None)
+        resolved_reason: Optional[str] = None
+        for candidate in (
+            getattr(error, "failure_reason", None),
+            details.get("failure_reason") if isinstance(details, dict) else None,
+        ):
+            if candidate is None or isinstance(candidate, bool):
+                continue
+            try:
+                candidate_text = str(candidate).strip()
+            except Exception:  # noqa: BLE001 - defensive error-envelope path
+                continue
+            if candidate_text:
+                resolved_reason = candidate_text
+                break
+        payload = {
+            "error": message,
+            "failure_code": str(
+                getattr(error, "code", None) or "request_error"
+            ),
+            "failure_reason": resolved_reason or message,
+        }
         if isinstance(details, dict):
-            payload.update(details)
+            payload["details"] = dict(details)
+            for key, value in details.items():
+                if key not in payload:
+                    payload[key] = value
         self._send_json(status, payload)
 
     @staticmethod

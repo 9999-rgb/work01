@@ -52,6 +52,17 @@ float64 path_fraction
 float64 required_fraction
 int32 moveit_error_code
 string policy_reason
+# Always empty on success.  On failure this is the actionable cause and is
+# kept separate from the short, user-facing message for machine clients.
+string failure_reason
+# Terminal evidence flags.  They are intentionally conservative: each is
+# true only after the corresponding physical side effect or recovery phase
+# has been verified.
+bool physical_outcome_confirmed
+bool final_state_verified
+bool transport_succeeded
+bool recovery_succeeded
+bool grasp_released
 ---
 # Feedback
 uint8 WAITING_FOR_SYSTEM=0

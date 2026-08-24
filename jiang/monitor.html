@@ -1034,7 +1034,7 @@
             <div class="form-field">
               <label for="assetToolsetSelect">目标末端工具套装</label>
               <select id="assetToolsetSelect" disabled>
-                <option value="A">套装 A：三电缸(右) + 两电缸(左)，用于抽拉柜 / 按钮 / 柜门</option>
+                <option value="A">套装 A：三电缸(右) + 两电缸(左)，当前自动任务为按钮 / 柜门；两电缸保留手动控制</option>
                 <option value="B">套装 B：旋转按钮(右) + 摇入摇出(左)，用于旋钮 / 摇杆开关</option>
               </select>
             </div>
@@ -1149,6 +1149,8 @@ let navigationStatus = null;
 let cabinetStatus = null;
 let cabinetControls = [];
 let cabinetCatalogReceived = false;
+let cabinetCatalogCoherent = true;
+let cabinetCatalogCoherenceReason = '';
 let cabinetAvailableFromHealth = false;
 let cabinetOperationAvailable = false;
 let cabinetResetAvailable = false;
@@ -2095,9 +2097,29 @@ let manualTakeoverState = 'idle';
 let manualTakeoverPromise = null;
 
 function applyTaskSnapshot(task) {
+  const numericActionErrorCode = (...values) => {
+    for (const value of values) {
+      if (value === null || value === undefined || value === '') continue;
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && Number.isInteger(numeric)) {
+        return numeric;
+      }
+    }
+    return null;
+  };
   if (!task || typeof task.task_id !== 'string') return;
   const terminal = ['success', 'failed', 'canceled'].includes(task.status);
-  const reservationActive = task.reservation_active === true;
+  const hasReservationField = Object.prototype.hasOwnProperty.call(
+    task,
+    'reservation_active'
+  );
+  // Missing ownership metadata is a protocol error.  Keep the interlock
+  // active until the backend explicitly confirms release; never infer
+  // "released" from an incomplete terminal response.
+  const reservationActive = hasReservationField
+    ? task.reservation_active === true
+    : terminal;
+  const reservationProtocolError = terminal && !hasReservationField;
   const updatedAt = Number(task.updated_at ?? task.created_at ?? 0);
   const previousVersion = taskSnapshotVersions.get(task.task_id);
   if (previousVersion && (
@@ -2124,6 +2146,15 @@ function applyTaskSnapshot(task) {
     const request = task.request || {};
     const result = task.result || {};
     const business = task.business_data || {};
+    // ``error_code`` is the numeric ROS Action result.  Keep it separate
+    // from the task-level string ``failure_code`` so old consumers that read
+    // the numeric field do not suddenly receive a classification string.
+    const actionErrorCode = numericActionErrorCode(
+      result.error_code,
+      task.failure_details && task.failure_details.error_code,
+      task.action_error_code,
+      task.error_code
+    );
     const taskCabinet = request.cabinet || '';
     const state = task.status === 'success'
       ? 'succeeded'
@@ -2134,7 +2165,9 @@ function applyTaskSnapshot(task) {
       active: !terminal || reservationActive,
       reservation_active: reservationActive,
       state,
-      message: task.failure_reason || task.message,
+      message: reservationProtocolError
+        ? '任务终态不完整：暂不能确认资源已释放。'
+        : (task.failure_reason || task.message),
       control_id: request.control_id,
       button_id: request.control_id,
       command: request.command,
@@ -2152,7 +2185,16 @@ function applyTaskSnapshot(task) {
       // tri-state prevents the UI from briefly presenting an in-progress
       // operation as a failed one before its terminal result arrives.
       success: terminal ? task.status === 'success' : null,
-      error_code: terminal ? task.failure_code : null
+      failure_code: reservationProtocolError
+        ? 'invalid_backend_result'
+        : (task.failure_code || null),
+      failure_reason: reservationProtocolError
+        ? '任务终态缺少 reservation_active，无法确认机器人资源已释放。'
+        : (task.failure_reason || (terminal && task.status !== 'success'
+          ? task.message : null)),
+      failure_details: task.failure_details || {},
+      action_error_code: actionErrorCode,
+      error_code: terminal ? actionErrorCode : null
     };
     if (taskCabinet) cabinetStatusByName.set(taskCabinet, nextStatus);
     if (!taskCabinet || taskCabinet === selectedCabinetName()) {
@@ -2164,6 +2206,12 @@ function applyTaskSnapshot(task) {
     const request = task.request || {};
     const result = task.result || {};
     const business = task.business_data || {};
+    const actionErrorCode = numericActionErrorCode(
+      result.error_code,
+      task.failure_details && task.failure_details.error_code,
+      task.action_error_code,
+      task.error_code
+    );
     const taskCabinet = request.cabinet || result.cabinet || '';
     const nextStatus = {
       ...business,
@@ -2179,9 +2227,20 @@ function applyTaskSnapshot(task) {
       phase: business.phase || task.phase || 'resetting',
       progress: task.progress,
       command: 'scene_reset',
-      message: task.failure_reason || task.message || result.message,
+      message: reservationProtocolError
+        ? '任务终态不完整：暂不能确认资源已释放。'
+        : (task.failure_reason || task.message || result.message),
       success: terminal ? task.status === 'success' : null,
-      error_code: task.failure_code
+      failure_code: reservationProtocolError
+        ? 'invalid_backend_result'
+        : (task.failure_code || null),
+      failure_reason: reservationProtocolError
+        ? '任务终态缺少 reservation_active，无法确认机器人资源已释放。'
+        : (task.failure_reason || (terminal && task.status !== 'success'
+          ? task.message : null)),
+      failure_details: task.failure_details || {},
+      action_error_code: actionErrorCode,
+      error_code: terminal ? actionErrorCode : null
     };
     if (taskCabinet) cabinetStatusByName.set(taskCabinet, nextStatus);
     if (!taskCabinet || taskCabinet === selectedCabinetName()) {
@@ -2507,6 +2566,23 @@ function handleTokenExpired() {
   toast('登录已失效，请重新登录', 'warn');
 }
 
+class ControlApiError extends Error {
+  constructor(message, {
+    status = 0,
+    code = 'request_error',
+    reason = message,
+    details = {}
+  } = {}) {
+    super(message);
+    this.name = 'ControlApiError';
+    this.status = Number(status) || 0;
+    this.code = String(code || 'request_error');
+    this.failure_code = this.code;
+    this.failure_reason = String(reason || message);
+    this.details = details && typeof details === 'object' ? details : {};
+  }
+}
+
 async function controlRequest(
   path,
   method = 'GET',
@@ -2549,10 +2625,19 @@ async function controlRequest(
   try { body = await response.json(); } catch (_) {}
   if (response.status === 401) {
     handleTokenExpired();
-    throw new Error('登录已失效，请重新登录');
+    throw new ControlApiError('登录已失效，请重新登录', {
+      status: 401,
+      code: body.failure_code || 'unauthorized',
+      reason: body.failure_reason || body.error
+    });
   }
   if (!response.ok) {
-    throw new Error(body.error || `HTTP ${response.status}`);
+    throw new ControlApiError(body.error || `HTTP ${response.status}`, {
+      status: response.status,
+      code: body.failure_code || `http_${response.status}`,
+      reason: body.failure_reason || body.error,
+      details: body.details || {}
+    });
   }
   return body;
 }
@@ -3401,6 +3486,7 @@ function isCabinetOperationActive(status = cabinetStatus) {
   const visibleStatusActive = Boolean(
     cabinetStatusCurrent && status && (
       status.active === true ||
+      status.reservation_active === true ||
       cabinetActiveStates.has(String(status.state || '').toLowerCase())
     )
   );
@@ -4107,15 +4193,30 @@ function applyCabinetHealth(health) {
     ? health.cabinets[selected]
     : null;
   if (instance) {
+    const catalogCoherent = instance.catalog_coherent !== false;
+    const advertisedAvailable = instance.available ?? (
+      instance.catalog_received &&
+      instance.operation_available
+    );
     cabinetOperationAvailable = Boolean(instance.operation_available);
     cabinetResetAvailable = Boolean(instance.reset_available);
-    cabinetAvailableFromHealth = Boolean(
-      instance.available ?? (
-        instance.catalog_received && instance.operation_available
-      )
+    // A malformed/stale health response must never re-enable cabinet writes.
+    // Availability is meaningful only when the catalog and the active
+    // end-effector are known to be coherent.
+    cabinetAvailableFromHealth = catalogCoherent && Boolean(
+      advertisedAvailable
     );
+    cabinetCatalogCoherent = catalogCoherent;
+    cabinetCatalogCoherenceReason = typeof instance.catalog_coherence_reason === 'string'
+      ? instance.catalog_coherence_reason
+      : '';
   } else {
-    cabinetAvailableFromHealth = Boolean(
+    const catalogCoherent = !health || health.catalog_coherent !== false;
+    cabinetCatalogCoherent = catalogCoherent;
+    cabinetCatalogCoherenceReason = catalogCoherent
+      ? ''
+      : '控制柜健康状态与当前末端目录不一致。';
+    cabinetAvailableFromHealth = catalogCoherent && Boolean(
       health && (
         health.cabinet_available ?? health.cabinet_operation_available
       )
@@ -4233,6 +4334,15 @@ function applyCabinetControls(payload) {
         ? control.state_positions.map(Number)
         : [],
       operable: control.operable === true,
+      required_toolset: typeof control.required_toolset === 'string'
+        ? control.required_toolset.trim().toUpperCase()
+        : '',
+      toolset_compatible: control.toolset_compatible === true,
+      adapter_validated: control.adapter_validated === true,
+      capability_metadata_present: Boolean(
+        typeof control.required_toolset === 'string' &&
+        control.required_toolset.trim()
+      ),
       unavailable_reason: typeof control.unavailable_reason === 'string'
         ? control.unavailable_reason
         : '',
@@ -4287,6 +4397,13 @@ function applyCabinetControls(payload) {
   cabinetCatalogReceived = Boolean(
     payload && payload.catalog_received && validControls.length
   );
+  cabinetCatalogCoherent = Boolean(
+    payload && payload.catalog_coherent !== false
+  );
+  cabinetCatalogCoherenceReason = payload && typeof payload.catalog_coherence_reason === 'string'
+    ? payload.catalog_coherence_reason
+    : '';
+  if (!cabinetCatalogCoherent) cabinetCatalogReceived = false;
   if (oldSignature !== newSignature) {
     const groups = cabinetControlTypeOrder.map(controlType => {
       const controls = cabinetControls.filter(control => (
@@ -4300,7 +4417,11 @@ function applyCabinetControls(payload) {
         option.value = control.control_id;
         option.textContent = control.operable
           ? control.display_name
-          : `${control.display_name}（需实时规划验证）`;
+          : control.capability_metadata_present && !control.toolset_compatible
+            ? `${control.display_name}（需套装 ${control.required_toolset || '?'}）`
+            : control.capability_metadata_present && !control.adapter_validated
+              ? `${control.display_name}（需完成物理验收）`
+              : `${control.display_name}（需实时规划验证）`;
         group.appendChild(option);
       });
       return group;
@@ -4316,7 +4437,11 @@ function applyCabinetControls(payload) {
   }
   cabinetTarget.value = preferredSelection;
   if (typeof (payload && payload.available) === 'boolean') {
-    cabinetAvailableFromHealth = payload.available;
+    // Do not let an optimistic `available: true` override an incoherent
+    // catalog.  The active toolset/catalog generation fence is authoritative.
+    cabinetAvailableFromHealth = Boolean(
+      payload.available && cabinetCatalogCoherent
+    );
   }
   if (typeof (payload && payload.operation_available) === 'boolean') {
     cabinetOperationAvailable = payload.operation_available;
@@ -4328,18 +4453,43 @@ function applyCabinetControls(payload) {
   return true;
 }
 
+function adjacentCabinetStateId(control) {
+  const stateIds = Array.isArray(control && control.state_ids)
+    ? control.state_ids
+    : [];
+  if (stateIds.length < 2) return stateIds[0] || '';
+  const currentIndex = stateIds.indexOf(control.current_state);
+  if (currentIndex < 0) return stateIds[0];
+  // A multi-detent knob must move one calibrated detent at a time.  Do not
+  // wrap right -> left (or left -> right), which would cross the center and
+  // be rejected by the physical transition guard.  Two-state controls may
+  // still use their natural adjacent opposite state.
+  if (Number(control.control_type) === 1) {
+    return stateIds[
+      currentIndex < stateIds.length - 1 ? currentIndex + 1 : currentIndex - 1
+    ];
+  }
+  return stateIds[(currentIndex + 1) % stateIds.length];
+}
+
 function renderCabinetTarget() {
   const control = selectedCabinetControl();
   $('cabinetTargetId').textContent = control ? control.control_id : '-';
-  $('cabinetCatalogHint').textContent = cabinetCatalogReceived
-    ? `已载入 ${cabinetControls.length} 个控制件；每个合法任务都会先导航，并由仿真后端给出实际执行或规划验证结果。`
-    : '控制柜目录尚未到达，操作功能已禁用。';
+  $('cabinetCatalogHint').textContent = !cabinetCatalogCoherent
+    ? `末端目录正在同步，操作已锁定：${cabinetCatalogCoherenceReason || '等待当前末端发布新目录。'}`
+    : cabinetCatalogReceived
+      ? `已载入 ${cabinetControls.length} 个控制件；错套装请求会在导航前失败，已验收控件才会执行物理写入，其余仅做规划验证。`
+      : '控制柜目录尚未到达，操作功能已禁用。';
   const unavailable = $('cabinetUnavailable');
   unavailable.hidden = !control || control.operable === true;
   unavailable.textContent = control && control.operable === false
-    ? `该控件带有安全策略限制。提交后仍会导航并执行实时规划验证；配置依据：${
-        control.unavailable_reason || '当前机器人尚未完成该控件的安全验证。'
-      }`
+    ? control.capability_metadata_present && !control.toolset_compatible
+      ? `当前末端套装不匹配，提交会直接失败且不会导航/归位。需要套装 ${
+          control.required_toolset || '未知'
+        }；原因：${control.unavailable_reason || '当前末端没有该控件的操作工具。'}`
+      : `该控件尚未完成物理闭环验收；提交后仅进行实时规划验证，不写入柜体状态。配置依据：${
+          control.unavailable_reason || '当前机器人尚未完成该控件的安全验证。'
+        }`
     : '';
 
   const stateField = $('cabinetStateField');
@@ -4392,13 +4542,10 @@ function renderCabinetTarget() {
     const stateIsAvailable = stateId => Array.from(stateSelect.options).some(
       option => option.value === stateId
     );
-    const currentStateIndex = stateIds.indexOf(control.current_state);
     // For a newly selected articulated control, choose the next calibrated
     // detent instead of its current detent.  A user-selected value is always
     // retained across live catalog/state refreshes.
-    const nextState = currentStateIndex >= 0 && stateIds.length > 1
-      ? stateIds[(currentStateIndex + 1) % stateIds.length]
-      : stateIds[0];
+    const nextState = adjacentCabinetStateId(control);
     const preferredState = [
       previousStateSelection,
       nextState,
@@ -4457,7 +4604,9 @@ function renderCabinetTarget() {
     3: '开合'
   };
   $('btnCabinetPress').textContent = control.operable === false
-    ? `导航并实时验证：${control.display_name}`
+    ? control.capability_metadata_present && !control.toolset_compatible
+      ? `切换套装 ${control.required_toolset || '?'} 后操作：${control.display_name}`
+      : `导航并验证：${control.display_name}`
     : `导航并${verbs[type] || '操作'}：${control.display_name}`;
 }
 
@@ -4805,6 +4954,23 @@ function cabinetValidationDetailLines(status) {
       `机械臂/柜体物理操作: ${status.operation_executed ? '已执行' : '未执行'}`
     );
   }
+  const evidenceFields = [
+    ['physical_outcome_confirmed', '柜体物理结果确认'],
+    ['final_state_verified', '最终状态稳定确认'],
+    ['transport_succeeded', '安全收回确认'],
+    ['recovery_succeeded', '失败恢复确认'],
+    ['grasp_released', '末端已释放'],
+  ];
+  const evidence = evidenceFields.filter(([name]) =>
+    typeof status[name] === 'boolean'
+  );
+  if (evidence.length) {
+    lines.push(
+      `终态证据: ${evidence.map(([name, label]) =>
+        `${label}${status[name] ? '✓' : '✗'}`
+      ).join(' · ')}`
+    );
+  }
   if (policyReason) lines.push(`验证原因: ${policyReason}`);
   const moveitErrorCode = Number(status.moveit_error_code);
   if (
@@ -5023,7 +5189,18 @@ function renderCabinetStatus() {
       reservationActive
         ? '任务资源占用: 等待归零后端确认停止'
         : '',
-      `结果: ${resultText}  错误码: ${cabinetStatus.error_code || '-'}`
+      cabinetStatus.success === false
+        ? `失败原因: ${cabinetStatus.failure_reason || cabinetStatus.message || '-'}`
+        : '',
+      `结果: ${resultText}  失败码: ${cabinetStatus.failure_code || cabinetStatus.error_code || '-'}`,
+      cabinetStatus.action_error_code !== null &&
+        cabinetStatus.action_error_code !== undefined
+        ? `ROS Action 错误码: ${cabinetStatus.action_error_code}`
+        : '',
+      cabinetStatus.failure_details &&
+        Object.keys(cabinetStatus.failure_details).length
+        ? `失败详情: ${JSON.stringify(cabinetStatus.failure_details)}`
+        : ''
     ].filter(Boolean).join('\n');
   } else {
     const success = cabinetStatus.success;
@@ -5075,9 +5252,20 @@ function renderCabinetStatus() {
       cabinetStatus.navigate_to_staging_pose === true
         ? '底层动作内嵌导航: 是'
         : '',
-      `结果: ${resultText}  错误码: ${
-        errorCode === null || errorCode === undefined ? '-' : errorCode
-      }`
+      success === false
+        ? `失败原因: ${cabinetStatus.failure_reason || cabinetStatus.message || '-'}`
+        : '',
+      `结果: ${resultText}  失败码: ${
+        cabinetStatus.failure_code || errorCode || '-'
+      }`,
+      cabinetStatus.action_error_code !== null &&
+        cabinetStatus.action_error_code !== undefined
+        ? `ROS Action 错误码: ${cabinetStatus.action_error_code}`
+        : '',
+      cabinetStatus.failure_details &&
+        Object.keys(cabinetStatus.failure_details).length
+        ? `失败详情: ${JSON.stringify(cabinetStatus.failure_details)}`
+        : ''
     ].filter(Boolean).join('\n');
   }
   cabinetDetail.style.whiteSpace = 'pre-line';
@@ -5189,12 +5377,15 @@ function updateControlInterlocks() {
     navigationRetiring ||
     takingOver ||
     replayLocked;
-  cabinetTarget.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
   cabinetInstance.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetInstances.length;
   navCabinetInstance.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetInstances.length;
-  $('cabinetTargetState').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
-  $('cabinetTargetPosition').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
-  $('cabinetForce').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived;
+  const catalogSyncLocked = (
+    typeof cabinetCatalogCoherent === 'boolean' && !cabinetCatalogCoherent
+  );
+  cabinetTarget.disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived || catalogSyncLocked;
+  $('cabinetTargetState').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived || catalogSyncLocked;
+  $('cabinetTargetPosition').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived || catalogSyncLocked;
+  $('cabinetForce').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived || catalogSyncLocked;
   renderBaseControlStatus();
   if (typeof updateReplayControls === 'function') updateReplayControls();
   if (typeof updateAssetControlState === 'function') updateAssetControlState();
@@ -5241,15 +5432,19 @@ function updateCabinetWorkflowStatus(
     progress,
     active = true,
     success = null,
-    errorCode = null
+    errorCode = null,
+    actionErrorCode = null,
+    failureReason = null,
+    failureDetails = {},
+    reservationActive = false,
+    result = {}
   }
 ) {
   if (!cabinetWorkflowIsCurrent(workflow)) return;
   cabinetStatus = {
-    ...(cabinetStatus || {}),
     cabinet: workflow.cabinet,
     active,
-    reservation_active: false,
+    reservation_active: reservationActive,
     state,
     message,
     control_id: workflow.controlId,
@@ -5266,8 +5461,20 @@ function updateCabinetWorkflowStatus(
     workflow_stage: workflow.stage,
     phase,
     progress,
+    // Keep terminal backend diagnostics (including the five physical
+    // evidence flags) at the same level used by applyTaskSnapshot/renderers.
+    // Canonical workflow fields below intentionally override any conflicting
+    // backend keys such as success/error_code.
+    ...(result && typeof result === 'object' ? result : {}),
     success,
-    error_code: errorCode
+    failure_code: errorCode,
+    failure_reason: failureReason || (success === false ? message : null),
+    failure_details: failureDetails || {},
+    action_error_code: actionErrorCode,
+    // Keep the numeric ROS Action code available to legacy renderers while
+    // exposing the stable task-level string in failure_code.
+    error_code: actionErrorCode ?? errorCode,
+    result: result || {}
   };
   cabinetStatusByName.set(workflow.cabinet, cabinetStatus);
   cabinetStatusCurrent = true;
@@ -5294,11 +5501,25 @@ async function waitForCabinetWorkflowTaskRelease(workflow, taskId) {
       lastError = null;
       if (
         cabinetWorkflowTerminalStates.has(task.status) &&
-        task.reservation_active !== true
+        Object.prototype.hasOwnProperty.call(task, 'reservation_active') &&
+        task.reservation_active === false
       ) {
         return task;
       }
+      if (
+        cabinetWorkflowTerminalStates.has(task.status) &&
+        !Object.prototype.hasOwnProperty.call(task, 'reservation_active')
+      ) {
+        const protocolError = new Error(
+          '任务终态缺少 reservation_active，无法确认机器人资源已释放'
+        );
+        protocolError.code = 'invalid_backend_result';
+        protocolError.failure_code = protocolError.code;
+        protocolError.failure_reason = protocolError.message;
+        throw protocolError;
+      }
     } catch (error) {
+      if (error && error.code === 'invalid_backend_result') throw error;
       lastError = error;
     }
     await waitForControlDelay(cabinetWorkflowTaskPollIntervalMs);
@@ -5522,6 +5743,28 @@ async function cancelNavigation() {
 }
 
 async function sendCabinetOperation() {
+  const actionErrorCodeFromTask = task => {
+    const candidates = [
+      task && task.result && task.result.error_code,
+      task && task.failure_details && task.failure_details.error_code,
+      task && task.action_error_code,
+      task && task.error_code
+    ];
+    for (const value of candidates) {
+      if (value === null || value === undefined || value === '') continue;
+      const numeric = Number(value);
+      if (Number.isFinite(numeric) && Number.isInteger(numeric)) {
+        return numeric;
+      }
+    }
+    return null;
+  };
+  const taskResult = task => (
+    task && task.result && typeof task.result === 'object'
+      ? task.result
+      : {}
+  );
+
   if (
     typeof replayControlReadOnly !== 'undefined' && replayControlReadOnly
   ) {
@@ -5549,6 +5792,54 @@ async function sendCabinetOperation() {
   const cabinet = selectedCabinetName();
   if (!cabinet) {
     toast('请选择柜体实例', 'err');
+    return;
+  }
+  const capabilityMetadataPresent = target.capability_metadata_present === true;
+  if (
+    capabilityMetadataPresent &&
+    target.toolset_compatible !== true
+  ) {
+    const requiredToolset = target.required_toolset || '未知';
+    const reason = target.unavailable_reason ||
+      `当前末端套装无法操作该控件，需要套装 ${requiredToolset}。`;
+    const workflow = {
+      cabinet,
+      controlId,
+      controlType: Number(target.control_type),
+      displayName: target.display_name,
+      command: null,
+      targetState: null,
+      targetPosition: null,
+      force: null,
+      stage: 'capability_rejected',
+      taskId: null,
+      cancelRequested: false,
+      cancelAcknowledgedTaskId: null,
+      cancelPromise: null,
+      cancelPromiseTaskId: null
+    };
+    cabinetOperationWorkflow = workflow;
+    const failureReason = `末端套装不匹配：需要套装 ${requiredToolset}。${reason}`;
+    updateCabinetWorkflowStatus(workflow, {
+      state: 'failed',
+      phase: 'toolset_validation',
+      progress: 0,
+      active: false,
+      success: false,
+      errorCode: 'toolset_mismatch',
+      failureReason,
+      failureDetails: {
+        required_toolset: requiredToolset,
+        toolset_compatible: false,
+        adapter_validated: target.adapter_validated === true,
+        control_id: controlId
+      },
+      message: `${failureReason} 未发送导航、归位或机械臂命令。`
+    });
+    cabinetOperationWorkflow = null;
+    renderCabinetStatus();
+    updateControlInterlocks();
+    toast(`控件操作失败: ${failureReason}`, 'err');
     return;
   }
   let command = 'toggle';
@@ -5670,7 +5961,12 @@ async function sendCabinetOperation() {
         active: false,
         success: false,
         errorCode: 'canceled',
-        message: '导航已取消，未发送控件操作任务。'
+        message: '导航已取消，未发送控件操作任务。',
+        failureReason: navigationResult.failure_reason ||
+          navigationResult.message || '导航已取消，未发送控件操作任务。',
+        failureDetails: navigationResult.failure_details || {},
+        actionErrorCode: actionErrorCodeFromTask(navigationResult),
+        result: taskResult(navigationResult)
       });
       toast('导航已取消，未执行控件操作', 'ok');
       return;
@@ -5686,7 +5982,11 @@ async function sendCabinetOperation() {
         active: false,
         success: false,
         errorCode: navigationResult.failure_code || 'navigation_failed',
-        message: `${reason}；未发送控件操作任务。`
+        message: `${reason}；未发送控件操作任务。`,
+        failureReason: reason,
+        failureDetails: navigationResult.failure_details || {},
+        actionErrorCode: actionErrorCodeFromTask(navigationResult),
+        result: taskResult(navigationResult)
       });
       toast(`导航失败，未执行控件操作: ${reason}`, 'err');
       return;
@@ -5774,7 +6074,11 @@ async function sendCabinetOperation() {
         active: false,
         success: false,
         errorCode: operationResult.failure_code || 'canceled',
-        message: reason
+        message: reason,
+        failureReason: operationResult.failure_reason || reason,
+        failureDetails: operationResult.failure_details || {},
+        actionErrorCode: actionErrorCodeFromTask(operationResult),
+        result: taskResult(operationResult)
       });
       toast(`控件操作已取消: ${reason}`, 'ok');
       return;
@@ -5792,7 +6096,11 @@ async function sendCabinetOperation() {
         active: false,
         success: false,
         errorCode: operationResult.failure_code || 'operation_failed',
-        message: reason
+        message: reason,
+        failureReason: operationResult.failure_reason || reason,
+        failureDetails: operationResult.failure_details || {},
+        actionErrorCode: actionErrorCodeFromTask(operationResult),
+        result: taskResult(operationResult)
       });
       toast(`控件操作失败: ${reason}`, 'err');
       return;
@@ -5807,11 +6115,20 @@ async function sendCabinetOperation() {
       active: false,
       success: true,
       errorCode: null,
-      message: operationResult.message || `${target.display_name} 操作成功。`
+      message: operationResult.message || `${target.display_name} 操作成功。`,
+      failureDetails: operationResult.failure_details || {},
+      actionErrorCode: actionErrorCodeFromTask(operationResult),
+      result: taskResult(operationResult)
     });
     toast(`控件操作成功: ${target.display_name}`, 'ok');
   } catch (error) {
     const canceled = workflow.cancelRequested;
+    const errorReason = error && (
+      error.failure_reason || error.message
+    ) || '未知错误';
+    const errorCode = error && (
+      error.failure_code || error.code
+    );
     workflow.stage = canceled ? 'canceled' : 'failed';
     updateCabinetWorkflowStatus(workflow, {
       state: canceled ? 'canceled' : 'failed',
@@ -5820,16 +6137,20 @@ async function sendCabinetOperation() {
         : 'waiting_for_system',
       progress: 0,
       active: false,
+      reservationActive: Boolean(workflow.taskId && !canceled),
       success: false,
-      errorCode: canceled ? 'canceled' : 'workflow_failed',
+      errorCode: canceled ? 'canceled' : (errorCode || 'workflow_failed'),
+      failureReason: canceled
+        ? `自动操作已取消，未继续执行：${errorReason}`
+        : `自动操作流程失败，未继续执行：${errorReason}`,
       message: canceled
-        ? `自动操作已取消，未继续执行：${error.message}`
-        : `自动操作流程失败，未继续执行：${error.message}`
+        ? `自动操作已取消，未继续执行：${errorReason}`
+        : `自动操作流程失败，未继续执行：${errorReason}`
     });
     toast(
       canceled
         ? '自动操作已取消，未执行后续操作'
-        : `自动操作流程失败: ${error.message}`,
+        : `自动操作流程失败: ${errorReason}`,
       canceled ? 'ok' : 'err'
     );
   } finally {
@@ -6399,6 +6720,8 @@ async function selectCabinetInstance(name) {
   navCabinetInstance.value = name;
   cabinetControls = [];
   cabinetCatalogReceived = false;
+  cabinetCatalogCoherent = true;
+  cabinetCatalogCoherenceReason = '';
   cabinetAvailableFromHealth = false;
   cabinetOperationAvailable = false;
   cabinetResetAvailable = false;

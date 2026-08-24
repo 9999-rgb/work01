@@ -15,10 +15,19 @@ uint8 CANCELED=8
 uint8 INTERNAL_ERROR=9
 uint8 RESOURCE_BUSY=10
 uint8 LEASE_LOST=11
+uint8 TOOLSET_MISMATCH=12
+uint8 ADAPTER_NOT_VALIDATED=13
 bool success
 uint8 error_code
 string message
 float64 max_travel
+# Always empty on success.  On failure this contains the actionable cause.
+string failure_reason
+bool physical_outcome_confirmed
+bool final_state_verified
+bool transport_succeeded
+bool recovery_succeeded
+bool grasp_released
 ---
 # Feedback
 uint8 WAITING_FOR_SYSTEM=0

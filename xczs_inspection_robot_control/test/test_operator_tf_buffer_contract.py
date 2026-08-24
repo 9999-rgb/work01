@@ -8,6 +8,49 @@ SOURCE = (
     / "src"
     / "cabinet_button_operator.cpp"
 )
+PACKAGE_ROOT = SOURCE.parents[1]
+
+
+def test_action_results_expose_conservative_terminal_evidence() -> None:
+    """Clients must be able to distinguish side effects from transport."""
+    operate = (PACKAGE_ROOT / "action" / "OperateCabinetControl.action").read_text(
+        encoding="utf-8"
+    )
+    press = (PACKAGE_ROOT / "action" / "PressCabinetButton.action").read_text(
+        encoding="utf-8"
+    )
+    fields = (
+        "physical_outcome_confirmed",
+        "final_state_verified",
+        "transport_succeeded",
+        "recovery_succeeded",
+        "grasp_released",
+    )
+    for field in fields:
+        assert f"bool {field}" in operate
+        assert f"bool {field}" in press
+
+    source = SOURCE.read_text(encoding="utf-8")
+    for field in fields:
+        assert f"result->{field} = false" in source
+    assert "result->physical_outcome_confirmed = true" in source
+    assert "result->final_state_verified = true" in source
+    assert "result->transport_succeeded = true" in source
+    assert "result->recovery_succeeded = true" in source
+    assert "result->grasp_released = true" in source
+
+
+def test_unknown_and_busy_goals_are_structured_action_failures() -> None:
+    """Goal transport acceptance must not discard the actionable reason."""
+    source = SOURCE.read_text(encoding="utf-8")
+    assert "GoalResponse::ACCEPT_AND_EXECUTE" in source
+    assert "PendingGoalDisposition::INVALID_CONTROL" in source
+    assert "PendingGoalDisposition::INVALID_BUTTON" in source
+    assert "PendingGoalDisposition::RESOURCE_BUSY" in source
+    assert "abort_pending_operate_goal(" in source
+    assert "abort_pending_press_goal(" in source
+    assert "Failed to start cabinet worker:" in source
+    assert "Cabinet worker terminated unexpectedly" in source
 
 
 def test_every_move_group_interface_reuses_the_warm_tf_buffer() -> None:

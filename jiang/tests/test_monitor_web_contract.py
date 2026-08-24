@@ -951,6 +951,86 @@ class MonitorWebContractTest(unittest.TestCase):
             assert.equal(interlocks, 2);
         """))
 
+    def test_health_cannot_reenable_writes_with_incoherent_catalog(self) -> None:
+        health = _source_block(
+            "function applyCabinetHealth(health)",
+            "\nfunction applyCabinetInstances(payload)",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            let selected = 'cabinet_a';
+            let cabinetOperationAvailable = false;
+            let cabinetResetAvailable = false;
+            let cabinetAvailableFromHealth = false;
+            let cabinetCatalogCoherent = true;
+            let cabinetCatalogCoherenceReason = '';
+            let cabinetActiveFromHealth = false;
+            function selectedCabinetName() {{ return selected; }}
+            function applyToolsetRuntimeStatus() {{}}
+            {health}
+
+            applyCabinetHealth({{
+              cabinets: {{cabinet_a: {{
+                available: true,
+                operation_available: true,
+                reset_available: true,
+                catalog_coherent: false,
+                catalog_coherence_reason: '目录属于旧末端'
+              }}}}
+            }});
+            assert.equal(cabinetAvailableFromHealth, false);
+            assert.equal(cabinetCatalogCoherent, false);
+            assert.equal(cabinetOperationAvailable, true);
+            assert.equal(cabinetResetAvailable, true);
+            assert.match(cabinetCatalogCoherenceReason, /旧末端/);
+        """))
+
+    def test_workflow_status_preserves_terminal_evidence_and_action_code(self) -> None:
+        update = _source_block(
+            "function updateCabinetWorkflowStatus(",
+            "\nasync function waitForCabinetWorkflowTaskRelease",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            const workflow = {{
+              cabinet: 'cabinet_a', controlId: 'box_3', controlType: 0,
+              command: 'press', targetState: null, targetPosition: null,
+              force: 5
+            }};
+            let cabinetOperationWorkflow = workflow;
+            let cabinetStatus = null;
+            let cabinetStatusByName = new Map();
+            let cabinetStatusCurrent = false;
+            function cabinetWorkflowIsCurrent(value) {{
+              return value === cabinetOperationWorkflow;
+            }}
+            function renderCabinetStatus() {{}}
+            {update}
+
+            updateCabinetWorkflowStatus(workflow, {{
+              state: 'failed', phase: 'verifying', progress: 1,
+              active: false, success: false,
+              errorCode: 'insufficient_force',
+              failureReason: '未达到触发阈值',
+              failureDetails: {{peak_force: 2.1, evidence_source: 'backend'}},
+              actionErrorCode: 13,
+              result: {{physical_outcome_confirmed: false,
+                final_state_verified: false}},
+              message: '未达到触发阈值'
+            }});
+            assert.equal(cabinetStatus.failure_code, 'insufficient_force');
+            assert.equal(cabinetStatus.failure_reason, '未达到触发阈值');
+            assert.deepEqual(cabinetStatus.failure_details, {{
+              peak_force: 2.1, evidence_source: 'backend'
+            }});
+            assert.equal(cabinetStatus.action_error_code, 13);
+            assert.equal(cabinetStatus.error_code, 13);
+            assert.equal(cabinetStatus.physical_outcome_confirmed, false);
+            assert.equal(cabinetStatus.final_state_verified, false);
+            assert.equal(cabinetStatus.result.physical_outcome_confirmed, false);
+            assert.equal(cabinetStatusByName.get('cabinet_a'), cabinetStatus);
+        """))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -446,11 +446,21 @@ class ControlServer:
             "queue.Queue[Dict[str, Any]]",
         ] = {}
         self._cabinet_clients: Dict[str, CabinetClient] = {}
+        toolset_status_provider = getattr(
+            self._node,
+            "toolset_switch_snapshot",
+            None,
+        )
+        if not toolset_supervisor_required or not callable(
+            toolset_status_provider
+        ):
+            toolset_status_provider = None
         for cabinet in self._inventory:
             client = CabinetClient(
                 cabinet.name,
                 self._cabinet_event_listener,
                 context=self._context,
+                toolset_status_provider=toolset_status_provider,
             )
             self._cabinet_clients[cabinet.name] = client
             self._executor.add_node(client)
@@ -1022,7 +1032,8 @@ class ControlServer:
                 }
                 cabinet_available = all(
                     bool(
-                        state.get(
+                        state.get("catalog_coherent", True) is not False
+                        and state.get(
                             "available",
                             state.get("catalog_received")
                             and state.get("operation_available"),
@@ -1653,6 +1664,56 @@ class ControlServer:
                         raise ControlRequestError(
                             f"Unknown cabinet control: {control_id}",
                             404,
+                            code="invalid_control",
+                        )
+                    selected_control = next(
+                        (
+                            control
+                            for control in catalog.get("controls", ())
+                            if isinstance(control, Mapping)
+                            and str(control.get("control_id", "")) == control_id
+                        ),
+                        None,
+                    )
+                    # A navigation request for an explicitly selected
+                    # control is part of the operation workflow.  Reject a
+                    # wrong-tool request before creating a navigation task so
+                    # the robot cannot home/drive merely to report a mismatch.
+                    if (
+                        selected_control is not None
+                        and selected_control.get(
+                            "capability_metadata_present", False
+                        )
+                        and selected_control.get("toolset_compatible") is False
+                    ):
+                        required = str(
+                            selected_control.get("required_toolset")
+                            or "another toolset"
+                        )
+                        reason = str(
+                            selected_control.get("unavailable_reason") or ""
+                        ).strip()
+                        message = (
+                            f"Control {control_id} requires toolset {required}; "
+                            "the currently mounted toolset cannot operate it."
+                        )
+                        if reason:
+                            message = f"{message} {reason}"
+                        raise ControlRequestError(
+                            message,
+                            409,
+                            details={
+                                "control_id": control_id,
+                                "required_toolset": required,
+                                "toolset_compatible": False,
+                                "adapter_validated": bool(
+                                    selected_control.get(
+                                        "adapter_validated", False
+                                    )
+                                ),
+                                "reason": reason,
+                            },
+                            code="toolset_mismatch",
                         )
                     control_station = (
                         self._robot_adapter.control_navigation_station(
@@ -1986,7 +2047,11 @@ class ControlServer:
                         client.submit_operation,
                         button_id,
                         "press",
-                        force=5.0,
+                        # Let the active catalog supply the calibrated default
+                        # force; a hard-coded 5 N can exceed a cabinet's
+                        # configured spring range and produce a needless
+                        # INVALID_FORCE failure.
+                        force=None,
                         navigate=navigate_to_staging_pose,
                     )
                 return self._node.press_cabinet_button(
@@ -2001,7 +2066,7 @@ class ControlServer:
         target_state: Optional[str],
         target_position: Optional[float],
         navigate_to_staging_pose: bool,
-        force: float = 5.0,
+        force: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Compatibility direct operation, available only with one cabinet."""
         with self._request_scope():
@@ -2119,6 +2184,8 @@ class ControlServer:
                 str(error),
                 error.status,
                 details=error.details,
+                code=error.code,
+                failure_reason=getattr(error, "failure_reason", None),
             ) from error
 
     def _active_task_snapshot(self) -> Optional[Dict[str, Any]]:
@@ -2300,13 +2367,51 @@ class ControlServer:
         )
         try:
             cabinet_result = client.reset()
-        except CabinetClientError as error:
+        except (CabinetClientError, ControlRequestError) as error:
+            failure_reason = str(
+                getattr(error, "failure_reason", None) or str(error)
+            )
+            failure_code = str(
+                getattr(error, "code", None) or "reset_failed"
+            )
+            failure_details = dict(getattr(error, "details", {}) or {})
+            failure_details.setdefault("failure_reason", failure_reason)
             raise TaskExecutionError(
-                str(error),
-                code=error.code,
-                details=error.details,
+                failure_reason,
+                code=failure_code,
+                details=failure_details,
                 result={"cabinet": cabinet},
             ) from error
+
+        if not isinstance(cabinet_result, Mapping):
+            raise TaskExecutionError(
+                "Cabinet reset client returned a non-mapping result.",
+                code="invalid_backend_result",
+                details={"result_type": type(cabinet_result).__name__},
+                result={"cabinet": cabinet},
+            )
+        reset_status = str(cabinet_result.get("status") or "").strip().lower()
+        reset_failed = (
+            cabinet_result.get("success") is False
+            or reset_status in {"failed", "error", "canceled", "cancelled"}
+        )
+        if reset_failed:
+            failure_reason = str(
+                cabinet_result.get("failure_reason")
+                or cabinet_result.get("message")
+                or "Cabinet reset failed."
+            ).strip()
+            raise TaskExecutionError(
+                failure_reason,
+                code=str(
+                    cabinet_result.get("failure_code") or "reset_failed"
+                ),
+                details={
+                    "failure_reason": failure_reason,
+                    "backend_status": reset_status or None,
+                },
+                result={"cabinet": cabinet, "backend": dict(cabinet_result)},
+            )
 
         context.progress(
             "resetting_robot_joints",
@@ -2518,19 +2623,30 @@ class ControlServer:
             self._node.robot_joint_state_snapshot()
         )
         try:
-            commanded = self._node.set_joint_target(
-                list(targets),
-                duration_sec=float(adapter.reset_joint_duration_sec),
-            )
+            # The task may have been admitted while the active toolset was
+            # ready, then a Web A/B switch can begin before this worker reaches
+            # the homing command. Re-check and publish under the same
+            # interlock used by the switch route so a transition cannot move
+            # the retiring child.
+            with self._task_interlock_scope():
+                commanded = self._node.set_joint_target(
+                    list(targets),
+                    duration_sec=float(adapter.reset_joint_duration_sec),
+                )
         except ControlRequestError as error:
+            failure_reason = str(
+                getattr(error, "failure_reason", None) or str(error)
+            )
+            failure_details = dict(getattr(error, "details", {}) or {})
+            failure_details.setdefault("failure_reason", failure_reason)
             raise TaskExecutionError(
-                str(error),
+                failure_reason,
                 code=(
                     "backend_unavailable"
                     if getattr(error, "status", 500) == 503
                     else "robot_joint_reset_rejected"
                 ),
-                details=getattr(error, "details", {}),
+                details=failure_details,
                 result={"cabinet": cabinet},
             ) from error
 
@@ -3991,6 +4107,46 @@ class ControlServer:
         force: Optional[float],
     ) -> Mapping[str, Any]:
         context.raise_if_canceled()
+        # Perform a read-only capability/action-server preflight before any
+        # homing or navigation.  In particular, a control belonging to the
+        # other mounted end-effector must fail here rather than first moving
+        # the robot and only then receiving TOOLSET_MISMATCH from ROS.
+        preflight = getattr(client, "preflight_operation", None)
+        if callable(preflight):
+            try:
+                preflight(
+                    control_id,
+                    command,
+                    target_state=target_state,
+                    target_position=target_position,
+                    force=force,
+                    navigate=False,
+                )
+            except (CabinetClientError, ControlRequestError) as error:
+                failure_reason = str(
+                    getattr(error, "failure_reason", None) or str(error)
+                )
+                backend_code = str(
+                    getattr(error, "code", None) or "operation_rejected"
+                )
+                failure_details = dict(getattr(error, "details", {}) or {})
+                failure_details.setdefault("failure_reason", failure_reason)
+                if getattr(error, "status", 500) == 503:
+                    failure_details.setdefault(
+                        "backend_failure_code", backend_code
+                    )
+                    backend_code = "backend_unavailable"
+                raise TaskExecutionError(
+                    failure_reason,
+                    code=backend_code,
+                    details=failure_details,
+                    result={
+                        "cabinet": cabinet,
+                        "control_id": control_id,
+                        "command": command,
+                        "preflight": True,
+                    },
+                ) from error
         self._home_robot_joints(
             context,
             cabinet,
@@ -4030,20 +4186,58 @@ class ControlServer:
                         navigate=False,
                     )
             except (CabinetClientError, ControlRequestError) as error:
-                raise TaskExecutionError(
-                    str(error),
-                    code=(
+                failure_reason = str(
+                    getattr(error, "failure_reason", None) or str(error)
+                )
+                backend_code = str(
+                    getattr(error, "code", None)
+                    or (
                         "backend_unavailable"
                         if getattr(error, "status", 500) == 503
                         else "operation_rejected"
-                    ),
-                    details=getattr(error, "details", {}),
+                    )
+                )
+                failure_details = dict(getattr(error, "details", {}) or {})
+                failure_details.setdefault("failure_reason", failure_reason)
+                if getattr(error, "status", 500) == 503:
+                    failure_details.setdefault(
+                        "backend_failure_code",
+                        backend_code,
+                    )
+                    backend_code = "backend_unavailable"
+                raise TaskExecutionError(
+                    failure_reason,
+                    code=backend_code,
+                    details=failure_details,
                 ) from error
 
-            submission_status = str(submission.get("status", "accepted"))
+            managed_client = callable(preflight)
+            if not isinstance(submission, Mapping):
+                raise TaskExecutionError(
+                    "Cabinet client returned a non-mapping submission.",
+                    code="invalid_backend_result",
+                    details={"submission_type": type(submission).__name__},
+                )
+            submission_status = submission.get("status")
+            if submission_status is None and not managed_client:
+                # Legacy test/in-process adapters predate the explicit status
+                # field; retain their compatibility while production clients
+                # must provide a complete submission envelope.
+                submission_status = "accepted"
+            submission_status = str(submission_status or "")
+            if submission_status not in {"accepted", "failed", "canceled"}:
+                raise TaskExecutionError(
+                    "Cabinet client returned an invalid submission status.",
+                    code="invalid_backend_result",
+                    details={"submission": dict(submission)},
+                )
             if submission_status == "canceled":
                 raise TaskCanceledError(
-                    str(submission.get("message") or "Operation was canceled.")
+                    str(
+                        submission.get("failure_reason")
+                        or submission.get("message")
+                        or "Operation was canceled."
+                    )
                 )
             if submission_status == "failed":
                 result = dict(submission.get("result") or {})
@@ -4055,19 +4249,36 @@ class ControlServer:
                         "duration_seconds": time.monotonic() - started,
                     }
                 )
+                failure_reason = str(
+                    submission.get("failure_reason")
+                    or submission.get("message")
+                    or "Cabinet operation failed."
+                )
+                failure_code = str(
+                    submission.get("failure_code") or "operation_failed"
+                )
                 raise TaskExecutionError(
-                    str(
-                        submission.get("message")
-                        or "Cabinet operation failed."
-                    ),
-                    code=str(
-                        submission.get("failure_code")
-                        or "operation_failed"
-                    ),
+                    failure_reason,
+                    code=failure_code,
+                    details={
+                        "error_code": submission.get("error_code"),
+                        "failure_reason": failure_reason,
+                    },
                     result=result,
                 )
 
             expected_generation = submission.get("generation")
+            if managed_client and (
+                isinstance(expected_generation, bool)
+                or not isinstance(expected_generation, int)
+                or expected_generation <= 0
+            ):
+                raise TaskExecutionError(
+                    "Cabinet client accepted an operation without a valid "
+                    "generation.",
+                    code="invalid_backend_result",
+                    details={"submission": dict(submission)},
+                )
 
             while True:
                 now = time.monotonic()
@@ -4198,8 +4409,11 @@ class ControlServer:
                             code="operation_timeout",
                             result=result,
                         )
-                    if outcome == "success" and bool(
-                        event.get("success", True)
+                    if (
+                        outcome == "success"
+                        and event.get("success") is True
+                        and not event.get("failure_code")
+                        and isinstance(event.get("result"), Mapping)
                     ):
                         return result
                     if outcome == "canceled":
@@ -4212,13 +4426,18 @@ class ControlServer:
                     failure_code = str(
                         event.get("failure_code") or "operation_failed"
                     )
+                    failure_reason = str(
+                        event.get("failure_reason")
+                        or event.get("message")
+                        or "Cabinet operation failed."
+                    )
                     raise TaskExecutionError(
-                        str(
-                            event.get("message")
-                            or "Cabinet operation failed."
-                        ),
+                        failure_reason,
                         code=failure_code,
-                        details={"error_code": event.get("error_code")},
+                        details={
+                            "error_code": event.get("error_code"),
+                            "failure_reason": failure_reason,
+                        },
                         result=result,
                     )
 

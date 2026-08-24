@@ -244,6 +244,12 @@ struct ButtonSpec
   // Physical execution is granted only by the explicit robot-adapter
   // operable_control_ids allowlist populated during configure_controls().
   bool operable{false};
+  // Keep the two policy dimensions explicit in the catalog.  ``operable`` is
+  // their conjunction; clients use these fields to explain a mismatch before
+  // they request navigation or motion.
+  bool adapter_validated{false};
+  bool toolset_compatible{false};
+  std::string required_toolset;
   std::string unavailable_reason;
   std::optional<ControlNavigationStation> navigation_station;
   std::string parent_control_id;
@@ -784,6 +790,43 @@ private:
     OPERATE,
   };
 
+  enum class PendingGoalDisposition
+  {
+    EXECUTE,
+    INVALID_CONTROL,
+    INVALID_BUTTON,
+    RESOURCE_BUSY,
+  };
+
+  static std::string goal_uuid_key(
+    const rclcpp_action::GoalUUID & goal_id)
+  {
+    return std::string(
+      reinterpret_cast<const char *>(goal_id.data()), goal_id.size());
+  }
+
+  void remember_pending_goal(
+    const rclcpp_action::GoalUUID & goal_id,
+    PendingGoalDisposition disposition)
+  {
+    std::lock_guard<std::mutex> lock(pending_goal_mutex_);
+    pending_goal_dispositions_[goal_uuid_key(goal_id)] = disposition;
+  }
+
+  PendingGoalDisposition take_pending_goal(
+    const rclcpp_action::GoalUUID & goal_id)
+  {
+    std::lock_guard<std::mutex> lock(pending_goal_mutex_);
+    const auto key = goal_uuid_key(goal_id);
+    const auto iterator = pending_goal_dispositions_.find(key);
+    if (iterator == pending_goal_dispositions_.end()) {
+      return PendingGoalDisposition::INVALID_CONTROL;
+    }
+    const auto disposition = iterator->second;
+    pending_goal_dispositions_.erase(iterator);
+    return disposition;
+  }
+
   std::string required_string_parameter(
     const std::string & name,
     const std::string & default_value)
@@ -1172,6 +1215,84 @@ private:
     }
   }
 
+  void release_failed_goal_resources(
+    ActiveGoalType type,
+    const rclcpp_action::GoalUUID & goal_id) noexcept
+  {
+    clear_latched_cabinet_transform();
+    if (active_goal_owns_physical_motion_resources(type, goal_id)) {
+      stop_active_motion();
+      cancel_active_navigation();
+      request_navigation_mode_without_wait(false);
+    }
+    {
+      std::lock_guard<std::mutex> lock(motion_mutex_);
+      active_move_group_.reset();
+    }
+    relinquish_active_goal_physical_motion_resources(type, goal_id);
+    release_operation_lease_noexcept();
+    publish_active_control("");
+  }
+
+  void abort_pending_press_goal(
+    const std::shared_ptr<PressGoalHandle> & goal_handle,
+    std::uint8_t error_code,
+    const std::string & message,
+    bool release_operation_slot) noexcept
+  {
+    auto result = std::make_shared<PressCabinetButton::Result>();
+    result->success = false;
+    result->error_code = error_code;
+    result->message = message;
+    result->failure_reason = message;
+    try {
+      if (goal_handle && goal_handle->is_active()) {
+        goal_handle->abort(result);
+      }
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to abort pending button goal: %s", error.what());
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "Failed to abort pending button goal.");
+    }
+    if (release_operation_slot && goal_handle) {
+      release_failed_goal_resources(
+        ActiveGoalType::PRESS, goal_handle->get_goal_id());
+      clear_active_goal(ActiveGoalType::PRESS, goal_handle->get_goal_id());
+      operation_active_.store(false);
+    }
+  }
+
+  void abort_pending_operate_goal(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    std::uint8_t error_code,
+    const std::string & message,
+    bool release_operation_slot) noexcept
+  {
+    auto result = std::make_shared<OperateCabinetControl::Result>();
+    result->success = false;
+    result->error_code = error_code;
+    result->message = message;
+    result->failure_reason = message;
+    result->diagnostic_stage = "accepted_callback";
+    try {
+      if (goal_handle && goal_handle->is_active()) {
+        goal_handle->abort(result);
+      }
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Failed to abort pending cabinet goal: %s", error.what());
+    } catch (...) {
+      RCLCPP_ERROR(get_logger(), "Failed to abort pending cabinet goal.");
+    }
+    if (release_operation_slot && goal_handle) {
+      release_failed_goal_resources(
+        ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+      clear_active_goal(ActiveGoalType::OPERATE, goal_handle->get_goal_id());
+      operation_active_.store(false);
+    }
+  }
+
   rclcpp_action::CancelResponse cancel_active_goal(
     ActiveGoalType type,
     const rclcpp_action::GoalUUID & goal_id)
@@ -1501,6 +1622,10 @@ private:
       }
       const bool in_allowlist = operable_controls.count(control_id) != 0U;
       const bool tool_serves = tool_serves_control(button->control_type);
+      button->adapter_validated = in_allowlist;
+      button->toolset_compatible = tool_serves;
+      button->required_toolset = required_toolset_for_control(
+        button->control_type);
       button->operable = in_allowlist && tool_serves;
       button->unavailable_reason = declare_parameter<std::string>(
         prefix + "unavailable_reason", "");
@@ -1626,13 +1751,21 @@ private:
         }
       }
       button->unit = is_button ? "m" : "rad";
-      button->supported_commands = is_button ?
-        xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_PRESS :
-        static_cast<std::uint8_t>(
-        xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_SET_STATE |
-        xczs_inspection_robot_control::msg::CabinetControl::
-        SUPPORT_SET_POSITION |
-        xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_TOGGLE);
+      // A knob is deliberately single-detent only: wrapping TOGGLE from the
+      // right detent to the left detent would cross an intermediate detent
+      // and is rejected by the physical transition guard.  Switches and
+      // doors have two-state semantics and may expose TOGGLE.
+      if (is_button) {
+        button->supported_commands =
+          xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_PRESS;
+      } else {
+        button->supported_commands = static_cast<std::uint8_t>(
+          xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_SET_STATE |
+          xczs_inspection_robot_control::msg::CabinetControl::
+          SUPPORT_SET_POSITION |
+          ((is_knob) ? 0U :
+          xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_TOGGLE));
+      }
       if (button->display_name.empty() || button->joint_name.empty() ||
         button->joint_state_topic.empty() || button->state_topic.empty() ||
         (is_button && button->pressed_topic.empty()))
@@ -1794,6 +1927,9 @@ private:
       control.requires_grasp = button->requires_grasp;
       control.operable = button->operable;
       control.unavailable_reason = button->unavailable_reason;
+      control.required_toolset = button->required_toolset;
+      control.toolset_compatible = button->toolset_compatible;
+      control.adapter_validated = button->adapter_validated;
       if (button->control_type ==
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
       {
@@ -1941,20 +2077,24 @@ private:
     const rclcpp_action::GoalUUID & uuid,
     const std::shared_ptr<const OperateCabinetControl::Goal> goal)
   {
-    // Only reject when the control itself is unknown.  Command-level
-    // validation (type mismatch, unsupported command, bad target) is
-    // deferred to ``execute_operate`` so that the action server can run
-    // its full planning-validation path and return a structured failure
-    // with diagnostic details, rather than silently rejecting the goal.
+    // Always accept at the transport layer.  Unknown controls and resource
+    // contention are recorded and converted to an action result in the
+    // accepted callback, so clients never lose the failure reason in a bare
+    // GoalResponse::REJECT.
     const auto control = find_button(goal->control_id);
-    if (!control) {
-      return rclcpp_action::GoalResponse::REJECT;
-    }
+    PendingGoalDisposition disposition =
+      control ? PendingGoalDisposition::EXECUTE :
+      PendingGoalDisposition::INVALID_CONTROL;
     bool expected = false;
-    if (!operation_active_.compare_exchange_strong(expected, true)) {
-      return rclcpp_action::GoalResponse::REJECT;
+    if (disposition == PendingGoalDisposition::EXECUTE &&
+      !operation_active_.compare_exchange_strong(expected, true))
+    {
+      disposition = PendingGoalDisposition::RESOURCE_BUSY;
     }
-    activate_goal(ActiveGoalType::OPERATE, uuid);
+    if (disposition == PendingGoalDisposition::EXECUTE) {
+      activate_goal(ActiveGoalType::OPERATE, uuid);
+    }
+    remember_pending_goal(uuid, disposition);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
@@ -1970,14 +2110,52 @@ private:
   void handle_operate_accepted(
     const std::shared_ptr<OperateGoalHandle> goal_handle)
   {
-    std::lock_guard<std::mutex> lock(worker_mutex_);
-    if (worker_thread_.joinable()) {
-      worker_thread_.join();
+    const auto disposition = take_pending_goal(goal_handle->get_goal_id());
+    if (disposition != PendingGoalDisposition::EXECUTE) {
+      abort_pending_operate_goal(
+        goal_handle,
+        disposition == PendingGoalDisposition::RESOURCE_BUSY ?
+        OperateCabinetControl::Result::RESOURCE_BUSY :
+        OperateCabinetControl::Result::INVALID_CONTROL,
+        disposition == PendingGoalDisposition::RESOURCE_BUSY ?
+        "Cabinet operation rejected because another operation is active." :
+        "Unknown cabinet control; no configured control matches control_id.",
+        false);
+      return;
     }
-    worker_thread_ = std::thread(
-      [this, goal_handle]() {
-        execute_operate(goal_handle);
-      });
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    try {
+      if (worker_thread_.joinable()) {
+        worker_thread_.join();
+      }
+      worker_thread_ = std::thread(
+        [this, goal_handle]() {
+          try {
+            execute_operate(goal_handle);
+          } catch (const std::exception & error) {
+            abort_pending_operate_goal(
+              goal_handle,
+              OperateCabinetControl::Result::INTERNAL_ERROR,
+              std::string("Cabinet worker terminated unexpectedly: ") +
+              error.what(), true);
+          } catch (...) {
+            abort_pending_operate_goal(
+              goal_handle,
+              OperateCabinetControl::Result::INTERNAL_ERROR,
+              "Cabinet worker terminated unexpectedly.", true);
+          }
+        });
+    } catch (const std::exception & error) {
+      abort_pending_operate_goal(
+        goal_handle,
+        OperateCabinetControl::Result::INTERNAL_ERROR,
+        std::string("Failed to start cabinet worker: ") + error.what(), true);
+    } catch (...) {
+      abort_pending_operate_goal(
+        goal_handle,
+        OperateCabinetControl::Result::INTERNAL_ERROR,
+        "Failed to start cabinet worker.", true);
+    }
   }
 
   double positive_parameter(
@@ -2021,21 +2199,20 @@ private:
     const std::shared_ptr<const PressCabinetButton::Goal> goal)
   {
     const auto control = find_button(goal->button_id);
-    if (!control || control->control_type !=
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON ||
-      !control->operable)
-    {
-      RCLCPP_WARN(
-        get_logger(), "Rejected unsupported cabinet button '%s'.",
-        goal->button_id.c_str());
-      return rclcpp_action::GoalResponse::REJECT;
-    }
+    PendingGoalDisposition disposition =
+      control && control->control_type ==
+      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON ?
+      PendingGoalDisposition::EXECUTE : PendingGoalDisposition::INVALID_BUTTON;
     bool expected = false;
-    if (!operation_active_.compare_exchange_strong(expected, true)) {
-      RCLCPP_WARN(get_logger(), "Rejected a concurrent cabinet operation.");
-      return rclcpp_action::GoalResponse::REJECT;
+    if (disposition == PendingGoalDisposition::EXECUTE &&
+      !operation_active_.compare_exchange_strong(expected, true))
+    {
+      disposition = PendingGoalDisposition::RESOURCE_BUSY;
     }
-    activate_goal(ActiveGoalType::PRESS, uuid);
+    if (disposition == PendingGoalDisposition::EXECUTE) {
+      activate_goal(ActiveGoalType::PRESS, uuid);
+    }
+    remember_pending_goal(uuid, disposition);
     return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
   }
 
@@ -2049,17 +2226,55 @@ private:
 
   void handle_accepted(const std::shared_ptr<PressGoalHandle> goal_handle)
   {
-    std::lock_guard<std::mutex> lock(worker_mutex_);
-    if (worker_thread_.joinable()) {
-      worker_thread_.join();
+    const auto disposition = take_pending_goal(goal_handle->get_goal_id());
+    if (disposition != PendingGoalDisposition::EXECUTE) {
+      abort_pending_press_goal(
+        goal_handle,
+        disposition == PendingGoalDisposition::RESOURCE_BUSY ?
+        PressCabinetButton::Result::RESOURCE_BUSY :
+        PressCabinetButton::Result::INVALID_BUTTON,
+        disposition == PendingGoalDisposition::RESOURCE_BUSY ?
+        "Cabinet button operation rejected because another operation is active." :
+        "Unknown cabinet button; no configured button matches button_id.",
+        false);
+      return;
     }
-    worker_thread_ = std::thread(
-      [this, goal_handle]() {
-        execute(goal_handle);
-      });
+    std::lock_guard<std::mutex> lock(worker_mutex_);
+    try {
+      if (worker_thread_.joinable()) {
+        worker_thread_.join();
+      }
+      worker_thread_ = std::thread(
+        [this, goal_handle]() {
+          try {
+            execute(goal_handle);
+          } catch (const std::exception & error) {
+            abort_pending_press_goal(
+              goal_handle,
+              PressCabinetButton::Result::INTERNAL_ERROR,
+              std::string("Cabinet worker terminated unexpectedly: ") +
+              error.what(), true);
+          } catch (...) {
+            abort_pending_press_goal(
+              goal_handle,
+              PressCabinetButton::Result::INTERNAL_ERROR,
+              "Cabinet worker terminated unexpectedly.", true);
+          }
+        });
+    } catch (const std::exception & error) {
+      abort_pending_press_goal(
+        goal_handle,
+        PressCabinetButton::Result::INTERNAL_ERROR,
+        std::string("Failed to start cabinet worker: ") + error.what(), true);
+    } catch (...) {
+      abort_pending_press_goal(
+        goal_handle,
+        PressCabinetButton::Result::INTERNAL_ERROR,
+        "Failed to start cabinet worker.", true);
+    }
   }
 
-  void execute(const std::shared_ptr<PressGoalHandle> goal_handle) noexcept
+  void execute(const std::shared_ptr<PressGoalHandle> goal_handle)
   {
     const auto operation_started_at = std::chrono::steady_clock::now();
     auto result = std::make_shared<PressCabinetButton::Result>();
@@ -2088,15 +2303,30 @@ private:
     }
 
     try {
+      if (!button) {
+        throw OperationError(
+                PressCabinetButton::Result::INVALID_BUTTON,
+                "The accepted cabinet button is no longer configured.");
+      }
+      if (!tool_serves_control(button->control_type)) {
+        throw OperationError(
+                PressCabinetButton::Result::TOOLSET_MISMATCH,
+                "Button '" + button->id + "' requires end-effector toolset " +
+                button->required_toolset + ", but the mounted toolset is " +
+                toolset_ + ".");
+      }
+      if (!button->adapter_validated) {
+        throw OperationError(
+                PressCabinetButton::Result::ADAPTER_NOT_VALIDATED,
+                button->unavailable_reason.empty() ?
+                "This button is not physically validated by the robot "
+                "adapter; use the generic cabinet operation for planning-only "
+                "validation." : button->unavailable_reason);
+      }
       // Bind the button operation's arm group, tip link, contact tool link and
       // transport target to the button type before any MoveIt planning.
       apply_tool_profile(
         xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON);
-      if (!button) {
-        throw OperationError(
-                PressCabinetButton::Result::INTERNAL_ERROR,
-                "The accepted cabinet button is no longer configured.");
-      }
       const bool should_navigate_to_staging_pose =
         goal_handle->get_goal()->navigate_to_staging_pose;
       acquire_operation_lease(
@@ -2279,6 +2509,8 @@ private:
       {
         check_cancel(goal_handle);
       }
+      result->physical_outcome_confirmed = true;
+      result->final_state_verified = true;
 
       publish_feedback(
         goal_handle,
@@ -2287,12 +2519,15 @@ private:
         "Returning the arm to its safe transport target.");
       plan_and_execute_named_target(
         *move_group, goal_handle, transport_named_target_, nullptr, true);
+      result->transport_succeeded = true;
 
       result->success = true;
       result->error_code = PressCabinetButton::Result::SUCCESS;
       result->message =
         "Pressed and released " + button->id + " successfully.";
       result->max_travel = button_snapshot(*button).peak_position;
+      result->recovery_succeeded = true;
+      result->grasp_released = true;
       request_success = true;
     } catch (const OperationError & error) {
       const bool lease_available = !operation_lease_lost_.load();
@@ -2403,7 +2638,7 @@ private:
   }
 
   void execute_operate(
-    const std::shared_ptr<OperateGoalHandle> goal_handle) noexcept
+    const std::shared_ptr<OperateGoalHandle> goal_handle)
   {
     const auto operation_started_at = std::chrono::steady_clock::now();
     auto result = std::make_shared<OperateCabinetControl::Result>();
@@ -2468,6 +2703,7 @@ private:
           "Switch to end-effector toolset " + required_toolset +
           " before operating this control." :
           control->unavailable_reason;
+        result->failure_reason = result->policy_reason;
         RCLCPP_WARN(get_logger(), "%s", result->message.c_str());
         finish_operate_goal_noexcept(goal_handle, result, false);
         clear_active_goal(ActiveGoalType::OPERATE, goal_handle->get_goal_id());
@@ -2502,40 +2738,64 @@ private:
         } else {
           const auto cmd = goal_handle->get_goal()->command;
           if (cmd == OperateCabinetControl::Goal::COMMAND_SET_STATE) {
-            command_valid = std::find(
-              control->state_ids.begin(), control->state_ids.end(),
-              goal_handle->get_goal()->target_state) !=
-              control->state_ids.end();
+            command_valid = (control->supported_commands &
+              xczs_inspection_robot_control::msg::CabinetControl::
+              SUPPORT_SET_STATE) != 0U;
             if (!command_valid) {
-              command_reason = "target_state '" +
-                goal_handle->get_goal()->target_state +
-                "' is not in the control's state list.";
+              command_reason = "This control does not support setting a state.";
+            }
+            if (command_valid) {
+              command_valid = std::find(
+                control->state_ids.begin(), control->state_ids.end(),
+                goal_handle->get_goal()->target_state) !=
+                control->state_ids.end();
+              if (!command_valid) {
+                command_reason = "target_state '" +
+                  goal_handle->get_goal()->target_state +
+                  "' is not in the control's state list.";
+              }
             }
           } else if (cmd ==
             OperateCabinetControl::Goal::COMMAND_SET_POSITION)
           {
-            command_valid = goal_handle->get_goal()->use_target_position &&
-              std::isfinite(goal_handle->get_goal()->target_position) &&
-              goal_handle->get_goal()->target_position >=
-              control->min_position &&
-              goal_handle->get_goal()->target_position <=
-              control->max_position &&
-              std::any_of(
-              control->state_positions.begin(),
-              control->state_positions.end(),
-              [this, &goal_handle](double preset) {
-                return std::abs(
-                  preset - goal_handle->get_goal()->target_position) <=
-                target_tolerance_;
-              });
+            command_valid = (control->supported_commands &
+              xczs_inspection_robot_control::msg::CabinetControl::
+              SUPPORT_SET_POSITION) != 0U;
             if (!command_valid) {
-              command_reason = "target_position is out of range or does " \
-                "not match a configured detent.";
+              command_reason =
+                "This control does not support setting a position.";
+            }
+            if (command_valid) {
+              command_valid = goal_handle->get_goal()->use_target_position &&
+                std::isfinite(goal_handle->get_goal()->target_position) &&
+                goal_handle->get_goal()->target_position >=
+                control->min_position &&
+                goal_handle->get_goal()->target_position <=
+                control->max_position &&
+                std::any_of(
+                control->state_positions.begin(),
+                control->state_positions.end(),
+                [this, &goal_handle](double preset) {
+                  return std::abs(
+                    preset - goal_handle->get_goal()->target_position) <=
+                  target_tolerance_;
+                });
+              if (!command_valid) {
+                command_reason = "target_position is out of range or does " \
+                  "not match a configured detent.";
+              }
             }
           } else if (cmd == OperateCabinetControl::Goal::COMMAND_TOGGLE) {
-            command_valid = control->state_ids.size() >= 2U;
+            command_valid = (control->supported_commands &
+              xczs_inspection_robot_control::msg::CabinetControl::
+              SUPPORT_TOGGLE) != 0U && control->state_ids.size() >= 2U;
             if (!command_valid) {
-              command_reason = "Toggle requires at least 2 states.";
+              command_reason = (control->supported_commands &
+                xczs_inspection_robot_control::msg::CabinetControl::
+                SUPPORT_TOGGLE) == 0U ?
+                "This control does not support toggle; choose an adjacent "
+                "detent with set_state or set_position." :
+                "Toggle requires at least 2 states.";
             }
           } else {
             command_reason = "Unknown command code " +
@@ -2552,6 +2812,7 @@ private:
           result->operation_executed = false;
           result->diagnostic_stage = "command_validation";
           result->policy_reason = command_reason;
+          result->failure_reason = command_reason;
           RCLCPP_WARN(
             get_logger(), "%s", result->message.c_str());
           finish_operate_goal_noexcept(goal_handle, result, false);
@@ -2889,6 +3150,8 @@ private:
         {
           check_cancel(goal_handle);
         }
+        result->physical_outcome_confirmed = true;
+        result->final_state_verified = true;
       } else {
         result->diagnostic_stage = "ready";
         publish_operate_feedback(
@@ -3066,6 +3329,7 @@ private:
             "Releasing the door after the tool cleared its sweep.");
           set_control_grasp(goal_handle, control->id, false);
           grasp_attached = false;
+          result->grasp_released = true;
           released_at = std::chrono::steady_clock::now();
         } else {
           result->diagnostic_stage = "release";
@@ -3076,6 +3340,7 @@ private:
             "Releasing the physical grasp at the requested detent.");
           set_control_grasp(goal_handle, control->id, false);
           grasp_attached = false;
+          result->grasp_released = true;
           released_at = std::chrono::steady_clock::now();
           result->diagnostic_stage = "retreat";
           publish_operate_feedback(
@@ -3113,6 +3378,8 @@ private:
         {
           check_cancel(goal_handle);
         }
+        result->physical_outcome_confirmed = true;
+        result->final_state_verified = true;
       }
 
       result->diagnostic_stage = "transport";
@@ -3124,6 +3391,7 @@ private:
       plan_and_execute_named_target(
         *move_group, goal_handle, transport_named_target_,
         &result->operation_executed, true);
+      result->transport_succeeded = true;
 
       const auto final_state = button_snapshot(*control);
       if (!result->operation_executed) {
@@ -3149,6 +3417,11 @@ private:
           result->button_triggered ||
           final_state.peak_position + 1.0e-9 >= control->press_threshold;
       }
+      result->physical_outcome_confirmed = true;
+      result->final_state_verified = true;
+      result->transport_succeeded = true;
+      result->recovery_succeeded = true;
+      result->grasp_released = true;
       request_success = true;
     } catch (const GenericOperationError & error) {
       result->success = false;
@@ -4188,6 +4461,10 @@ private:
         return OperateCabinetControl::Result::RESOURCE_BUSY;
       case PressCabinetButton::Result::LEASE_LOST:
         return OperateCabinetControl::Result::LEASE_LOST;
+      case PressCabinetButton::Result::TOOLSET_MISMATCH:
+        return OperateCabinetControl::Result::TOOLSET_MISMATCH;
+      case PressCabinetButton::Result::ADAPTER_NOT_VALIDATED:
+        return OperateCabinetControl::Result::UNREACHABLE;
       default:
         return OperateCabinetControl::Result::INTERNAL_ERROR;
     }
@@ -4205,6 +4482,22 @@ private:
     bool request_success) noexcept
   {
     const auto finalize = [&]() {
+        if (result) {
+          if (request_success) {
+            result->failure_reason.clear();
+          } else {
+            result->physical_outcome_confirmed = false;
+            result->final_state_verified = false;
+            result->transport_succeeded = false;
+            result->recovery_succeeded = false;
+            result->grasp_released = false;
+            if (result->failure_reason.empty()) {
+              result->failure_reason = result->message.empty() ?
+                "Cabinet operation failed without a diagnostic message." :
+                result->message;
+            }
+          }
+        }
         return apply_goal_terminal_disposition(
           goal_terminal_disposition(
             request_success, is_operate_goal_canceling(goal_handle)),
@@ -4213,6 +4506,7 @@ private:
             result->success = false;
             result->error_code = OperateCabinetControl::Result::CANCELED;
             result->message = "Cabinet operation was canceled.";
+            result->failure_reason = result->message;
             goal_handle->canceled(result);
           },
           [&]() {goal_handle->abort(result);});
@@ -6659,6 +6953,22 @@ private:
     bool request_success) noexcept
   {
     const auto finalize = [&]() {
+        if (result) {
+          if (request_success) {
+            result->failure_reason.clear();
+          } else {
+            result->physical_outcome_confirmed = false;
+            result->final_state_verified = false;
+            result->transport_succeeded = false;
+            result->recovery_succeeded = false;
+            result->grasp_released = false;
+            if (result->failure_reason.empty()) {
+              result->failure_reason = result->message.empty() ?
+                "Cabinet button operation failed without a diagnostic message." :
+                result->message;
+            }
+          }
+        }
         return apply_goal_terminal_disposition(
           goal_terminal_disposition(
             request_success, is_goal_canceling_noexcept(goal_handle)),
@@ -6667,6 +6977,7 @@ private:
             result->success = false;
             result->error_code = PressCabinetButton::Result::CANCELED;
             result->message = "Cabinet button operation was canceled.";
+            result->failure_reason = result->message;
             goal_handle->canceled(result);
           },
           [&]() {goal_handle->abort(result);});
@@ -6866,6 +7177,9 @@ private:
   std::chrono::steady_clock::time_point last_navigation_feedback_{};
   std::mutex worker_mutex_;
   std::thread worker_thread_;
+  std::mutex pending_goal_mutex_;
+  std::unordered_map<std::string, PendingGoalDisposition>
+    pending_goal_dispositions_;
   std::atomic<bool> operation_active_{false};
   std::mutex operation_lease_mutex_;
   std::string operation_lease_owner_id_;

@@ -60,10 +60,19 @@ class ControlRequestError(RuntimeError):
         message: str,
         status: int = 400,
         details: Optional[Dict[str, Any]] = None,
+        *,
+        code: Optional[str] = None,
+        failure_reason: Optional[str] = None,
     ) -> None:
         super().__init__(message)
         self.status = status
         self.details = dict(details or {})
+        self.code = str(code).strip() if code else "request_error"
+        self.failure_reason = (
+            str(failure_reason).strip()
+            if failure_reason is not None
+            else None
+        ) or None
 
 
 class RosControlNode(Node):
@@ -416,6 +425,8 @@ class RosControlNode(Node):
             "peak_position": None,
             "final_state": None,
             "success": None,
+            "failure_code": None,
+            "failure_reason": None,
             "error_code": None,
             "updated_at": time.time(),
             "button_state_updated_at": None,
@@ -1123,6 +1134,89 @@ class RosControlNode(Node):
                 "data": list(self._map_state["data"]),
             }
 
+    def _cabinet_catalog_coherence_locked(
+        self,
+        controls: Optional[Mapping[str, Mapping[str, Any]]] = None,
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Fence the legacy cabinet catalog against a managed toolset.
+
+        ``CabinetClient`` performs the same check for the normal per-cabinet
+        path.  The single-node compatibility path must expose identical
+        fail-closed fields; otherwise a stale transient catalog could still
+        be advertised as usable after an A/B end-effector replacement.
+        """
+        status = getattr(self, "_toolset_status", None)
+        if not isinstance(status, Mapping) or status.get("managed") is not True:
+            # Direct/legacy launches have no supervisor and retain their
+            # historical static-toolset behavior.
+            return True, "", None
+
+        active = status.get("active_toolset")
+        active = (
+            active.strip().upper()
+            if isinstance(active, str)
+            else None
+        )
+        state = status.get("state")
+        if (
+            state != "ready"
+            or status.get("ready") is not True
+            or active not in {"A", "B"}
+        ):
+            stage = str(status.get("stage") or state or "unknown")
+            return (
+                False,
+                f"End-effector toolset is not ready (stage: {stage}); "
+                "cabinet controls are locked until the fresh catalog arrives.",
+                active,
+            )
+
+        candidate = (
+            getattr(self, "_cabinet_controls", {})
+            if controls is None
+            else controls
+        )
+        if not candidate:
+            return (
+                False,
+                "Cabinet control catalog is empty while the active toolset is ready.",
+                active,
+            )
+        missing_metadata = [
+            str(control_id)
+            for control_id, control in candidate.items()
+            if not isinstance(control, Mapping)
+            or not bool(control.get("capability_metadata_present", False))
+        ]
+        if missing_metadata:
+            return (
+                False,
+                "Cabinet catalog has no toolset capability metadata; "
+                "waiting for a fresh publisher from the active robot child.",
+                active,
+            )
+        mismatches = []
+        for control_id, control in candidate.items():
+            required = str(
+                control.get("required_toolset") or ""
+            ).strip().upper()
+            compatible = bool(control.get("toolset_compatible", False))
+            expected = required in {"A", "B"} and required == active
+            if required not in {"A", "B"} or compatible != expected:
+                mismatches.append(str(control_id))
+        if mismatches:
+            preview = ", ".join(mismatches[:4])
+            if len(mismatches) > 4:
+                preview += ", ..."
+            return (
+                False,
+                "Cabinet catalog does not match the active end-effector "
+                f"toolset {active}; waiting for a fresh catalog "
+                f"(controls: {preview}).",
+                active,
+            )
+        return True, "", active
+
     def cabinet_snapshot(self) -> Dict[str, Any]:
         """Return cabinet action availability, feedback and control state."""
         with self._lock:
@@ -1151,15 +1245,22 @@ class RosControlNode(Node):
                 getattr(self, "_cabinet_button_client", None)
             )
             catalog_received = self._cabinet_catalog_received
+            catalog_coherent, catalog_coherence_reason, catalog_active_toolset = (
+                self._cabinet_catalog_coherence_locked()
+            )
             snapshot.update(
                 {
                     "available": (
                         catalog_received
+                        and catalog_coherent
                         and (operation_available or legacy_button_available)
                     ),
                     "operation_available": operation_available,
                     "legacy_button_available": legacy_button_available,
                     "catalog_received": catalog_received,
+                    "catalog_coherent": catalog_coherent,
+                    "catalog_active_toolset": catalog_active_toolset,
+                    "catalog_coherence_reason": catalog_coherence_reason,
                     "reset_available": self._service_ready(
                         getattr(self, "_cabinet_reset_client", None)
                     ),
@@ -1195,9 +1296,13 @@ class RosControlNode(Node):
             legacy_button_available = self._action_server_ready(
                 getattr(self, "_cabinet_button_client", None)
             )
+            catalog_coherent, catalog_coherence_reason, catalog_active_toolset = (
+                self._cabinet_catalog_coherence_locked()
+            )
         return {
             "available": (
                 catalog_received
+                and catalog_coherent
                 and (operation_available or legacy_button_available)
             ),
             "operation_available": operation_available,
@@ -1206,6 +1311,9 @@ class RosControlNode(Node):
                 getattr(self, "_cabinet_reset_client", None)
             ),
             "catalog_received": catalog_received,
+            "catalog_coherent": catalog_coherent,
+            "catalog_active_toolset": catalog_active_toolset,
+            "catalog_coherence_reason": catalog_coherence_reason,
             "source": (
                 "operator_catalog"
                 if catalog_received
@@ -1222,7 +1330,7 @@ class RosControlNode(Node):
         target_state: Optional[str] = None,
         target_position: Optional[float] = None,
         navigate_to_staging_pose: bool = True,
-        force: float = 5.0,
+        force: Optional[float] = None,
     ) -> Dict[str, Any]:
         """Submit one generic, physically verified cabinet operation."""
         if not isinstance(control_id, str) or not control_id.strip():
@@ -1235,16 +1343,21 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 "navigate_to_staging_pose must be a boolean."
             )
-        if isinstance(force, bool):
-            raise ControlRequestError("force must be a positive finite number.")
-        try:
-            force = float(force)
-        except (TypeError, ValueError) as error:
-            raise ControlRequestError(
-                "force must be a positive finite number."
-            ) from error
-        if not math.isfinite(force) or force <= 0.0:
-            raise ControlRequestError("force must be a positive finite number.")
+        if force is not None:
+            if isinstance(force, bool):
+                raise ControlRequestError(
+                    "force must be a positive finite number."
+                )
+            try:
+                force = float(force)
+            except (TypeError, ValueError) as error:
+                raise ControlRequestError(
+                    "force must be a positive finite number."
+                ) from error
+            if not math.isfinite(force) or force <= 0.0:
+                raise ControlRequestError(
+                    "force must be a positive finite number."
+                )
         if target_state is not None:
             if not isinstance(target_state, str) or not target_state.strip():
                 raise ControlRequestError(
@@ -1271,6 +1384,29 @@ class RosControlNode(Node):
                 target_position,
             )
             self._reject_cabinet_start_conflicts_locked()
+            is_button = (
+                int(control.get("control_type", -1))
+                == self.CABINET_CONTROL_TYPE_BUTTON
+            )
+            if force is not None and not is_button:
+                raise ControlRequestError(
+                    "force is only valid for button press operations; knobs, "
+                    "switches, and doors use their configured detent "
+                    "transition.",
+                    code="invalid_force",
+                    details={
+                        "control_id": control_id,
+                        "control_type": int(control.get("control_type", -1)),
+                    },
+                )
+            if is_button:
+                force = (
+                    force
+                    if force is not None
+                    else float(control.get("default_force", 5.0) or 5.0)
+                )
+            else:
+                force = 0.0
         operation_client = getattr(
             self,
             "_cabinet_operation_client",
@@ -1329,6 +1465,8 @@ class RosControlNode(Node):
                     ),
                     "final_state": None,
                     "success": None,
+                    "failure_code": None,
+                    "failure_reason": None,
                     "error_code": None,
                     "requested_force": force,
                     "estimated_force": None,
@@ -1349,24 +1487,48 @@ class RosControlNode(Node):
         goal.force = force
         goal.navigate_to_staging_pose = navigate_to_staging_pose
         try:
-            future = operation_client.send_goal_async(
-                goal,
-                feedback_callback=(
-                    lambda feedback_message: (
-                        self._cabinet_operation_feedback_callback(
-                            feedback_message,
-                            generation,
+            # Keep the final coherence check and goal admission under the
+            # catalog/toolset lock. A direct legacy caller can otherwise
+            # validate while an end-effector replacement starts, then dispatch
+            # the stale goal before the next catalog callback is processed.
+            with self._lock:
+                self._ensure_cabinet_catalog_coherent_locked()
+                future = operation_client.send_goal_async(
+                    goal,
+                    feedback_callback=(
+                        lambda feedback_message: (
+                            self._cabinet_operation_feedback_callback(
+                                feedback_message,
+                                generation,
+                            )
                         )
-                    )
-                ),
-            )
-            future.add_done_callback(
-                lambda goal_future: self._cabinet_goal_response_callback(
-                    goal_future,
-                    generation,
-                    generic=True,
+                    ),
                 )
+                future.add_done_callback(
+                    lambda goal_future: self._cabinet_goal_response_callback(
+                        goal_future,
+                        generation,
+                        generic=True,
+                    )
+                )
+        except ControlRequestError as error:
+            # Preserve the structured transition error for direct callers;
+            # do not re-label it as a generic transport failure.
+            transition_reason = str(
+                getattr(error, "failure_reason", None) or str(error)
             )
+            self._set_cabinet_terminal(
+                "failed",
+                transition_reason,
+                False,
+                None,
+                generation=generation,
+                failure_code=str(
+                    getattr(error, "code", None) or "toolset_transition"
+                ),
+                failure_reason=transition_reason,
+            )
+            raise
         except Exception as error:  # noqa: BLE001
             self._set_cabinet_terminal(
                 "failed",
@@ -1478,6 +1640,8 @@ class RosControlNode(Node):
                     "progress": 0.0,
                     "max_travel": 0.0,
                     "success": None,
+                    "failure_code": None,
+                    "failure_reason": None,
                     "error_code": None,
                     "updated_at": time.time(),
                 }
@@ -1489,21 +1653,41 @@ class RosControlNode(Node):
         goal.button_id = button_id
         goal.navigate_to_staging_pose = navigate_to_staging_pose
         try:
-            future = self._cabinet_button_client.send_goal_async(
-                goal,
-                feedback_callback=(
-                    lambda feedback_message: self._cabinet_feedback_callback(
-                        feedback_message,
+            # Serialize legacy goal admission with the same catalog/toolset
+            # fence used by the generic action path.
+            with self._lock:
+                self._ensure_cabinet_catalog_coherent_locked()
+                future = self._cabinet_button_client.send_goal_async(
+                    goal,
+                    feedback_callback=(
+                        lambda feedback_message: self._cabinet_feedback_callback(
+                            feedback_message,
+                            generation,
+                        )
+                    ),
+                )
+                future.add_done_callback(
+                    lambda goal_future: self._cabinet_goal_response_callback(
+                        goal_future,
                         generation,
                     )
-                ),
-            )
-            future.add_done_callback(
-                lambda goal_future: self._cabinet_goal_response_callback(
-                    goal_future,
-                    generation,
                 )
+        except ControlRequestError as error:
+            transition_reason = str(
+                getattr(error, "failure_reason", None) or str(error)
             )
+            self._set_cabinet_terminal(
+                "failed",
+                transition_reason,
+                False,
+                None,
+                generation=generation,
+                failure_code=str(
+                    getattr(error, "code", None) or "toolset_transition"
+                ),
+                failure_reason=transition_reason,
+            )
+            raise
         except Exception as error:  # noqa: BLE001
             self._set_cabinet_terminal(
                 "failed",
@@ -2665,7 +2849,22 @@ class RosControlNode(Node):
             )
             return
 
-        if not goal_handle.accepted:
+        try:
+            accepted = bool(goal_handle.accepted)
+        except Exception as error:  # noqa: BLE001 - malformed action handle
+            reason = f"Cabinet action returned an invalid goal handle: {error}"
+            self._set_cabinet_terminal(
+                "failed",
+                reason,
+                False,
+                None,
+                generation=generation,
+                failure_code="invalid_backend_result",
+                failure_reason=reason,
+            )
+            return
+
+        if not accepted:
             self._set_cabinet_terminal(
                 "rejected",
                 "Cabinet operation action server rejected the goal.",
@@ -2863,6 +3062,36 @@ class RosControlNode(Node):
                 "estimated_force": float(result.estimated_force),
                 "button_triggered": bool(result.button_triggered),
             }
+            terminal_evidence: Dict[str, bool] = {}
+            evidence_names = {
+                "physical_outcome_confirmed",
+                "final_state_verified",
+                "transport_succeeded",
+                "recovery_succeeded",
+                "grasp_released",
+            }
+            for name in (
+                "validation_performed",
+                "operation_executed",
+                "diagnostic_stage",
+                "path_fraction",
+                "required_fraction",
+                "moveit_error_code",
+                "policy_reason",
+                "failure_reason",
+                "physical_outcome_confirmed",
+                "final_state_verified",
+                "transport_succeeded",
+                "recovery_succeeded",
+                "grasp_released",
+            ):
+                if hasattr(result, name):
+                    raw_value = getattr(result, name)
+                    if name in evidence_names:
+                        terminal_evidence[name] = bool(raw_value)
+                        result_updates[name] = terminal_evidence[name]
+                    else:
+                        result_updates[name] = raw_value
             with self._lock:
                 if (
                     self._cabinet_state.get("control_type")
@@ -2877,6 +3106,9 @@ class RosControlNode(Node):
                 state = "canceled"
                 success = False
                 message = result_message or "Cabinet operation was canceled."
+                failure_reason = str(
+                    getattr(result, "failure_reason", "") or ""
+                ).strip() or message
             elif (
                 action_status == GoalStatus.STATUS_SUCCEEDED
                 and bool(result.success)
@@ -2885,6 +3117,41 @@ class RosControlNode(Node):
                 state = "succeeded"
                 success = True
                 message = result_message or "Cabinet operation succeeded."
+                explicit_failure_reason = str(
+                    getattr(result, "failure_reason", "") or ""
+                ).strip()
+                if explicit_failure_reason:
+                    # A successful action must not carry a failure reason.
+                    # Treat this contradictory backend result as a failure so
+                    # the compatibility status cannot present a false
+                    # success to older Web clients.
+                    state = "failed"
+                    success = False
+                    error_code = OperateCabinetControl.Result.INTERNAL_ERROR
+                    message = (
+                        "Cabinet operation returned a success result with a "
+                        "non-empty failure reason."
+                    )
+                    failure_reason = message
+                else:
+                    failure_reason = None
+                missing_evidence = [
+                    name for name, confirmed in terminal_evidence.items()
+                    if not confirmed
+                ]
+                if missing_evidence:
+                    state = "failed"
+                    success = False
+                    error_code = OperateCabinetControl.Result.INTERNAL_ERROR
+                    message = (
+                        "Cabinet operation reported success before all physical "
+                        "terminal evidence was confirmed: "
+                        + ", ".join(missing_evidence)
+                    )
+                    failure_reason = message
+                    result_updates["missing_terminal_evidence"] = (
+                        missing_evidence
+                    )
             else:
                 state = "failed"
                 success = False
@@ -2893,12 +3160,22 @@ class RosControlNode(Node):
                     "Cabinet operation",
                 )
                 message = result_message or fallback_message
+                failure_reason = str(
+                    getattr(result, "failure_reason", "") or ""
+                ).strip() or message
+                if error_code == OperateCabinetControl.Result.SUCCESS:
+                    error_code = OperateCabinetControl.Result.INTERNAL_ERROR
+                    failure_reason = (
+                        "Cabinet operation returned an inconsistent terminal "
+                        "result with SUCCESS error code."
+                    )
         except Exception as error:  # noqa: BLE001
             state = "failed"
             success = False
             message = f"Cabinet operation result failed: {error}"
             error_code = None
             result_updates = {}
+            failure_reason = message
 
         self._set_cabinet_terminal(
             state,
@@ -2909,6 +3186,12 @@ class RosControlNode(Node):
             generation=generation,
             expected_goal_handle=goal_handle,
             result_updates=result_updates,
+            failure_reason=failure_reason,
+            failure_code=(
+                None
+                if state == "succeeded"
+                else self._cabinet_error_code_name(error_code)
+            ),
         )
 
     def _cabinet_result_callback(
@@ -2917,6 +3200,7 @@ class RosControlNode(Node):
         generation: int,
         goal_handle: Any,
     ) -> None:
+        result_updates: Dict[str, Any] = {}
         try:
             wrapped_result = future.result()
             result = wrapped_result.result
@@ -2924,6 +3208,18 @@ class RosControlNode(Node):
             error_code = int(result.error_code)
             max_travel = max(0.0, float(result.max_travel))
             result_message = str(result.message)
+            evidence_names = {
+                "physical_outcome_confirmed",
+                "final_state_verified",
+                "transport_succeeded",
+                "recovery_succeeded",
+                "grasp_released",
+            }
+            terminal_evidence: Dict[str, bool] = {}
+            for name in evidence_names:
+                if hasattr(result, name):
+                    terminal_evidence[name] = bool(getattr(result, name))
+                    result_updates[name] = terminal_evidence[name]
 
             if (
                 action_status == GoalStatus.STATUS_CANCELED
@@ -2935,6 +3231,9 @@ class RosControlNode(Node):
                     result_message
                     or "Cabinet button operation was canceled."
                 )
+                failure_reason = str(
+                    getattr(result, "failure_reason", "") or ""
+                ).strip() or message
             elif (
                 action_status == GoalStatus.STATUS_SUCCEEDED
                 and bool(result.success)
@@ -2946,6 +3245,45 @@ class RosControlNode(Node):
                     result_message
                     or "Cabinet button operation succeeded."
                 )
+                explicit_failure_reason = str(
+                    getattr(result, "failure_reason", "") or ""
+                ).strip()
+                if explicit_failure_reason:
+                    state = "failed"
+                    success = False
+                    error_code = getattr(
+                        PressCabinetButton.Result,
+                        "INTERNAL_ERROR",
+                        9,
+                    )
+                    message = (
+                        "Cabinet button returned a success result with a "
+                        "non-empty failure reason."
+                    )
+                    failure_reason = message
+                else:
+                    failure_reason = None
+                missing_evidence = [
+                    name for name, confirmed in terminal_evidence.items()
+                    if not confirmed
+                ]
+                if missing_evidence:
+                    state = "failed"
+                    success = False
+                    error_code = getattr(
+                        PressCabinetButton.Result,
+                        "INTERNAL_ERROR",
+                        9,
+                    )
+                    message = (
+                        "Cabinet button reported success before all physical "
+                        "terminal evidence was confirmed: "
+                        + ", ".join(missing_evidence)
+                    )
+                    failure_reason = message
+                    result_updates["missing_terminal_evidence"] = (
+                        missing_evidence
+                    )
             else:
                 state = "failed"
                 success = False
@@ -2954,12 +3292,27 @@ class RosControlNode(Node):
                     "Cabinet button operation",
                 )
                 message = result_message or fallback_message
+                failure_reason = str(
+                    getattr(result, "failure_reason", "") or ""
+                ).strip() or message
+                if error_code == PressCabinetButton.Result.SUCCESS:
+                    error_code = getattr(
+                        PressCabinetButton.Result,
+                        "INTERNAL_ERROR",
+                        9,
+                    )
+                    failure_reason = (
+                        "Cabinet button returned an inconsistent terminal "
+                        "result with SUCCESS error code."
+                    )
         except Exception as error:  # noqa: BLE001
             state = "failed"
             success = False
             message = f"Cabinet button result failed: {error}"
             error_code = None
             max_travel = None
+            result_updates = {}
+            failure_reason = message
 
         self._set_cabinet_terminal(
             state,
@@ -2969,6 +3322,13 @@ class RosControlNode(Node):
             max_travel,
             generation=generation,
             expected_goal_handle=goal_handle,
+            result_updates=result_updates,
+            failure_reason=failure_reason,
+            failure_code=(
+                None
+                if state == "succeeded"
+                else self._legacy_cabinet_error_code_name(error_code)
+            ),
         )
 
     def _cabinet_cancel_callback(
@@ -3029,6 +3389,8 @@ class RosControlNode(Node):
         generation: Optional[int] = None,
         expected_goal_handle: Any = None,
         result_updates: Optional[Dict[str, Any]] = None,
+        failure_code: Optional[str] = None,
+        failure_reason: Optional[str] = None,
     ) -> None:
         with self._lock:
             if (
@@ -3063,12 +3425,42 @@ class RosControlNode(Node):
                     ),
                     "max_travel": observed_max,
                     "success": success,
+                    "failure_code": (
+                        None if success else (failure_code or "operation_failed")
+                    ),
+                    "failure_reason": (
+                        None
+                        if success
+                        else (
+                            str(failure_reason or message).strip()
+                            or "Cabinet operation failed without a diagnostic reason."
+                        )
+                    ),
                     "error_code": error_code,
                     "updated_at": time.time(),
                 }
             )
             if result_updates:
                 self._cabinet_state.update(result_updates)
+            # Backend result fields are diagnostic input and must not be able
+            # to overwrite the canonical terminal contract.  In particular,
+            # a generated action's empty ``failure_reason`` would otherwise
+            # replace the required ``None`` on a successful operation.
+            if success:
+                self._cabinet_state.update(
+                    {
+                        "success": True,
+                        "failure_code": None,
+                        "failure_reason": None,
+                    }
+                )
+            else:
+                self._cabinet_state["success"] = False
+                if not str(self._cabinet_state.get("failure_reason") or "").strip():
+                    self._cabinet_state["failure_reason"] = (
+                        str(message).strip()
+                        or "Cabinet operation failed without a diagnostic reason."
+                    )
             self._cabinet_terminal_event.set()
 
     def _navigation_mode_callback(self, message: Bool) -> None:
@@ -3104,15 +3496,40 @@ class RosControlNode(Node):
         message: CabinetControlCatalog,
     ) -> None:
         controls: Dict[str, Dict[str, Any]] = {}
-        for entry in message.controls:
-            control_id = str(entry.control_id).strip()
+        entries = getattr(message, "controls", None)
+        if entries is None:
+            self.get_logger().warning(
+                "Ignored a cabinet control catalog without controls."
+            )
+            return
+        try:
+            iterator = iter(entries)
+        except TypeError:
+            self.get_logger().warning(
+                "Ignored a cabinet control catalog with a non-iterable "
+                "controls field."
+            )
+            return
+        for entry in iterator:
+            try:
+                control_id = str(entry.control_id).strip()
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
             if not control_id or control_id in controls:
                 continue
-            joint_name = str(entry.joint_name).strip()
-            joint_state_topic = str(entry.joint_state_topic).strip()
-            pressed_topic = str(entry.pressed_topic).strip()
-            state_topic = str(getattr(entry, "state_topic", "")).strip()
-            control_type = int(entry.control_type)
+            try:
+                joint_name = str(entry.joint_name).strip()
+                joint_state_topic = str(entry.joint_state_topic).strip()
+                pressed_topic = str(entry.pressed_topic).strip()
+                state_topic = str(getattr(entry, "state_topic", "")).strip()
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
+            try:
+                control_type = int(entry.control_type)
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                # Ignore only this malformed catalog entry; a bad DDS sample
+                # must not terminate the callback for all other controls.
+                continue
             # Missing capability metadata is unverified, never physically
             # operable.  This keeps legacy/malformed catalogs fail-closed.
             operable = bool(getattr(entry, "operable", False))
@@ -3125,31 +3542,62 @@ class RosControlNode(Node):
                 )
             ):
                 continue
-            min_position = float(getattr(entry, "min_position", 0.0))
-            max_position = float(getattr(entry, "max_position", 0.0))
+            try:
+                min_position = float(getattr(entry, "min_position", 0.0))
+                max_position = float(getattr(entry, "max_position", 0.0))
+                force_values = (
+                    float(getattr(entry, "default_force", 0.0)),
+                    float(getattr(entry, "min_trigger_force", 0.0)),
+                    float(getattr(entry, "max_force", 0.0)),
+                )
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
             if (
                 not math.isfinite(min_position)
                 or not math.isfinite(max_position)
                 or min_position > max_position
+                or not all(math.isfinite(value) for value in force_values)
             ):
                 continue
-            state_ids = [str(value) for value in getattr(entry, "state_ids", [])]
-            state_labels = [
-                str(value) for value in getattr(entry, "state_labels", [])
-            ]
-            state_positions = [
-                float(value)
-                for value in getattr(entry, "state_positions", [])
-            ]
+            try:
+                state_ids = [
+                    str(value)
+                    for value in getattr(entry, "state_ids", [])
+                ]
+                state_labels = [
+                    str(value)
+                    for value in getattr(entry, "state_labels", [])
+                ]
+                state_positions = [
+                    float(value)
+                    for value in getattr(entry, "state_positions", [])
+                ]
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
             if (
                 len(state_labels) not in {0, len(state_ids)}
                 or len(state_positions) not in {0, len(state_ids)}
                 or not all(math.isfinite(value) for value in state_positions)
             ):
                 continue
-            supported_commands = int(
-                getattr(entry, "supported_commands", 0)
+            required_toolset = str(
+                getattr(entry, "required_toolset", "")
+            ).strip().upper()
+            capability_metadata_present = bool(required_toolset)
+            adapter_validated = bool(
+                getattr(entry, "adapter_validated", operable)
             )
+            toolset_compatible = bool(
+                getattr(entry, "toolset_compatible", True)
+            )
+            if capability_metadata_present:
+                operable = adapter_validated and toolset_compatible
+            try:
+                supported_commands = int(
+                    getattr(entry, "supported_commands", 0)
+                )
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                continue
             if (
                 supported_commands == 0
                 and control_type == self.CABINET_CONTROL_TYPE_BUTTON
@@ -3178,16 +3626,16 @@ class RosControlNode(Node):
                     getattr(entry, "requires_grasp", False)
                 ),
                 "operable": operable,
+                "required_toolset": required_toolset,
+                "toolset_compatible": toolset_compatible,
+                "adapter_validated": adapter_validated,
+                "capability_metadata_present": capability_metadata_present,
                 "unavailable_reason": str(
                     getattr(entry, "unavailable_reason", "")
                 ),
-                "default_force": float(
-                    getattr(entry, "default_force", 0.0)
-                ),
-                "min_trigger_force": float(
-                    getattr(entry, "min_trigger_force", 0.0)
-                ),
-                "max_force": float(getattr(entry, "max_force", 0.0)),
+                "default_force": force_values[0],
+                "min_trigger_force": force_values[1],
+                "max_force": force_values[2],
             }
 
         if not controls:
@@ -3832,6 +4280,48 @@ class RosControlNode(Node):
             "command must be one of: press, set_state, set_position, toggle."
         )
 
+    def _ensure_cabinet_catalog_coherent_locked(self) -> None:
+        """Fail closed for direct/legacy calls during an A/B replacement.
+
+        The normal multi-cabinet path uses :class:`CabinetClient`, which
+        fences the catalog immediately before dispatch.  Older single-node
+        callers invoke this node directly, so they need the same fence or a
+        retained catalog from the retiring end-effector could still start
+        motion while the Web interlock is active.
+        """
+        coherent, reason, active_toolset = (
+            self._cabinet_catalog_coherence_locked()
+        )
+        if coherent:
+            return
+        status = getattr(self, "_toolset_status", None)
+        state = status.get("state") if isinstance(status, Mapping) else None
+        code = (
+            "toolset_transition"
+            if (
+                not isinstance(status, Mapping)
+                or state != "ready"
+                or status.get("ready") is not True
+                or active_toolset not in {"A", "B"}
+            )
+            else "catalog_stale"
+        )
+        details: Dict[str, Any] = {
+            "catalog_coherent": False,
+            "catalog_active_toolset": active_toolset,
+        }
+        if isinstance(status, Mapping):
+            details["toolset_status"] = dict(status)
+        raise ControlRequestError(
+            reason
+            or "Cabinet catalog is not synchronized with the active "
+            "end-effector toolset.",
+            409 if code == "toolset_transition" else 503,
+            details=details,
+            code=code,
+            failure_reason=reason,
+        )
+
     def _validate_cabinet_operation_locked(
         self,
         control_id: str,
@@ -3839,6 +4329,7 @@ class RosControlNode(Node):
         target_state: Optional[str],
         target_position: Optional[float],
     ) -> Dict[str, Any]:
+        self._ensure_cabinet_catalog_coherent_locked()
         if not self._cabinet_catalog_received:
             raise ControlRequestError(
                 "Cabinet control catalog is not available yet.",
@@ -3847,14 +4338,53 @@ class RosControlNode(Node):
         control = self._cabinet_controls.get(control_id)
         if control is None:
             raise ControlRequestError(
-                f"Unsupported cabinet control: {control_id}."
+                f"Unsupported cabinet control: {control_id}.",
+                code="invalid_control",
+            )
+        try:
+            control_type = int(control.get("control_type", -1))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ControlRequestError(
+                f"Cabinet control {control_id} has an invalid control type.",
+                code="invalid_control",
+            ) from error
+        if control_type not in self.CABINET_CONTROL_TYPES:
+            raise ControlRequestError(
+                f"Cabinet control {control_id} has an unsupported control type.",
+                code="invalid_control",
+                details={"control_id": control_id, "control_type": control_type},
+            )
+        if (
+            control.get("capability_metadata_present", False)
+            and control.get("toolset_compatible") is False
+        ):
+            required = str(control.get("required_toolset") or "another toolset")
+            reason = str(control.get("unavailable_reason") or "").strip()
+            message = (
+                f"Control {control_id} requires end-effector toolset {required}; "
+                "the currently mounted toolset cannot operate it."
+            )
+            if reason:
+                message = f"{message} {reason}"
+            raise ControlRequestError(
+                message,
+                409,
+                details={
+                    "control_id": control_id,
+                    "required_toolset": required,
+                    "toolset_compatible": False,
+                    "adapter_validated": bool(
+                        control.get("adapter_validated", False)
+                    ),
+                    "reason": reason,
+                },
+                code="toolset_mismatch",
             )
         default_support = (
             self.CABINET_COMMAND_SUPPORT[
                 OperateCabinetControl.Goal.COMMAND_PRESS
             ]
-            if int(control.get("control_type", -1))
-            == self.CABINET_CONTROL_TYPE_BUTTON
+            if control_type == self.CABINET_CONTROL_TYPE_BUTTON
             else 0
         )
         supported_commands = int(
@@ -3865,6 +4395,22 @@ class RosControlNode(Node):
             raise ControlRequestError(
                 f"Control {control_id} does not support command "
                 f"{self.CABINET_COMMAND_NAMES[command_code]}."
+            )
+        if (
+            command_code != OperateCabinetControl.Goal.COMMAND_SET_STATE
+            and target_state is not None
+        ):
+            raise ControlRequestError(
+                "target_state is only valid for the set_state command.",
+                code="invalid_target",
+            )
+        if (
+            command_code != OperateCabinetControl.Goal.COMMAND_SET_POSITION
+            and target_position is not None
+        ):
+            raise ControlRequestError(
+                "target_position is only valid for the set_position command.",
+                code="invalid_target",
             )
         if (
             command_code == OperateCabinetControl.Goal.COMMAND_SET_STATE
@@ -3909,6 +4455,7 @@ class RosControlNode(Node):
         return control
 
     def _validate_cabinet_button_locked(self, button_id: str) -> None:
+        self._ensure_cabinet_catalog_coherent_locked()
         if not self._cabinet_catalog_received:
             raise ControlRequestError(
                 "Cabinet control catalog is not available yet.",
@@ -3921,7 +4468,34 @@ class RosControlNode(Node):
             != self.CABINET_CONTROL_TYPE_BUTTON
         ):
             raise ControlRequestError(
-                f"Unsupported cabinet button: {button_id}."
+                f"Unsupported cabinet button: {button_id}.",
+                code="invalid_control",
+            )
+        if (
+            control.get("capability_metadata_present", False)
+            and control.get("toolset_compatible") is False
+        ):
+            required = str(control.get("required_toolset") or "A")
+            reason = str(control.get("unavailable_reason") or "").strip()
+            message = (
+                f"Button {button_id} requires end-effector toolset {required}; "
+                "the currently mounted toolset cannot operate it."
+            )
+            if reason:
+                message = f"{message} {reason}"
+            raise ControlRequestError(
+                message,
+                409,
+                details={
+                    "control_id": button_id,
+                    "required_toolset": required,
+                    "toolset_compatible": False,
+                    "adapter_validated": bool(
+                        control.get("adapter_validated", False)
+                    ),
+                    "reason": reason,
+                },
+                code="toolset_mismatch",
             )
 
     def _reject_cabinet_start_conflicts_locked(self) -> None:
@@ -4252,6 +4826,57 @@ class RosControlNode(Node):
                 + quaternion.z * quaternion.z
             ),
         )
+
+    @staticmethod
+    def _legacy_cabinet_error_code_name(
+        error_code: Optional[int],
+    ) -> Optional[str]:
+        if error_code is None:
+            return "result_channel_failed"
+        names = {
+            getattr(PressCabinetButton.Result, "SUCCESS", 0): "success",
+            getattr(PressCabinetButton.Result, "INVALID_BUTTON", 1): "invalid_control",
+            getattr(PressCabinetButton.Result, "NOT_READY", 2): "not_ready",
+            getattr(PressCabinetButton.Result, "NAVIGATION_FAILED", 3): "navigation_failed",
+            getattr(PressCabinetButton.Result, "PLANNING_FAILED", 4): "planning_failed",
+            getattr(PressCabinetButton.Result, "EXECUTION_FAILED", 5): "execution_failed",
+            getattr(PressCabinetButton.Result, "PRESS_NOT_DETECTED", 6): "target_not_reached",
+            getattr(PressCabinetButton.Result, "RELEASE_NOT_DETECTED", 7): "release_failed",
+            getattr(PressCabinetButton.Result, "CANCELED", 8): "canceled",
+            getattr(PressCabinetButton.Result, "INTERNAL_ERROR", 9): "internal_error",
+            getattr(PressCabinetButton.Result, "RESOURCE_BUSY", 10): "resource_busy",
+            getattr(PressCabinetButton.Result, "LEASE_LOST", 11): "lease_lost",
+            getattr(PressCabinetButton.Result, "TOOLSET_MISMATCH", 12): "toolset_mismatch",
+            getattr(PressCabinetButton.Result, "ADAPTER_NOT_VALIDATED", 13): "adapter_not_validated",
+        }
+        return names.get(int(error_code), "unknown_error")
+
+    @staticmethod
+    def _cabinet_error_code_name(error_code: Optional[int]) -> Optional[str]:
+        if error_code is None:
+            return "result_channel_failed"
+        names = {
+            getattr(OperateCabinetControl.Result, "SUCCESS", 0): "success",
+            getattr(OperateCabinetControl.Result, "INVALID_CONTROL", 1): "invalid_control",
+            getattr(OperateCabinetControl.Result, "UNSUPPORTED_COMMAND", 2): "unsupported_command",
+            getattr(OperateCabinetControl.Result, "NOT_READY", 3): "not_ready",
+            getattr(OperateCabinetControl.Result, "NAVIGATION_FAILED", 4): "navigation_failed",
+            getattr(OperateCabinetControl.Result, "PLANNING_FAILED", 5): "planning_failed",
+            getattr(OperateCabinetControl.Result, "EXECUTION_FAILED", 6): "execution_failed",
+            getattr(OperateCabinetControl.Result, "GRASP_FAILED", 7): "grasp_failed",
+            getattr(OperateCabinetControl.Result, "TARGET_NOT_REACHED", 8): "target_not_reached",
+            getattr(OperateCabinetControl.Result, "RELEASE_FAILED", 9): "release_failed",
+            getattr(OperateCabinetControl.Result, "CANCELED", 10): "canceled",
+            getattr(OperateCabinetControl.Result, "INTERNAL_ERROR", 11): "internal_error",
+            getattr(OperateCabinetControl.Result, "INVALID_FORCE", 12): "invalid_force",
+            getattr(OperateCabinetControl.Result, "INSUFFICIENT_FORCE", 13): "insufficient_force",
+            getattr(OperateCabinetControl.Result, "UNREACHABLE", 14): "unreachable",
+            getattr(OperateCabinetControl.Result, "CONTACT_DETECTION_TIMEOUT", 15): "contact_detection_timeout",
+            getattr(OperateCabinetControl.Result, "RESOURCE_BUSY", 16): "resource_busy",
+            getattr(OperateCabinetControl.Result, "LEASE_LOST", 17): "lease_lost",
+            getattr(OperateCabinetControl.Result, "TOOLSET_MISMATCH", 18): "toolset_mismatch",
+        }
+        return names.get(int(error_code), "unknown_error")
 
     @staticmethod
     def _goal_status(status: int, label: str) -> Tuple[str, str]:
