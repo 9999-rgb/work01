@@ -8,8 +8,8 @@
 #   ./run_all.sh --with-proxy     # 附加 CDR→JSON 代理（精细化数据处理）
 #   同机隔离启动（端口应避开其他实例）:
 #     ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 BRIDGE_TCP_PORT=17447 \
-#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=8090 \
-#       XCZS_CONTROL_ORIGINS=http://localhost:8090,http://127.0.0.1:8090 \
+#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=18090 \
+#       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
 #       ./run_all.sh --web
 #
 #

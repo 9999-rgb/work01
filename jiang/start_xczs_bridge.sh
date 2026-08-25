@@ -9,8 +9,8 @@
 #   ./run_all.sh --keyboard       # 键盘调试控制（不启动 Web 控制服务）
 #   同机隔离启动（端口应避开其他实例）:
 #     ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 BRIDGE_TCP_PORT=17447 \
-#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=8090 \
-#       XCZS_CONTROL_ORIGINS=http://localhost:8090,http://127.0.0.1:8090 \
+#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=18090 \
+#       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
 #       ./run_all.sh --web
 #
 # 启动后（FastAPI 三合一，默认监听所有网卡 :8090）:
@@ -659,12 +659,18 @@ _require_port_available() {
     local host="$1"
     local port="$2"
     local label="$3"
-    if ! "$PYTHON_BIN" - "$host" "$port" <<'PY'
+    # 预检模式下 Python 只返回绑定结果，不向 stderr 抛原始错误（预检摘要
+    # 会列出冲突）；正式启动仍原样回显，便于判断是占用还是地址不可用。
+    # 必须保持 `if !` 结构：在 set -e 下赋值捕获失败的命令替换会直接中止脚本。
+    if ! PREFLIGHT_ONLY="$PREFLIGHT_ONLY" \
+        "$PYTHON_BIN" - "$host" "$port" <<'PY'
+import os
 import socket
 import sys
 
 host = sys.argv[1]
 port = int(sys.argv[2])
+quiet = os.environ.get("PREFLIGHT_ONLY") == "true"
 errors = []
 seen = set()
 try:
@@ -672,7 +678,8 @@ try:
         host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE
     )
 except OSError as error:
-    print(error, file=sys.stderr)
+    if not quiet:
+        print(error, file=sys.stderr)
     raise SystemExit(1)
 for family, socktype, protocol, _canonname, address in addresses:
     key = (family, address)
@@ -689,10 +696,17 @@ for family, socktype, protocol, _canonname, address in addresses:
         sock.close()
 if not errors and seen:
     raise SystemExit(0)
-print("; ".join(dict.fromkeys(errors)), file=sys.stderr)
+if not quiet:
+    print("; ".join(dict.fromkeys(errors)), file=sys.stderr)
 raise SystemExit(1)
 PY
     then
+        if [ "$PREFLIGHT_ONLY" = "true" ]; then
+            # 预检只验证启动配置；端口被已运行的 XCZS 实例占用不是配置
+            # 错误，收集到预检摘要里提示，不中止。正式启动仍会在此硬性失败。
+            PREFLIGHT_PORT_CONFLICTS+=("$label|$port")
+            return 0
+        fi
         echo "ERROR: $label 无法绑定 $host:$port（端口被占用或地址不可用）。" >&2
         _describe_port_owner "$port"
         exit 1
@@ -1244,7 +1258,9 @@ if [ "$CONTROL_MODE" = "web" ] || [ "$CABINET_BRINGUP" = "true" ]; then
 fi
 
 # 预检与正式启动采用同一端口检查。端口被外部服务占用时只报错，
-# 不复用、不终止不属于本次启动的进程。
+# 不复用、不终止不属于本次启动的进程。预检模式只验证配置，端口占用
+# 收集到 PREFLIGHT_PORT_CONFLICTS 在摘要里提示，不当作配置错误。
+PREFLIGHT_PORT_CONFLICTS=()
 if [ "$ZENOH_REQUIRED" = "true" ]; then
     _require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_TCP_PORT" "Zenoh TCP"
     _require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_REST_PORT" "Zenoh REST"
@@ -1300,6 +1316,17 @@ echo "  Nav2 导航: $NAV2_LABEL"
 echo ""
 
 if [ "$PREFLIGHT_ONLY" = "true" ]; then
+    if [ "${#PREFLIGHT_PORT_CONFLICTS[@]}" -gt 0 ]; then
+        echo ""
+        echo "  ⚠ 配置校验通过，但以下端口已被占用（通常是本项目的运行实例）:"
+        for _preflight_conflict in "${PREFLIGHT_PORT_CONFLICTS[@]}"; do
+            _preflight_conflict_port="${_preflight_conflict##*|}"
+            echo "      - ${_preflight_conflict%%|*}"
+            _describe_port_owner "$_preflight_conflict_port"
+        done
+        echo "    如需再启动一个实例：先停止现有实例，或按启动脚本头部的"
+        echo "    同机隔离示例用环境变量覆盖端口与 ROS_DOMAIN_ID。"
+    fi
     echo "  启动配置预检通过（XCZS_PREFLIGHT_ONLY=true，未启动进程）。"
     CLEANUP_DONE="true"
     exit 0
