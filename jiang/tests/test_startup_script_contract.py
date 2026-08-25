@@ -35,7 +35,10 @@ class StartupScriptContractTests(unittest.TestCase):
         )
 
     def test_preflight_checks_runtime_contract_and_ports(self) -> None:
-        preflight_exit = self.startup_source.index(
+        # 用 rindex 定位"预检退出"块：_require_port_available 内还有一处更早的
+        # `if [ "$PREFLIGHT_ONLY" = "true" ]`（预检端口占用收集分支），
+        # index() 会误命中它。
+        preflight_exit = self.startup_source.rindex(
             'if [ "$PREFLIGHT_ONLY" = "true" ]'
         )
         adapter_check = self.startup_source.index("check_adapter_contract")

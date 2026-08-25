@@ -1626,7 +1626,9 @@ def main() -> int:
         # Operator-chain calibrated offsets (anchor.x = local_position.x +
         # shoulder offset) and per-button standoffs.  box_7 stays planning-only
         # under the box_9_knob physical occlusion; box_10 uses the deeper -0.55
-        # band.  Unlisted front controls keep the legacy +0.35 shoulder offset.
+        # band.  Front controls outside the table follow the validated
+        # -0.3506 button-family shoulder offset (box_5_knob's /compute_ik
+        # sweep proved the legacy +0.35 knob sign was a historical error).
         BUTTON_CALIBRATION = {
             "box_3_button_1": (-0.3506, 0.780),
             "box_3_button_2": (-0.3506, 0.780),
@@ -1674,8 +1676,10 @@ def main() -> int:
                 shoulder_offset = -0.3506
                 expected_standoff = None
             else:
-                # The fixed tools retain the original right-shoulder calibration.
-                shoulder_offset = 0.35
+                # Front controls outside the table use the validated -0.3506
+                # button/knob shoulder offset (shoulder aligned to the control
+                # centre-line); the legacy +0.35 knob sign was a calibration error.
+                shoulder_offset = -0.3506
                 expected_standoff = None
             expected_anchor = [
                 control_position[0] + shoulder_offset,

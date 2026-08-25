@@ -60,15 +60,37 @@ _CONTROLS_BLOCK = (
 )
 _ADAPTER_BLOCK = (
     "      box_9_knob:\n"
+    "        # 物理抓取同 box_5_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。\n"
+    "        # 2026-08-25 物理批测：9 号旋钮叶片相对同柜其余旋钮在面板内旋转了\n"
+    "        # 90°（pivot 相对 local_position 的偏移在局部 x 而非 y），roll=0 时\n"
+    "        # 钳口开合轴(tool +Y，世界 -Y)与叶片面法向(世界 -Z)垂直，接近阶段\n"
+    "        # 直接顶动叶片，pre-grasp 扰动实测 detent 误差 0.42 rad 且距离为 nan。\n"
+    "        # 对 center→right 档(transition 矩阵 index=source*3+target=1*3+2=5)\n"
+    "        # 施加 +90° 滚转：Rx(+π/2)·(世界 -Y) = 世界 -Z，与叶片面法向对齐，\n"
+    "        # 钳口可沿叶片厚度方向无接触闭合（与 box_5 roll=0 的钳口-叶片关系\n"
+    "        # 一致）。roll 为全程恒定偏转，旋转弧中工具随叶片同步旋转保持对齐。\n"
+    "        tool_roll_offsets:\n"
+    "          - 0.0\n"
+    "          - 0.0\n"
+    "          - 0.0\n"
+    "          - 0.0\n"
+    "          - 0.0\n"
+    "          - 1.5707963267948966\n"
+    "          - 0.0\n"
+    "          - 0.0\n"
+    "          - 0.0\n"
+    "        grasp_outward_offset: 0.026\n"
+    "        detent_release_fraction: 0.75\n"
     "        navigation_station:\n"
-    "          local_anchor: [0.488440, 1.115, 0.000]\n"
+    "          local_anchor: [-0.21216, 1.115, 0.000]\n"
     "          outward_axis: [0.0, 0.0, 1.0]\n"
     "          standoff: 0.930\n"
     "          base_yaw_offset: 0.0\n"
     "          frame_id: map\n"
 )
-# 物理能力采用正向 operable_control_ids 清单；当前样例没有把 box_9_knob
-# 列为已验收项，因此从 33 控件派生体删除它时只需同步删除导航工位。
+# 物理能力采用正向 operable_control_ids 清单；box_9_knob 现为已验收项，
+# 因此从 33 控件派生体删除它时须同步删除导航工位与 operable_control_ids 条目。
+_OPERABLE_ID_LINE = "      - box_9_knob\n"
 _GAZEBO_LINE = (
     '      <xacro:control_cabinet_knob_state control_id="box_9_knob" '
     'joint_name="box_9_box_9_knob" />\n'
@@ -108,6 +130,8 @@ def _derive_trimmed_cabinet(target: Path) -> Path:
     text = adapter.read_text(encoding="utf-8")
     assert _ADAPTER_BLOCK in text
     text = text.replace(_ADAPTER_BLOCK, "")
+    assert _OPERABLE_ID_LINE in text
+    text = text.replace(_OPERABLE_ID_LINE, "")
     adapter.write_text(text, encoding="utf-8")
 
     gazebo = target / "control_cabinet" / "components" / "gazebo.xacro"

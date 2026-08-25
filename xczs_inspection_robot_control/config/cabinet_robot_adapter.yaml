@@ -282,13 +282,22 @@
     # 逐控件工位属于机器人适配能力，不写入共用的设备几何参数。Web 会
     # 先导航到所有可提交控件的显式工位，再发送操作或只规划验证任务。
     # 正面工位沿控件局部 +Z 法向退让，横向 anchor 按按压/抓取点
-    # local_position.x + 0.35 m 对齐右臂肩关节（body -x 0.35 m 经 -90° 机头
-    # 映射到世界 +Y），使控件位于右臂工作空间内；旧的 -0.161 m 偏移是按
-    # 原六轴末端调校的，双臂右臂无法够到，已修正。
+    # local_position.x - 0.3506 m 使右臂肩关节与控件中线对齐，控件位于右臂
+    # 工作空间内；旧的 +0.35/+0.55 肩偏符号与可达按钮族(-0.3506)相反，
+    # 经 box_5_knob 的 /compute_ik 遥置扫描确认属历史标定错误，旋钮与
+    # box_1/2/11 按钮已统一修正（box_10 按钮按实测链单独校到 -0.55）。
     controls:
       cabinet_rear_door:
         navigation_station:
           local_anchor: [0.610, 1.115, -0.680]
+          # 后门与门载总开关共用同一柜后工位（check_cabinet_model 强制二者
+          # 共享 local_anchor/outward_axis/frame，且开关偏航 = 门偏航 ± π，
+          # 从柜体局部 -Z 面接近）。曾尝试侧向停靠（outward +x、yaw +π/2）
+          # 以让右臂三电缸够到 +x 世界方向的握柄，但侧向停靠下身体机头朝北、
+          # 左臂（body +x）指向柜外，门载总开关（左臂 + rocker，已从 -Z 面
+          # 0.780 m 退距物理验收）在侧向工位无可达分支。门把手从唯一允许的
+          # -Z 面工位（yaw 0）右臂三电缸 0% IK（ready_pose OMPL 无解），
+          # 属模型物理不可达，按项目约束不改模型外观，保持 inoperable。
           outward_axis: [0.0, 0.0, -1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
@@ -336,29 +345,51 @@
             - 0.7052
             - -0.0849
       box_1_button_1:
+        # 2026-08-25 planning-only 实测：世界高 1.876 m，任意退距
+        # （0.930/0.769/0.600）ready_pose 均 0% 失败 —— 超出三电缸按压
+        # 工具可达高度上限（已验收按钮最高 1.547 m），属模型物理不可达。
+        unavailable_reason: >-
+          顶部按钮（世界高 1.876 m）超出右臂三电缸按压工具最大按压点高度
+          （实测可达上限约 1.547 m，见已验收的 box_3/4 按钮）；任意退距下
+          ready_pose 均无法采样无碰撞解，属模型物理不可达，按项目约束不改模型外观。
         navigation_station:
-          local_anchor: [0.470000, 1.115, 0.000]
+          local_anchor: [-0.2306, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_1_button_2:
+        # 同 box_1_button_1：1.876 m 高，按压工具不可达。
+        unavailable_reason: >-
+          同 box_1_button_1：顶部按钮（世界高 1.876 m）超出三电缸按压工具
+          最大可达高度，任意退距下 ready_pose 无解，属模型物理不可达。
         navigation_station:
-          local_anchor: [0.520000, 1.115, 0.000]
+          local_anchor: [-0.1806, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_button_1:
+        # 2026-08-25 planning-only 实测：世界高 1.876 m，任意退距
+        # （0.930/0.769/0.600）ready_pose 均 0% 失败 —— 同 box_1 顶部按钮，
+        # 超出三电缸按压工具可达高度上限（已验收按钮最高 1.547 m）。
+        unavailable_reason: >-
+          同 box_1_button_1：顶部按钮（世界高 1.876 m）超出右臂三电缸按压
+          工具最大按压点高度（实测可达上限约 1.547 m）；任意退距下 ready_pose
+          均无法采样无碰撞解，属模型物理不可达，按项目约束不改模型外观。
         navigation_station:
-          local_anchor: [0.799000, 1.115, 0.000]
+          local_anchor: [0.0984, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_button_2:
+        # 同 box_2_button_1：1.876 m 高，按压工具不可达。
+        unavailable_reason: >-
+          同 box_1_button_1：顶部按钮（世界高 1.876 m）超出三电缸按压工具
+          最大可达高度，任意退距下 ready_pose 无解，属模型物理不可达。
         navigation_station:
-          local_anchor: [0.849000, 1.115, 0.000]
+          local_anchor: [0.1484, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
@@ -582,6 +613,10 @@
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
+        unavailable_reason: >-
+          被同列下方 box_9_knob 的碰撞包络真实干涉（r_three_cyl_finger2 侵入
+          约 1.65 cm），滚转 12 方向全扫无解，属模型物理不可达；按项目约束不改
+          模型外观，如实返回失败阶段而不执行。
 
       box_7_button_2:
         # 同 box_7_button_1：被 box_9_knob 碰撞包络物理遮挡，planning-only 如实失败。
@@ -591,6 +626,9 @@
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
+        unavailable_reason: >-
+          同 box_7_button_1：被 box_9_knob 碰撞包络物理遮挡（约 1.65 cm 侵入），
+          滚转全扫无解，属模型物理不可达；如实返回失败阶段而不执行。
 
       box_8_button_1:
         # 第四排右列按钮。0.12 m prepress 下需退至 standoff=1.100 才全程无碰撞，
@@ -696,45 +734,101 @@
             - -1.450551
             - 3.124155
       box_11_button_1:
+        # 2026-08-25 planning-only 实测：世界高 0.377 m，低于底盘接地平面
+        # （z≈0.58），机械臂无法下探到基准以下，属模型物理不可达。
+        unavailable_reason: >-
+          底部按钮（世界高 0.377 m）低于底盘接地平面（z≈0.58），机械臂无法
+          下探到安装基准以下接触控件，任意退距下 ready_pose 无解，属模型物理
+          不可达，按项目约束不改模型外观。
         navigation_station:
-          local_anchor: [0.842000, 1.115, 0.000]
+          local_anchor: [0.1414, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
       box_11_button_2:
+        # 同 box_11_button_1：0.377 m 高，低于底盘接地平面。
+        unavailable_reason: >-
+          同 box_11_button_1：底部按钮（世界高 0.377 m）低于底盘接地平面
+          （z≈0.58），机械臂无法下探到安装基准以下，属模型物理不可达。
         navigation_station:
-          local_anchor: [0.877000, 1.115, 0.000]
+          local_anchor: [0.1764, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
           frame_id: map
       box_1_knob:
+        # 2026-08-25 planning-only 实测：世界高 2.064 m，任意退距下 ready_pose
+        # 均 0% 失败 —— 超出旋转按钮工具可达高度上限（已验收旋钮最高 1.735 m）。
+        unavailable_reason: >-
+          顶部旋钮（世界高 2.064 m）超出右臂旋转按钮工具最大可达高度
+          （实测可达上限约 1.735 m，见已验收的 box_3/4 旋钮）；任意退距下
+          ready_pose 均无法采样无碰撞解，属模型物理不可达，按项目约束不改模型外观。
         navigation_station:
-          local_anchor: [0.517470, 1.115, 0.000]
+          local_anchor: [-0.18313, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_2_knob:
+        # 同 box_1_knob：2.064 m 高，旋钮工具不可达。
+        unavailable_reason: >-
+          同 box_1_knob：顶部旋钮（世界高 2.064 m）超出旋转按钮工具最大
+          可达高度，任意退距下 ready_pose 无解，属模型物理不可达。
         navigation_station:
-          local_anchor: [0.846470, 1.115, 0.000]
+          local_anchor: [0.14587, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_3_knob:
+        # 2026-08-25 planning-only 实测：0.930 m 退距使旋钮(1.735 m 高)超出右臂
+        # 工作空间，ready_pose 恒失败。可达窗口 [0.600, 0.643]（0.645 开始
+        # retreat 掉崖）。取 0.620（窗口中部，兼顾 Nav2 停靠误差两侧余量）。
+        # 物理抓取：全局 grasp_outward_offset=0.02 使钳口基板与叶片 2 mm 重叠，
+        # 接近阶段顶动叶片触发 pre-grasp 扰动保护（实测 detent 扰动 0.0145 rad）；
+        # 提到 0.026 留 4 mm 净间隙，同 box_5_knob 实测值。
+        grasp_outward_offset: 0.026
+        detent_release_fraction: 0.75
+        # 2026-08-25 物理批测：无种子时 unseeded IK 落入
+        # r_arm_0=-3.00447 分支，center→right 旋转弧 69.4% 即失败
+        # （r_arm_0↔r_arm_2 自碰撞/关节限位）。命名种子取该自然分支作为
+        # 运行时 select_rotary_branch_seed 的起点，按 r_arm_0∈[-2.5,2.5]
+        # 扫描并挑选 approach+arc+retreat 全程 ≥99% 的分支；若全族都无解
+        # 则按最佳候选诚实失败。
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -3.00447
+            - 2.20028
+            - 2.79483
+            - 0.623348
+            - -0.201685
+            - -2.20883
+            - 2.15929
         navigation_station:
-          local_anchor: [0.517470, 1.115, 0.000]
+          local_anchor: [-0.18313, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.620
           base_yaw_offset: 0.0
           frame_id: map
       box_4_knob:
+        # 同 box_3_knob：1.735 m 高旋钮在 0.930 m 退距下 ready_pose 恒失败；
+        # 可达窗口比左列更宽（≥0.648 仍通过）。与 box_3 同取 0.620。
+        # 物理抓取同 box_3_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。
+        grasp_outward_offset: 0.026
+        detent_release_fraction: 0.75
         navigation_station:
-          local_anchor: [0.846470, 1.115, 0.000]
+          local_anchor: [0.14587, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.620
           base_yaw_offset: 0.0
           frame_id: map
       box_5_knob:
@@ -808,8 +902,34 @@
           base_yaw_offset: 0.0
           frame_id: map
       box_6_knob:
+        # 物理抓取同 box_5_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。
+        # 2026-08-25 物理批测：无种子时 unseeded IK 落入 r_arm_0=-0.153153
+        # 分支，center→right 旋转弧 75.5% 即失败。命名种子取该自然分支作为
+        # 运行时分支选择的起点（见 box_3_knob 说明）。
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -0.153153
+            - -2.11365
+            - 1.49558
+            - -1.71949
+            - -0.547842
+            - 0.0123416
+            - -0.0134692
+        # 2026-08-25 物理批测：该块此前缺 grasp_outward_offset，落到全局 0.020
+        # 默认 → 钳口基板与叶片 2 mm 重叠，pre-grasp 直接顶动叶片
+        # （detent 误差 0.0031 rad / 速度 0.53 rad/s，distance=nan）。与 box_5 一致
+        # 显式 0.026 → 4 mm 净间隙，接近路径不再接触叶片。
+        grasp_outward_offset: 0.026
         navigation_station:
-          local_anchor: [0.846470, 1.115, 0.000]
+          local_anchor: [0.14587, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
@@ -817,36 +937,95 @@
       # 旋钮后端已使用单自由度柔顺耦合；7～11 号仍因工位/双工具
       # 碰撞或完整到档往返尚未通过而保持规划验证模式，不执行物理动作。
       box_7_knob:
+        # 物理抓取同 box_5_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。
+        # 2026-08-25 物理批测：无种子时 unseeded IK 落入 r_arm_0=1.36955
+        # 分支，center→right 旋转弧 85% 即失败。命名种子取该自然分支作为
+        # 运行时分支选择的起点（见 box_3_knob 说明）。
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - 1.36955
+            - -1.18734
+            - 0.34572
+            - -1.63673
+            - -1.74594
+            - 2.86471
+            - -1.94508
+        # 2026-08-25 物理批测：该块此前缺 grasp_outward_offset，落到全局 0.020
+        # 默认 → 钳口基板与叶片 2 mm 重叠，pre-grasp 直接顶动叶片
+        # （detent 误差 0.0037 rad / 速度 0.63 rad/s，distance=nan）。与 box_5 一致
+        # 显式 0.026 → 4 mm 净间隙，接近路径不再接触叶片。
+        grasp_outward_offset: 0.026
         navigation_station:
-          local_anchor: [0.517470, 1.115, 0.000]
+          local_anchor: [-0.18313, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_8_knob:
+        # 物理抓取同 box_5_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。
+        grasp_outward_offset: 0.026
+        detent_release_fraction: 0.75
         navigation_station:
-          local_anchor: [0.846470, 1.115, 0.000]
+          local_anchor: [0.14587, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
       box_9_knob:
+        # 物理抓取同 box_5_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。
+        # 2026-08-25 物理批测：9 号旋钮叶片相对同柜其余旋钮在面板内旋转了
+        # 90°（pivot 相对 local_position 的偏移在局部 x 而非 y），roll=0 时
+        # 钳口开合轴(tool +Y，世界 -Y)与叶片面法向(世界 -Z)垂直，接近阶段
+        # 直接顶动叶片，pre-grasp 扰动实测 detent 误差 0.42 rad 且距离为 nan。
+        # 对 center→right 档(transition 矩阵 index=source*3+target=1*3+2=5)
+        # 施加 +90° 滚转：Rx(+π/2)·(世界 -Y) = 世界 -Z，与叶片面法向对齐，
+        # 钳口可沿叶片厚度方向无接触闭合（与 box_5 roll=0 的钳口-叶片关系
+        # 一致）。roll 为全程恒定偏转，旋转弧中工具随叶片同步旋转保持对齐。
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 1.5707963267948966
+          - 0.0
+          - 0.0
+          - 0.0
+        grasp_outward_offset: 0.026
+        detent_release_fraction: 0.75
         navigation_station:
-          local_anchor: [0.488440, 1.115, 0.000]
+          local_anchor: [-0.21216, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_10_knob:
+        # 物理抓取同 box_5_knob：0.026 留 4 mm 钳口基板净间隙，避免 pre-grasp 扰动。
+        grasp_outward_offset: 0.026
+        detent_release_fraction: 0.75
         navigation_station:
-          local_anchor: [0.485470, 1.115, 0.000]
+          local_anchor: [-0.21513, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.930
           base_yaw_offset: 0.0
           frame_id: map
       box_11_knob:
+        # 2026-08-25 planning-only 实测：世界高 0.447 m，低于底盘接地平面
+        # （z≈0.58），旋钮工具不可达，属模型物理不可达。
+        unavailable_reason: >-
+          底部旋钮（世界高 0.447 m）低于底盘接地平面（z≈0.58），机械臂无法
+          下探到安装基准以下接触控件，任意退距下 ready_pose 无解，属模型物理
+          不可达，按项目约束不改模型外观。
         navigation_station:
-          local_anchor: [0.485470, 1.115, 0.000]
+          local_anchor: [-0.21513, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.884
           base_yaw_offset: 0.0
@@ -870,6 +1049,13 @@
       - box_10_button_1
       - box_10_button_2
       - box_5_knob
+      - box_3_knob
+      - box_4_knob
+      - box_6_knob
+      - box_7_knob
+      - box_8_knob
+      - box_9_knob
+      - box_10_knob
       - cabinet_main_switch
     inoperable_control_reason: >-
       未列入 operable_control_ids 的控件仅保留状态显示和实时规划验证；流程会明确
@@ -877,8 +1063,10 @@
       高约 1.27 m）与 11 号柜按钮（底部，press 工具点贴近地面）超出右臂在
       现工位退距下的可达工作空间，OMPL 无法为 prepress 目标采样有效解。
       其余 knob（box_3/4/6/7/8/9/10/11 等）尚未完成带安全退距的旋转到档
-      验收；cabinet_rear_door 尚未完成开合到位、释放、回收和无串扰闭环，
-      因此当前仅规划验证。按钮与 box_5_knob 已通过 seeded prepress 的 fixed-lease 链式
+      验收；cabinet_rear_door 的握柄从唯一允许的柜后 -Z 面工位（右臂三电缸
+      0.930 m 退距、yaw 0）无法采样无碰撞 IK（0%），而侧向停靠又会与门载
+      总开关的共享工位合同冲突（左臂在侧向指向柜外），属模型物理不可达，按
+      项目约束不改模型外观，当前仅规划验证。按钮与 box_5_knob 已通过 seeded prepress 的 fixed-lease 链式
       （approach/manip/retreat=1.000 + OMPL home→J）与物理到档验收，其中
       box_10 经 operator 实测链校准锚点（肩部偏移 -0.55）与退距 0.914，免 roll。
       box_7_button_1/2（第四排左列）经滚转 12 方向全扫确认被下方 box_9_knob 的
