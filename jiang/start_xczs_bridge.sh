@@ -12,6 +12,8 @@
 #       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=18090 \
 #       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
 #       ./run_all.sh --web
+#   端口被本项目旧实例进程占用时，启动会自动终止占用进程后继续；
+#   非本项目进程占用会明确报错，不会误杀。
 #
 # 启动后（FastAPI 三合一，默认监听所有网卡 :8090）:
 #   - 监控面板: http://<服务器IP>:8090/monitor.html
@@ -655,15 +657,13 @@ _describe_port_owner() {
     fi
 }
 
-_require_port_available() {
+# 绑定测试：0 = 可绑定，1 = 不可绑定。预检模式静默返回结果，正式启动才
+# 回显原始绑定错误。只能通过 if / 条件上下文调用——在 set -e 下用命令
+# 替换捕获失败会直接中止脚本。
+_port_bindable() {
     local host="$1"
     local port="$2"
-    local label="$3"
-    # 预检模式下 Python 只返回绑定结果，不向 stderr 抛原始错误（预检摘要
-    # 会列出冲突）；正式启动仍原样回显，便于判断是占用还是地址不可用。
-    # 必须保持 `if !` 结构：在 set -e 下赋值捕获失败的命令替换会直接中止脚本。
-    if ! PREFLIGHT_ONLY="$PREFLIGHT_ONLY" \
-        "$PYTHON_BIN" - "$host" "$port" <<'PY'
+    PREFLIGHT_ONLY="$PREFLIGHT_ONLY" "$PYTHON_BIN" - "$host" "$port" <<'PY'
 import os
 import socket
 import sys
@@ -700,17 +700,84 @@ if not quiet:
     print("; ".join(dict.fromkeys(errors)), file=sys.stderr)
 raise SystemExit(1)
 PY
-    then
-        if [ "$PREFLIGHT_ONLY" = "true" ]; then
-            # 预检只验证启动配置；端口被已运行的 XCZS 实例占用不是配置
-            # 错误，收集到预检摘要里提示，不中止。正式启动仍会在此硬性失败。
-            PREFLIGHT_PORT_CONFLICTS+=("$label|$port")
+}
+
+# 终止占用给定端口的旧实例进程并等待端口释放。
+# 只自动终止本项目运行实例的进程（zenoh-bridge / gzserver / 控制服务 /
+# 启动脚本等）；非本项目进程占用时拒绝终止并返回 1，避免误杀无关服务。
+# 返回 0 = 端口已释放；1 = 无法释放（调用方将报错退出）。
+_kill_port_holder() {
+    local port="$1"
+    local label="$2"
+    local pids pid pcomm pcmd i
+    # set -e 下命令替换失败会中止脚本，ss 查询失败时降级为“无占用者”。
+    pids="$(ss -H -ltnp "sport = :$port" 2>/dev/null \
+        | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u || true)"
+    if [ -z "$pids" ]; then
+        # 没有监听进程但仍无法绑定（如地址不可用），无从终止。
+        return 1
+    fi
+    for pid in $pids; do
+        pcomm="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
+        pcmd="$(ps -p "$pid" -o args= 2>/dev/null || true)"
+        if [ -z "$pcomm" ]; then
+            # 进程在 ss 与 ps 之间已退出，占用视为消失，交给绑定复检。
+            continue
+        fi
+        case "${pcomm} ${pcmd}" in
+            *"zenoh-bridge"*|*"gzserver"*|*"gzclient"*|*"control_server"*|*"toolset_supervisor"*|*"start_xczs_bridge"*|*"run_all.sh"*|*"xczs"*)
+                echo "  终止旧实例进程 pid=$pid（$pcomm）。"
+                kill -TERM "$pid" 2>/dev/null || true
+                ;;
+            *)
+                echo "ERROR: $label 端口被非本项目进程 pid=$pid（$pcomm）占用，拒绝自动终止。" >&2
+                echo "      请先手动停止该服务后再启动。" >&2
+                return 1
+                ;;
+        esac
+    done
+    # 优雅退出最多等 5 秒；仍占用则强制终止。
+    for i in 1 2 3 4 5; do
+        sleep 1
+        if ! ss -H -ltnp "sport = :$port" 2>/dev/null | grep -q 'pid='; then
             return 0
         fi
-        echo "ERROR: $label 无法绑定 $host:$port（端口被占用或地址不可用）。" >&2
-        _describe_port_owner "$port"
-        exit 1
+    done
+    for pid in $pids; do
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "  进程 pid=$pid 未在 5 秒内退出，发送 SIGKILL。"
+            kill -KILL "$pid" 2>/dev/null || true
+        fi
+    done
+    sleep 1
+    if ss -H -ltnp "sport = :$port" 2>/dev/null | grep -q 'pid='; then
+        return 1
     fi
+    return 0
+}
+
+_require_port_available() {
+    local host="$1"
+    local port="$2"
+    local label="$3"
+    if _port_bindable "$host" "$port"; then
+        return 0
+    fi
+    if [ "$PREFLIGHT_ONLY" = "true" ]; then
+        # 预检只验证启动配置；端口被已运行的 XCZS 实例占用不是配置
+        # 错误，收集到预检摘要里提示，不中止。正式启动才会处理占用。
+        PREFLIGHT_PORT_CONFLICTS+=("$label|$port")
+        return 0
+    fi
+    # 端口被占用：终止旧实例进程后继续启动；无法自动释放才硬性失败。
+    echo "WARN: $label 端口 $host:$port 被占用，尝试终止旧实例进程。"
+    if _kill_port_holder "$port" "$label" && _port_bindable "$host" "$port"; then
+        echo "  → 端口 $host:$port 已释放，继续启动。"
+        return 0
+    fi
+    echo "ERROR: $label 无法绑定 $host:$port（端口被占用且未能自动释放）。" >&2
+    _describe_port_owner "$port"
+    exit 1
 }
 
 if [ "$ZENOH_REQUIRED" = "true" ]; then
@@ -1257,9 +1324,10 @@ if [ "$CONTROL_MODE" = "web" ] || [ "$CABINET_BRINGUP" = "true" ]; then
     fi
 fi
 
-# 预检与正式启动采用同一端口检查。端口被外部服务占用时只报错，
-# 不复用、不终止不属于本次启动的进程。预检模式只验证配置，端口占用
-# 收集到 PREFLIGHT_PORT_CONFLICTS 在摘要里提示，不当作配置错误。
+# 预检与正式启动采用同一端口检查。正式启动时端口被本项目旧实例进程
+# （zenoh-bridge / gzserver / 控制服务 / 启动脚本）占用会自动终止占用
+# 进程后继续；被非本项目进程占用仍只报错、不误杀。预检模式只验证配置，
+# 端口占用收集到 PREFLIGHT_PORT_CONFLICTS 在摘要里提示，不当作配置错误。
 PREFLIGHT_PORT_CONFLICTS=()
 if [ "$ZENOH_REQUIRED" = "true" ]; then
     _require_port_available "$ZENOH_BIND_HOST" "$BRIDGE_TCP_PORT" "Zenoh TCP"
@@ -1324,8 +1392,8 @@ if [ "$PREFLIGHT_ONLY" = "true" ]; then
             echo "      - ${_preflight_conflict%%|*}"
             _describe_port_owner "$_preflight_conflict_port"
         done
-        echo "    如需再启动一个实例：先停止现有实例，或按启动脚本头部的"
-        echo "    同机隔离示例用环境变量覆盖端口与 ROS_DOMAIN_ID。"
+        echo "    正式启动会自动终止这些旧实例进程并继续；如需同时运行两个实例，"
+        echo "    按启动脚本头部的同机隔离示例用环境变量覆盖端口与 ROS_DOMAIN_ID。"
     fi
     echo "  启动配置预检通过（XCZS_PREFLIGHT_ONLY=true，未启动进程）。"
     CLEANUP_DONE="true"

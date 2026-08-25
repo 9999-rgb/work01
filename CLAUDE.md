@@ -99,7 +99,7 @@ python3 -m pytest jiang/tests/test_inventory.py -q   # 单个文件
 
 ### 运行时组件
 
-`start_xczs_bridge.sh` 先校验配置合同、Python/ROS 依赖、Zenoh 二进制和端口，再依次拉起 Zenoh bridge、可选 CDR→JSON 代理、统一 FastAPI Web 服务，最后执行 `ros2 launch xczs_inspection_robot_control inspection_robot.launch.py` 按需 include Gazebo、MoveIt、Nav2、机器人 bringup 和各柜体节点。SSE、相机、雷达和静态页已合并到同一 FastAPI 进程。脚本只终止本次注册的进程组；外部服务占用端口时会明确报错，不会扫描或终止全机同名进程。
+`start_xczs_bridge.sh` 先校验配置合同、Python/ROS 依赖、Zenoh 二进制和端口，再依次拉起 Zenoh bridge、可选 CDR→JSON 代理、统一 FastAPI Web 服务，最后执行 `ros2 launch xczs_inspection_robot_control inspection_robot.launch.py` 按需 include Gazebo、MoveIt、Nav2、机器人 bringup 和各柜体节点。SSE、相机、雷达和静态页已合并到同一 FastAPI 进程。脚本只终止本次注册的进程组；启动时端口被本项目旧实例进程（zenoh-bridge / gzserver / 控制服务 / 启动脚本）占用会自动终止占用进程后继续，被非本项目进程占用会明确报错，不会扫描或终止全机同名进程。预检模式（`XCZS_PREFLIGHT_ONLY=true`）只验证配置，端口占用以 ⚠ 摘要提示而非硬性失败。
 
 C++ 节点位于 `xczs_inspection_robot_control/src/`（`include/` 存放可复用的纯逻辑头文件），包括底盘路由 `base_command_router`、手动轨迹路由、规划场景适配 `cabinet_planning_scene`、位姿权威 `cabinet_pose_authority`、按钮 operator、`operation_lease_coordinator`（防并发租约）、`cabinet_grasp_aggregator`，以及 Gazebo 插件 `src/gazebo/planar_stabilizer_plugin.cpp` 与 `cabinet_state_plugin.cpp`。自定义接口定义于 `action/`、`msg/`、`srv/`。
 

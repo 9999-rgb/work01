@@ -11,6 +11,8 @@
 #       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=18090 \
 #       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
 #       ./run_all.sh --web
+#   端口被本项目旧实例进程占用时，启动会自动终止占用进程后继续；
+#   非本项目进程占用会明确报错，不会误杀。
 #
 #
 # 启动后（默认监听所有网卡 :8090，其他电脑可访问）:
