@@ -25,6 +25,9 @@ from control_gateway.inventory import NavigationStation  # noqa: E402
 from control_gateway.inventory import NavigationStationSpec  # noqa: E402
 from control_gateway.ros_node import ControlRequestError  # noqa: E402
 from control_gateway.robot_adapter import load as load_robot_adapter  # noqa: E402
+from control_gateway.robot_adapter import (  # noqa: E402
+    NavigationKeepoutConfig,
+)
 from control_gateway import runner as runner_module  # noqa: E402
 from control_gateway.runner import ControlServer  # noqa: E402
 from control_gateway.task_manager import TaskManager  # noqa: E402
@@ -1270,6 +1273,78 @@ class TaskRunnerTest(unittest.TestCase):
             task["failure_details"]["station_drift"]["position_m"],
         )
 
+    def test_navigation_amcl_drift_does_not_trigger_localization_jump(
+        self,
+    ) -> None:
+        # Regression: AMCL refining map->odom during a drive shifts the
+        # map-frame station by 0.6 m, but the cabinet is fixed in the
+        # odom/parent frame.  The drift guard must compare the parent-frame
+        # stations so localization noise cannot manufacture a phantom jump
+        # (mirrors the live switch-dock failure where a static cabinet drifted
+        # 0.618 m only because AMCL re-converged mid-navigation).
+        server, node = _server()
+        calls = {"map": 0, "parent": 0}
+
+        def map_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            calls["map"] += 1
+            # Submission epoch vs post-arrival epoch: the map-frame station
+            # moves 0.6 m (above the 0.5 m localization-jump threshold).
+            x = 3.5 if calls["map"] == 1 else 2.9
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=x,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        def parent_station(
+            cabinet: str,
+            _cabinet_frame: str,
+            _spec: NavigationStationSpec,
+        ) -> NavigationStation:
+            calls["parent"] += 1
+            # Same station resolved in the cabinet's fixed parent frame: the
+            # odom->cabinet TF is static, so both epochs agree exactly.
+            return NavigationStation(
+                cabinet=cabinet,
+                frame_id="odom",
+                x=3.5,
+                y=0.0,
+                z=0.0,
+                yaw=math.pi,
+            )
+
+        node.navigation_station_from_tf = map_station
+        node.navigation_station_parent_from_tf = parent_station
+        accepted = server.submit_navigation_task("cabinet_a")
+        self.assertIsNotNone(node.wait_for_navigation_goal(1))
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 3.5, "y": 0.0, "yaw": math.pi},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+        self.assertIsNone(task["failure_code"])
+        # The handoff error (0.6 m) stays inside the 1.0 m docking-takeover
+        # window, so no correction is issued and the parent-frame drift is
+        # recorded as insignificant.
+        self.assertEqual(1, node.navigation_goal_count)
+        self.assertEqual(2, calls["parent"])  # submission + post-arrival
+        self.assertFalse(
+            task["result"]["route"]["significant_station_drift"]
+        )
+        self.assertAlmostEqual(
+            0.0,
+            task["result"]["route"]["last_station_drift"]["position_m"],
+        )
+
     def test_navigation_live_station_corrections_are_bounded(self) -> None:
         server, node = _server()
         calls = 0
@@ -1630,6 +1705,126 @@ class TaskRunnerTest(unittest.TestCase):
             [first_goal, second_goal],
             [leg["target"] for leg in task["result"]["route"]["legs"]],
         )
+
+    def test_navigation_progress_stays_monotonic_after_slow_homing_with_keepout_detour(
+        self,
+    ) -> None:
+        # Regression: homing occupies a leading slice of the navigation window
+        # (0.0-0.02) but only reports once per second, so its high-water mark
+        # can sit mid-slice.  The keepout detour splits the route into a short
+        # via leg plus a long crossing leg; without the window shift the via
+        # leg's first progress report (weight-scaled, well under 0.02) would
+        # regress under the homing watermark and trip the monotonic-progress
+        # invariant, failing the whole navigation task.
+        server, node = _server()
+        server._robot_adapter.reset_joint_timeout_sec = 3.0
+        server._robot_adapter.navigation_keepout = NavigationKeepoutConfig(
+            x_min=1.8,
+            x_max=3.0,
+            y_min=-2.85,
+            y_max=2.85,
+            corridor_offset=0.65,
+            side_clearance=1.2,
+        )
+        # Start one arm off-home so homing actually commands a trajectory, and
+        # keep the joint-state unavailable for ~25 polls so homing runs past
+        # its one-second report interval and records a nonzero watermark.
+        node.joint_positions["arm1_arm2"] = 0.0
+        node.joint_state_received_monotonic = time.monotonic()
+        original_snapshot = node.robot_joint_state_snapshot
+        snapshots_after_command = 0
+
+        def delayed_home_snapshot() -> Dict[str, Any]:
+            nonlocal snapshots_after_command
+            snapshot = original_snapshot()
+            if node.joint_targets:
+                snapshots_after_command += 1
+                if snapshots_after_command < 25:
+                    snapshot["available"] = False
+            return snapshot
+
+        node.robot_joint_state_snapshot = (  # type: ignore[method-assign]
+            delayed_home_snapshot
+        )
+        station = NavigationStationSpec(
+            local_anchor=(3.5, -0.08, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: station if control_id == "button_1" else None
+        )
+        node.state["current_pose"] = {
+            "x": 0.6,
+            "y": 3.4,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        via_goal = node.wait_for_navigation_goal(1, timeout=5.0)
+        self.assertIsNotNone(via_goal)
+        assert via_goal is not None
+        self.assertAlmostEqual(0.6, via_goal["x"])
+        self.assertAlmostEqual(3.5, via_goal["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.6, "y": 3.5, "yaw": via_goal["yaw"]},
+        )
+        final_goal = node.wait_for_navigation_goal(2, timeout=5.0)
+        self.assertIsNotNone(final_goal)
+        assert final_goal is not None
+        # The inventory maps local_anchor (3.5, -0.08) + outward·standoff 0.5
+        # into the world dock (4.0, -0.08).
+        self.assertAlmostEqual(4.0, final_goal["x"])
+        self.assertAlmostEqual(-0.08, final_goal["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 4.0, "y": -0.08, "yaw": final_goal["yaw"]},
+        )
+
+        task = server._task_manager.wait(accepted["task_id"], timeout=10.0)
+        self.assertEqual("success", task["status"])
+        self.assertEqual(
+            ["via", "xy"],
+            [leg["axis"] for leg in task["result"]["route"]["legs"]],
+        )
+        events = server._task_manager.events.events_after(0)
+        task_progress = [
+            event["data"]["progress"]
+            for event in events
+            if event["data"].get("task_id") == accepted["task_id"]
+            and event["event"] == "task_progress"
+        ]
+        self.assertEqual(sorted(task_progress), task_progress)
+        homing_watermark = max(
+            [
+                event["data"]["progress"]
+                for event in events
+                if event["data"].get("task_id") == accepted["task_id"]
+                and event["event"] == "task_progress"
+                and event["data"].get("phase") == "homing_robot_joints"
+            ]
+            or [0.0]
+        )
+        # Homing really reported inside its leading slice.
+        self.assertGreater(homing_watermark, 0.0)
+        self.assertLessEqual(homing_watermark, 0.02)
+        # Every navigation-leg report must clear the homing watermark; the
+        # keepout detour's first (via) leg is weight-scaled far below 0.02.
+        nav_progress = [
+            event["data"]["progress"]
+            for event in events
+            if event["data"].get("task_id") == accepted["task_id"]
+            and event["event"] == "task_progress"
+            and str(event["data"].get("phase") or "").startswith(
+                "navigation_"
+            )
+        ]
+        self.assertGreater(len(nav_progress), 0)
+        self.assertGreaterEqual(min(nav_progress), homing_watermark)
 
     def test_navigation_preserves_heading_at_negative_y_corner(self) -> None:
         server, node = _server()

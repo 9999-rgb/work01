@@ -576,6 +576,19 @@ class TaskContext:
             retain_reservation=True,
         )
 
+    def cancel_retaining_reservation(
+        self,
+        reason: str,
+        *,
+        details: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Publish a terminal cancellation while retaining backend ownership."""
+        return self.manager.mark_canceled_retaining_reservation(
+            self.task_id,
+            reason=reason,
+            details=details,
+        )
+
     def release_reservation(
         self,
         *,
@@ -1028,6 +1041,38 @@ class TaskManager:
             message=reason,
             failure_code="canceled",
             failure_reason=reason,
+        )
+
+    def mark_canceled_retaining_reservation(
+        self,
+        task_id: str,
+        *,
+        reason: str = "Task was canceled.",
+        details: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Mark a canceled task terminal while retaining backend ownership.
+
+        A user-initiated cancel whose backend never confirms termination must
+        still become terminal so the task slot can be force-released by the
+        bounded backend-reconcile window; the reservation is retained in the
+        meantime to keep a new globally-exclusive task from overlapping a
+        possibly-still-moving robot.
+        """
+        reason = _nonempty_string(reason, "cancellation reason")
+        safe_details = (
+            _json_safe_mapping(details, "Task cancellation details")
+            if details is not None
+            else None
+        )
+        return self._finish_task(
+            task_id,
+            "canceled",
+            result=None,
+            message=reason,
+            failure_code="canceled",
+            failure_reason=reason,
+            failure_details=safe_details,
+            retain_reservation=True,
         )
 
     def release_reservation(

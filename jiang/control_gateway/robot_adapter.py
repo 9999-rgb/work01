@@ -125,6 +125,91 @@ class ResetBasePoseConfig:
 
 
 @dataclass(frozen=True)
+class NavigationKeepoutConfig:
+    """Rectangular map-frame band the mobile base routes around.
+
+    The cabinet row occupies a continuous obstacle band (x between
+    ``x_min``/``x_max``, y between ``y_min``/``y_max``) that splits the
+    navigable map into a west aisle (controls on the cabinet face) and an
+    east aisle (switch dock).  Nav2's shortest path across the band hugs the
+    wall's inflation edge, where DWB's obstacle scoring throttles the base to
+    a crawl and the leg times out.  When the task-layer axis route would cross
+    this band it instead routes through clear space via a waypoint offset
+    ``side_clearance`` outside the band and ``corridor_offset`` beyond the
+    nearer band end, so the whole leg stays clear of inflation and drives at
+    full speed.  ``None`` disables the detour.
+    """
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    corridor_offset: float
+    side_clearance: float
+
+
+def keepout_crossing_waypoint(
+    start_x: float,
+    start_y: float,
+    target_x: float,
+    target_y: float,
+    keepout: Union[NavigationKeepoutConfig, None],
+) -> Union[Tuple[float, float], None]:
+    """Return a clear-space via waypoint for a keep-out band crossing.
+
+    When the straight axis route would pass through the cabinet-row band,
+    Nav2 plans the shortest path hugging the band's inflation edge, where
+    DWB's obstacle scoring throttles the base to a crawl and the leg times
+    out.  Routing through a waypoint offset ``side_clearance`` outside the
+    band and ``corridor_offset`` beyond the nearer band end keeps the whole
+    leg clear of inflation so the base drives at full speed.  Returns
+    ``None`` when no crossing needs a detour (including a disabled band).
+    """
+    if keepout is None:
+        return None
+    try:
+        x_min = float(keepout.x_min)
+        x_max = float(keepout.x_max)
+        y_min = float(keepout.y_min)
+        y_max = float(keepout.y_max)
+        corridor_offset = float(keepout.corridor_offset)
+        side_clearance = float(keepout.side_clearance)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    crossing_x = (
+        (start_x < x_min and target_x > x_max)
+        or (start_x > x_max and target_x < x_min)
+    )
+    if not crossing_x:
+        return None
+    # The axis-by-axis route crosses the band during its X leg, which runs at
+    # the *start's* y (the Y leg then runs east/west of the band at the
+    # station x, outside the band).  The X leg throttles while it stays within
+    # the band's inflation zone, which reaches ``corridor_offset`` beyond
+    # either edge; a start already past that corridor drives the whole
+    # crossing in clear space and needs no detour.  Judging the crossing by
+    # the whole segment's y-extent over-triggers whenever one endpoint dips
+    # into the zone while the X leg itself stays clear.
+    if (
+        start_y >= y_max + corridor_offset
+        or start_y <= y_min - corridor_offset
+    ):
+        return None
+    use_north = (y_max - start_y) <= (start_y - y_min)
+    tip_y = (
+        y_max + corridor_offset
+        if use_north
+        else y_min - corridor_offset
+    )
+    via_x = (
+        x_min - side_clearance
+        if start_x < x_min
+        else x_max + side_clearance
+    )
+    return (via_x, tip_y)
+
+
+@dataclass(frozen=True)
 class RobotAdapterConfig:
     """Immutable ROS/TF interface contract for one robot adapter."""
 
@@ -158,6 +243,7 @@ class RobotAdapterConfig:
     control_navigation_stations: Tuple[
         Tuple[str, NavigationStationSpec], ...
     ]
+    navigation_keepout: Union[NavigationKeepoutConfig, None]
 
     @property
     def manual_joint_names(self) -> Tuple[str, ...]:
@@ -771,6 +857,67 @@ def _control_navigation_stations(
     return tuple(stations)
 
 
+def _navigation_keepout(
+    parameters: Mapping[str, Any],
+) -> Union[NavigationKeepoutConfig, None]:
+    """Load an optional navigation keep-out band from the global parameters.
+
+    The band is a pure task-layer navigation hint: it is never enforced by a
+    planner layer, and a missing or malformed entry disables the crossing
+    detour rather than failing the whole profile.
+    """
+    value = parameters.get("navigation_keepout")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise RobotAdapterError("navigation_keepout must be a mapping.")
+    field = "navigation_keepout"
+    x_min = _finite_number(
+        _required(value, "x_min", legacy=False), f"{field}.x_min"
+    )
+    x_max = _finite_number(
+        _required(value, "x_max", legacy=False), f"{field}.x_max"
+    )
+    y_min = _finite_number(
+        _required(value, "y_min", legacy=False), f"{field}.y_min"
+    )
+    y_max = _finite_number(
+        _required(value, "y_max", legacy=False), f"{field}.y_max"
+    )
+    corridor_offset = _finite_number(
+        _required(value, "corridor_offset", legacy=False),
+        f"{field}.corridor_offset",
+    )
+    side_clearance = _finite_number(
+        _required(value, "side_clearance", legacy=False),
+        f"{field}.side_clearance",
+    )
+    if x_min >= x_max:
+        raise RobotAdapterError(
+            f"{field}.x_min must be less than {field}.x_max."
+        )
+    if y_min >= y_max:
+        raise RobotAdapterError(
+            f"{field}.y_min must be less than {field}.y_max."
+        )
+    if corridor_offset <= 0.0:
+        raise RobotAdapterError(
+            f"{field}.corridor_offset must be positive."
+        )
+    if side_clearance <= 0.0:
+        raise RobotAdapterError(
+            f"{field}.side_clearance must be positive."
+        )
+    return NavigationKeepoutConfig(
+        x_min=x_min,
+        x_max=x_max,
+        y_min=y_min,
+        y_max=y_max,
+        corridor_offset=corridor_offset,
+        side_clearance=side_clearance,
+    )
+
+
 def _active_calibration_joint_targets(
     document: Mapping[str, Any],
     path: Path,
@@ -1081,4 +1228,5 @@ def load(
             document,
             path,
         ),
+        navigation_keepout=_navigation_keepout(parameters),
     )

@@ -143,6 +143,7 @@ class RosControlNode(Node):
         command_timeout: float,
         context: Context,
         navigation_frame: str = "map",
+        pose_parent_frame: str = "odom",
         navigation_base_frame: str = "base_link",
         navigation_action: str = "/navigate_to_pose",
         navigation_readiness_service: Optional[str] = None,
@@ -187,6 +188,7 @@ class RosControlNode(Node):
         self._max_angular_speed = max_angular_speed
         self._command_timeout = command_timeout
         self._navigation_frame = navigation_frame
+        self._pose_parent_frame = pose_parent_frame
         self._navigation_base_frame = navigation_base_frame
         self._manual_joints = tuple(manual_joints)
         if not self._manual_joints:
@@ -878,6 +880,47 @@ class RosControlNode(Node):
         correction instead of silently treating inventory coordinates as map
         coordinates.
         """
+        return self._resolve_navigation_station_in_frame(
+            cabinet,
+            cabinet_frame,
+            station_spec,
+            target_frame=self._navigation_frame,
+            require_navigation_spec=True,
+        )
+
+    def navigation_station_parent_from_tf(
+        self,
+        cabinet: str,
+        cabinet_frame: str,
+        station_spec: NavigationStationSpec,
+    ) -> NavigationStation:
+        """Resolve the same station in the pose parent frame (odom/world).
+
+        The drift guard that rejects a "jumping" cabinet must not compare
+        map-frame stations across two AMCL epochs, because AMCL refining
+        map->odom shifts every map-frame station even when the cabinet is
+        fixed in the world.  Resolving into ``pose_parent_frame`` (the fixed
+        parent of the cabinet TF) measures only real cabinet motion, so a
+        static cabinet reports zero drift regardless of localization noise.
+        """
+        return self._resolve_navigation_station_in_frame(
+            cabinet,
+            cabinet_frame,
+            station_spec,
+            target_frame=self._pose_parent_frame,
+            require_navigation_spec=False,
+        )
+
+    def _resolve_navigation_station_in_frame(
+        self,
+        cabinet: str,
+        cabinet_frame: str,
+        station_spec: NavigationStationSpec,
+        *,
+        target_frame: str,
+        require_navigation_spec: bool,
+    ) -> NavigationStation:
+        """Transform cabinet-local station geometry into ``target_frame``."""
         if not isinstance(cabinet, str) or not cabinet.strip():
             raise ControlRequestError(
                 "cabinet must be a non-empty string.",
@@ -898,7 +941,10 @@ class RosControlNode(Node):
                 "station_spec must be a NavigationStationSpec.",
                 400,
             )
-        if station_spec.frame_id != self._navigation_frame:
+        if (
+            require_navigation_spec
+            and station_spec.frame_id != self._navigation_frame
+        ):
             raise ControlRequestError(
                 "Navigation station frame must match the configured "
                 f"navigation frame {self._navigation_frame}.",
@@ -957,14 +1003,14 @@ class RosControlNode(Node):
             )
         try:
             transform = tf_buffer.lookup_transform(
-                self._navigation_frame,
+                target_frame,
                 cabinet_frame,
                 RosTime(),
             )
         except TransformException as error:
             raise ControlRequestError(
                 f"Live transform from {cabinet_frame} to "
-                f"{self._navigation_frame} is not available: {error}",
+                f"{target_frame} is not available: {error}",
                 503,
             ) from error
 
@@ -1047,7 +1093,7 @@ class RosControlNode(Node):
             )
         return NavigationStation(
             cabinet=cabinet,
-            frame_id=self._navigation_frame,
+            frame_id=target_frame,
             x=position[0],
             y=position[1],
             z=position[2],

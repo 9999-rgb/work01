@@ -1623,6 +1623,26 @@ def main() -> int:
             for control_id in control_ids
             if controls[control_id].get("type") in {"button", "knob"}
         }
+        # Operator-chain calibrated offsets (anchor.x = local_position.x +
+        # shoulder offset) and per-button standoffs.  box_7 stays planning-only
+        # under the box_9_knob physical occlusion; box_10 uses the deeper -0.55
+        # band.  Unlisted front controls keep the legacy +0.35 shoulder offset.
+        BUTTON_CALIBRATION = {
+            "box_3_button_1": (-0.3506, 0.780),
+            "box_3_button_2": (-0.3506, 0.780),
+            "box_4_button_1": (-0.3506, 0.780),
+            "box_4_button_2": (-0.3506, 0.780),
+            "box_5_button_1": (-0.3506, 0.914),
+            "box_5_button_2": (-0.3506, 0.914),
+            "box_6_button_1": (-0.3506, 0.914),
+            "box_6_button_2": (-0.3506, 0.914),
+            "box_7_button_1": (-0.3506, 0.914),
+            "box_7_button_2": (-0.3506, 0.914),
+            "box_8_button_1": (-0.3506, 1.100),
+            "box_8_button_2": (-0.3506, 1.100),
+            "box_10_button_1": (-0.55, 0.914),
+            "box_10_button_2": (-0.55, 0.914),
+        }
         for control_id in sorted(front_control_ids):
             station = adapter_controls[control_id]["navigation_station"]
             anchor = numbers(
@@ -1644,10 +1664,19 @@ def main() -> int:
                 controls[control_id].get("local_position"),
                 f"controls.{control_id}.local_position",
             )
-            # The fixed tools retain the original right-shoulder calibration.
-            # box_5_knob keeps its lateral planning calibration, but its base
-            # standoff must remain outside the padded chassis footprint.
-            shoulder_offset = 0.55 if control_id == "box_5_knob" else 0.35
+            button_cal = BUTTON_CALIBRATION.get(control_id)
+            if button_cal is not None:
+                shoulder_offset, expected_standoff = button_cal
+            elif control_id == "box_5_knob":
+                # 校正：原 +0.55 肩偏让肩点相对旋钮横偏 0.9 m，ready IK 恒失败。
+                # 可达按钮族用 -0.3506（肩点与控件中线对齐）；旋钮改为同值后
+                # pre-press 与左右档位 pose 均经 /compute_ik 遥置扫描验证可达。
+                shoulder_offset = -0.3506
+                expected_standoff = None
+            else:
+                # The fixed tools retain the original right-shoulder calibration.
+                shoulder_offset = 0.35
+                expected_standoff = None
             expected_anchor = [
                 control_position[0] + shoulder_offset,
                 1.115,
@@ -1656,12 +1685,23 @@ def main() -> int:
             if not close_lists(anchor, expected_anchor):
                 fail(
                     f"Front control {control_id} navigation anchor must align "
-                    f"local_position.x plus the calibrated {shoulder_offset:.2f} "
-                    "m right-shoulder "
-                    "offset and retain the common [y, z] anchor."
+                    f"local_position.x plus the calibrated {shoulder_offset:.4f} "
+                    "m shoulder offset and retain the common [y, z] anchor."
                 )
-            if control_id == "box_5_knob" and not math.isclose(
-                float(station.get("standoff", 0.0)),
+            station_standoff = float(station.get("standoff", 0.0))
+            if button_cal is not None and not math.isclose(
+                station_standoff,
+                expected_standoff,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            ):
+                fail(
+                    f"{control_id} navigation standoff must retain the "
+                    f"calibrated {expected_standoff:.3f} m operator-chain "
+                    "standoff."
+                )
+            elif control_id == "box_5_knob" and not math.isclose(
+                station_standoff,
                 0.769,
                 rel_tol=0.0,
                 abs_tol=1.0e-9,
@@ -1691,17 +1731,28 @@ def main() -> int:
                     "The door-mounted cabinet_main_switch must share the "
                     f"rear-door navigation station {field}."
                 )
-        for field in ("base_yaw_offset",):
-            if not math.isclose(
-                float(rear_door_station.get(field, 0.0)),
-                float(main_switch_station.get(field, 0.0)),
-                rel_tol=0.0,
-                abs_tol=1.0e-9,
-            ):
-                fail(
-                    "The door-mounted cabinet_main_switch must share the "
-                    f"rear-door navigation station {field}."
-                )
+        # base_yaw_offset: the switch sits on the door but is operated by the
+        # LEFT arm (body +x, front), while the door itself is operated by the
+        # RIGHT arm (body -x, back).  body_base_link is a fixed -90° yaw joint
+        # and the station formula computes a BASE_LINK yaw (body = base_link +
+        # π/2).  The door keeps offset 0 (body ends at -π/2, right arm faces
+        # the panel); the switch MUST flip the dock 180° (offset = door ± π) so
+        # the body ends at +π/2 and the left arm faces the switch handle.  With
+        # the door's offset the switch prepress pose is NO_IK_SOLUTION at every
+        # dock yaw; with the flipped offset the full chain (ready, 108 mm
+        # approach, rotation arc, retreat) is collision-free on the seeded
+        # l_arm_2≈1.9 branch (verified via /compute_ik).
+        switch_yaw = float(main_switch_station.get("base_yaw_offset", 0.0))
+        door_yaw = float(rear_door_station.get("base_yaw_offset", 0.0))
+        yaw_diff = abs(switch_yaw - door_yaw)
+        if not math.isclose(
+            yaw_diff, math.pi, rel_tol=0.0, abs_tol=1.0e-9
+        ):
+            fail(
+                "cabinet_main_switch base_yaw_offset must be the rear-door "
+                "offset plus π so the LEFT arm (body +x) faces the switch; "
+                f"got switch={switch_yaw} door={door_yaw}."
+            )
         # The switch shares the rear-door dock geometry (anchor / outward /
         # frame checked above) but its standoff is intentionally shorter than
         # the rear door's: the Set B rocker arm cannot reach the switch handle
@@ -1822,15 +1873,25 @@ def main() -> int:
             or door_release_position_timeout < 5.0
         ):
             fail("Door physical release-position timeout must be at least 5 s.")
-        door_pregrasp_clearance = float(
-            parameters.get("door_pregrasp_clearance", 0.0)
+        rotary_pregrasp_clearance = float(
+            parameters.get("rotary_pregrasp_clearance", 0.0)
         )
         if (
-            not math.isfinite(door_pregrasp_clearance)
-            or not 0.003 <= door_pregrasp_clearance <= 0.015
+            not math.isfinite(rotary_pregrasp_clearance)
+            or not 0.003 <= rotary_pregrasp_clearance <= 0.015
         ):
             fail(
-                "Door pre-grasp clearance must be in [0.003, 0.015] m."
+                "Rotary pre-grasp clearance must be in [0.003, 0.015] m."
+            )
+        knob_pregrasp_clearance = float(
+            parameters.get("knob_pregrasp_clearance", 0.0)
+        )
+        if (
+            not math.isfinite(knob_pregrasp_clearance)
+            or not 0.030 <= knob_pregrasp_clearance <= 0.054
+        ):
+            fail(
+                "Knob pre-grasp clearance must be in [0.030, 0.054] m."
             )
         door_release_clearance = float(
             parameters.get("door_release_clearance", 0.0)

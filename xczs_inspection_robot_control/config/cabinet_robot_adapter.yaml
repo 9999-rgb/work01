@@ -25,6 +25,18 @@
     navigation_mode_service: /xczs/set_navigation_mode
     navigation_mode_topic: /xczs/navigation_mode
     map_topic: /map
+    # 柜体排连续占据一个矩形障碍带，把可导航地图分成柜前西廊和柜后
+    # 东廊（主开关工位）。Nav2 跨带最短路径贴着墙体膨胀边缘走，DWB 的
+    # 障碍评分会把底盘压到接近停驶，60s 导航超时必然失败。任务层在
+    # 直线路线穿越该带时改走带外净空路点（y 向多让 corridor_offset、
+    # x 向多让 side_clearance），整段避开膨胀区、按全速穿越。
+    navigation_keepout:
+      x_min: 1.8
+      x_max: 3.0
+      y_min: -2.85
+      y_max: 2.85
+      corridor_offset: 0.65
+      side_clearance: 1.2
     localization_pose_topic: /amcl_pose
     manual_cmd_vel_topic: /xczs/manual_cmd_vel
     navigation_cmd_vel_topic: /cmd_vel
@@ -286,12 +298,19 @@
       # x=2.881 超出左臂工作空间 ~0.094 m），改为 0.780 m 退距：经逐档
       # 遥置 + IK 扫描确认 0.82 m 以下整条接近路径全部可达（阈值 0.84），
       # 且 0.780 ± 0.015 m 停靠误差仍落在可达带内。
+      # dock 朝向：body_base_link 为固定 -90° 偏航关节，工位公式求的是
+      # base_link 偏航，body = base_link + π/2。左臂装在 body +x（机头），
+      # 后门右臂（body -x）用 base_yaw_offset=0 可够到；左臂必须把 body
+      # 转到 +π/2（机头朝北）才能让左臂指向开关。base_yaw_offset=-π 使
+      # base_link 偏航回到 0 → 精停后 body 偏航 +π/2（/compute_ik 实测：
+      # ready→108mm 接近→46 点旋转弧→撤离 全程无碰撞，落在 l_arm_2≈1.9
+      # seed 分支；body 偏航 -π/2 时同一批位姿全部 NO_IK_SOLUTION）。
       cabinet_main_switch:
         navigation_station:
           local_anchor: [0.610, 1.115, -0.680]
           outward_axis: [0.0, 0.0, -1.0]
           standoff: 0.780
-          base_yaw_offset: 0.0
+          base_yaw_offset: -3.14159265358979
           frame_id: map
         # 七轴臂对同一摇杆握持位姿存在多组 IK。默认 seed（当前臂姿态）落在
         # l_arm_2≈+0.7 的分支，接近后旋转弧约 12.5% 即失败（Cartesian 不连续）。
@@ -345,12 +364,14 @@
           base_yaw_offset: 0.0
           frame_id: map
       box_3_button_1:
-        # 第二排左列按钮（y=1.547）。seeded prepress 固定 r_arm_4≈-0.39 分支，
-        # 与 box_4 共用种子，fixed-lease 3 轮 chain+OMPL 验证通过。
+        # 第二排左列按钮。operator 实测链(prepress=-0.12/contact=-0.001/pressed=+0.008,
+        # 免 roll)于 anchor=local_x-0.3506、standoff=0.780 全程无碰撞，种子为该链 prepress 解。
+        # Cartesian 级重校准：原种子 approach 仅 0.541，换用 IK 分支搜索找到的 prepress 解，
+        # approach/press/retract 三条 Cartesian 路径均 1.000（faithful_check 实测）。
         navigation_station:
-          local_anchor: [0.470000, 1.115, 0.000]
+          local_anchor: [-0.2306, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.780
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -363,19 +384,23 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6580
-            - 1.9156
-            - 1.4451
-            - 1.8725
-            - -0.3942
-            - 1.1576
-            - 3.1108
+            - 2.668681
+            - 1.521860
+            - 0.700345
+            - 1.823279
+            - 2.814113
+            - 3.047083
+            - 2.288262
       box_3_button_2:
-        # 同 box_3_button_1：共用种子。
+        # 同 box_3_button_1：共用锚点/退距带。prepress 种子取自 box_3_button_1：
+        # 两按钮在各自 dock 下的 body 系按压几何完全一致（anchor.x 恰好补偿按钮
+        # 0.05m 横向偏移），原 seed(r_arm_0=-3.02 分支)落在肩部奇异区，press
+        # Cartesian 路径在 body X≈-0.07 处 IK 爆炸（fraction 0~0.27）；改用
+        # box_3_button_1 已验证的 +2.67 分支使 press/approach/retract 全链路 1.000。
         navigation_station:
-          local_anchor: [0.520000, 1.115, 0.000]
+          local_anchor: [-0.1806, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.780
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -388,20 +413,19 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6580
-            - 1.9156
-            - 1.4451
-            - 1.8725
-            - -0.3942
-            - 1.1576
-            - 3.1108
+            - 2.668681
+            - 1.521860
+            - 0.700345
+            - 1.823279
+            - 2.814113
+            - 3.047083
+            - 2.288262
       box_4_button_1:
-        # 第二排右列按钮（y=1.547）。seeded prepress 固定 r_arm_4≈-0.39 分支，
-        # 与 box_3 共用种子，fixed-lease 3 轮 chain+OMPL 验证通过。
+        # 第二排右列按钮。同 box_3 退距带，operator 实测链全程无碰撞。
         navigation_station:
-          local_anchor: [0.799000, 1.115, 0.000]
+          local_anchor: [0.0984, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.780
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -414,19 +438,19 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6580
-            - 1.9156
-            - 1.4451
-            - 1.8725
-            - -0.3942
-            - 1.1576
-            - 3.1108
+            - 0.8458
+            - -1.5461
+            - 2.4189
+            - 1.8229
+            - 0.6218
+            - 0.3322
+            - -2.2554
       box_4_button_2:
-        # 同 box_4_button_1：共用种子。
+        # 同 box_4_button_1：独立 prepress 种子。
         navigation_station:
-          local_anchor: [0.849000, 1.115, 0.000]
+          local_anchor: [0.1484, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.780
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -439,21 +463,20 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6580
-            - 1.9156
-            - 1.4451
-            - 1.8725
-            - -0.3942
-            - 1.1576
-            - 3.1108
+            - -2.3948
+            - 1.4667
+            - 2.5252
+            - -1.8248
+            - 0.5564
+            - 2.8818
+            - 0.9971
       box_5_button_1:
-        # 原退距 0.769 下 prepress 与面板/邻件碰撞（collect=0）。退距加大到
-        # 1.10（与 box_6 相同的退距带）后，seeded prepress 无碰撞且 OMPL 连续
-        # 通过 3 轮验证（fixed-lease 30/30 采样，dock y=-0.140）。
+        # 第三排左列按钮。0.12 m prepress 下需退至 standoff=0.914 才全程无碰撞
+        #（0.78/0.85 带 prepress 与面板/邻件碰撞），种子为该链 prepress 解。
         navigation_station:
-          local_anchor: [0.470000, 1.115, 0.000]
+          local_anchor: [-0.2306, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 1.100
+          standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -466,20 +489,19 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 2.5941
-            - 1.6211
-            - 1.9362
-            - -1.9915
-            - -0.2489
-            - -2.2045
-            - -2.5999
+            - -1.0951
+            - 1.5117
+            - 2.7415
+            - -2.2246
+            - 1.7699
+            - 2.5793
+            - 1.1314
       box_5_button_2:
-        # 同 box_5_button_1：退距 1.10（dock y=-0.190），共用种子固定到
-        # r_arm_4≈-0.249 连续分支（fixed-lease 30/30 采样通过）。
+        # 同 box_5_button_1：退距带 0.914，独立 prepress 种子。
         navigation_station:
-          local_anchor: [0.520000, 1.115, 0.000]
+          local_anchor: [-0.1806, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 1.100
+          standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -492,34 +514,22 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 2.5941
-            - 1.6211
-            - 1.9362
-            - -1.9915
-            - -0.2489
-            - -2.2045
-            - -2.5999
+            - 1.9225
+            - -1.4651
+            - -0.3209
+            - -2.2243
+            - -1.4467
+            - 0.4292
+            - -2.0349
       box_6_button_1:
-        # 轴向挂载后，旧工位(1.230,-0.470)会让七轴臂肘部满折(Elbow≈2.69)自碰撞
-        # (r_arm_0<->r_arm_5)，RRTConnect 报 goal tree 无有效状态。
-        # 工位 (1.040,-0.330) 的 prepress 目标本身无碰撞，但 OMPL 从折叠 home
-        # 摆动到 prepress 的路径会扫过相邻 5 号模块控件（box_5_knob /
-        # box_5_button_2），move_group 校验拒绝（Computed path is not valid）。
-        # 本工位保留 check_cabinet_model 的肩部校准合同（anchor.x =
-        # local_position.x + 0.35，即 dock Y = -0.469），standoff 1.10 把 dock
-        # 置于 (0.900,-0.469)。此处 + prepress_distance 0.12 下，seeded prepress
-        # 无碰撞，OMPL 路径连续 3 轮 ×10 次采样全部通过真实 move_group plan()
-        # 离线实测（dock=0.90,y=-0.469 组合：in3=3/3, tot=10/10）。
+        # 第三排右列按钮。同 box_5 退距带 0.914（0.78/0.85 带 prepress 碰撞），
+        # operator 实测链全程无碰撞。
         navigation_station:
-          local_anchor: [0.799000, 1.115, 0.000]
+          local_anchor: [0.0984, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 1.100
+          standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
-        # 七轴臂对同一夹具位姿存在多组 IK。直压接近(prepress->contact)若落在
-        # r_arm_4 为 +2.02 的分支，会卡在腕部翻转奇点附近，Cartesian 路径约 15%
-        # 即失败。此种子把 prepress 固定在 r_arm_4≈-1.47 的连续分支，使接近、
-        # 按压、撤回全程 IK 连续（已用 /compute_ik 逐段验证）。
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -530,25 +540,67 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6780
-            - 1.3430
-            - -0.0230
-            - 1.9800
-            - -1.4740
-            - -0.0400
-            - 1.7490
+            - 1.8953
+            - -1.4564
+            - -0.3031
+            - -2.2245
+            - 1.6801
+            - 2.7413
+            - 1.1031
       box_6_button_2:
-        # 同 box_6_button_1：保留肩部校准合同（anchor.x = local_position.x +
-        # 0.35，dock Y = -0.519），standoff 1.10 把 dock 置于 (0.900,-0.519)。
-        # r_arm_4≈-1.46 连续分支无碰撞，与 prepress_distance 0.12 组合经真实
-        # move_group plan() 三轮 ×10 次采样全过（in3=3/3, tot=10/10）。
+        # 同 box_6_button_1：独立 prepress 种子。
         navigation_station:
-          local_anchor: [0.849000, 1.115, 0.000]
+          local_anchor: [0.1484, 1.115, 0.000]
+          outward_axis: [0.0, 0.0, 1.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - 1.4322
+            - -1.3881
+            - 0.0118
+            - -2.2245
+            - 1.4536
+            - -3.0696
+            - 1.1054
+      box_7_button_1:
+        # 第四排左列按钮。与下方 box_9_knob（同列，下移 0.114 m）碰撞包络真实干涉：
+        # r_three_cyl_finger2 侵入 0.0165 m，滚转 12 个方向全部失败，属模型物理不可达。
+        # 按项目约束不改模型外观，保持 planning-only：提交时如实返回失败阶段。
+        navigation_station:
+          local_anchor: [-0.2306, 1.115, 0.000]
+          outward_axis: [0.0, 0.0, 1.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+
+      box_7_button_2:
+        # 同 box_7_button_1：被 box_9_knob 碰撞包络物理遮挡，planning-only 如实失败。
+        navigation_station:
+          local_anchor: [-0.1806, 1.115, 0.000]
+          outward_axis: [0.0, 0.0, 1.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+
+      box_8_button_1:
+        # 第四排右列按钮。0.12 m prepress 下需退至 standoff=1.100 才全程无碰撞，
+        # 种子为该链 prepress 解。
+        navigation_station:
+          local_anchor: [0.0984, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 1.100
           base_yaw_offset: 0.0
           frame_id: map
-        # 同 box_6_button_1：固定到 r_arm_4≈-1.46 的连续分支。
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -559,101 +611,43 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.6760
-            - 1.4880
-            - -0.0200
-            - 1.8580
-            - -1.4730
-            - -0.0400
-            - 1.7720
-      box_7_button_1:
-        # 接触位姿可达但与下方 box_9_knob（同列 x=0.125，向下 0.114 m）以
-        # r_three_cyl_finger2 深度 0.0165 m 真实干涉。按钮工具尖相对腕轴侧偏
-        # ~6 cm，工具滚转 315°（-π/4）把指尖集群旋离旋钮即解除干涉。
-        # tool_roll_offset 取 -π/4 等价的 -0.7854（|v|≤π 校验）。
-        # seeded prepress 固定 r_arm_4≈-1.46 连续分支，5 轮 chain+OMPL 全过。
-        navigation_station:
-          local_anchor: [0.470000, 1.115, 0.000]
-          outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-        tool_roll_offset: -0.7854
-        ready_joint_seed:
-          joint_names:
-            - r_arm_0_joint
-            - r_arm_1_joint
-            - r_arm_2_joint
-            - r_arm_3_joint
-            - r_arm_4_joint
-            - r_arm_5_joint
-            - r_arm_6_joint
-          positions:
-            - 1.7932
-            - 2.0713
-            - 1.7496
-            - -2.1595
-            - -1.4603
-            - -2.2963
-            - -0.9905
-      box_7_button_2:
-        # 同 box_7_button_1：与下方 box_9_knob 干涉，滚转 -π/4 解除。
-        # 与 button_1 同 dock/退距/高度，共用种子。
-        navigation_station:
-          local_anchor: [0.520000, 1.115, 0.000]
-          outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-        tool_roll_offset: -0.7854
-        ready_joint_seed:
-          joint_names:
-            - r_arm_0_joint
-            - r_arm_1_joint
-            - r_arm_2_joint
-            - r_arm_3_joint
-            - r_arm_4_joint
-            - r_arm_5_joint
-            - r_arm_6_joint
-          positions:
-            - 1.7932
-            - 2.0713
-            - 1.7496
-            - -2.1595
-            - -1.4603
-            - -2.2963
-            - -0.9905
-      box_8_button_1:
-        # 中排右列按钮（y=0.889），下方无控件阻挡。seeded prepress 固定
-        # r_arm_4≈+0.74 分支，fixed-lease 3 轮 chain+OMPL 验证通过。
-        navigation_station:
-          local_anchor: [0.799000, 1.115, 0.000]
-          outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-        ready_joint_seed:
-          joint_names:
-            - r_arm_0_joint
-            - r_arm_1_joint
-            - r_arm_2_joint
-            - r_arm_3_joint
-            - r_arm_4_joint
-            - r_arm_5_joint
-            - r_arm_6_joint
-          positions:
-            - -1.8918
-            - -1.2080
-            - 2.3068
-            - 2.0238
-            - 0.7408
-            - -2.5340
-            - -1.0687
+            - 1.4655
+            - -2.0966
+            - 1.4479
+            - -1.3904
+            - -2.8878
+            - -1.2906
+            - -0.7789
       box_8_button_2:
-        # 同 box_8_button_1：seeded prepress 固定 r_arm_4≈-2.57 分支。
-        # fixed-lease 3 轮 chain+OMPL 验证通过。
+        # 同 box_8_button_1：退距带 1.100，独立 prepress 种子。
         navigation_station:
-          local_anchor: [0.849000, 1.115, 0.000]
+          local_anchor: [0.1484, 1.115, 0.000]
+          outward_axis: [0.0, 0.0, 1.0]
+          standoff: 1.100
+          base_yaw_offset: 0.0
+          frame_id: map
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.124
+            - 1.3954
+            - 0.3306
+            - 1.3891
+            - -1.1685
+            - -2.6916
+            - 1.7596
+      box_10_button_1:
+        # 底部右列按钮。肩部偏移 -0.55（比其余按钮更靠柜），0.12 m prepress 下
+        # standoff=0.914 全程无碰撞，免 roll（旧 -pi/4 是在错误锚点下补偿邻件）。
+        navigation_station:
+          local_anchor: [-0.0580, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.914
           base_yaw_offset: 0.0
@@ -668,52 +662,22 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 0.6225
-            - 0.9187
-            - -0.1054
-            - 2.0239
-            - -2.5707
-            - -0.2149
-            - 1.5334
-      box_10_button_1:
-        # 接触位姿可达且无碰撞，但直压到按位时工具体擦过相邻 box_10_button_2
-        # （两按钮间距仅 35 mm，15 mm 半径碰撞柱之间只有 5 mm 间隙）。滚转
-        # 315°（-π/4）把指尖旋离邻件解除干涉。seeded prepress 固定
-        # r_arm_4≈-1.44 连续分支，5 轮 chain+OMPL 全过。
-        navigation_station:
-          local_anchor: [0.842000, 1.115, 0.000]
-          outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
-          base_yaw_offset: 0.0
-          frame_id: map
-        tool_roll_offset: -0.7854
-        ready_joint_seed:
-          joint_names:
-            - r_arm_0_joint
-            - r_arm_1_joint
-            - r_arm_2_joint
-            - r_arm_3_joint
-            - r_arm_4_joint
-            - r_arm_5_joint
-            - r_arm_6_joint
-          positions:
-            - 0.8585
-            - 1.8626
-            - 1.4702
-            - -1.0504
-            - -1.4416
-            - -2.4320
-            - -1.3248
+            - 0.093
+            - 1.5387
+            - 1.8382
+            - -0.8232
+            - -0.0093
+            - -0.8458
+            - -0.2623
       box_10_button_2:
-        # 同 box_10_button_1：按压擦过相邻 box_10_button_1，滚转 -π/4 解除。
-        # 与 button_1 同 dock/退距/高度，共用种子。
+        # 同 box_10_button_1：独立 prepress 种子。Cartesian 级重校准：原种子 approach 不足，
+        # 换用近域扰动搜索得到的 prepress 解，approach/press/retract 均 1.000（faithful_check 实测）。
         navigation_station:
-          local_anchor: [0.877000, 1.115, 0.000]
+          local_anchor: [-0.0230, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.930
+          standoff: 0.914
           base_yaw_offset: 0.0
           frame_id: map
-        tool_roll_offset: -0.7854
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -724,13 +688,13 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 0.8585
-            - 1.8626
-            - 1.4702
-            - -1.0504
-            - -1.4416
-            - -2.4320
-            - -1.3248
+            - -0.711900
+            - 1.612563
+            - -1.529762
+            - -0.833043
+            - -0.041215
+            - -1.450551
+            - 3.124155
       box_11_button_1:
         navigation_station:
           local_anchor: [0.842000, 1.115, 0.000]
@@ -778,17 +742,23 @@
         # 沿柜面法向的半外廓，接近时会先让底盘/工具与柜体产生物理接触。
         # 恢复 0.769 m 安全退距；不得用缩短底盘距离的方式改变本控件几何。
         #
-        # tool_roll_offsets 在 toward_control 方向下全部置 0：工具 +Z 指向
+        # tool_roll_offsets 在 toward_control 方向下以 0 为基准：工具 +Z 指向
         # 控件时，roll=0 使钳口开合轴(tool +Y)平行于旋钮叶片法向(世界 ±Y)，
         # 叶片(11 mm 厚)可无接触滑入 36 mm 钳口；历史数值(沿原 outward 方向
-        # 标定)会让钳口转成垂直(世界 ±Z)，叶片 65 mm 高无法进入 36 mm 竖向
+        # 标定)把钳口转成垂直(世界 ±Z)，叶片 65 mm 高无法进入 36 mm 竖向
         # 间隙，接近阶段必然顶动叶片并触发 pre-grasp 扰动保护。
-        # roll=0 在旋转全程保持对齐：工具与叶片随 wq(旋钮角)一同转动。
+        # roll 在旋转全程为恒定偏转：钳口与叶片的夹角恒等于 |roll|，
+        # 叶片沿钳口开合轴的投影 = 11·|cos roll| + 65·|sin roll|，
+        # 该值 < 36 mm 时叶片全程都能在钳口中通过（|roll| ≤ ~22.5°）。
+        # center→left 档(索引 3)在 roll=0 下左旋弧末段存在 r_arm_0↔r_arm_2
+        # 真实网格自碰撞(约 32% 处开始 1–7.5 mm 重叠)，OMPL/Cartesian 均无法
+        # 通过；对左转应用 −20° 滚转后全链自碰撞为零，且叶片投影
+        # 11·cos20°+65·sin20° ≈ 32.6 mm 仍 < 36 mm，抓取与旋转物理成立。
         tool_roll_offsets:
           - 0.0
           - 0.0
           - 0.0
-          - 0.0
+          - -0.349066
           - 0.0
           - 0.0
           - 0.0
@@ -804,6 +774,9 @@
         detent_release_fraction: 0.75
         # 七轴臂对同一夹具位姿存在多组 IK。该命名种子选择已逐段验证可继续
         # 完成接近、相邻档旋转和撤离的分支；运行时仍会按实时 TF 重新求 IK。
+        # r_arm_0 取负号：原正向种子在 center→right 的旋转弧末段出现
+        # r_arm_0↔r_arm_2 真实网格自碰撞(约 1.2 mm 重叠)，而取负后 /compute_ik
+        # 四个档位转移全程(ready→pregrasp→50mm 接近→17 点旋转弧)均无自碰撞。
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -814,15 +787,22 @@
             - r_arm_5_joint
             - r_arm_6_joint
           positions:
-            - 1.221067
+            - -1.221067
             - 1.158552
             - -1.448952
             - -1.806018
             - 1.998380
             - 0.014786
             - -1.656403
+        # 历史工位 anchor x=0.717(+0.55 肩偏)让肩点 r_arm_0 相对旋钮横偏 0.9 m，
+        # 从该工位做 ready IK 恒失败（stage=ready, PLANNING_FAILED）。经
+        # /compute_ik 遥置扫描：base_y≈0.513（肩点与旋钮叶片中线对齐，即按钮
+        # 族采用的 -0.3506 肩偏，anchor x=-0.18313）时 pre-press 与左右档位
+        # pose 均可达且碰撞检查通过；base_y=-0.388（原工位）不可达。旋钮
+        # 的 +0.55/+0.35 肩偏符号与可达按钮族(-0.3506)相反，属历史标定错误。
+        # 退距仍保持 0.769，仅横向对齐，不改变本控件几何。
         navigation_station:
-          local_anchor: [0.717470, 1.115, 0.000]
+          local_anchor: [-0.18313, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
           standoff: 0.769
           base_yaw_offset: 0.0
@@ -885,8 +865,6 @@
       - box_5_button_2
       - box_6_button_1
       - box_6_button_2
-      - box_7_button_1
-      - box_7_button_2
       - box_8_button_1
       - box_8_button_2
       - box_10_button_1
@@ -901,10 +879,13 @@
       其余 knob（box_3/4/6/7/8/9/10/11 等）尚未完成带安全退距的旋转到档
       验收；cabinet_rear_door 尚未完成开合到位、释放、回收和无串扰闭环，
       因此当前仅规划验证。按钮与 box_5_knob 已通过 seeded prepress 的 fixed-lease 链式
-      （approach/manip/retreat=1.000 + OMPL home→J）与物理到档验收；
-      box_7/10 需 tool_roll_offset=-π/4 规避下方旋钮/邻件干涉，box_5 需
-      退距 1.10。总开关已通过 0.780 m 退距下的左臂 + rocker 物理到档验收，
-      见 cabinet_main_switch。
+      （approach/manip/retreat=1.000 + OMPL home→J）与物理到档验收，其中
+      box_10 经 operator 实测链校准锚点（肩部偏移 -0.55）与退距 0.914，免 roll。
+      box_7_button_1/2（第四排左列）经滚转 12 方向全扫确认被下方 box_9_knob 的
+      碰撞包络真实干涉（r_three_cyl_finger2 侵入约 1.65 cm），属模型物理不可达，
+      按项目约束不改模型外观，如实返回失败阶段而不执行。box_5_knob 已通过
+      seeded prepress 的 fixed-lease 链式与物理到档验收。总开关已通过 0.780 m
+      退距下的左臂 + rocker 物理到档验收，见 cabinet_main_switch。
     toolset_mismatch_reason: >-
       当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；套装 B：
       旋转按钮/摇杆）。控件仍保留状态显示；错套装请求会在导航和机械臂归位前

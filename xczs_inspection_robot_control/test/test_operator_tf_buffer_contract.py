@@ -124,8 +124,8 @@ def test_rotary_controls_are_stable_at_both_pregrasp_boundaries() -> None:
         "wait_for_pregrasp_controls_stable(",
         first_stability_gate + 1,
     )
-    door_pregrasp_motion = operate.index(
-        "rotary_poses.door_pregrasp_pose",
+    pregrasp_motion = operate.index(
+        "rotary_poses.pregrasp_pose",
         ready_motion,
     )
     final_cartesian_approach = operate.index(
@@ -138,7 +138,7 @@ def test_rotary_controls_are_stable_at_both_pregrasp_boundaries() -> None:
     )
 
     assert first_stability_gate < first_geometry_latch
-    assert ready_motion < door_pregrasp_motion < second_stability_gate
+    assert ready_motion < pregrasp_motion < second_stability_gate
     assert second_stability_gate < final_cartesian_approach < attach_grasp
 
 

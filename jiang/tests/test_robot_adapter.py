@@ -324,15 +324,25 @@ class RobotAdapterTest(unittest.TestCase):
         rear_door = stations["cabinet_rear_door"]
         switch = stations["cabinet_main_switch"]
         # The switch is mounted on the rear door, so it must share the
-        # behind-cabinet dock (same anchor / outward axis / frame).  Its
-        # standoff is shorter (0.780 m) than the rear door's (0.930 m)
+        # behind-cabinet dock POSITION (same anchor / outward axis / frame).
+        # Its standoff is shorter (0.780 m) than the rear door's (0.930 m)
         # because the Set B rocker arm cannot reach the handle from the
         # longer standoff; the shorter standoff keeps the whole approach
         # path inside the rocker's verified reach envelope.
+        #
+        # The dock ORIENTATION is opposite, by physical requirement.
+        # body_base_link is a fixed -90° yaw joint, so base_yaw_offset=-π
+        # rotates the docked body 180° (body yaw +π/2 instead of -π/2).  The
+        # rear door handle is reached by the right arm (body -x) from the
+        # formula dock, while the switch is operated by the Set B left-arm
+        # rocker, which only resolves IK at body yaw +π/2 (/compute_ik sweep:
+        # body yaw -π/2 gives NO_IK_SOLUTION for every switch pose; the +π/2
+        # dock passes the e2e physical operation with final_verified=True).
         self.assertEqual(rear_door.local_anchor, switch.local_anchor)
         self.assertEqual(rear_door.outward_axis, switch.outward_axis)
         self.assertEqual(rear_door.frame_id, switch.frame_id)
-        self.assertEqual(rear_door.base_yaw_offset, switch.base_yaw_offset)
+        self.assertAlmostEqual(0.0, rear_door.base_yaw_offset)
+        self.assertAlmostEqual(-pi, switch.base_yaw_offset)
         self.assertEqual(0.780, switch.standoff)
         self.assertLess(switch.standoff, rear_door.standoff)
 

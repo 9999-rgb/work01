@@ -129,7 +129,12 @@ struct OperationPoses
 struct RotaryOperationPoses
 {
   geometry_msgs::msg::Pose ready_pose;
-  geometry_msgs::msg::Pose door_pregrasp_pose;
+  // Near-grasp standoff used by both knobs and doors.  A pose-only OMPL plan
+  // to the far ready pose can land on an IK branch whose long straight inward
+  // Cartesian approach self-collides (r_arm_0 <-> r_arm_2).  Planning to a
+  // pose only a few mm from the grasp point first keeps the final approach
+  // short enough that any branch completes it.
+  geometry_msgs::msg::Pose pregrasp_pose;
   geometry_msgs::msg::Pose grasp_pose;
 };
 
@@ -604,12 +609,29 @@ public:
       "door_detent_hysteresis", 0.02);
     door_release_position_margin_ = positive_parameter(
       "door_release_position_margin", 0.01);
-    door_pregrasp_clearance_ = positive_parameter(
-      "door_pregrasp_clearance", 0.010);
-    if (door_pregrasp_clearance_ > 0.015) {
+    rotary_pregrasp_clearance_ = positive_parameter(
+      "rotary_pregrasp_clearance", 0.010);
+    if (rotary_pregrasp_clearance_ > 0.015) {
       throw std::invalid_argument(
-              "Parameter 'door_pregrasp_clearance' must be no greater "
+              "Parameter 'rotary_pregrasp_clearance' must be no greater "
               "than 0.015 m.");
+    }
+    // Knob blades sit inside the cabinet face plane while the tool clamps
+    // them, so the shared door clearance (<= 15 mm) would put the unconstrained
+    // OMPL ready->pregrasp path within jaw reach of the blade and actuate it
+    // before grasp.  Knobs instead stop far enough out that the whole tool
+    // stays beyond the blade near face during the pose-planned pregrasp, then
+    // commit the final straight push as a short validated Cartesian approach.
+    // 0.050 m gives a 50 mm final approach (CLEAR on every IK branch) with a
+    // >50 mm blade gap; the OMPL pregrasp plan cannot physically clip it.
+    knob_pregrasp_clearance_ = positive_parameter(
+      "knob_pregrasp_clearance", 0.050);
+    if (knob_pregrasp_clearance_ < 0.030 ||
+      knob_pregrasp_clearance_ > 0.054)
+    {
+      throw std::invalid_argument(
+              "Parameter 'knob_pregrasp_clearance' must be in "
+              "[0.030, 0.054] m.");
     }
     door_release_clearance_ = positive_parameter(
       "door_release_clearance", 0.30);
@@ -2360,6 +2382,15 @@ private:
         std::lock_guard<std::mutex> lock(motion_mutex_);
         active_move_group_ = move_group;
       }
+      {
+        // A fresh MoveGroupInterface replaces any wedged one from a prior
+        // goal: abandon the execute serialization a wedged worker is holding
+        // so the new goal can move on its own independent instance.  The old
+        // worker's in-flight execute() only touches the old instance, which it
+        // keeps alive through its own action client.
+        std::lock_guard<std::mutex> lock(motion_execute_serial_->guard_mutex);
+        motion_execute_serial_->wedged_lock.reset();
+      }
       configure_move_group(*move_group);
       move_group_ready_for_motion = true;
       const auto initial_robot_state =
@@ -2654,6 +2685,10 @@ private:
     DoorArcProgress door_arc_progress;
     double target_position = 0.0;
     double rotary_tool_roll_offset = 0.0;
+    // Precomputed upstream so the manipulation block and the ready/pregrasp
+    // branch selection share the exact same arc targets and waypoints.
+    double rotary_manip_pos = 0.0;
+    std::vector<geometry_msgs::msg::Pose> rotary_arc_waypoints;
     double button_press_depth = 0.0;
     bool button_should_trigger = false;
     bool is_button = false;
@@ -2920,6 +2955,14 @@ private:
       } else {
         rotary_poses = calculate_rotary_operation_poses(
           *control, initial_state.position, rotary_tool_roll_offset);
+        // The manipulation arc is needed both for the runtime branch
+        // selection below (validated against the real dock TF before any arm
+        // motion) and for the actual arc execution after the grasp attaches.
+        rotary_manip_pos = rotary_manipulation_position(
+          *control, initial_state.position, target_position);
+        rotary_arc_waypoints = calculate_rotation_waypoints(
+          *control, initial_state.position, rotary_manip_pos,
+          rotary_tool_roll_offset);
       }
       if (control->navigation_station &&
         (preparation_policy.execute_embedded_navigation ||
@@ -2943,6 +2986,12 @@ private:
       {
         std::lock_guard<std::mutex> lock(motion_mutex_);
         active_move_group_ = move_group;
+      }
+      {
+        // See the press-goal equivalent above: a fresh move group replaces any
+        // wedged one, so its execute serialization must be released.
+        std::lock_guard<std::mutex> lock(motion_execute_serial_->guard_mutex);
+        motion_execute_serial_->wedged_lock.reset();
       }
       configure_move_group(*move_group);
       const auto current_robot_state =
@@ -3159,9 +3208,35 @@ private:
           OperateCabinetControl::Feedback::MOVING_TO_READY,
           0.25F, target_position,
           "Planning the probe to the control ready pose.");
+        // Runtime branch selection: a knob's ready/pregrasp plans must land on
+        // an IK family whose whole Cartesian chain (50 mm approach + the
+        // manipulation arc) is feasible from the REAL dock TF.  The configured
+        // seed alone is not enough -- it can fail the arc via r_arm_0<->r_arm_2
+        // self-collision or a wrist joint limit.  Doors keep their segmented
+        // arc mechanism and the configured seed unchanged.
+        std::vector<double> rotary_branch_seed;
+        const std::vector<double> * rotary_branch_seed_ptr = nullptr;
+        if (control->control_type ==
+            xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+        {
+          // The post-release retreat target (knob angle at the manipulation
+          // position, prepress standoff) must match the retreat the operator
+          // actually executes after releasing the grasp.
+          const auto retreat_pose = calculate_rotary_tool_pose(
+            *control, rotary_manip_pos, prepress_distance_, false,
+            rotary_tool_roll_offset);
+          rotary_branch_seed = select_rotary_branch_seed(
+            *move_group, *control, rotary_poses.pregrasp_pose,
+            rotary_poses.grasp_pose, rotary_arc_waypoints, retreat_pose,
+            contact_tool_link_);
+          if (!rotary_branch_seed.empty()) {
+            rotary_branch_seed_ptr = &rotary_branch_seed;
+          }
+        }
         plan_and_execute_pose(
           *move_group, goal_handle, rotary_poses.ready_pose,
-          contact_tool_link_, &result->operation_executed, control.get());
+          contact_tool_link_, &result->operation_executed, control.get(),
+          rotary_branch_seed_ptr);
         should_attempt_retreat = true;
         result->diagnostic_stage = "approach";
         publish_operate_feedback(
@@ -3170,15 +3245,31 @@ private:
           0.43F, target_position,
           "Approaching the physical grasp point.");
         if (control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+            xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ||
+          control->control_type ==
+            xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
         {
           // A pose-only OMPL plan can select a ready-pose IK branch that
           // cannot finish the final inward Cartesian approach.  Require an
           // exact collision-checked plan to a near-grasp pose first, then
-          // preserve a short straight-line final approach.
+          // preserve a short straight-line final approach.  Knobs share the
+          // failure: the left-detent ready pose lands on an r_arm branch
+          // whose 94 mm straight approach self-collides r_arm_0 <-> r_arm_2;
+          // a 50 mm final approach is clean on every branch.  The knob
+          // pregrasp itself must sit far enough out that the pose-planned
+          // motion to it cannot sweep the clamped blade (see the
+          // knob_pregrasp_clearance comment); doors keep their 10 mm variant.
+          // The pregrasp plan must use the same calibrated IK seed as the
+          // ready plan: an unseeded OMPL plan can pick a different IK branch
+          // (observed: r_arm_2 = +0.89) whose 50 mm approach self-collides at
+          // ~25 % before the blade clamp, while every seed-derived branch is
+          // clean over the full distance.  For knobs the seed is the runtime
+          // branch picked by select_rotary_branch_seed (same as the ready
+          // plan); doors keep their configured seed.
           plan_and_execute_pose(
-            *move_group, goal_handle, rotary_poses.door_pregrasp_pose,
-            contact_tool_link_, &result->operation_executed);
+            *move_group, goal_handle, rotary_poses.pregrasp_pose,
+            contact_tool_link_, &result->operation_executed, control.get(),
+            rotary_branch_seed_ptr);
         }
         wait_for_pregrasp_controls_stable(
           goal_handle, *control, pregrasp_stability_references,
@@ -3202,12 +3293,11 @@ private:
         // Doors and calibrated knobs are over-center mechanisms.  Moving
         // safely beyond the next midpoint lets the physical detent spring
         // finish the requested travel after release, without demanding an
-        // unreachable full-angle Cartesian wrist arc.
-        const double manipulation_position = rotary_manipulation_position(
-          *control, initial_state.position, target_position);
-        const auto waypoints = calculate_rotation_waypoints(
-          *control, initial_state.position, manipulation_position,
-          rotary_tool_roll_offset);
+        // unreachable full-angle Cartesian wrist arc.  These were computed
+        // before the ready pose plan so the branch selection could validate
+        // the same arc against the real dock TF.
+        const double & manipulation_position = rotary_manip_pos;
+        const auto & waypoints = rotary_arc_waypoints;
         result->diagnostic_stage = "manipulation";
         publish_operate_feedback(
           goal_handle,
@@ -3970,9 +4060,15 @@ private:
     RotaryOperationPoses poses;
     poses.ready_pose = calculate_rotary_tool_pose(
       control, position, prepress_distance_, true, tool_roll_offset);
-    poses.door_pregrasp_pose = calculate_rotary_tool_pose(
+    // Knobs need a far pregrasp so the pose-planned motion to it stays clear
+    // of the blade; doors keep the small shared clearance they were tuned with.
+    const double pregrasp_clearance =
+      control.control_type ==
+        xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB ?
+      knob_pregrasp_clearance_ : rotary_pregrasp_clearance_;
+    poses.pregrasp_pose = calculate_rotary_tool_pose(
       control, position,
-      control.grasp_outward_offset + door_pregrasp_clearance_, true,
+      control.grasp_outward_offset + pregrasp_clearance, true,
       tool_roll_offset);
     poses.grasp_pose = calculate_rotary_tool_pose(
       control, position, control.grasp_outward_offset, true,
@@ -5122,7 +5218,8 @@ private:
     const moveit::core::RobotState & start_state,
     const geometry_msgs::msg::Pose & target,
     const std::string & tool_link,
-    const ButtonSpec * control)
+    const ButtonSpec * control,
+    const std::vector<double> * seed_positions_override = nullptr)
   {
     if (control == nullptr || control->ready_joint_seed_names.empty()) {
       return move_group.setPoseTarget(target, tool_link);
@@ -5156,11 +5253,20 @@ private:
               "' ready_joint_seed must name every variable of MoveIt group '" +
               move_group_name_ + "' exactly once.");
     }
+    const auto & seed_positions = seed_positions_override != nullptr ?
+      *seed_positions_override : control->ready_joint_seed_positions;
+    if (seed_positions.size() != control->ready_joint_seed_names.size()) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              "Control '" + control->id +
+              "' runtime branch seed must name every variable of MoveIt "
+              "group '" + move_group_name_ + "' exactly once.");
+    }
 
     moveit::core::RobotState seeded_goal(start_state);
     seeded_goal.setVariablePositions(
       control->ready_joint_seed_names,
-      control->ready_joint_seed_positions);
+      seed_positions);
     seeded_goal.update();
     if (!seeded_goal.satisfiesBounds(joint_model_group)) {
       throw GenericOperationError(
@@ -5177,6 +5283,186 @@ private:
     seeded_goal.update();
     return seeded_goal.satisfiesBounds(joint_model_group) &&
            move_group.setJointValueTarget(seeded_goal);
+  }
+
+  // Choose the IK branch for a rotary control's ready/pregrasp plans so the
+  // whole Cartesian chain (50 mm approach + the manipulation arc) is feasible
+  // from the REAL dock TF.  A 7-DOF arm has several IK families for one tool
+  // pose; the calibrated seed is only a starting point and can fail the arc
+  // (r_arm_0<->r_arm_2 self-collision near a detent, or a wrist joint pinned
+  // against its limit).  Candidate branches are the configured seed and its
+  // mirror (the first group joint negated).  Each candidate is dry-run with
+  // computeCartesianPath -- the same path the operator will execute -- and the
+  // first candidate that clears the full chain is returned.  This is a branch
+  // PICKER, not a gate: if nothing clears, the configured seed is returned and
+  // the real execution reports the failure honestly.
+  std::vector<double> select_rotary_branch_seed(
+    MoveGroupInterface & move_group,
+    const ButtonSpec & control,
+    const geometry_msgs::msg::Pose & pregrasp_pose,
+    const geometry_msgs::msg::Pose & grasp_pose,
+    const std::vector<geometry_msgs::msg::Pose> & arc_waypoints,
+    const geometry_msgs::msg::Pose & retreat_pose,
+    const std::string & tool_link)
+  {
+    if (control.ready_joint_seed_names.empty() || arc_waypoints.empty()) {
+      return {};
+    }
+    const auto robot_model = move_group.getRobotModel();
+    const auto * joint_model_group =
+      robot_model == nullptr ? nullptr :
+      robot_model->getJointModelGroup(move_group_name_);
+    if (joint_model_group == nullptr) {
+      return {};
+    }
+    const auto & group_variable_names = joint_model_group->getVariableNames();
+    if (group_variable_names.empty() ||
+      control.ready_joint_seed_names[0] != group_variable_names.front())
+    {
+      return {};
+    }
+
+    // A 7-DOF arm has a one-parameter family of IK branches for the same
+    // pregrasp pose.  The configured seed is only one sample; different
+    // shoulder (r_arm_0) seeds converge to different branches that trade off
+    // clean approach/arc against a retreat with room to clear the blade.
+    // Sample the branch space broadly so the operation is robust to the few
+    // millimetres of docking drift between branch validation and execution.
+    std::vector<std::vector<double>> candidates;
+    candidates.push_back(control.ready_joint_seed_positions);
+    for (const double shoulder :
+      { -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5 })
+    {
+      auto variant = control.ready_joint_seed_positions;
+      variant[0] = shoulder;
+      candidates.push_back(std::move(variant));
+    }
+
+    constexpr double kRequired = 0.99;
+    double best_margin = -1.0;
+    std::vector<double> best_margin_seed;
+    double best_fraction = -1.0;
+    std::vector<double> best_fraction_seed;
+    for (const auto & seed : candidates) {
+      try {
+        const auto current_state =
+          synchronized_current_robot_state(move_group);
+        moveit::core::RobotState branch_state(*current_state);
+        branch_state.setVariablePositions(
+          control.ready_joint_seed_names, seed);
+        if (!branch_state.setFromIK(
+            joint_model_group, pregrasp_pose, tool_link,
+            std::min(1.0, planning_time_)))
+        {
+          continue;
+        }
+        branch_state.update();
+        if (!branch_state.satisfiesBounds(joint_model_group)) {
+          continue;
+        }
+
+        moveit_msgs::msg::RobotTrajectory approach;
+        move_group.setStartState(branch_state);
+        const double f_approach = move_group.computeCartesianPath(
+          {grasp_pose}, 0.002, cartesian_jump_threshold_, approach, true);
+        if (f_approach < kRequired ||
+          approach.joint_trajectory.points.empty())
+        {
+          continue;
+        }
+
+        robot_trajectory::RobotTrajectory approach_trajectory(
+          move_group.getRobotModel(), move_group_name_);
+        approach_trajectory.setRobotTrajectoryMsg(branch_state, approach);
+        moveit::core::RobotState arc_start =
+          approach_trajectory.getLastWayPoint();
+        moveit_msgs::msg::RobotTrajectory arc;
+        move_group.setStartState(arc_start);
+        const double f_arc = move_group.computeCartesianPath(
+          arc_waypoints, 0.002, cartesian_jump_threshold_, arc, true);
+        if (f_arc < kRequired || arc.joint_trajectory.points.empty()) {
+          continue;
+        }
+
+        // The post-release retreat is part of the same physical chain: the
+        // arm must be able to pull the tool straight out of the knob at the
+        // arc-end angle.  A branch can clear approach + arc and still pin a
+        // joint against its limit during the retreat, so validate it too.
+        robot_trajectory::RobotTrajectory arc_trajectory(
+          move_group.getRobotModel(), move_group_name_);
+        arc_trajectory.setRobotTrajectoryMsg(arc_start, arc);
+        moveit::core::RobotState retreat_start =
+          arc_trajectory.getLastWayPoint();
+        moveit_msgs::msg::RobotTrajectory retreat;
+        move_group.setStartState(retreat_start);
+        const double f_retreat = move_group.computeCartesianPath(
+          {retreat_pose}, 0.002, cartesian_jump_threshold_, retreat, true);
+
+        const double fraction = std::min(
+          {f_approach, f_arc, f_retreat});
+        if (fraction > best_fraction) {
+          best_fraction = fraction;
+          best_fraction_seed = seed;
+        }
+        if (f_retreat < kRequired) {
+          continue;
+        }
+
+        // Among branches that clear the whole chain, prefer the one whose
+        // arc-end state sits farthest from every joint limit: it keeps the
+        // retreat feasible against the docking drift that can appear between
+        // this dry-run and the physical arc execution.
+        const double margin = joint_limit_margin(
+          retreat_start, joint_model_group);
+        if (margin > best_margin) {
+          best_margin = margin;
+          best_margin_seed = seed;
+        }
+      } catch (const std::exception & error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Rotary branch validation for '%s' failed: %s",
+          control.id.c_str(), error.what());
+      }
+    }
+    if (!best_margin_seed.empty()) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Rotary branch selected for '%s': approach+arc+retreat clear "
+        "(best arc-end joint-limit margin=%.3f).",
+        control.id.c_str(), best_margin);
+      return best_margin_seed;
+    }
+    RCLCPP_WARN(
+      get_logger(),
+      "No rotary branch cleared approach+arc+retreat for '%s' "
+      "(best min fraction=%.3f); using the best candidate. The execution "
+      "reports any failure honestly.",
+      control.id.c_str(), best_fraction > 0.0 ? best_fraction : 0.0);
+    return best_fraction_seed.empty() ?
+      control.ready_joint_seed_positions : best_fraction_seed;
+  }
+
+  double joint_limit_margin(
+    const moveit::core::RobotState & state,
+    const moveit::core::JointModelGroup * joint_model_group)
+  {
+    double min_fraction = 1.0;
+    for (const auto * joint : joint_model_group->getActiveJointModels()) {
+      for (const auto & variable : joint->getVariableNames()) {
+        const auto & bounds = joint->getVariableBounds(variable);
+        if (!bounds.position_bounded_ || bounds.min_position_ >= bounds.max_position_) {
+          continue;
+        }
+        const double low = bounds.min_position_;
+        const double high = bounds.max_position_;
+        const double q = state.getVariablePosition(variable);
+        const double fraction = std::min(
+          (q - low) / (high - low), (high - q) / (high - low));
+        min_fraction = std::min(min_fraction, fraction);
+      }
+    }
+    return min_fraction;
   }
 
   moveit::core::RobotState validate_pose_plan_only(
@@ -5201,25 +5487,34 @@ private:
       target.orientation.x, target.orientation.y,
       target.orientation.z, target.orientation.w);
     move_group.setStartState(start_state);
-    if (!set_pose_target_with_calibrated_ik_seed(
-        move_group, start_state, target, tool_link, control))
-    {
-      update_validation_diagnostic(
-        *result, stage, 0.0, 1.0,
-        moveit_msgs::msg::MoveItErrorCodes::INVALID_GOAL_CONSTRAINTS);
-      throw OperationError(
-              PressCabinetButton::Result::PLANNING_FAILED,
-              planning_validation_failure_message(
-                *result, "MoveIt 拒绝了目标位姿或工具链接。"));
-    }
-
+    // A calibrated seed pins OMPL to one IK branch.  When that branch is
+    // unreachable or in collision, fall back to a pure pose target so the
+    // validation still certifies the collision-free pose itself.
     MoveGroupInterface::Plan plan;
-    moveit::core::MoveItErrorCode planning_result;
+    moveit::core::MoveItErrorCode planning_result =
+      moveit::core::MoveItErrorCode::FAILURE;
     bool planned = false;
     for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
       check_cancel(goal_handle);
       move_group.setStartState(start_state);
+      // Re-apply the calibrated seed on every attempt: setJointValueTarget
+      // pins one IK branch, and clearPoseTargets() at the end of each
+      // iteration wipes that target, so a const seed computed once would plan
+      // to an empty goal (and never re-enter the seed branch) on later tries.
+      const bool seed_ok = set_pose_target_with_calibrated_ik_seed(
+        move_group, start_state, target, tool_link, control);
+      if (seed_ok) {
+        planning_result = move_group.plan(plan);
+        move_group.clearPoseTargets();
+        if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+          planned = true;
+          break;
+        }
+      }
+      move_group.setStartState(start_state);
+      move_group.setPoseTarget(target, tool_link);
       planning_result = move_group.plan(plan);
+      move_group.clearPoseTargets();
       if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
         planned = true;
         break;
@@ -5473,11 +5768,13 @@ private:
         rotary_poses.ready_pose, contact_tool_link_, "ready_pose", result,
         &control);
       if (control.control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+            xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ||
+          control.control_type ==
+            xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
       {
         virtual_state = validate_pose_plan_only(
           move_group, goal_handle, virtual_state,
-          rotary_poses.door_pregrasp_pose, contact_tool_link_,
+          rotary_poses.pregrasp_pose, contact_tool_link_,
           "pregrasp", result);
       }
       publish_operate_feedback(
@@ -5538,7 +5835,8 @@ private:
     const geometry_msgs::msg::Pose & target,
     const std::string & tool_link,
     bool * operation_executed = nullptr,
-    const ButtonSpec * control = nullptr)
+    const ButtonSpec * control = nullptr,
+    const std::vector<double> * seed_positions_override = nullptr)
   {
     check_cancel(goal_handle);
     MoveGroupInterface::Plan plan;
@@ -5548,25 +5846,37 @@ private:
       const auto current_state =
         synchronized_current_robot_state(move_group);
       move_group.setStartState(*current_state);
-      if (!set_pose_target_with_calibrated_ik_seed(
-          move_group, *current_state, target, tool_link, control))
-      {
-        throw OperationError(
-                PressCabinetButton::Result::PLANNING_FAILED,
-                "MoveIt rejected the cabinet pose target or its calibrated "
-                "IK seed did not converge.");
+      // Prefer the calibrated IK seed so the planned branch matches the pose
+      // family the seed was calibrated for.  When the seed-derived branch is
+      // unreachable or in collision (e.g. dock calibration drift), fall back
+      // to a pure pose target and let OMPL sample any collision-free branch.
+      const bool seed_ok = set_pose_target_with_calibrated_ik_seed(
+        move_group, *current_state, target, tool_link, control,
+        seed_positions_override);
+      moveit::core::MoveItErrorCode planning_result =
+        moveit::core::MoveItErrorCode::FAILURE;
+      if (seed_ok) {
+        planning_result = move_group.plan(plan);
+        move_group.clearPoseTargets();
+        if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+          planned = true;
+          break;
+        }
       }
-      const auto planning_result = move_group.plan(plan);
+      move_group.setStartState(*current_state);
+      move_group.setPoseTarget(target, tool_link);
+      const auto pose_planning_result = move_group.plan(plan);
       move_group.clearPoseTargets();
-      if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+      if (pose_planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
         planned = true;
         break;
       }
       RCLCPP_WARN(
         get_logger(),
         "MoveIt planning to the cabinet pose for '%s' failed "
-        "(attempt %d/%d).",
-        tool_link.c_str(), attempt, motion_planning_attempts_);
+        "(attempt %d/%d, seed=%d pose=%d).",
+        tool_link.c_str(), attempt, motion_planning_attempts_,
+        seed_ok ? planning_result.val : -1, pose_planning_result.val);
     }
     if (!planned) {
       throw OperationError(
@@ -5580,9 +5890,12 @@ private:
     if (operation_executed) {
       *operation_executed = true;
     }
-    if (move_group.execute(plan) !=
-      moveit::core::MoveItErrorCode::SUCCESS)
-    {
+    check_cancel(goal_handle);
+    const auto prepress_code = execute_motion_bounded(
+      [&move_group, &plan]() { return move_group.execute(plan); },
+      [this, &goal_handle]() { return goal_should_stop(goal_handle); },
+      std::chrono::seconds(120), "prepress pose");
+    if (prepress_code != moveit::core::MoveItErrorCode::SUCCESS) {
       check_cancel(goal_handle);
       throw OperationError(
               PressCabinetButton::Result::EXECUTION_FAILED,
@@ -5642,7 +5955,11 @@ private:
     if (operation_executed) {
       *operation_executed = true;
     }
-    if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+    const auto stow_code = execute_motion_bounded(
+      [&move_group, &plan]() { return move_group.execute(plan); },
+      [this, &goal_handle]() { return goal_should_stop(goal_handle); },
+      std::chrono::seconds(120), "named target '" + target_name + "'");
+    if (stow_code != moveit::core::MoveItErrorCode::SUCCESS) {
       check_stop();
       throw OperationError(
               PressCabinetButton::Result::EXECUTION_FAILED,
@@ -5767,6 +6084,56 @@ private:
       }
     }
     if (best_fraction < minimum_fraction) {
+      // Diagnostic: report the approach start state and the tool link pose at
+      // the last collision-free waypoint so a Cartesian clearance regression
+      // can be reproduced and fixed from the config layer alone.
+      try {
+        const auto start_state = synchronized_current_robot_state(move_group);
+        std::ostringstream oss;
+        oss << "Cartesian fraction=" << best_fraction;
+        oss << " start_joints=";
+        for (const auto & name : start_state->getVariableNames()) {
+          if (name.find("r_arm") == 0 || name.find("l_arm") == 0 ||
+            name.find("cyl") != std::string::npos ||
+            name.find("r_three") == 0)
+          {
+            oss << name << ":" << start_state->getVariablePosition(name)
+              << " ";
+          }
+        }
+        if (!trajectory_message.joint_trajectory.points.empty()) {
+          const auto & last = trajectory_message.joint_trajectory.points.back();
+          const auto & names = trajectory_message.joint_trajectory.joint_names;
+          moveit::core::RobotState waypoint_state(move_group.getRobotModel());
+          waypoint_state.setToDefaultValues();
+          for (std::size_t i = 0; i < names.size() && i < last.positions.size();
+            ++i)
+          {
+            waypoint_state.setVariablePosition(names[i], last.positions[i]);
+          }
+          waypoint_state.update();
+          const Eigen::Isometry3d & link_pose =
+            waypoint_state.getGlobalLinkTransform(contact_tool_link_);
+          const Eigen::Vector3d t = link_pose.translation();
+          oss << " last_waypoint_tool_pose=(" << t.x() << "," << t.y()
+            << "," << t.z() << ")";
+          oss << " waypoint_joints=";
+          for (std::size_t i = 0; i < names.size() && i < last.positions.size();
+            ++i)
+          {
+            if (names[i].find("r_arm") == 0 || names[i].find("cyl") !=
+              std::string::npos || names[i].find("r_three") == 0)
+            {
+              oss << names[i] << ":" << last.positions[i] << " ";
+            }
+          }
+        }
+        RCLCPP_ERROR(get_logger(), "%s", oss.str().c_str());
+      } catch (const std::exception & e) {
+        RCLCPP_WARN(
+          get_logger(), "Cartesian failure diagnostic unavailable: %s",
+          e.what());
+      }
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
               "MoveIt completed only " +
@@ -5784,9 +6151,13 @@ private:
     if (operation_executed) {
       *operation_executed = true;
     }
-    if (move_group.execute(trajectory_message) !=
-      moveit::core::MoveItErrorCode::SUCCESS)
-    {
+    const auto cartesian_code = execute_motion_bounded(
+      [&move_group, &trajectory_message]() {
+        return move_group.execute(trajectory_message);
+      },
+      [this, &goal_handle]() { return goal_should_stop(goal_handle); },
+      std::chrono::seconds(120), "Cartesian button path");
+    if (cartesian_code != moveit::core::MoveItErrorCode::SUCCESS) {
       check_cancel(goal_handle);
       throw OperationError(
               PressCabinetButton::Result::EXECUTION_FAILED,
@@ -5816,6 +6187,152 @@ private:
               "MoveIt could not generate a low-speed Cartesian trajectory.");
     }
     trajectory.getRobotTrajectoryMsg(trajectory_message);
+  }
+
+  // MoveIt2 Humble's move_group.execute() busy-waits an internal done flag with
+  // no timeout.  If the controller's ExecuteTrajectory result is lost, the call
+  // never returns and the operator permanently blocks, holding operation_active_
+  // true so every later goal returns RESOURCE_BUSY ("一直失败") until the whole
+  // stack is restarted.  This wrapper runs the blocking motion on a worker
+  // thread, polls a cancel predicate and a hard deadline, and when either fires
+  // first asks stop_active_motion() to cancel the controller goal and then, if
+  // the worker still will not return, abandons it (detach) and reports failure
+  // so the operation fails cleanly instead of wedging the operator forever.
+  //
+  // should_stop may be null (best-effort safety retreat/stow have no goal
+  // handle): then only the hard deadline applies, so a lost controller result
+  // can never block a safety motion indefinitely either.  goal_should_stop on a
+  // null handle would return true immediately, so callers must pass null here
+  // for those noexcept best-effort paths.
+  //
+  // Safety properties of the wedge path (detach):
+  //  - The worker never throws: motion() is wrapped so a throwing action-client
+  //    cannot escape the thread and call std::terminate.
+  //  - The worker holds shared ownership of the motion std::function and the
+  //    result promise, so the function object survives the caller's stack; the
+  //    motion's by-reference captures are only read while execute() serializes
+  //    the goal, which happened before any wedge was detected.
+  //  - A second execute on the same MoveGroupInterface cannot race the wedged
+  //    in-flight one: every bounded motion first takes a serialization lock
+  //    (motion_execute_serial_->execute_mutex), and the wedge transfers that
+  //    lock into the shared serialization state until the wedged worker
+  //    eventually returns.  Retreat/stow after a wedge therefore fail fast with
+  //    FAILURE instead of launching a concurrent move_group.execute().  A fresh
+  //    MoveGroupInterface for a later goal (acquire_active_move_group) clears
+  //    the wedge lock so the new, independent instance is not bricked forever.
+  moveit::core::MoveItErrorCode execute_motion_bounded(
+    const std::function<moveit::core::MoveItErrorCode()> & motion,
+    const std::function<bool()> & should_stop,
+    const std::chrono::steady_clock::duration & hard_deadline,
+    const std::string & description)
+  {
+    const auto serial = motion_execute_serial_;
+    // Refuse immediately (no blocking) if a prior wedge still holds the
+    // execute serialization: launching a second execute() on the same
+    // MoveGroupInterface while the wedged worker is still inside the first
+    // one would be a data race on a non-thread-safe object.
+    std::unique_lock<std::mutex> execute_serial(
+      serial->execute_mutex, std::try_to_lock);
+    if (!execute_serial.owns_lock()) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Bounded '%s' refused: a previous bounded motion is still in flight "
+        "on this move group (wedged backend); refusing a concurrent execute.",
+        description.c_str());
+      return moveit::core::MoveItErrorCode::FAILURE;
+    }
+    const auto result_holder =
+      std::make_shared<std::promise<moveit::core::MoveItErrorCode>>();
+    std::future<moveit::core::MoveItErrorCode> future =
+      result_holder->get_future();
+    // Heap-shared copy of the motion closure: a detached worker outlives this
+    // call and must not touch the caller's stack-owned std::function.
+    const auto motion_holder =
+      std::make_shared<std::function<moveit::core::MoveItErrorCode()>>(
+        motion);
+    const rclcpp::Logger bounded_logger = get_logger();
+    std::thread worker([result_holder, motion_holder, serial,
+        bounded_logger]() {
+      try {
+        result_holder->set_value((*motion_holder)());
+      } catch (const std::exception & error) {
+        RCLCPP_ERROR(
+          bounded_logger,
+          "Bounded motion threw inside its worker thread: %s",
+          error.what());
+        try {
+          result_holder->set_value(moveit::core::MoveItErrorCode::FAILURE);
+        } catch (...) {
+        }
+      } catch (...) {
+        try {
+          result_holder->set_value(moveit::core::MoveItErrorCode::FAILURE);
+        } catch (...) {
+        }
+      }
+      // If this worker was detached on the wedge path, its in-flight
+      // execute() transferred the serialization lock into serial->wedged_lock;
+      // clear it now that the execute has actually returned so later bounded
+      // motions can run again.
+      std::lock_guard<std::mutex> lock(serial->guard_mutex);
+      serial->wedged_lock.reset();
+    });
+    const auto deadline_time =
+      std::chrono::steady_clock::now() + hard_deadline;
+    moveit::core::MoveItErrorCode code =
+      moveit::core::MoveItErrorCode::FAILURE;
+    bool worker_detached = false;
+    while (true) {
+      if (future.wait_for(std::chrono::milliseconds(50)) ==
+        std::future_status::ready) {
+        code = future.get();
+        break;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      const bool stop_requested =
+        (should_stop && should_stop()) || now >= deadline_time;
+      if (stop_requested) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Bounded '%s' hit its deadline or was canceled; stopping motion.",
+          description.c_str());
+        stop_active_motion();
+        const auto grace_deadline =
+          now + std::chrono::milliseconds(2500);
+        while (future.wait_for(std::chrono::milliseconds(50)) !=
+          std::future_status::ready) {
+          if (std::chrono::steady_clock::now() >= grace_deadline) {
+            break;
+          }
+        }
+        if (future.wait_for(std::chrono::seconds(0)) ==
+          std::future_status::ready) {
+          code = future.get();
+        } else {
+          RCLCPP_ERROR(
+            get_logger(),
+            "Bounded '%s' is permanently wedged (lost controller result); "
+            "abandoning the motion worker and failing the operation.",
+            description.c_str());
+          // Keep the execute serialization held until the wedged worker
+          // returns (worker clears it) or a fresh move group replaces this
+          // one, so no retreat/stow on this instance races the in-flight
+          // execute() with a concurrent move_group.execute().
+          {
+            std::lock_guard<std::mutex> lock(serial->guard_mutex);
+            serial->wedged_lock.emplace(std::move(execute_serial));
+          }
+          worker.detach();
+          worker_detached = true;
+          code = moveit::core::MoveItErrorCode::FAILURE;
+        }
+        break;
+      }
+    }
+    if (!worker_detached && worker.joinable()) {
+      worker.join();
+    }
+    return code;
   }
 
   bool best_effort_cartesian_move(
@@ -5852,9 +6369,13 @@ private:
       if (operation_executed) {
         *operation_executed = true;
       }
-      if (move_group.execute(trajectory_message) !=
-        moveit::core::MoveItErrorCode::SUCCESS)
-      {
+      const auto best_effort_code = execute_motion_bounded(
+        [&move_group, &trajectory_message]() {
+          return move_group.execute(trajectory_message);
+        },
+        std::function<bool()>(), std::chrono::seconds(60),
+        description);
+      if (best_effort_code != moveit::core::MoveItErrorCode::SUCCESS) {
         RCLCPP_ERROR(get_logger(), "%s execution failed.", description);
         return false;
       }
@@ -5973,7 +6494,10 @@ private:
       if (operation_executed) {
         *operation_executed = true;
       }
-      if (move_group.execute(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+      const auto stow_code = execute_motion_bounded(
+        [&move_group, &plan]() { return move_group.execute(plan); },
+        std::function<bool()>(), std::chrono::seconds(60), "safety stow");
+      if (stow_code != moveit::core::MoveItErrorCode::SUCCESS) {
         RCLCPP_ERROR(get_logger(), "Safety stow execution failed.");
       }
     } catch (const std::exception & error) {
@@ -7171,6 +7695,19 @@ private:
   std::vector<std::shared_ptr<ButtonSpec>> buttons_in_order_;
   std::mutex motion_mutex_;
   std::shared_ptr<MoveGroupInterface> active_move_group_;
+  // Shared serialization for MoveGroupInterface::execute() across bounded
+  // motions (see execute_motion_bounded).  The mutexes are heap-shared so a
+  // detached wedge worker can safely clear the transferred lock even if the
+  // operator is destroyed; the execute serialization is what keeps a wedged
+  // in-flight execute() from racing a later one on the same instance.
+  struct MotionExecuteSerialization
+  {
+    std::mutex execute_mutex;
+    std::mutex guard_mutex;
+    std::optional<std::unique_lock<std::mutex>> wedged_lock;
+  };
+  std::shared_ptr<MotionExecuteSerialization> motion_execute_serial_ =
+    std::make_shared<MotionExecuteSerialization>();
   std::mutex navigation_mutex_;
   NavigationGoalHandle::SharedPtr active_navigation_goal_;
   std::mutex navigation_feedback_mutex_;
@@ -7278,7 +7815,8 @@ private:
   double door_release_position_timeout_{10.0};
   double door_detent_hysteresis_{0.02};
   double door_release_position_margin_{0.01};
-  double door_pregrasp_clearance_{0.010};
+  double rotary_pregrasp_clearance_{0.010};
+  double knob_pregrasp_clearance_{0.050};
   double door_release_clearance_{0.30};
   double planning_scene_settle_seconds_{0.50};
   double rotation_waypoint_step_{0.03490658504};

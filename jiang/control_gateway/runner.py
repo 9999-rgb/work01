@@ -49,6 +49,7 @@ from .recording_manager import RecordingManager
 from .ros_node import ControlRequestError
 from .ros_node import RosControlNode
 from .robot_adapter import RobotAdapterError
+from .robot_adapter import keepout_crossing_waypoint
 from .robot_adapter import load as load_robot_adapter
 from .scene_catalog import resolve_package_uri
 from .scene_catalog import SceneCatalog
@@ -84,6 +85,11 @@ REQUEST_DRAIN_TIMEOUT_SEC = 8.0
 # that a genuinely stuck goal fails promptly rather than running for minutes.
 NAVIGATION_TIMEOUT_SEC = 60.0
 NAVIGATION_CANCEL_GRACE_SEC = 5.0
+# After a timeout is reported with the global task slot retained, keep polling
+# for a real backend terminal state only for this bounded window.  A wedged
+# Nav2 / action server that never confirms termination must not hold the
+# globally-exclusive task slot forever and brick every later submit with 409.
+BACKEND_RECONCILE_SEC = 30.0
 NAVIGATION_CLOCK_STALL_TIMEOUT_SEC = 30.0
 NAVIGATION_FINAL_POSE_WAIT_SEC = 2.0
 NAVIGATION_FINAL_POSE_MAX_AGE_SEC = 1.0
@@ -409,6 +415,7 @@ class ControlServer:
             command_timeout,
             self._context,
             navigation_frame=self._robot_adapter.navigation_frame,
+            pose_parent_frame=self._robot_adapter.pose_parent_frame,
             navigation_base_frame=self._robot_adapter.navigation_base_frame,
             navigation_action=self._robot_adapter.navigation_action,
             navigation_readiness_service=(
@@ -1727,6 +1734,7 @@ class ControlServer:
                     None,
                 )
                 station_refresh = None
+                station_parent = None
                 if callable(live_station_transform):
                     station_spec = self._inventory.station_spec_for(
                         cabinet,
@@ -1743,6 +1751,16 @@ class ControlServer:
                         margin=MAP_STATION_MARGIN_M,
                     )
                     station_refresh = (
+                        cabinet_instance.frame_id,
+                        station_spec,
+                    )
+                    # The drift guard compares stations across AMCL epochs, so
+                    # it needs the same station in the cabinet's fixed pose
+                    # parent frame (odom/world).  Absent the resolver, or when
+                    # the resolver fails, the task falls back to the map-frame
+                    # comparison.
+                    station_parent = self._navigation_station_parent_optional(
+                        cabinet,
                         cabinet_instance.frame_id,
                         station_spec,
                     )
@@ -1787,6 +1805,7 @@ class ControlServer:
                                 station.to_dict(),
                                 replay_owned,
                                 station_refresh=station_refresh,
+                                station_parent=station_parent,
                             )
                         ),
                         cancel_callback=lambda _task_id: (
@@ -2300,10 +2319,13 @@ class ControlServer:
         station_refresh: Optional[
             Tuple[str, NavigationStationSpec]
         ] = None,
+        station_parent: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         navigation_kwargs: Dict[str, Any] = {}
         if station_refresh is not None:
             navigation_kwargs["station_refresh"] = station_refresh
+        if station_parent is not None:
+            navigation_kwargs["station_parent"] = station_parent
         try:
             if not replay_owned:
                 return self._execute_navigation_task(
@@ -2817,14 +2839,25 @@ class ControlServer:
         station_refresh: Optional[
             Tuple[str, NavigationStationSpec]
         ] = None,
+        station_parent: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         context.raise_if_canceled()
+        # Homing occupies a small leading slice of the navigation window and
+        # reports only once per second (never a final 100% of its slice), so
+        # its high-water mark can sit anywhere inside that slice.  The legs
+        # below must therefore start *above* the homing slice, or the first
+        # leg's early progress (weight-scaled, often well below 0.02 for a
+        # short keepout detour leg) would regress under the homing watermark
+        # and trip the task manager's monotonic-progress invariant.
+        homing_span = min(0.02, max(0.0, progress_span))
         self._home_robot_joints(
             context,
             str(station.get("cabinet") or "robot"),
-            progress_base=0.0,
-            progress_span=0.02,
+            progress_base=progress_start,
+            progress_span=homing_span,
         )
+        progress_start += homing_span
+        progress_span -= homing_span
         task_started = time.monotonic()
         initial_snapshot = self._node.navigation_snapshot()
         navigation_clock = self._navigation_clock_state(
@@ -2832,6 +2865,16 @@ class ControlServer:
             task_started,
         )
         current_station = dict(station)
+        # Parent-frame (odom/world) version of the same station.  The drift
+        # guard compares these across AMCL epochs instead of the map-frame
+        # station: AMCL refining map->odom shifts every map-frame station even
+        # when the cabinet is fixed, which would manufacture a phantom "jump".
+        # A static cabinet reports zero parent-frame drift; only real cabinet
+        # motion trips the guard.  Tests without the parent resolver fall back
+        # to the map-frame comparison (current_station_parent stays None).
+        current_station_parent = (
+            dict(station_parent) if station_parent is not None else None
+        )
         route_legs: List[Dict[str, Any]] = []
         final_result: Mapping[str, Any] = {}
         correction_count = 0
@@ -2846,6 +2889,11 @@ class ControlServer:
             legs = self._axis_navigation_legs(
                 initial_pose,
                 current_station,
+                # None (absent key) disables the crossing detour; getattr keeps
+                # the caller resilient to adapters without the optional field.
+                keepout=getattr(
+                    self._robot_adapter, "navigation_keepout", None
+                ),
             )
             total_distance = sum(
                 float(leg["distance_m"]) for leg in legs
@@ -2941,15 +2989,33 @@ class ControlServer:
                 break
 
             context.raise_if_canceled()
-            latest_station = self._refresh_navigation_station_for_task(
-                current_station,
-                station_refresh,
-                task_started=task_started,
+            latest_station, latest_station_parent = (
+                self._refresh_navigation_station_for_task(
+                    current_station,
+                    station_refresh,
+                    task_started=task_started,
+                )
             )
             station_refresh_count += 1
+            # Compare in the parent frame whenever both epochs were resolved
+            # there, so AMCL map->odom refinement cannot manufacture drift for
+            # a cabinet that is fixed in the world (see _execute_navigation_task
+            # for the fallback semantics).
+            compare_parent = (
+                current_station_parent is not None
+                and latest_station_parent is not None
+            )
             station_drift = self._planar_navigation_error(
-                current_station,
-                latest_station,
+                (
+                    current_station_parent
+                    if compare_parent
+                    else current_station
+                ),
+                (
+                    latest_station_parent
+                    if compare_parent
+                    else latest_station
+                ),
             )
             last_station_drift = station_drift
             drift_is_significant = (
@@ -3039,6 +3105,7 @@ class ControlServer:
                 )
             pose_error = final_result["error"]
             current_station = latest_station
+            current_station_parent = latest_station_parent
 
             correction_required = (
                 pose_error["position_m"]
@@ -3111,14 +3178,59 @@ class ControlServer:
         }
         return result
 
+    def _navigation_station_parent_optional(
+        self,
+        cabinet: str,
+        cabinet_frame: str,
+        station_spec: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Best-effort parent-frame station for the navigation drift guard.
+
+        The parent frame is only the *baseline* for measuring real cabinet
+        motion across AMCL epochs; a TF or pose-authority hiccup there must not
+        fail the navigation task.  On any resolution error, return ``None`` so
+        the caller falls back to the map-frame comparison.
+        """
+        parent_resolver = getattr(
+            self._node,
+            "navigation_station_parent_from_tf",
+            None,
+        )
+        if not callable(parent_resolver):
+            return None
+        try:
+            resolved = parent_resolver(cabinet, cabinet_frame, station_spec)
+        except Exception as error:  # noqa: BLE001
+            try:
+                self._node.get_logger().warning(
+                    "Parent-frame navigation station for %s could not be "
+                    "resolved (%s); the drift guard will compare in the "
+                    "navigation frame.",
+                    cabinet,
+                    str(error),
+                )
+            except Exception:  # noqa: BLE001 - diagnostics are best effort
+                pass
+            return None
+        try:
+            return resolved.to_dict()
+        except Exception:  # noqa: BLE001
+            return None
+
     def _refresh_navigation_station_for_task(
         self,
         previous_station: Mapping[str, Any],
         station_refresh: Tuple[str, NavigationStationSpec],
         *,
         task_started: float,
-    ) -> Dict[str, Any]:
-        """Resolve and validate the latest live station after Nav2 arrival."""
+    ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+        """Resolve the latest live stations after Nav2 arrival.
+
+        Returns ``(map_station, parent_station)``.  ``parent_station`` is the
+        same station resolved in the cabinet's fixed pose-parent frame (odom/
+        world) when the node exposes the resolver, otherwise ``None``; the
+        drift guard falls back to comparing the map-frame stations then.
+        """
         cabinet = str(previous_station.get("cabinet") or "")
         cabinet_frame, station_spec = station_refresh
         live_station_transform = getattr(
@@ -3137,6 +3249,7 @@ class ControlServer:
                     "duration_seconds": time.monotonic() - task_started,
                 },
             )
+        parent_station: Optional[Dict[str, Any]] = None
         try:
             station = live_station_transform(
                 cabinet,
@@ -3147,6 +3260,11 @@ class ControlServer:
                 station,
                 boundary=self._live_map_bounds(),
                 margin=MAP_STATION_MARGIN_M,
+            )
+            parent_station = self._navigation_station_parent_optional(
+                cabinet,
+                cabinet_frame,
+                station_spec,
             )
         except (ControlRequestError, InventoryError) as error:
             details = dict(getattr(error, "details", {}) or {})
@@ -3182,7 +3300,7 @@ class ControlServer:
                     "duration_seconds": time.monotonic() - task_started,
                 },
             )
-        return station.to_dict()
+        return station.to_dict(), parent_station
 
     @staticmethod
     def _planar_navigation_error(
@@ -3292,10 +3410,36 @@ class ControlServer:
         timeout_started_at: Optional[float] = None
         timeout_cause: Optional[str] = None
         timeout_reported = False
+        # Wall-clock instant the terminal-with-retention state began, so the
+        # monitor can force-release a wedged backend after a bounded window.
+        retained_since: Optional[float] = None
+        # Wall-clock instant a user cancellation was first observed, so an
+        # unconfirmed cancel does not strand the task in 'canceling' forever.
+        cancel_requested_at: Optional[float] = None
         last_timeout_cancel_at = 0.0
         final_pose_started_active: Optional[float] = None
         last_settling_report_at = 0.0
         rejection_retry_count = 0
+
+        def _release_retained(
+            *,
+            backend_termination_confirmed: bool,
+            details: Mapping[str, Any],
+        ) -> None:
+            """Release the retained slot before leaving the monitor.
+
+            Once the task is terminal-with-retention every exit path must
+            release it, otherwise the globally-exclusive task slot leaks and
+            all later submissions return 409. ``release_reservation`` is a
+            no-op when the reservation is already free, so calling this on
+            both the confirmed-backend and reconcile paths is safe.
+            """
+            if retained_since is not None:
+                context.release_reservation(
+                    backend_termination_confirmed=backend_termination_confirmed,
+                    details=details,
+                )
+
         while True:
             snapshot = self._node.navigation_snapshot()
             state = str(snapshot.get("state", "unknown"))
@@ -3316,6 +3460,16 @@ class ControlServer:
             timed_out = timeout_started_at is not None
 
             if state == "succeeded":
+                if retained_since is not None:
+                    # The task is already terminal-with-retention (canceled or
+                    # failed); Nav2 reaching the goal is the awaited backend
+                    # confirmation, so release the slot and leave the existing
+                    # terminal task state untouched.
+                    _release_retained(
+                        backend_termination_confirmed=True,
+                        details={"backend_terminal_state": state},
+                    )
+                    return {}
                 if final_pose_started_active is None:
                     final_pose_started_active = active_elapsed
                 settling_elapsed = max(
@@ -3454,17 +3608,31 @@ class ControlServer:
                             details={"backend_terminal_state": state},
                         )
                         return {}
+                    _release_retained(
+                        backend_termination_confirmed=True,
+                        details={"backend_terminal_state": state},
+                    )
                     raise TaskExecutionError(
                         "Navigation timed out and was canceled.",
                         code="navigation_timeout",
                         result=timeout_result,
                     )
+                _release_retained(
+                    backend_termination_confirmed=True,
+                    details={"backend_terminal_state": state},
+                )
                 raise TaskCanceledError("Navigation task was canceled.")
             if (
                 state == "rejected"
                 and not timed_out
                 and rejection_retry_count < NAVIGATION_REJECT_RETRY_LIMIT
             ):
+                if retained_since is not None:
+                    _release_retained(
+                        backend_termination_confirmed=True,
+                        details={"backend_terminal_state": state},
+                    )
+                    return {}
                 rejection_retry_count += 1
                 context.progress(
                     "navigation_waiting_for_system",
@@ -3536,6 +3704,10 @@ class ControlServer:
                         details={"backend_terminal_state": state},
                     )
                     return {}
+                _release_retained(
+                    backend_termination_confirmed=True,
+                    details={"backend_terminal_state": state},
+                )
                 raise TaskExecutionError(
                     str(snapshot.get("message") or "Navigation failed."),
                     code=code,
@@ -3556,7 +3728,8 @@ class ControlServer:
                 initial_distance,
             )
             should_report = (
-                not timeout_reported
+                retained_since is None
+                and not timeout_reported
                 and (
                     state != last_phase
                     or progress > last_progress + 0.005
@@ -3627,6 +3800,7 @@ class ControlServer:
                     },
                 )
                 timeout_reported = True
+                retained_since = now
             if (
                 cancel_for_shutdown
                 and context.shutdown_elapsed >= BACKEND_SHUTDOWN_GRACE_SEC
@@ -3651,9 +3825,57 @@ class ControlServer:
                     },
                 )
                 return {}
-            # A user cancellation callback already sent the cancel request.
-            # Keep polling until Nav2 reports a real terminal state so a new
-            # globally-exclusive task cannot overlap a retiring goal.
+            # A user-initiated cancellation must not strand the task in
+            # 'canceling' forever when Nav2 never confirms the cancel.  Wait
+            # the grace period for a terminal state, then mark the task
+            # canceled while retaining the slot and let the bounded reconcile
+            # window release it.
+            user_cancel = context.cancellation_requested
+            if user_cancel and not timed_out and cancel_requested_at is None:
+                cancel_requested_at = now
+            cancel_unconfirmed = (
+                user_cancel
+                and not timed_out
+                and cancel_requested_at is not None
+                and now - cancel_requested_at >= NAVIGATION_CANCEL_GRACE_SEC
+            )
+            if cancel_unconfirmed and retained_since is None:
+                context.cancel_retaining_reservation(
+                    "Navigation cancellation was not confirmed by Nav2 within "
+                    "the grace period; marking the task canceled while "
+                    "backend termination remains unconfirmed.",
+                    details={
+                        "backend_terminal_state": state,
+                        "cancel_grace_seconds": NAVIGATION_CANCEL_GRACE_SEC,
+                    },
+                )
+                retained_since = now
+            # After the task became terminal-with-retention (timeout reported,
+            # or an unconfirmed user cancellation), keep polling for a real
+            # Nav2 terminal state for a bounded window so a new
+            # globally-exclusive task cannot overlap a retiring goal.  A
+            # wedged Nav2 that never confirms termination must not hold the
+            # slot forever; force-release with termination unconfirmed so the
+            # gateway stays live.
+            if retained_since is None and timed_out and timeout_reported:
+                retained_since = now
+            if (
+                retained_since is not None
+                and now - retained_since >= BACKEND_RECONCILE_SEC
+            ):
+                context.release_reservation(
+                    backend_termination_confirmed=False,
+                    details={
+                        "backend_terminal_state": state,
+                        "backend_reconcile_seconds": BACKEND_RECONCILE_SEC,
+                        "reason": (
+                            "Nav2 termination remained unconfirmed after the "
+                            "backend reconciliation window; released the "
+                            "global task slot to restore gateway liveness."
+                        ),
+                    },
+                )
+                return {}
             time.sleep(TASK_MONITOR_PERIOD_SEC)
 
     @staticmethod
@@ -3743,8 +3965,15 @@ class ControlServer:
     def _axis_navigation_legs(
         initial_pose: Any,
         station: Mapping[str, Any],
+        keepout: Any = None,
     ) -> Tuple[Dict[str, Any], ...]:
-        """Build stoppable map-axis legs, always preferring X before Y."""
+        """Build stoppable map-axis legs, always preferring X before Y.
+
+        When a straight axis leg would cross the configured navigation
+        keep-out band (the cabinet row), the route is replaced with a clear-
+        space via leg plus a final leg, so the base never hugs the band's
+        inflation edge where DWB throttles it to a crawl.
+        """
         if not isinstance(initial_pose, Mapping):
             raise TaskExecutionError(
                 "A localized start pose is required for axis-by-axis navigation.",
@@ -3792,6 +4021,46 @@ class ControlServer:
         # X-leg corner would otherwise detour through the cabinet midline and
         # still need a separate lateral + heading leg afterward.
         merge_into_direct = has_x and has_y and minor_axis <= NAVIGATION_MERGE_AXIS_M
+
+        keepout_via = keepout_crossing_waypoint(
+            start_x,
+            start_y,
+            target_x,
+            target_y,
+            keepout,
+        )
+        if keepout_via is not None:
+            via_x, via_y = keepout_via
+            via_target = dict(station)
+            via_target.update(
+                {
+                    "x": via_x,
+                    "y": via_y,
+                    # The via leg keeps the holonomic heading unchanged; the
+                    # final leg still owns the station heading.
+                    "yaw": start_yaw,
+                }
+            )
+            return (
+                {
+                    "axis": "via",
+                    "distance_m": math.hypot(
+                        via_x - start_x,
+                        via_y - start_y,
+                    ),
+                    "target": via_target,
+                },
+                {
+                    # A keep-out crossing is inherently off-axis, so the final
+                    # leg is a direct holonomic Nav2 goal around the band end.
+                    "axis": "xy",
+                    "distance_m": math.hypot(
+                        target_x - via_x,
+                        target_y - via_y,
+                    ),
+                    "target": dict(station),
+                },
+            )
 
         legs: List[Dict[str, Any]] = []
         if has_x and has_y and not merge_into_direct:
@@ -4159,6 +4428,12 @@ class ControlServer:
         started = time.monotonic()
         timeout_started_at: Optional[float] = None
         timeout_reported = False
+        # Wall-clock instant the terminal-with-retention state began, so the
+        # monitor can force-release a wedged backend after a bounded window.
+        retained_since: Optional[float] = None
+        # Wall-clock instant a user cancellation was first observed, so an
+        # unconfirmed cancel does not strand the task in 'canceling' forever.
+        cancel_requested_at: Optional[float] = None
         last_timeout_cancel_at = 0.0
         last_progress = OPERATION_PREFLIGHT_PROGRESS
         # The cabinet action drives MoveIt/Gazebo under the ROS/sim clock, so
@@ -4171,6 +4446,26 @@ class ControlServer:
         )
         operation_last_sim = operation_sim_baseline
         operation_last_sim_advance_wall = started
+
+        def _release_retained(
+            *,
+            backend_termination_confirmed: bool,
+            details: Mapping[str, Any],
+        ) -> None:
+            """Release the retained slot before leaving the monitor.
+
+            Once the task is terminal-with-retention every exit path must
+            release it, otherwise the globally-exclusive task slot leaks and
+            all later submissions return 409. ``release_reservation`` is a
+            no-op when the reservation is already free, so calling this on
+            both the confirmed-backend and reconcile paths is safe.
+            """
+            if retained_since is not None:
+                context.release_reservation(
+                    backend_termination_confirmed=backend_termination_confirmed,
+                    details=details,
+                )
+
         try:
             try:
                 # See the navigation equivalent above.  This makes the
@@ -4344,7 +4639,10 @@ class ControlServer:
                     else ""
                 )
                 if event_type == "feedback":
-                    if not timeout_reported:
+                    # Never report progress once the task is terminal-with-
+                    # retention: report_progress raises on a terminal task and
+                    # would leak the retained slot on the way out.
+                    if not timeout_reported and retained_since is None:
                         progress_value = event.get("progress", last_progress)
                         try:
                             progress = float(progress_value)
@@ -4396,13 +4694,23 @@ class ControlServer:
                     if actual_displacement is not None:
                         result["actual_displacement"] = actual_displacement
                     outcome = str(event.get("outcome", "failed"))
+                    if retained_since is not None:
+                        # A terminal event arrived after the task became
+                        # terminal-with-retention (timeout reported, or an
+                        # unconfirmed user cancellation).  The slot was held
+                        # for backend reconciliation; the backend has now
+                        # confirmed termination, so release it and leave the
+                        # terminal task exactly as recorded.
+                        _release_retained(
+                            backend_termination_confirmed=True,
+                            details={"backend_terminal_state": outcome},
+                        )
+                        return {}
                     if timed_out:
-                        if timeout_reported:
-                            context.release_reservation(
-                                backend_termination_confirmed=True,
-                                details={"backend_terminal_state": outcome},
-                            )
-                            return {}
+                        # Reaching here means the terminal event landed inside
+                        # the timeout-before-grace window (timeout_reported is
+                        # False, retained_since is None): fail the task and let
+                        # the executor's normal non-retaining path free the slot.
                         raise TaskExecutionError(
                             "Cabinet operation timed out and reached a "
                             "terminal state.",
@@ -4465,6 +4773,7 @@ class ControlServer:
                         },
                     )
                     timeout_reported = True
+                    retained_since = now
                 if (
                     cancel_for_shutdown
                     and context.shutdown_elapsed >= BACKEND_SHUTDOWN_GRACE_SEC
@@ -4491,6 +4800,60 @@ class ControlServer:
                         },
                     )
                     return {}
+                # A user-initiated cancellation must not strand the task in
+                # 'canceling' forever when the cabinet action never confirms
+                # the cancel.  Wait the grace period for a terminal event, then
+                # mark the task canceled while retaining the slot and let the
+                # bounded reconcile window release it.
+                user_cancel = context.cancellation_requested
+                if (
+                    user_cancel
+                    and not timed_out
+                    and cancel_requested_at is None
+                ):
+                    cancel_requested_at = now
+                cancel_unconfirmed = (
+                    user_cancel
+                    and not timed_out
+                    and cancel_requested_at is not None
+                    and now - cancel_requested_at >= OPERATION_CANCEL_GRACE_SEC
+                )
+                if cancel_unconfirmed and retained_since is None:
+                    context.cancel_retaining_reservation(
+                        "Cancellation was not confirmed by the cabinet action "
+                        "within the grace period; marking the task canceled "
+                        "while backend termination remains unconfirmed.",
+                        details={
+                            "backend_terminal_state": "active",
+                            "cancel_grace_seconds": OPERATION_CANCEL_GRACE_SEC,
+                        },
+                    )
+                    retained_since = now
+                # Mirror the navigation monitor: after the task became
+                # terminal-with-retention (timeout reported, or an unconfirmed
+                # user cancellation), wait only a bounded window for the
+                # cabinet action to confirm termination.  A wedged action
+                # server must not hold the globally-exclusive slot forever.
+                if retained_since is None and timed_out and timeout_reported:
+                    retained_since = now
+                if (
+                    retained_since is not None
+                    and now - retained_since >= BACKEND_RECONCILE_SEC
+                ):
+                    context.release_reservation(
+                        backend_termination_confirmed=False,
+                        details={
+                            "backend_terminal_state": "active",
+                            "backend_reconcile_seconds": BACKEND_RECONCILE_SEC,
+                            "reason": (
+                                "Cabinet action termination remained "
+                                "unconfirmed after the backend reconciliation "
+                                "window; released the global task slot to "
+                                "restore gateway liveness."
+                            ),
+                        },
+                    )
+                    return {}
         finally:
             # An unexpected exception escaping the monitor loop (for example a
             # task cancellation surfaced through context.progress, or a bug)
@@ -4502,6 +4865,13 @@ class ControlServer:
                 client.cancel()
             except Exception:  # noqa: BLE001
                 pass
+            # Belt-and-suspenders: if an unexpected exception escapes while the
+            # slot is still retained, release it so a bug cannot strand the
+            # globally-exclusive task slot (409 forever). Idempotent.
+            _release_retained(
+                backend_termination_confirmed=False,
+                details={"reason": "operation monitor exited unexpectedly"},
+            )
             with self._operation_bindings_lock:
                 if self._operation_event_queues.get(cabinet) is event_queue:
                     self._operation_event_queues.pop(cabinet, None)

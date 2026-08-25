@@ -133,8 +133,13 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
     controls = builtin["controls"]
     assert isinstance(controls, dict)
     calibration = controls["box_5_knob"]
+    # Aligned dock anchor: shoulder (r_arm_0) laterally aligned with the knob
+    # blade centerline (base_y ~ 0.513, the button family's -0.3506 shoulder
+    # offset, anchor x = -0.18313) makes pre-press and both detents reachable.
+    # The historical x = 0.717 (+0.55 shoulder offset) put the shoulder 0.9 m
+    # sideways and made the ready IK fail every time.
     assert calibration["navigation_station"]["local_anchor"] == [
-        0.717470,
+        -0.18313,
         1.115,
         0.0,
     ]
@@ -149,7 +154,7 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
     assert calibration["ready_joint_seed"] == {
         "joint_names": [f"r_arm_{index}_joint" for index in range(7)],
         "positions": [
-            1.221067,
+            -1.221067,
             1.158552,
             -1.448952,
             -1.806018,
@@ -159,13 +164,31 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
         ],
     }
 
-    # All-zero rolls in the toward_control orientation: with tool +Z pointing
-    # at the control, roll=0 keeps the jaw opening axis (tool +Y) parallel to
-    # the knob-blade normal (world +-Y), so the 11 mm blade slips into the
-    # 36 mm jaw without contact.  The historical non-zero rolls were calibrated
-    # along the old outward axis, which turned the jaws vertical (world +-Z)
-    # and made the 65 mm blade unable to enter the 36 mm vertical gap.
-    assert calibration["tool_roll_offsets"] == [0.0] * 9
+    # Knob-blade grasp contract in the toward_control orientation: tool +Z
+    # points at the control, and roll rotates the jaw opening axis (tool +Y)
+    # relative to the knob-blade normal (world +-Y).  Because the roll is a
+    # constant offset in the tool frame, the jaw<->blade misalignment equals
+    # |roll| throughout the whole rotation, so the blade projects
+    # 11*|cos roll| + 65*|sin roll| onto the 36 mm jaw opening.  That value
+    # must stay below 36 mm, i.e. |roll| <= ~22.5 deg.  The historical
+    # non-zero rolls were calibrated along the old outward axis (jaws vertical,
+    # world +-Z, 65 mm blade could not enter the 36 mm vertical gap); the
+    # calibrated center->left roll (-20 deg) stays inside the fit bound
+    # (11*cos20 + 65*sin20 ~ 32.6 mm < 36 mm) while clearing the r_arm_0<->
+    # r_arm_2 self-collision that otherwise blocks the left arc.
+    offsets = calibration["tool_roll_offsets"]
+    assert len(offsets) == 9
+    for offset in offsets:
+        assert (
+            abs(math.cos(offset)) * 0.011 + abs(math.sin(offset)) * 0.065
+            < 0.036
+        ), f"tool roll {offset} breaks the knob-blade jaw fit"
+    # state_ids = ["left","center","right"]; index = source*3 + target.
+    # center(1)->left(0) = index 3 is the only non-zero entry.
+    assert offsets[3] == -0.349066
+    assert all(
+        offsets[i] == 0.0 for i in range(9) if i != 3
+    )
 
 
 def test_operation_watchdog_fits_between_heartbeat_and_lease_expiry() -> None:

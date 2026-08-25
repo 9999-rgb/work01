@@ -272,7 +272,11 @@
     door_release_position_timeout: 10.0
     door_detent_hysteresis: 0.02
     door_release_position_margin: 0.01
-    door_pregrasp_clearance: 0.010
+    # 柜门在抓取点外的预备站距；门用短距(10 mm 终段接近)，旋钮叶片在面内
+    # 被钳爪包夹，OMPL 预备规划到近点会扫到叶片触发 pre-grasp 扰动，
+    # 因此旋钮单独用远站距(50 mm 终段接近，所有 IK 分支均无自碰撞)。
+    rotary_pregrasp_clearance: 0.010
+    knob_pregrasp_clearance: 0.050
     door_release_clearance: 0.30
     planning_scene_settle_seconds: 0.50
     rotation_waypoint_step: 0.03490658504
