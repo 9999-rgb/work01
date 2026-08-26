@@ -816,9 +816,10 @@ _require_port_available() {
     fi
     # 端口被占用：终止旧实例进程后继续启动；无法自动释放才硬性失败。
     echo "WARN: $label 端口 $host:$port 被占用，尝试终止旧实例进程。"
-    local _kill_rc _tries
-    _kill_port_holder "$port" "$label"
-    _kill_rc=$?
+    # 脚本在 set -e 下运行：_kill_port_holder 返回非零（1=拒绝/2=未释放）时必须
+    # 用 || 惯用法捕获，独立调用会触发 set -e 直接中止脚本。
+    local _kill_rc=0 _tries
+    _kill_port_holder "$port" "$label" || _kill_rc=$?
     if [ "$_kill_rc" -eq 1 ]; then
         # 非本项目进程占用：_kill_port_holder 已输出明确拒绝原因，硬性失败。
         echo "ERROR: $label 无法绑定 $host:$port（被非本项目进程占用）。" >&2
