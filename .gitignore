@@ -15,6 +15,7 @@ export.log
 # Python generated files
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
 # SQLite database (generated)
 /jiang/data/
