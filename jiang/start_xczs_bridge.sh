@@ -750,8 +750,9 @@ _kill_port_holder() {
     pids="$(ss -H -ltnp "sport = :$port" 2>/dev/null \
         | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u || true)"
     if [ -z "$pids" ]; then
-        # 没有监听进程但仍无法绑定（如地址不可用），无从终止。
-        return 1
+        # 没有监听进程但仍无法绑定（如刚终止的进程留下的监听 socket /
+        # TIME_WAIT 尚未消退），无从终止；返回 2 让调用方有界等待后复检绑定。
+        return 2
     fi
     for pid in $pids; do
         pcomm="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
@@ -772,8 +773,11 @@ _kill_port_holder() {
                 ;;
         esac
     done
-    # 优雅退出最多等 5 秒；仍占用则强制终止。
-    for i in 1 2 3 4 5; do
+    # 优雅退出宽限：gzserver 关闭复杂世界较慢，默认等 10 秒（可用
+    # XCZS_PORT_RELEASE_GRACE 覆盖）等待监听 socket 释放；仍占用则强制终止。
+    local _grace=$(( ${XCZS_PORT_RELEASE_GRACE:-10} < 1 ? 1 : ${XCZS_PORT_RELEASE_GRACE:-10} ))
+    local _i
+    for ((_i = 1; _i <= _grace; _i++)); do
         sleep 1
         if ! ss -H -ltnp "sport = :$port" 2>/dev/null | grep -q 'pid='; then
             return 0
@@ -781,15 +785,20 @@ _kill_port_holder() {
     done
     for pid in $pids; do
         if kill -0 "$pid" 2>/dev/null; then
-            echo "  进程 pid=$pid 未在 5 秒内退出，发送 SIGKILL。"
+            echo "  进程 pid=$pid 未在 ${_grace} 秒内退出，发送 SIGKILL。"
             kill -KILL "$pid" 2>/dev/null || true
         fi
     done
-    sleep 1
-    if ss -H -ltnp "sport = :$port" 2>/dev/null | grep -q 'pid='; then
-        return 1
-    fi
-    return 0
+    # SIGKILL 后进程消失需要一点时间（僵尸回收、内核拆除 socket），再等最多 5 秒。
+    for ((_i = 1; _i <= 5; _i++)); do
+        sleep 1
+        if ! ss -H -ltnp "sport = :$port" 2>/dev/null | grep -q 'pid='; then
+            return 0
+        fi
+    done
+    # 端口仍未释放：可能是已死进程的 TIME_WAIT/半关闭状态短暂占据。
+    # 返回 2，调用方将做有界绑定复检（SO_REUSEADDR 通常可越过 TIME_WAIT）。
+    return 2
 }
 
 _require_port_available() {
@@ -807,10 +816,24 @@ _require_port_available() {
     fi
     # 端口被占用：终止旧实例进程后继续启动；无法自动释放才硬性失败。
     echo "WARN: $label 端口 $host:$port 被占用，尝试终止旧实例进程。"
-    if _kill_port_holder "$port" "$label" && _port_bindable "$host" "$port"; then
-        echo "  → 端口 $host:$port 已释放，继续启动。"
-        return 0
+    local _kill_rc _tries
+    _kill_port_holder "$port" "$label"
+    _kill_rc=$?
+    if [ "$_kill_rc" -eq 1 ]; then
+        # 非本项目进程占用：_kill_port_holder 已输出明确拒绝原因，硬性失败。
+        echo "ERROR: $label 无法绑定 $host:$port（被非本项目进程占用）。" >&2
+        _describe_port_owner "$port"
+        exit 1
     fi
+    # 占用进程已处理（0=监听 socket 已释放；2=无占用者可终止，或 SIGKILL 后
+    # TIME_WAIT 短暂收尾），统一有界等待后复检绑定，避免误报“未能自动释放”。
+    for _tries in 1 2 3 4 5 6 7 8; do
+        if _port_bindable "$host" "$port"; then
+            echo "  → 端口 $host:$port 已释放，继续启动。"
+            return 0
+        fi
+        sleep 2
+    done
     echo "ERROR: $label 无法绑定 $host:$port（端口被占用且未能自动释放）。" >&2
     _describe_port_owner "$port"
     exit 1
