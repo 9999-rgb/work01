@@ -202,6 +202,42 @@ if [ "$DISPLAY_AVAILABLE" = "false" ]; then
     echo "⚠ 未检测到可用显示器 ($DISPLAY_ERROR)，已禁用 Gazebo 图形界面；基于渲染的 RGB 相机也不会发布图像"
     GAZEBO_GUI="false"
 fi
+
+# ── 显示/图形栈就绪等待 ─────────────────────────────────────────
+# 刚开机/刚登录后 X server 能立即应答，但 NVIDIA/Mutter 的 GLX 上下文栈
+# 仍在初始化；此时启动 gzserver，其 OGRE 渲染窗口创建会在 GLX FSAA 阶段
+# 段错误（实测：登录后约 60-90 秒内启动 gzserver 崩溃，约 4 分钟后成功）。
+# 通过 X socket 创建时间判断显示是否“新鲜”：过新则有界等待其成熟，
+# 避免“开机即启动”撞上该竞态。正常启动（显示早已就绪）零延迟。
+# 阈值可用 XCZS_DISPLAY_SETTLE_SECONDS / XCZS_DISPLAY_SETTLE_MAX_WAIT 覆盖。
+if [ "$DISPLAY_AVAILABLE" = "true" ] &&
+    [ "$GAZEBO_ENABLED" = "true" ] &&
+    [ "$PREFLIGHT_ONLY" != "true" ]; then
+    _display_num="${DISPLAY##*:}"
+    _display_num="${_display_num%%.*}"
+    _display_socket="/tmp/.X11-unix/X${_display_num}"
+    _display_settle_seconds="${XCZS_DISPLAY_SETTLE_SECONDS:-180}"
+    _display_settle_max_wait="${XCZS_DISPLAY_SETTLE_MAX_WAIT:-180}"
+    if [ -S "$_display_socket" ]; then
+        _x_age=$(( $(date +%s) - $(stat -c %Y "$_display_socket" 2>/dev/null || echo 0) ))
+        if [ "$_x_age" -lt 0 ]; then _x_age=0; fi
+        _waited=0
+        while [ "$_x_age" -lt "$_display_settle_seconds" ] &&
+            [ "$_waited" -lt "$_display_settle_max_wait" ]; do
+            if [ "$_waited" -eq 0 ]; then
+                echo "⚠ 显示刚启动 ${_x_age}s（低于 ${_display_settle_seconds}s 就绪阈值），等待图形栈稳定，避免 gzserver GLX 启动崩溃..."
+            fi
+            sleep 5
+            _waited=$(( _waited + 5 ))
+            _x_age=$(( $(date +%s) - $(stat -c %Y "$_display_socket" 2>/dev/null || echo 0) ))
+        done
+        if [ "$_waited" -gt 0 ]; then
+            echo "  图形栈就绪等待完成（已等 ${_waited}s，显示年龄 ${_x_age}s）。"
+            DISPLAY_STATUS="$DISPLAY_STATUS（已等待图形栈稳定）"
+        fi
+    fi
+fi
+
 if [ "$CONTROL_MODE" = "keyboard" ] &&
     [ "$DISPLAY_AVAILABLE" = "false" ]; then
     echo "ERROR: 键盘调试控制需要可连接的 DISPLAY 和终端界面。"
