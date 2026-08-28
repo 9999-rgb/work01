@@ -1,0 +1,80 @@
+/**/xczs_cabinet_planning_scene:
+  ros__parameters:
+    # 场景适配层：固定框架和 hinge_position 位于 cabinet_frame；门板、
+    # 门把手和门上开关的位置位于门铰链旋转后的局部坐标系。
+    # control_cabinet_frame 是单柜兼容默认值，多柜体由 launch 覆盖。
+    # 更换柜体时应替换本文件和 cabinet_controls.yaml，无需修改 C++。
+    cabinet_frame: control_cabinet_frame
+    # 多柜体启动时由 launch 覆盖为实例名；空值保留原单柜碰撞对象 ID。
+    collision_object_prefix: ""
+    require_pose_valid: true
+    pose_valid_topic: pose_valid
+    # 与 Gazebo 插件一致：高于 1.25 s 最坏正常续约间隔，低于 3 s 租约 TTL。
+    operation_watchdog_timeout: 2.0
+
+    # 柜体局部坐标中的导航工位几何。Web inventory 会用完整 RPY
+    # 变换 anchor/outward_axis，再沿外法线退让 standoff 得到目标位姿。
+    navigation_station:
+      frame_id: map
+      local_anchor: [0.331, 1.115, 0.0]
+      outward_axis: [0.0, 0.0, 1.0]
+      standoff: 0.930
+      base_yaw_offset: 0.0
+
+    frame_part_ids:
+      - front_panel
+      - left_wall
+      - right_wall
+      - bottom_wall
+      - top_wall
+    frame_parts:
+      front_panel:
+        size: [0.642, 2.210, 0.010]
+        position: [0.331, 1.115, -0.025]
+      left_wall:
+        size: [0.010, 2.230, 0.600]
+        position: [0.005, 1.115, -0.300]
+      right_wall:
+        size: [0.010, 2.230, 0.600]
+        position: [0.657, 1.115, -0.300]
+      bottom_wall:
+        size: [0.642, 0.010, 0.600]
+        position: [0.331, 0.005, -0.300]
+      top_wall:
+        size: [0.642, 0.010, 0.600]
+        position: [0.331, 2.225, -0.300]
+
+    control_collision:
+      button_size: [0.012, 0.015]
+      button_center_offset: 0.0055
+      knob_size: [0.046, 0.050]
+      knob_center_offset: 0.013
+
+    door:
+      control_id: cabinet_rear_door
+      hinge_position: [0.010, 0.010, -0.600]
+      axis: [0.0, 1.0, 0.0]
+      # 以下 panel/handle position 均相对 hinge_position，而非 cabinet_frame。
+      # panel_size 包络可视门板和 Gazebo 物理门板的完整厚度。
+      panel_size: [0.636, 2.204, 0.011]
+      panel_position: [0.321, 1.105, -0.0085]
+      handle_part_ids: [lower_mount, upper_mount, grip]
+      handle_parts:
+        lower_mount:
+          size: [0.025, 0.025, 0.070]
+          position: [0.600, 1.035, -0.045]
+        upper_mount:
+          size: [0.025, 0.025, 0.070]
+          position: [0.600, 1.175, -0.045]
+        grip:
+          size: [0.025, 0.165, 0.025]
+          position: [0.600, 1.105, -0.080]
+
+    switch:
+      control_id: cabinet_main_switch
+      parent_control_id: cabinet_rear_door
+      # 门上开关的 pivot 同样位于门铰链局部坐标系。
+      pivot_position: [0.342, 1.680, -0.018]
+      axis: [0.0, 0.0, 1.0]
+      size: [0.020, 0.080, 0.020]
+      center_offset: [0.0, 0.0, 0.010]

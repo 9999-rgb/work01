@@ -1,0 +1,199 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro
+    name="control_cabinet_gazebo_link"
+    params="link_name gazebo_material has_collision:=false">
+    <gazebo reference="${link_name}">
+      <material>${gazebo_material}</material>
+      <xacro:if value="${has_collision}">
+        <mu1>${cabinet_contact_friction}</mu1>
+        <mu2>${cabinet_contact_friction}</mu2>
+        <kp>${cabinet_contact_kp}</kp>
+        <kd>${cabinet_contact_kd}</kd>
+        <maxVel>${cabinet_contact_max_velocity}</maxVel>
+        <minDepth>${cabinet_contact_min_depth}</minDepth>
+      </xacro:if>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_button_state"
+    params="control_id joint_name">
+    <control>
+      <control_id>${control_id}</control_id>
+      <control_type>button</control_type>
+      <joint_name>${joint_name}</joint_name>
+      <joint_state_topic>${cabinet_namespace}/${control_id}/joint_states</joint_state_topic>
+      <pressed_topic>${cabinet_namespace}/${control_id}/pressed</pressed_topic>
+      <state_topic>${cabinet_namespace}/${control_id}/state</state_topic>
+      <state_ids>released pressed</state_ids>
+      <spring_stiffness>${cabinet_button_spring_stiffness}</spring_stiffness>
+      <spring_damping>8.0</spring_damping>
+      <press_threshold>${cabinet_button_press_threshold}</press_threshold>
+      <release_threshold>${cabinet_button_release_threshold}</release_threshold>
+      <reset_position>0.0</reset_position>
+      <graspable>false</graspable>
+    </control>
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_knob_state"
+    params="control_id joint_name">
+    <control>
+      <control_id>${control_id}</control_id>
+      <control_type>knob</control_type>
+      <joint_name>${joint_name}</joint_name>
+      <joint_state_topic>${cabinet_namespace}/${control_id}/joint_states</joint_state_topic>
+      <pressed_topic>${cabinet_namespace}/${control_id}/pressed</pressed_topic>
+      <state_topic>${cabinet_namespace}/${control_id}/state</state_topic>
+      <detents>-${cabinet_knob_limit} 0 ${cabinet_knob_limit}</detents>
+      <state_ids>left center right</state_ids>
+      <detent_stiffness>0.60</detent_stiffness>
+      <spring_damping>0.08</spring_damping>
+      <!-- Keep position-controlled robot wrists out of a rigid ODE loop. -->
+      <grasp_coupling_stiffness>1.0</grasp_coupling_stiffness>
+      <grasp_coupling_damping>0.02</grasp_coupling_damping>
+      <grasp_coupling_max_effort>0.5</grasp_coupling_max_effort>
+      <motion_tolerance>0.025</motion_tolerance>
+      <reset_position>0.0</reset_position>
+      <graspable>true</graspable>
+      <grasp_point>0 0 0.03</grasp_point>
+    </control>
+  </xacro:macro>
+
+  <xacro:macro name="control_cabinet_state_plugin" params="">
+    <!--
+      Gazebo hosts every cabinet plugin in one process.  Keep the plugin/node
+      name unique even when process-wide ROS arguments override the namespace;
+      otherwise rosout treats all cabinet instances as the same node.
+    -->
+    <plugin name="xczs_$(arg cabinet_name)_state" filename="libxczs_cabinet_state.so">
+      <ros>
+        <namespace>${cabinet_namespace}</namespace>
+      </ros>
+      <state_publish_rate>20.0</state_publish_rate>
+      <reset_service>${cabinet_namespace}/reset_physics</reset_service>
+      <grasp_service>${cabinet_namespace}/grasp</grasp_service>
+      <grasp_active_topic>${cabinet_namespace}/grasp_active</grasp_active_topic>
+      <active_control_topic>${cabinet_namespace}/active_control</active_control_topic>
+      <operation_heartbeat_topic>${cabinet_namespace}/operation_heartbeat</operation_heartbeat_topic>
+      <operation_fault_topic>${cabinet_namespace}/operation_fault</operation_fault_topic>
+      <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <!-- Above the 1.25 s worst normal heartbeat, below the 3 s lease TTL. -->
+      <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
+
+      <xacro:control_cabinet_button_state control_id="box_1_button_1" joint_name="box_1_box_1_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_1_button_2" joint_name="box_1_box_1_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_2_button_1" joint_name="box_2_box_2_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_2_button_2" joint_name="box_2_box_2_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_3_button_1" joint_name="box_3_box_3_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_3_button_2" joint_name="box_3_box_3_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_4_button_1" joint_name="box_4_box_4_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_4_button_2" joint_name="box_4_box_4_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_5_button_1" joint_name="box_5_box_5_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_5_button_2" joint_name="box_5_box_5_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_6_button_1" joint_name="box_6_box_6_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_6_button_2" joint_name="box_6_box_6_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_7_button_1" joint_name="box_7_box_7_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_7_button_2" joint_name="box_7_box_7_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_8_button_1" joint_name="box_8_box_8_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_8_button_2" joint_name="box_8_box_8_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_10_button_1" joint_name="box_10_box_10_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_10_button_2" joint_name="box_10_box_10_button_2" />
+      <xacro:control_cabinet_button_state control_id="box_11_button_1" joint_name="box_11_box_11_button_1" />
+      <xacro:control_cabinet_button_state control_id="box_11_button_2" joint_name="box_11_box_11_button_2" />
+
+      <xacro:control_cabinet_knob_state control_id="box_1_knob" joint_name="box_1_box_1_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_2_knob" joint_name="box_2_box_2_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_3_knob" joint_name="box_3_box_3_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_4_knob" joint_name="box_4_box_4_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_5_knob" joint_name="box_5_box_5_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_6_knob" joint_name="box_6_box_6_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_7_knob" joint_name="box_7_box_7_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_8_knob" joint_name="box_8_box_8_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_9_knob" joint_name="box_9_box_9_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_10_knob" joint_name="box_10_box_10_knob" />
+      <xacro:control_cabinet_knob_state control_id="box_11_knob" joint_name="box_11_box_11_knob" />
+
+      <control>
+        <control_id>cabinet_main_switch</control_id>
+        <control_type>switch</control_type>
+        <joint_name>cabinet_switch_base_cabinet_switch_handle</joint_name>
+        <joint_state_topic>${cabinet_namespace}/cabinet_main_switch/joint_states</joint_state_topic>
+        <pressed_topic>${cabinet_namespace}/cabinet_main_switch/pressed</pressed_topic>
+        <state_topic>${cabinet_namespace}/cabinet_main_switch/state</state_topic>
+        <detents>0 ${cabinet_switch_limit}</detents>
+        <state_ids>off on</state_ids>
+        <detent_stiffness>0.80</detent_stiffness>
+        <grasp_stiffness>0.05</grasp_stiffness>
+        <spring_damping>0.10</spring_damping>
+        <grasp_damping>0.10</grasp_damping>
+        <!--
+          The switch is mounted on the articulated rear door.  A cross-model
+          fixed joint closes a stiff loop through both cabinet hinges and can
+          pull the arm away from its Cartesian path.  Follow the measured tool
+          twist with a bounded one-DOF torque instead; the switch joint remains
+          fully integrated by ODE and its detent completes the final travel.
+        -->
+        <grasp_coupling_stiffness>2.0</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.10</grasp_coupling_damping>
+        <grasp_coupling_max_effort>1.0</grasp_coupling_max_effort>
+        <motion_tolerance>0.035</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+        <actuation_collision>cabinet_switch_handle_collision</actuation_collision>
+        <actuation_collision_restore_delay>1.50</actuation_collision_restore_delay>
+        <actuation_collision_restore_distance>0.50</actuation_collision_restore_distance>
+      </control>
+
+      <control>
+        <control_id>cabinet_rear_door</control_id>
+        <control_type>door</control_type>
+        <joint_name>cabinet_body_cabinet_rear_door</joint_name>
+        <joint_state_topic>${cabinet_namespace}/cabinet_rear_door/joint_states</joint_state_topic>
+        <pressed_topic>${cabinet_namespace}/cabinet_rear_door/pressed</pressed_topic>
+        <state_topic>${cabinet_namespace}/cabinet_rear_door/state</state_topic>
+        <detents>0 ${cabinet_door_limit}</detents>
+        <state_ids>closed open</state_ids>
+        <detent_stiffness>60.00</detent_stiffness>
+        <grasp_stiffness>0.50</grasp_stiffness>
+        <!--
+          Door inertia about the hinge is about 2.75 kg m^2.  Together with
+          the native 1.0 N m s/rad joint damping, 25.0 keeps the 60.0 N m/rad
+          detent spring close to critical damping after release.
+        -->
+        <spring_damping>25.00</spring_damping>
+        <grasp_damping>2.00</grasp_damping>
+        <!--
+          The arm's Gazebo position backend is kinematic.  Convert its measured
+          handle rotation into a bounded compliant hinge torque so the door is
+          still integrated by ODE instead of being assigned a target angle.
+        -->
+        <grasp_coupling_stiffness>80.0</grasp_coupling_stiffness>
+        <grasp_coupling_damping>30.0</grasp_coupling_damping>
+        <grasp_coupling_max_effort>150.0</grasp_coupling_max_effort>
+        <detent_hysteresis>0.02</detent_hysteresis>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0.600 1.105 -0.080</grasp_point>
+        <!--
+          The door uses compliant one-DOF coupling rather than a rigid
+          cross-model constraint.  Its panel and mounted switch therefore
+          remain physical throughout manipulation; the operator moves the
+          tool beyond the complete remaining sweep before releasing it.
+        -->
+      </control>
+    </plugin>
+  </xacro:macro>
+
+  <xacro:macro name="control_cabinet_gazebo" params="">
+    <gazebo>
+      <!-- The body is fixed to world; interactive controls remain dynamic. -->
+      <static>false</static>
+      <selfCollide>false</selfCollide>
+      <xacro:control_cabinet_state_plugin />
+    </gazebo>
+  </xacro:macro>
+</robot>

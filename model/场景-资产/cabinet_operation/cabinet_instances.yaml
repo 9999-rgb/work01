@@ -1,0 +1,29 @@
+# 控制柜实例清单
+# 所有实例共用同一份 cabinet_controls.yaml 和 cabinet_scene.yaml
+# 启动时通过 launch 参数 cabinet_instances:=<path> 传入
+
+instances:
+  - name: "cabinet_a"
+    x: 2.0
+    y: 0.33
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
+
+  - name: "cabinet_b"
+    # 与 cabinet_a 沿世界 Y 轴保持 2.50 m 间距，为相邻侧面工位
+    # 以及后门扫掠预留空间。
+    x: 2.0
+    y: 2.83
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679
+
+  - name: "cabinet_c"
+    # 三个柜体共用前、后通道；最外侧机器人 footprint 仍位于默认
+    # Nav2 地图 [-5, 5] 内。
+    x: 2.0
+    y: -2.17
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679

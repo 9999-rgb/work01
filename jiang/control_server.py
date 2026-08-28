@@ -273,6 +273,17 @@ def main() -> None:
     control_names = load_control_display_names(args.cabinet_controls)
     task_record_store = TaskRecordStore(control_names=control_names)
 
+    # 资产场景解析器：把资产库已导入的 scene 资产暴露给 /scenes 与 /scene/switch，
+    # 使监控页可在内置场景之外即时切换到用户导入的场景资产（Web 导入 / 删除即生效）。
+    from app.assets.store import SqlAssetStore
+    from control_gateway.asset_library import AssetLibrary, default_library_root
+    from control_gateway.asset_scene_provider import AssetSceneProvider
+
+    _asset_root = os.environ.get("XCZS_ASSETS_DIR") or default_library_root()
+    asset_scene_provider = AssetSceneProvider(
+        AssetLibrary(_asset_root, store=SqlAssetStore())
+    )
+
     server = ControlServer(
         host=args.host,
         port=args.port,
@@ -298,6 +309,7 @@ def main() -> None:
         allowed_origins=allowed_origins,
         fatal_callback=fatal_callback,
         task_record_sink=task_record_store,
+        asset_scene_provider=asset_scene_provider,
     )
 
     sensor_state = None

@@ -1,0 +1,10 @@
+# 控制柜操作场景（单一场景，名称与资产名一致）。
+#
+# nav2_map 用资产目录内相对路径，导入时归一化为资产库内绝对路径；
+# spawn_cabinet: true + model: null 表示沿用世界 ground_plane 并布柜体集群。
+scenes:
+  - name: cabinet_operation
+    spawn_cabinet: true
+    model: null
+    nav2_map: maps/inspection_map.yaml
+    robot_spawn: {x: 0.0, y: 0.0, z: 0.515, yaw: 1.5707963267948966}

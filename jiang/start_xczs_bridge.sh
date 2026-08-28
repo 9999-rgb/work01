@@ -132,6 +132,17 @@ NAV2_MAP_PATH="${NAV2_MAP_PATH:-}"
 NAV2_PARAMS_FILE="${NAV2_PARAMS_FILE:-$WORK_DIR/xczs_inspection_robot_nav2/config/nav2_params.yaml}"
 SCENE="${SCENE:-cabinet_operation}"
 SCENES_CONFIG="${SCENES_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/scenes.yaml}"
+# 当前进程栈启动时实际挂载的场景 / 柜体资产（供 Web「立即生效」按钮诚实报告：
+# 场景可即时切换，柜体资产生效需重启）。绝不写重启标记。柜体资产名从解析后的
+# CABINET_CONTROLS_PATH 推导，仅当它落在资产库 cabinet/ 下时才有对应资产名，
+# 否则留空（内置配置或显式 env 覆盖）。
+export XCZS_ACTIVE_SCENE="$SCENE"
+XCZS_ACTIVE_CABINET=""
+case "$CABINET_CONTROLS_PATH" in
+    "$XCZS_ASSETS_DIR"/cabinet/*/cabinet_controls.yaml)
+        XCZS_ACTIVE_CABINET="$(basename "$(dirname "$CABINET_CONTROLS_PATH")")" ;;
+esac
+export XCZS_ACTIVE_CABINET
 ROBOT_BRINGUP="${ROBOT_BRINGUP:-true}"
 GAZEBO_ENABLED="${GAZEBO_ENABLED:-true}"
 USE_SIM_TIME="${USE_SIM_TIME:-true}"

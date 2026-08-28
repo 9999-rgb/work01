@@ -27,8 +27,10 @@ scenes:
       file: package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.sdf
       pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
     nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map_electrical_mezzanine.yaml
-    # 占位初始位姿：近 floor 左下自由角落，待按实际地图与需求调整。
-    robot_spawn: {x: 2.0, y: 2.0, z: 0.515, yaw: 0.0}
+    # 出生点避开 x=2.0 的柜体集群（cabinet_b 前板 y∈[2.18,2.82]）：(2,2)
+    # 距其仅 0.02 m 会出生即碰撞（body 半宽 0.426 m），改到 (4,4)，距最近
+    # 柜体前板 1.99 m，mesh 地板平坦无上部结构。
+    robot_spawn: {x: 4.0, y: 4.0, z: 0.515, yaw: 0.0}
 
   - name: generator_plant
     spawn_cabinet: false

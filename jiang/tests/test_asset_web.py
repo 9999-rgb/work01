@@ -152,12 +152,16 @@ class _AssetWebTestCase(unittest.TestCase):
         self._previous_env = os.environ.get("XCZS_ASSETS_DIR")
         self._previous_db_url = os.environ.get("XCZS_DATABASE_URL")
         self._previous_active_toolset = os.environ.get("XCZS_ACTIVE_TOOLSET")
+        self._previous_active_scene = os.environ.get("XCZS_ACTIVE_SCENE")
+        self._previous_active_cabinet = os.environ.get("XCZS_ACTIVE_CABINET")
         os.environ["XCZS_ASSETS_DIR"] = str(self.assets_dir)
         os.environ["XCZS_DATABASE_URL"] = f"sqlite+aiosqlite:///{self.db_path}"
         # Unit tests start the Web API without the unified launcher.  Make
-        # that state explicit instead of inheriting a toolset from the outer
-        # test process.
+        # that state explicit instead of inheriting a toolset (or mounted
+        # scene / cabinet) from the outer test process.
         os.environ.pop("XCZS_ACTIVE_TOOLSET", None)
+        os.environ.pop("XCZS_ACTIVE_SCENE", None)
+        os.environ.pop("XCZS_ACTIVE_CABINET", None)
 
     def tearDown(self) -> None:
         if self._client_entered:
@@ -174,6 +178,14 @@ class _AssetWebTestCase(unittest.TestCase):
             os.environ.pop("XCZS_ACTIVE_TOOLSET", None)
         else:
             os.environ["XCZS_ACTIVE_TOOLSET"] = self._previous_active_toolset
+        if self._previous_active_scene is None:
+            os.environ.pop("XCZS_ACTIVE_SCENE", None)
+        else:
+            os.environ["XCZS_ACTIVE_SCENE"] = self._previous_active_scene
+        if self._previous_active_cabinet is None:
+            os.environ.pop("XCZS_ACTIVE_CABINET", None)
+        else:
+            os.environ["XCZS_ACTIVE_CABINET"] = self._previous_active_cabinet
         self._temporary_directory.cleanup()
 
     # ── SQLite 目录 / 选择断言辅助 ───────────────────────────────────
@@ -192,6 +204,42 @@ class _AssetWebTestCase(unittest.TestCase):
                 "SELECT scene, cabinet FROM selection WHERE id=1"
             ).fetchone()
         return (None, None) if row is None else tuple(row)
+
+    def _import_scene_direct(self, name: str = "web_scene") -> None:
+        """绕过 /assets/import 的 admin 门禁，直接向资产库写入最小场景资产。
+
+        仅供 read-contract 用例使用：让 GET /assets 的 ``applied`` 块与
+        POST /assets/selection 的保存响应能针对真实 catalog 断言。
+        validate=None 只做结构 + 引用归一化，不校验 PGM 地图文件是否存在。
+        必须与生产路由（``assets.py:_library``）共用 ``SqlAssetStore``，否则
+        导入会落进默认 YAML catalog 而非本用例指向的 SQLite ``assets`` 表。
+        """
+        from app.assets.store import SqlAssetStore
+
+        from control_gateway.asset_library import AssetLibrary
+
+        source = self.scratch / "src" / name
+        source.mkdir(parents=True)
+        (source / "manifest.yaml").write_text(
+            yaml.safe_dump(_scene_manifest(name), sort_keys=False),
+            encoding="utf-8",
+        )
+        (source / "scenes.yaml").write_text(
+            yaml.safe_dump(_scene_document(name), sort_keys=False),
+            encoding="utf-8",
+        )
+        (source / "cabinet_instances.yaml").write_text(
+            "instances: []\n", encoding="utf-8"
+        )
+        maps = source / "maps"
+        maps.mkdir()
+        (maps / "inspection_map.yaml").write_text(
+            yaml.safe_dump(MAP_FIELDS, sort_keys=False), encoding="utf-8"
+        )
+        (maps / "inspection_map.pgm").write_bytes(b"\x00")
+        AssetLibrary(self.assets_dir, store=SqlAssetStore()).import_asset(
+            source, validate=None
+        )
 
 
 class AssetWebReadContractTest(_AssetWebTestCase):
@@ -293,6 +341,43 @@ class AssetWebReadContractTest(_AssetWebTestCase):
             },
             applied.json()["toolset_status"],
         )
+
+    # ── applied（启动时实际挂载的场景 / 柜体 / 套装） ─────────────
+    def test_applied_all_null_without_launcher_env(self) -> None:
+        # setUp 已清空 XCZS_ACTIVE_SCENE / CABINET / TOOLSET —— 无统一启动
+        # 脚本时 applied 全为 null，绝不谎报挂载状态。
+        data = self.client.get("/assets").json()
+        self.assertEqual(
+            {"scene": None, "cabinet": None, "toolset": None}, data["applied"]
+        )
+
+    def test_applied_reports_mounted_scene_cabinet_toolset_from_env(self) -> None:
+        os.environ["XCZS_ACTIVE_SCENE"] = "cabinet_operation"
+        os.environ["XCZS_ACTIVE_CABINET"] = "demo_cabinet"
+        os.environ["XCZS_ACTIVE_TOOLSET"] = "B"
+
+        data = self.client.get("/assets").json()
+        self.assertEqual(
+            {
+                "scene": "cabinet_operation",
+                "cabinet": "demo_cabinet",
+                "toolset": "B",
+            },
+            data["applied"],
+        )
+
+    def test_selection_save_reports_applied_and_keeps_restart_required_false(
+        self,
+    ) -> None:
+        self._import_scene_direct("web_scene")
+        os.environ["XCZS_ACTIVE_SCENE"] = "web_scene"  # 已挂载
+        # cabinet 未挂载（env 缺失）—— 保存后必须诚实报告 None，且不写重启标记。
+
+        saved = self.client.post("/assets/selection", json={"scene": "web_scene"})
+        self.assertEqual(200, saved.status_code, saved.text)
+        self.assertFalse(saved.json()["restart_required"])
+        self.assertEqual("web_scene", saved.json()["applied"]["scene"])
+        self.assertIsNone(saved.json()["applied"]["cabinet"])
 
 
 class AssetWebImportContractTest(_AssetWebTestCase):

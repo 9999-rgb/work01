@@ -1,0 +1,71 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:property
+    name="cabinet_mesh_directory"
+    value="package://xczs_inspection_robot_description/meshes/control_cabinet" />
+
+  <!-- Cabinet dimensions in the original CAD frame. -->
+  <xacro:property name="cabinet_width" value="0.662" />
+  <xacro:property name="cabinet_height" value="2.230" />
+  <xacro:property name="cabinet_depth" value="0.600" />
+  <xacro:property name="cabinet_frame_thickness" value="0.010" />
+  <xacro:property name="cabinet_front_panel_thickness" value="0.010" />
+  <xacro:property name="cabinet_door_width" value="0.642" />
+  <xacro:property name="cabinet_door_height" value="2.210" />
+  <xacro:property name="cabinet_door_thickness" value="0.010" />
+  <xacro:property name="cabinet_door_visual_clearance" value="0.003" />
+  <xacro:property name="cabinet_door_visual_depth_clearance" value="0.003" />
+  <xacro:property name="cabinet_door_collision_clearance" value="0.004" />
+  <xacro:property name="cabinet_door_collision_depth_clearance" value="0.004" />
+  <xacro:property name="cabinet_door_mass" value="20.0" />
+
+  <!-- Shared physical parameters for all interactive controls. -->
+  <xacro:property
+    name="cabinet_button_travel"
+    value="$(arg button_max_travel)" />
+  <xacro:property
+    name="cabinet_button_spring_stiffness"
+    value="$(arg button_spring_stiffness)" />
+  <xacro:property
+    name="cabinet_button_press_threshold"
+    value="$(arg button_press_threshold)" />
+  <xacro:property
+    name="cabinet_button_release_threshold"
+    value="${0.5 * cabinet_button_press_threshold}" />
+  <xacro:property name="cabinet_button_radius" value="0.015" />
+  <xacro:property name="cabinet_button_collision_length" value="0.012" />
+
+  <xacro:property name="cabinet_knob_limit" value="0.7853981633974483" />
+  <!--
+    The extreme knob detents coincide exactly with the original revolute joint
+    limit (0.785398), so a knob driven to its detent by the release snap rests
+    on the ODE stop motor.  That stop contact is sticky: the constraint force
+    balances the detent pull exactly, and the knob never returns to its detent,
+    so the next operation's attach check sees the control still moving and
+    refuses.  The joint limit is therefore a pure safety backstop placed well
+    past the snap overshoot (the observed coast past the detent is about
+    0.01 rad at the 3e-5 kg m^2 inertia).  With the backstop at +-0.8854 the
+    knob coasts to its natural peak, the detent reverses it, and the low joint
+    friction (0.002 N m, primitives.xacro) lets it seat back at the detent.
+  -->
+  <xacro:property name="cabinet_knob_joint_limit" value="0.8853981633974483" />
+  <xacro:property name="cabinet_knob_mass" value="0.08" />
+  <xacro:property name="cabinet_knob_base_radius" value="0.0175" />
+  <xacro:property name="cabinet_knob_base_length" value="0.020" />
+
+  <xacro:property name="cabinet_switch_limit" value="1.5707963267948966" />
+  <!--
+    The switch ON detent (0.785398 -> pi/2) coincides exactly with the original
+    upper revolute limit.  As with the knob, a switch driven to its ON detent
+    by the release snap would rest on the ODE stop motor and never seat back.
+    Give the travel the same generous safety-backstop margin.
+  -->
+  <xacro:property name="cabinet_switch_joint_limit" value="1.6707963267948966" />
+  <xacro:property name="cabinet_door_limit" value="1.5707963267948966" />
+
+  <xacro:property name="cabinet_contact_friction" value="1.0" />
+  <xacro:property name="cabinet_contact_kp" value="1000000" />
+  <xacro:property name="cabinet_contact_kd" value="100" />
+  <xacro:property name="cabinet_contact_max_velocity" value="0.1" />
+  <xacro:property name="cabinet_contact_min_depth" value="0.001" />
+</robot>

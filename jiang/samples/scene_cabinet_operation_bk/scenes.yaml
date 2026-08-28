@@ -1,0 +1,10 @@
+scenes:
+- name: scene_cabinet_operation
+  spawn_cabinet: true
+  model: null
+  nav2_map: /home/live/work01/jiang/data/assets/scene/scene_cabinet_operation/maps/inspection_map.yaml
+  robot_spawn:
+    x: 0.0
+    y: 0.0
+    z: 0.515
+    yaw: 1.5707963267948966

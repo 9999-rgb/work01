@@ -1,0 +1,15 @@
+# 场景资产：控制柜操作场景（cabinet_operation）。
+#
+# 自包含 Nav2 地图 + 三台控制柜摆放；地板沿用世界 ground_plane
+# （spawn_cabinet: true + model: null）。柜体资产引用 demo_cabinet
+# （33 控件物理孪生）。导入校验（check_scene_config）会验证 robot_spawn
+# 的加 pad 足迹完全落在自由栅格内，并把相对引用归一化为资产库内绝对路径。
+kind: scene
+name: cabinet_operation
+version: 1.0.0
+description: 控制柜操作场景（默认场景，spawn 三台控制柜）
+files:
+  scenes: scenes.yaml
+  instances: cabinet_instances.yaml
+references:
+  cabinet: demo_cabinet

@@ -159,6 +159,19 @@ def _spec(
     )
 
 
+class _FakeProvider:
+    """Stand-in for AssetSceneProvider in runner-level tests."""
+
+    def __init__(self, specs: dict[str, SceneSpec]) -> None:
+        self._specs = dict(specs)
+
+    def resolve_scene(self, name: str) -> Optional[SceneSpec]:
+        return self._specs.get(name)
+
+    def iter_scene_specs(self):
+        return iter(self._specs.values())
+
+
 class SceneSwitchTest(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary_directory = tempfile.TemporaryDirectory()
@@ -183,9 +196,12 @@ class SceneSwitchTest(unittest.TestCase):
         inventory: tuple[_Cabinet, ...] = (),
         active: Optional[str] = None,
         fail_load_map: bool = False,
+        asset_scene_provider: Any = None,
     ) -> tuple[ControlServer, _FakeGazeboClient, _FakeNode]:
         server = object.__new__(ControlServer)
         server._scene_catalog = catalog
+        server._scene_specs = {scene.name: scene for scene in catalog}
+        server._asset_scene_provider = asset_scene_provider
         server._gazebo_client = _FakeGazeboClient()
         server._node = _FakeNode(fail_load_map=fail_load_map)
         server._inventory = inventory
@@ -439,6 +455,127 @@ class SceneSwitchTest(unittest.TestCase):
                 "cabinet_a", "box_8_button_1", "press", None, None, None
             )
         self.assertEqual(404, caught2.exception.status)
+
+
+    def test_scenes_merges_asset_scenes_with_source_tag_and_dedupe(self) -> None:
+        catalog = SceneCatalog(
+            [
+                _spec("cabinet_operation", True),
+                _spec("generator_plant", False, model=self.floor_model),
+            ]
+        )
+        asset_mezzanine = _spec(
+            "electrical_mezzanine",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/assets/maps/mezzanine.yaml",
+        )
+        asset_cabinet = _spec(
+            "cabinet_operation", True, nav2_map="/tmp/assets/maps/cabinet.yaml"
+        )
+        provider = _FakeProvider(
+            {
+                "electrical_mezzanine": asset_mezzanine,
+                "cabinet_operation": asset_cabinet,
+            }
+        )
+        server, _gazebo, _node = self._server(
+            catalog, active="cabinet_operation", asset_scene_provider=provider
+        )
+
+        scenes = server.scenes()
+        by_name = {entry["name"]: entry for entry in scenes["scenes"]}
+        self.assertEqual(
+            {"cabinet_operation", "generator_plant", "electrical_mezzanine"},
+            set(by_name),
+        )
+        # 内置场景带 builtin 标记。
+        self.assertEqual("builtin", by_name["generator_plant"]["source"])
+        # 同名冲突时资产胜出：source 为 asset，nav2_map 用资产版本。
+        self.assertEqual("asset", by_name["cabinet_operation"]["source"])
+        self.assertEqual(
+            "/tmp/assets/maps/cabinet.yaml",
+            by_name["cabinet_operation"]["nav2_map"],
+        )
+        self.assertEqual("asset", by_name["electrical_mezzanine"]["source"])
+
+    def test_switch_to_asset_scene_resolves_caches_and_switches_back(self) -> None:
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
+        plant = _spec(
+            "generator_plant",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/maps/plant.yaml",
+            robot_spawn=RobotSpawn(2.0, 3.0, 0.515, 0.0),
+        )
+        asset_mezzanine = _spec(
+            "electrical_mezzanine",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/assets/maps/mezzanine.yaml",
+            robot_spawn=RobotSpawn(1.0, 1.0, 0.515, 0.0),
+        )
+        catalog = SceneCatalog([cabinet, plant])
+        provider = _FakeProvider({"electrical_mezzanine": asset_mezzanine})
+        server, gazebo, node = self._server(
+            catalog,
+            inventory=(_Cabinet("cabinet_a"),),
+            active="cabinet_operation",
+            asset_scene_provider=provider,
+        )
+
+        result = server.switch_scene("electrical_mezzanine")
+        self.assertEqual("switched", result["status"])
+        self.assertEqual("electrical_mezzanine", result["scene"])
+        self.assertEqual("cabinet_operation", result["previous"])
+        self.assertEqual("electrical_mezzanine", server._active_scene)
+        # 资产场景已缓存进注册表，previous 查询与回切均命中。
+        self.assertIn("electrical_mezzanine", server._scene_specs)
+
+        back = server.switch_scene("generator_plant")
+        self.assertEqual("switched", back["status"])
+        self.assertEqual("generator_plant", server._active_scene)
+
+        again = server.switch_scene("electrical_mezzanine")
+        self.assertEqual("switched", again["status"])
+        self.assertEqual("electrical_mezzanine", server._active_scene)
+
+    def test_switch_to_unknown_still_404_when_neither_catalog_nor_asset(
+        self,
+    ) -> None:
+        catalog = SceneCatalog([_spec("cabinet_operation", True)])
+        provider = _FakeProvider(
+            {"electrical_mezzanine": _spec("electrical_mezzanine", False)}
+        )
+        server, _gazebo, _node = self._server(
+            catalog, asset_scene_provider=provider
+        )
+
+        with self.assertRaises(ControlRequestError) as raised:
+            server.switch_scene("missing_scene")
+        self.assertEqual(404, raised.exception.status)
+
+    def test_active_scene_works_for_asset_scene(self) -> None:
+        catalog = SceneCatalog([_spec("cabinet_operation", True)])
+        asset_mezzanine = _spec(
+            "electrical_mezzanine",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/assets/maps/mezzanine.yaml",
+        )
+        provider = _FakeProvider({"electrical_mezzanine": asset_mezzanine})
+        server, _gazebo, _node = self._server(
+            catalog, active="cabinet_operation", asset_scene_provider=provider
+        )
+        server._active_scene = "electrical_mezzanine"
+
+        active = server.active_scene()
+        self.assertEqual("electrical_mezzanine", active["name"])
+        self.assertFalse(active["spawn_cabinet"])
 
 
 if __name__ == "__main__":

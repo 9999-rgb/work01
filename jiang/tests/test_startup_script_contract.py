@@ -238,6 +238,24 @@ class StartupScriptContractTests(unittest.TestCase):
         )
         self.assertNotIn("工具套装已切换，自动重启", run_all_source)
 
+    def test_mounted_scene_and_cabinet_are_exported_without_restart_marker(
+        self,
+    ) -> None:
+        # 「立即生效」依赖启动脚本把实际挂载的场景 / 柜体资产名导出为 env，
+        # Web 据此诚实区分「已挂载生效」与「需重启后生效」。与工具套装先例
+        # 一致：只导出静态挂载状态，绝不写重启标记或触发自动重启。
+        self.assertIn('export XCZS_ACTIVE_SCENE="$SCENE"', self.startup_source)
+        self.assertIn("XCZS_ACTIVE_CABINET", self.startup_source)
+        self.assertIn("export XCZS_ACTIVE_CABINET", self.startup_source)
+        self.assertIn(
+            '"$XCZS_ASSETS_DIR"/cabinet/*/cabinet_controls.yaml',
+            self.startup_source,
+        )
+        # 绝不因保存一次选择而自动重启（工具套装测试的同一约束）。
+        self.assertNotIn("XCZS_RESTART_MARKER", self.startup_source)
+        self.assertNotIn("restart.marker", self.startup_source)
+        self.assertNotIn("return 42", self.startup_source)
+
     def test_network_isolation_is_explicit_and_consistent(self) -> None:
         self.assertIn(
             'ZENOH_LAN_ENABLED="${XCZS_ZENOH_LAN_ENABLED:-false}"',

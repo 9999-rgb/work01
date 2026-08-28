@@ -30,7 +30,13 @@ DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
 DEFAULT_JOINT_STATE_TOPIC = "/xczs/joint_states"
 DEFAULT_JOINT_HOLD_TOPIC = "/xczs/joint_hold_enabled"
 DEFAULT_TIMEOUT_SEC = 15.0
-DEFAULT_TOLERANCE = 0.02
+# 出生位姿容差：spawn 关节锁（planar_stabilizer_plugin 的 joint_hold）释放
+# 前，校验窗口可能采到"锁未生效时刻"的沉降中段值；释放后的稳态沉降实测可达
+# 0.069 rad（约 3.9°，l_arm_1）。0.02 rad（约 1.15°）比该噪声更紧，导致三轴
+# 机械臂中少量关节恰好越线、启动被误杀（实测撞在 0.0355）。本哨兵的目标是抓
+# "初始化断裂"（关节错位/未读取，通常 0.1+ rad），因此取 0.08 rad（约 4.6°）：
+# 完整覆盖正常沉降（0.069 < 0.08），仍远小于真实故障幅度。
+DEFAULT_TOLERANCE = 0.08
 POLL_INTERVAL_SEC = 0.05
 JOINT_HOLD_QOS = QoSProfile(
     depth=1,

@@ -1,0 +1,151 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro
+    name="control_cabinet_visual_link"
+    params="link_name mesh_name urdf_material gazebo_material">
+    <link name="${link_name}">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/${mesh_name}.stl" />
+        </geometry>
+        <material name="${urdf_material}" />
+      </visual>
+    </link>
+    <xacro:control_cabinet_gazebo_link
+      link_name="${link_name}"
+      gazebo_material="${gazebo_material}" />
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_fixed_joint"
+    params="joint_name parent_link child_link xyz">
+    <joint name="${joint_name}" type="fixed">
+      <origin xyz="${xyz}" rpy="0 0 0" />
+      <parent link="${parent_link}" />
+      <child link="${child_link}" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_interactive_button"
+    params="link_name joint_name mesh_name parent_link xyz urdf_material gazebo_material">
+    <link name="${link_name}">
+      <inertial>
+        <origin xyz="0 0 -0.03975" rpy="0 0 0" />
+        <mass value="0.05" />
+        <inertia
+          ixx="3.2e-05"
+          ixy="0"
+          ixz="0"
+          iyy="3.2e-05"
+          iyz="0"
+          izz="1.2e-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/${mesh_name}.stl" />
+        </geometry>
+        <material name="${urdf_material}" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 -0.0055" rpy="0 0 0" />
+        <geometry>
+          <cylinder
+            radius="${cabinet_button_radius}"
+            length="${cabinet_button_collision_length}" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${joint_name}" type="prismatic">
+      <origin xyz="${xyz}" rpy="0 0 0" />
+      <parent link="${parent_link}" />
+      <child link="${link_name}" />
+      <!-- The CAD panel normal is +Z; pressing moves into the panel. -->
+      <axis xyz="0 0 -1" />
+      <limit
+        lower="0.0"
+        upper="${cabinet_button_travel}"
+        effort="30.0"
+        velocity="0.10" />
+      <dynamics damping="2.0" friction="0.05" />
+    </joint>
+    <xacro:control_cabinet_gazebo_link
+      link_name="${link_name}"
+      gazebo_material="${gazebo_material}"
+      has_collision="true" />
+    <gazebo reference="${joint_name}">
+      <implicitSpringDamper>true</implicitSpringDamper>
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+  </xacro:macro>
+
+  <xacro:macro
+    name="control_cabinet_interactive_knob"
+    params="link_name joint_name mesh_name parent_link xyz blade_xyz blade_size urdf_material gazebo_material">
+    <link name="${link_name}">
+      <inertial>
+        <origin xyz="${blade_xyz}" rpy="0 0 0" />
+        <mass value="${cabinet_knob_mass}" />
+        <inertia
+          ixx="3.7e-05"
+          ixy="0"
+          ixz="0"
+          iyy="1.0e-05"
+          iyz="0"
+          izz="3.0e-05" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${cabinet_mesh_directory}/${mesh_name}.stl" />
+        </geometry>
+        <material name="${urdf_material}" />
+      </visual>
+      <!-- The base and blade stay primitive so contact remains convex. -->
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <cylinder
+            radius="${cabinet_knob_base_radius}"
+            length="${cabinet_knob_base_length}" />
+        </geometry>
+      </collision>
+      <collision>
+        <origin xyz="${blade_xyz}" rpy="0 0 0" />
+        <geometry>
+          <box size="${blade_size}" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${joint_name}" type="revolute">
+      <origin xyz="${xyz}" rpy="0 0 0" />
+      <parent link="${parent_link}" />
+      <child link="${link_name}" />
+      <axis xyz="0 0 1" />
+      <limit
+        lower="-${cabinet_knob_joint_limit}"
+        upper="${cabinet_knob_joint_limit}"
+        effort="5.0"
+        velocity="1.0" />
+      <!--
+        Joint friction must stay well below the detent restoring force at the
+        cushion offset (0.60 * 0.01 = 0.006 N m).  0.02 N m gave a +-0.033 rad
+        Coulomb dead zone, so a release snap landing 0.0054 rad past the detent
+        stuck there on the ODE stop motor and kicked on approach.  0.002 N m
+        keeps the dead zone +-0.0033 rad inside the cushion, so the detent
+        always seats the knob back at its detent.
+      -->
+      <dynamics damping="0.04" friction="0.002" />
+    </joint>
+    <xacro:control_cabinet_gazebo_link
+      link_name="${link_name}"
+      gazebo_material="${gazebo_material}"
+      has_collision="true" />
+    <gazebo reference="${joint_name}">
+      <implicitSpringDamper>true</implicitSpringDamper>
+      <provideFeedback>true</provideFeedback>
+    </gazebo>
+  </xacro:macro>
+</robot>

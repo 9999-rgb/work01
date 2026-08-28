@@ -1024,6 +1024,12 @@
           <div class="command-row">
             <button class="btn btn-primary" id="btnAssetApply" disabled>保存场景 / 柜体选择</button>
           </div>
+          <div class="command-row">
+            <button class="btn btn-outline" id="btnAssetActivate" disabled>立即生效</button>
+          </div>
+          <div class="status-detail" id="assetActivateDetail">
+            立即生效：保存当前选择；场景可经上方场景下拉即时切换，柜体资产若未挂载需重启栈后生效（不自动重启）。
+          </div>
           <div class="status-detail" id="assetLibraryRoot">
             场景 / 柜体选择会在下次人工启动时由 <strong>./run_all.sh</strong> 应用到场景 / 导航 / 柜体配置。
           </div>
@@ -1238,6 +1244,8 @@ const btnAssetImport = $('btnAssetImport');
 const btnAssetRefresh = $('btnAssetRefresh');
 const btnAssetDelete = $('btnAssetDelete');
 const btnAssetApply = $('btnAssetApply');
+const btnAssetActivate = $('btnAssetActivate');
+const assetActivateDetail = $('assetActivateDetail');
 const btnToolsetSwitch = $('btnToolsetSwitch');
 const assetLibraryRoot = $('assetLibraryRoot');
 const toolsetDetail = $('toolsetDetail');
@@ -3564,19 +3572,27 @@ function applyScenes(payload) {
     ? payload.active
     : '';
   const previous = sceneSelect.value;
-  const options = sceneCatalog.map(entry => {
+  // 按来源分组：内置场景 / 已导入场景（资产场景由 /scenes 的 source 字段标记）。
+  const builtinGroup = document.createElement('optgroup');
+  builtinGroup.label = '内置场景';
+  const assetGroup = document.createElement('optgroup');
+  assetGroup.label = '已导入场景';
+  for (const entry of sceneCatalog) {
     const option = document.createElement('option');
     option.value = entry.name;
     option.textContent = entry.name;
-    return option;
-  });
-  if (!options.length) {
+    (entry.source === 'asset' ? assetGroup : builtinGroup).appendChild(option);
+  }
+  const nodes = [];
+  if (builtinGroup.children.length) nodes.push(builtinGroup);
+  if (assetGroup.children.length) nodes.push(assetGroup);
+  if (!nodes.length) {
     const empty = document.createElement('option');
     empty.value = '';
     empty.textContent = '未配置场景';
-    options.push(empty);
+    nodes.push(empty);
   }
-  sceneSelect.replaceChildren(...options);
+  sceneSelect.replaceChildren(...nodes);
   const preferred = sceneCatalog.some(entry => entry.name === previous)
     ? previous
     : (sceneCatalog.some(entry => entry.name === activeSceneName)
@@ -3598,8 +3614,12 @@ function applyScenes(payload) {
   );
   sceneDetail.textContent = activeEntry
     ? (spawnCabinet
-      ? '当前场景包含控制柜；切换后柜体控件与地图将随之更新。'
-      : '当前场景仅含机器人与场地（无柜体），Nav2 地图已对应更新。')
+      ? (activeEntry.source === 'asset'
+        ? '资产场景含控制柜：柜体控件与地图将即时更新；若其自带实例与本次启动库存不一致，实例/控件/xacro 需重启栈后生效。'
+        : '当前场景包含控制柜；切换后柜体控件与地图将随之更新。')
+      : (activeEntry.source === 'asset'
+        ? '资产场景仅含机器人与场地（无柜体），Nav2 地图已对应更新。'
+        : '当前场景仅含机器人与场地（无柜体），Nav2 地图已对应更新。'))
     : '连接控制服务器后可切换仿真场景。';
 }
 
@@ -3845,6 +3865,7 @@ function updateAssetControlState() {
   btnAssetRefresh.disabled = !writable;
   btnAssetDelete.disabled = !admin || !assetList.value || assetImportInFlight;
   btnAssetApply.disabled = !writable || assetImportInFlight;
+  btnAssetActivate.disabled = !writable || assetImportInFlight;
   assetSceneSelect.disabled = !writable;
   assetCabinetSelect.disabled = !writable;
   const canSwitch = writable && assetIsAdmin() &&
@@ -3986,6 +4007,44 @@ async function saveAssetSelection() {
 
 const toolsetStatusPollIntervalMs = 750;
 const toolsetSwitchWaitTimeoutMs = 180000;
+
+// 「立即生效」：持久化当前场景 / 柜体选择，并基于 POST /assets/selection 响应的
+// ``applied``（当前进程栈启动时实际挂载的资产）诚实报告柜体是否需重启生效。
+// 不触发自动重启，也不做场景即时切换 —— 场景即时切换由上方场景下拉负责。
+async function applySelectedAssets() {
+  const scene = assetSceneSelect.value || null;
+  const cabinet = assetCabinetSelect.value || null;
+  setAutonomyState(assetState, '生效中 ...', 'busy');
+  try {
+    const saved = await assetRequest('/assets/selection', 'POST', {scene, cabinet});
+    assetSelectionDirty = false;
+    assetSelectionSnapshot = saved;
+    assetToolsetStatus = saved.toolset_status || assetToolsetStatus;
+    const applied = saved.applied || {};
+    const parts = [];
+    if (scene) {
+      parts.push(applied.scene === scene
+        ? `场景资产 ${scene} 已在本次启动生效`
+        : `场景资产 ${scene} 已保存（可用上方场景下拉即时切换，或重启后生效）`);
+    }
+    if (cabinet) {
+      parts.push(applied.cabinet === cabinet
+        ? `柜体资产 ${cabinet} 已挂载生效`
+        : `柜体资产 ${cabinet} 需重启栈后生效（不自动重启）`);
+    }
+    const message = parts.length ? parts.join('；') : '未选择场景 / 柜体资产';
+    assetActivateDetail.textContent = message;
+    const pendingRestart = Boolean(cabinet) && applied.cabinet !== cabinet;
+    toast(message, pendingRestart ? 'warn' : 'ok');
+    log('ok', `资产生效：${JSON.stringify(saved)}`);
+    await refreshAssets();
+  } catch (error) {
+    setAutonomyState(assetState, '生效失败', 'err');
+    assetActivateDetail.textContent = `生效失败：${error.message}`;
+    toast(`生效失败：${error.message}`, 'err');
+    log('err', `资产生效失败: ${error.message}`);
+  }
+}
 
 function waitForToolsetStatusDelay(delayMs) {
   return new Promise(resolve => setTimeout(resolve, delayMs));
@@ -6678,6 +6737,7 @@ $('btnAssetRefresh').addEventListener('click', () => {
 });
 $('btnAssetDelete').addEventListener('click', deleteSelectedAsset);
 $('btnAssetApply').addEventListener('click', saveAssetSelection);
+$('btnAssetActivate').addEventListener('click', applySelectedAssets);
 $('btnToolsetSwitch').addEventListener('click', switchToolset);
 for (const select of [assetSceneSelect, assetCabinetSelect]) {
   select.addEventListener('change', () => {

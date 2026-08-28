@@ -1,0 +1,13 @@
+# 电气夹层巡检场景（单一场景，名称与资产名一致）。
+#
+# model.file 用 package:// 引用 description 包静态地板（SDF 内部 mesh 走
+# model://，运行时经 gazebo resource path 解析）；nav2_map 用资产目录内
+# 相对路径，导入时归一化为资产库内绝对路径。
+scenes:
+  - name: electrical_mezzanine
+    spawn_cabinet: false
+    model:
+      file: package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.sdf
+      pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
+    nav2_map: maps/inspection_map_electrical_mezzanine.yaml
+    robot_spawn: {x: 2.0, y: 2.0, z: 0.515, yaw: 0.0}

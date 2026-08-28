@@ -29,6 +29,7 @@ from rclpy.context import Context
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.signals import SignalHandlerOptions
 
+from .asset_scene_provider import AssetSceneProvider
 from .cabinet_client import CabinetClient
 from .cabinet_client import CabinetClientError
 from .cabinet_spawn import CabinetSpawnError
@@ -229,6 +230,7 @@ class ControlServer:
         toolset_persist_callback: Optional[Callable[[str], None]] = None,
         fatal_callback: Optional[ExecutorFatalCallback] = None,
         task_record_sink: Optional[TaskRecordSink] = None,
+        asset_scene_provider: Optional[AssetSceneProvider] = None,
     ) -> None:
         if (
             isinstance(port, bool)
@@ -331,6 +333,24 @@ class ControlServer:
             self._scene_catalog = SceneCatalog.load(scenes_path)
         except SceneError as error:
             raise RuntimeError(f"Invalid scene catalog: {error}") from error
+        # 运行时场景注册表。内置场景始终可选（即使启动时挂了资产 scenes.yaml
+        # 作为 SCENES_CONFIG）；已导入的资产场景经 _asset_scene_provider 惰性
+        # 解析并缓存于此，使 _apply_scene_switch 的 previous 查询与删除资产后
+        # 的回切都能命中。_active_scene 校验仍只针对启动 catalog。
+        builtin_scenes_path = control_config / "scenes.yaml"
+        try:
+            if Path(scenes_path).expanduser().resolve() == builtin_scenes_path.expanduser().resolve():
+                self._builtin_scene_catalog = self._scene_catalog
+            else:
+                self._builtin_scene_catalog = SceneCatalog.load(builtin_scenes_path)
+        except (SceneError, OSError):
+            self._builtin_scene_catalog = self._scene_catalog
+        self._scene_specs: Dict[str, SceneSpec] = {}
+        for scene in self._builtin_scene_catalog:
+            self._scene_specs[scene.name] = scene
+        for scene in self._scene_catalog:
+            self._scene_specs[scene.name] = scene  # 启动 catalog 同名覆盖
+        self._asset_scene_provider = asset_scene_provider
         active_scene = (
             str(initial_scene) if initial_scene is not None else None
         )
@@ -1291,17 +1311,67 @@ class ControlServer:
                 }
 
     def scenes(self) -> Dict[str, Any]:
-        """Return the scene catalog and the currently active scene."""
+        """Return all switchable scenes (built-in + imported assets) and the
+        currently active scene.
+
+        Built-in scenes come from the shipped ``scenes.yaml``; imported scene
+        assets are resolved lazily through the asset library so a Web import /
+        delete is reflected without restart.  Entries carry a ``source`` field
+        (``builtin`` | ``asset``) for the monitor's grouped dropdown; on a name
+        collision the asset scene wins (it is the self-contained, importable
+        copy the user selected).
+        """
         with self._request_scope():
+            builtin_catalog = getattr(self, "_builtin_scene_catalog", None)
+            if builtin_catalog is None:
+                builtin_catalog = getattr(self, "_scene_catalog", ())
+            merged: Dict[str, Dict[str, Any]] = {}
+            for scene in builtin_catalog:
+                entry = scene.to_dict()
+                entry["source"] = "builtin"
+                merged[scene.name] = entry
+            provider = getattr(self, "_asset_scene_provider", None)
+            iterate = getattr(provider, "iter_scene_specs", None)
+            if callable(iterate):
+                for scene in iterate():
+                    entry = scene.to_dict()
+                    entry["source"] = "asset"
+                    merged[scene.name] = entry
             return {
                 "active": self._active_scene,
-                "scenes": self._scene_catalog.list_scenes(),
+                "scenes": list(merged.values()),
             }
 
     def active_scene(self) -> Dict[str, Any]:
         """Return the currently active scene specification."""
         with self._request_scope():
-            return self._scene_catalog.get(self._active_scene).to_dict()
+            return self._scene_lookup(self._active_scene).to_dict()
+
+    def _scene_lookup(self, name: str) -> SceneSpec:
+        """Resolve a scene name across the asset library and the runtime registry.
+
+        The provider is consulted first so an asset scene shadows a built-in
+        scene with the same name; a resolved asset spec is cached in
+        ``_scene_specs`` so a switch away still resolves ``previous`` after the
+        asset is deleted.  Fake/legacy servers built without ``__init__`` fall
+        back to ``_scene_catalog``.
+        """
+        provider = getattr(self, "_asset_scene_provider", None)
+        resolve = getattr(provider, "resolve_scene", None)
+        if callable(resolve):
+            spec = resolve(name)
+            if spec is not None:
+                specs = getattr(self, "_scene_specs", None)
+                if specs is not None:
+                    specs[name] = spec
+                return spec
+        specs = getattr(self, "_scene_specs", None)
+        if specs is not None and name in specs:
+            return specs[name]
+        catalog = getattr(self, "_scene_catalog", None)
+        if catalog is not None:
+            return catalog.get(name)
+        raise SceneNotFoundError(name)
 
     def _require_cabinet_scene(self, operation: str) -> None:
         """Reject cabinet-scoped work when the active scene has no cabinets.
@@ -1318,7 +1388,7 @@ class ControlServer:
         # cabinet work through the inventory only; never block them here.
         if catalog is None or active_name is None:
             return
-        if not catalog.get(active_name).spawn_cabinet:
+        if not self._scene_lookup(active_name).spawn_cabinet:
             raise ControlRequestError(
                 f"{operation} is unavailable in scene "
                 f"'{active_name}' (no cabinets).",
@@ -1342,7 +1412,7 @@ class ControlServer:
             )
         with self._request_scope():
             try:
-                target = self._scene_catalog.get(name.strip())
+                target = self._scene_lookup(name.strip())
             except SceneNotFoundError as error:
                 raise ControlRequestError(str(error), 404) from error
             self._await_canceling_task_quiescence()
@@ -1367,7 +1437,7 @@ class ControlServer:
         so a raised error leaves the recorded scene at ``previous`` even if
         geometry is partially reconciled.
         """
-        previous = self._scene_catalog.get(previous_name)
+        previous = self._scene_lookup(previous_name)
         try:
             # Load the Nav2 map first.  It is the most likely external call to
             # fail (map_server rejects bad metadata), and doing it before any

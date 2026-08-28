@@ -50,6 +50,11 @@ _ASSET_KINDS = ("scene", "cabinet")
 
 _ACTIVE_TOOLSET_ENV = "XCZS_ACTIVE_TOOLSET"
 
+#: 启动脚本导出「当前进程栈实际挂载」的场景 / 柜体资产名，Web 据此诚实报告
+#: 一次保存是立即生效还是需重启。未挂接统一启动脚本时（env 缺失）为 null。
+_ACTIVE_SCENE_ENV = "XCZS_ACTIVE_SCENE"
+_ACTIVE_CABINET_ENV = "XCZS_ACTIVE_CABINET"
+
 
 def _library() -> AssetLibrary:
     """构建资产库实例；根目录可用 ``XCZS_ASSETS_DIR`` 覆盖（与启动脚本一致）。
@@ -94,6 +99,22 @@ def _toolset_status(selection: AssetSelection) -> dict[str, object]:
     }
 
 
+def _applied_status(selection: AssetSelection) -> dict[str, object]:
+    """描述当前进程栈启动时实际挂载的场景 / 柜体（静态值）。
+
+    场景 / 柜体资产名由统一启动脚本经 ``XCZS_ACTIVE_SCENE`` /
+    ``XCZS_ACTIVE_CABINET`` 导出（显式 env 覆盖优先，故反映真实挂载）；
+    未挂接统一启动脚本时两个字段为 ``None``。注意这是启动时挂载值，不是
+    实时活动场景 —— 实时场景请看 ``/scenes.active``。
+    """
+    toolset_status = _toolset_status(selection)
+    return {
+        "scene": os.environ.get(_ACTIVE_SCENE_ENV) or None,
+        "cabinet": os.environ.get(_ACTIVE_CABINET_ENV) or None,
+        "toolset": toolset_status["active_toolset"],
+    }
+
+
 def _selection_from_request(
     body: AssetSelectionRequest,
     library: AssetLibrary,
@@ -135,6 +156,7 @@ async def list_assets() -> dict[str, Any]:
         "assets": [record.to_dict() for record in assets],
         "selection": selection.to_dict(),
         "toolset_status": _toolset_status(selection),
+        "applied": _applied_status(selection),
         "library_root": str(library.root),
     }
 
@@ -156,7 +178,8 @@ async def get_selection() -> dict[str, Any]:
     description=(
         "持久化选择组合；下次人工启动时由启动脚本消费。scene / cabinet 必须已在"
         "资产库中。工具套装不会让当前 Gazebo 仿真自动重启；响应会返回当前、"
-        "待生效与已应用状态。"
+        "待生效与已应用状态。``applied`` 报告当前进程栈启动时实际挂载的场景 / "
+        "柜体（用于「立即生效」判断柜体是否需重启）。"
     ),
 )
 async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
@@ -179,13 +202,13 @@ async def save_selection(body: AssetSelectionRequest) -> dict[str, Any]:
         # 保留 ``restart_required`` 兼容旧前端，但它现在恒为 false：当前
         # 仿真绝不能因为持久化一次选择而被自动终止。
         result["restart_required"] = False
-        result["toolset_status"] = _toolset_status(
-            AssetSelection(
-                scene=result["scene"],
-                cabinet=result["cabinet"],
-                toolset=result["toolset"],
-            )
+        effective = AssetSelection(
+            scene=result["scene"],
+            cabinet=result["cabinet"],
+            toolset=result["toolset"],
         )
+        result["toolset_status"] = _toolset_status(effective)
+        result["applied"] = _applied_status(effective)
         return result
 
     return await asyncio.to_thread(_run)
