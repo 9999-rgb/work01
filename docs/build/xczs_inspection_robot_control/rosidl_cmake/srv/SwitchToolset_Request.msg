@@ -1,0 +1,9 @@
+# Request a world-preserving end-effector change.
+#
+# The physical A/B tools have mutually exclusive ROS 2 control and MoveIt
+# topology, so the supervisor replaces only the robot child stack while the
+# Gazebo world remains alive.  ``expected_generation == 0`` means the caller
+# accepts the current generation; non-zero values provide optimistic
+# concurrency protection for Web clients.
+string toolset
+uint64 expected_generation

@@ -1,0 +1,74 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from xczs_inspection_robot_interfaces/msg/CabinetControl.msg
+// generated code does not contain a copyright notice
+
+
+module xczs_inspection_robot_interfaces {
+  module msg {
+    module CabinetControl_Constants {
+      const uint8 TYPE_BUTTON = 0;
+      const uint8 TYPE_KNOB = 1;
+      const uint8 TYPE_SWITCH = 2;
+      const uint8 TYPE_DOOR = 3;
+      const uint8 SUPPORT_PRESS = 1;
+      const uint8 SUPPORT_SET_STATE = 2;
+      const uint8 SUPPORT_SET_POSITION = 4;
+      const uint8 SUPPORT_TOGGLE = 8;
+    };
+    struct CabinetControl {
+      string control_id;
+
+      string display_name;
+
+      uint8 control_type;
+
+      string joint_name;
+
+      string joint_state_topic;
+
+      string pressed_topic;
+
+      string state_topic;
+
+      uint8 supported_commands;
+
+      string unit;
+
+      double min_position;
+
+      double max_position;
+
+      sequence<string> state_ids;
+
+      sequence<string> state_labels;
+
+      sequence<double> state_positions;
+
+      boolean requires_grasp;
+
+      boolean operable;
+
+      string unavailable_reason;
+
+      @verbatim (language="comment", text=
+        "The end-effector set required by this control (A or B).  This is exposed" "\n"
+        "separately from ``operable`` so clients can provide an actionable error" "\n"
+        "before attempting navigation when the other set is mounted.")
+      string required_toolset;
+
+      boolean toolset_compatible;
+
+      @verbatim (language="comment", text=
+        "True when this control is in the robot adapter's physically validated" "\n"
+        "allowlist.  A false value means planning-only validation is allowed, but no" "\n"
+        "physical cabinet command may be sent.")
+      boolean adapter_validated;
+
+      double default_force;
+
+      double min_trigger_force;
+
+      double max_force;
+    };
+  };
+};

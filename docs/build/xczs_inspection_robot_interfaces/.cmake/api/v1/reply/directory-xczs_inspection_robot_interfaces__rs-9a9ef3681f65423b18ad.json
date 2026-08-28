@@ -1,0 +1,14 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : [],
+		"files" : [],
+		"nodes" : []
+	},
+	"installers" : [],
+	"paths" : 
+	{
+		"build" : "xczs_inspection_robot_interfaces__rs",
+		"source" : "/home/live/work01/build/xczs_inspection_robot_interfaces/xczs_inspection_robot_interfaces__rs"
+	}
+}

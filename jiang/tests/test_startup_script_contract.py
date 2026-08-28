@@ -12,11 +12,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 STARTUP = ROOT / "jiang" / "start_xczs_bridge.sh"
-WEB_VALIDATOR = ROOT / "scripts" / "validate_cabinet_web"
-RECORDING_VALIDATOR = ROOT / "scripts" / "validate_recording_replay"
+WEB_VALIDATOR = ROOT / "scripts" / "validate" / "validate_cabinet_web"
+RECORDING_VALIDATOR = ROOT / "scripts" / "validate" / "validate_recording_replay"
 ZENOH_BRIDGE_CONFIG = (
     ROOT
-    / "xczs_inspection_robot_control"
+    / "jiang"
     / "config"
     / "zenoh_bridge.json5"
 )
@@ -657,7 +657,7 @@ class StartupScriptContractTests(unittest.TestCase):
             self.startup_source,
         )
         self.assertIn(
-            "ros2 launch xczs_inspection_robot_control",
+            "ros2 launch xczs_inspection_robot_bringup",
             self.startup_source,
         )
         self.assertIn("xczs-managed-guardian", self.startup_source)

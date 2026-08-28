@@ -1041,7 +1041,7 @@ class ControlServer:
     def health(self) -> Dict[str, Any]:
         """Return gateway, Nav2, cabinet, and global task availability."""
         with self._request_scope():
-            toolset = self._sync_toolset_runtime()
+            toolset = self._sync_toolset_runtime(probe=True)
             navigation = self._node.navigation_snapshot()
             try:
                 self._live_map_bounds()
@@ -1129,6 +1129,9 @@ class ControlServer:
                     else None
                 ),
                 "active_scene": getattr(self, "_active_scene", None),
+                "scene_switching": bool(
+                    getattr(self, "_scene_switch_in_progress", False)
+                ),
                 "cabinets": cabinet_states,
                 "replay_mode": replay["mode"],
                 "replay_read_only": replay["read_only"],
@@ -1145,7 +1148,7 @@ class ControlServer:
     def robot_capabilities(self) -> Dict[str, Any]:
         """Return the ordered manual-control contract used by the Web UI."""
         with self._request_scope():
-            self._sync_toolset_runtime()
+            self._sync_toolset_runtime(probe=True)
             adapter = self._robot_adapter
             joints = [
                 {
@@ -1187,7 +1190,7 @@ class ControlServer:
     def toolset_status(self) -> Dict[str, Any]:
         """Return the supervisor-backed A/B toolset transition status."""
         with self._request_scope():
-            return self._sync_toolset_runtime()
+            return self._sync_toolset_runtime(probe=True)
 
     def request_toolset_switch(
         self,
@@ -1422,7 +1425,15 @@ class ControlServer:
                     previous = self._active_scene
                     if previous == target.name:
                         return {"status": "unchanged", "scene": target.name}
-                    self._apply_scene_switch(previous, target)
+                    # Advertise the maintenance window through /health so the
+                    # bridge liveness monitor treats the bounded map/geometry
+                    # reconciliation as a hold instead of a dead stack.  The
+                    # flag is cleared even when the switch raises.
+                    self._scene_switch_in_progress = True
+                    try:
+                        self._apply_scene_switch(previous, target)
+                    finally:
+                        self._scene_switch_in_progress = False
                     self._active_scene = target.name
                     return {
                         "status": "switched",
@@ -1451,14 +1462,28 @@ class ControlServer:
                 )
             if previous.spawn_cabinet:
                 self._delete_cabinet_entities()
+            # Pass 1 — home in the cleared environment: the retiring scene's
+            # geometry is gone and the incoming scene's floor/model is not yet
+            # spawned.  Homing *after* the incoming geometry appears lets the
+            # new structure collide with the robot still standing at the old
+            # pose and push its arm away from home mid-motion (the reverse-
+            # switch homing timeout).  Teleport afterwards, once the arm is
+            # tucked, so an extended posture is never carried into a foreign
+            # location.
+            self._home_robot_joints(None, self._robot_entity_name)
+            self._teleport_robot(target.robot_spawn)
             if target.model is not None:
                 self._spawn_scene_floor(target.model)
             if target.spawn_cabinet:
                 self._spawn_cabinet_entities()
-            # Home the arm before teleporting so an extended posture does not
-            # collide with the incoming scene geometry mid-switch.
+            # Pass 2 — re-home once the incoming geometry is live.  Inserting a
+            # large static mesh (or the cabinet cluster) into a running world
+            # perturbs the articulated robot (a broadphase insertion kick) and
+            # can nudge the tucked arm away from the defaults.  The pass is a
+            # fast-path no-op when the arm is still home, and pulls it back to
+            # the adapter defaults when a spawn moved it, so a scene switch
+            # never hands the caller a robot left off its nominal posture.
             self._home_robot_joints(None, self._robot_entity_name)
-            self._teleport_robot(target.robot_spawn)
         except ControlRequestError:
             raise
         except (
@@ -1468,9 +1493,20 @@ class ControlServer:
             ValueError,
             TaskExecutionError,
         ) as error:
+            # Surface structured failure context (e.g. the homing
+            # ``observed_positions`` that explain an out-of-tolerance joint)
+            # instead of swallowing it into a bare message.
+            details = {}
+            for source in (
+                getattr(error, "details", None),
+                getattr(error, "result", None),
+            ):
+                if isinstance(source, Mapping):
+                    details.update(source)
             raise ControlRequestError(
                 f"Scene switch to '{target.name}' failed: {error}",
                 503,
+                details=details or None,
             ) from error
 
     def _delete_cabinet_entities(self) -> None:
@@ -5325,13 +5361,29 @@ class ControlServer:
         """Run target profile preflight while the current robot is untouched."""
         self._load_runtime_toolset_adapter(toolset)
 
-    def _sync_toolset_runtime(self) -> Dict[str, Any]:
-        """Synchronize Web joint capabilities after a supervisor success."""
+    def _sync_toolset_runtime(
+        self,
+        *,
+        probe: bool = False,
+    ) -> Dict[str, Any]:
+        """Synchronize Web joint capabilities after a supervisor success.
+
+        ``probe`` callers (health / toolset status / capabilities) degrade to a
+        read-only last-known snapshot instead of waiting out a long-lived
+        runtime lock (a scene switch or homing holds it for many seconds).
+        Gate callers (motion admission) keep the blocking form so they fail
+        closed on the real supervisor state.
+        """
         runtime_lock = getattr(self, "_toolset_runtime_lock", None)
         if runtime_lock is None:
             runtime_lock = threading.RLock()
             self._toolset_runtime_lock = runtime_lock
-        with runtime_lock:
+        if probe:
+            if not runtime_lock.acquire(timeout=0.25):
+                return self._degraded_toolset_snapshot("runtime_lock_busy")
+        else:
+            runtime_lock.acquire()
+        try:
             status = self._runtime_toolset_snapshot()
             managed = bool(status.get("managed"))
             if not managed:
@@ -5418,6 +5470,38 @@ class ControlServer:
                 None,
             )
             return status
+        finally:
+            runtime_lock.release()
+
+    def _degraded_toolset_snapshot(
+        self,
+        reason: str,
+    ) -> Dict[str, Any]:
+        """Read-only last-known toolset status for probe callers while the
+        runtime lock is held by a long mutation (a scene switch or homing).
+
+        Built only from published fields and never touches the runtime lock,
+        so probe endpoints stay responsive while a switch is in flight.
+        """
+        status = self._runtime_toolset_snapshot()
+        adapter_active = getattr(
+            getattr(self, "_robot_adapter", None),
+            "active_toolset",
+            None,
+        )
+        status["gateway_active_toolset"] = adapter_active
+        status["gateway_synced"] = bool(
+            status.get("state") == "ready"
+            and status.get("ready") is True
+            and status.get("active_toolset") == adapter_active
+        )
+        status["persistence_error"] = getattr(
+            self,
+            "_toolset_persistence_error",
+            None,
+        )
+        status["gateway_degraded"] = reason
+        return status
 
     def _ensure_toolset_motion_ready(self) -> None:
         """Fail closed while a managed robot topology is being replaced."""

@@ -1,0 +1,559 @@
+Start testing: Aug 21 14:44 CST
+----------------------------------------------------------
+1/12 Testing: operation_lease_state_test
+1/12 Test: operation_lease_state_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_lease_state_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"operation_lease_state_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 5 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 5 tests from OperationLeaseState
+[ RUN      ] OperationLeaseState.ExcludesOtherOwnersAndAllowsRelease
+[       OK ] OperationLeaseState.ExcludesOtherOwnersAndAllowsRelease (0 ms)
+[ RUN      ] OperationLeaseState.ConcurrentAcquireHasExactlyOneWinner
+[       OK ] OperationLeaseState.ConcurrentAcquireHasExactlyOneWinner (2 ms)
+[ RUN      ] OperationLeaseState.RenewalExtendsLeaseAndStaleTokenCannotRelease
+[       OK ] OperationLeaseState.RenewalExtendsLeaseAndStaleTokenCannotRelease (0 ms)
+[ RUN      ] OperationLeaseState.ExpiredOwnerCannotRenewAndResourceRecovers
+[       OK ] OperationLeaseState.ExpiredOwnerCannotRenewAndResourceRecovers (0 ms)
+[ RUN      ] OperationLeaseState.SubTickDurationIsRejected
+[       OK ] OperationLeaseState.SubTickDurationIsRejected (0 ms)
+[----------] 5 tests from OperationLeaseState (2 ms total)
+
+[----------] Global test environment tear-down
+[==========] 5 tests from 1 test suite ran. (2 ms total)
+[  PASSED  ] 5 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml'
+<end of output>
+Test time =   0.11 sec
+----------------------------------------------------------
+Test Passed.
+"operation_lease_state_test" end time: Aug 21 14:44 CST
+"operation_lease_state_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+2/12 Testing: router_utils_test
+2/12 Test: router_utils_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/router_utils_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/router_utils_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"router_utils_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/router_utils_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 7 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 7 tests from RouterUtils
+[ RUN      ] RouterUtils.RotatesPlanarVelocityByConfiguredYaw
+[       OK ] RouterUtils.RotatesPlanarVelocityByConfiguredYaw (0 ms)
+[ RUN      ] RouterUtils.RotationPreservesPlanarMagnitude
+[       OK ] RouterUtils.RotationPreservesPlanarMagnitude (0 ms)
+[ RUN      ] RouterUtils.UsesTheSameOffsetForDockingFrameYaw
+[       OK ] RouterUtils.UsesTheSameOffsetForDockingFrameYaw (0 ms)
+[ RUN      ] RouterUtils.RejectsInvalidJointGroups
+[       OK ] RouterUtils.RejectsInvalidJointGroups (0 ms)
+[ RUN      ] RouterUtils.ValidatesRequiredAndOptionalTrajectoryFields
+[       OK ] RouterUtils.ValidatesRequiredAndOptionalTrajectoryFields (0 ms)
+[ RUN      ] RouterUtils.ValidatesStrictlyIncreasingTrajectoryDurations
+[       OK ] RouterUtils.ValidatesStrictlyIncreasingTrajectoryDurations (0 ms)
+[ RUN      ] RouterUtils.GatesOnlyEmbeddedNavigationRequests
+[       OK ] RouterUtils.GatesOnlyEmbeddedNavigationRequests (0 ms)
+[----------] 7 tests from RouterUtils (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 7 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 7 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml'
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"router_utils_test" end time: Aug 21 14:44 CST
+"router_utils_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+3/12 Testing: planning_scene_profile_test
+3/12 Test: planning_scene_profile_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/planning_scene_profile_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/planning_scene_profile_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"planning_scene_profile_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/planning_scene_profile_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 7 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 7 tests from PlanningSceneProfile
+[ RUN      ] PlanningSceneProfile.AcceptsButtonAndKnobOnlyDevice
+[       OK ] PlanningSceneProfile.AcceptsButtonAndKnobOnlyDevice (0 ms)
+[ RUN      ] PlanningSceneProfile.AcceptsDoorWithoutSwitch
+[       OK ] PlanningSceneProfile.AcceptsDoorWithoutSwitch (0 ms)
+[ RUN      ] PlanningSceneProfile.AcceptsUnparentedSwitchWithoutDoor
+[       OK ] PlanningSceneProfile.AcceptsUnparentedSwitchWithoutDoor (0 ms)
+[ RUN      ] PlanningSceneProfile.AcceptsSwitchParentedToDoor
+[       OK ] PlanningSceneProfile.AcceptsSwitchParentedToDoor (0 ms)
+[ RUN      ] PlanningSceneProfile.RejectsMissingSwitchParent
+[       OK ] PlanningSceneProfile.RejectsMissingSwitchParent (0 ms)
+[ RUN      ] PlanningSceneProfile.RejectsSwitchParentThatIsNotDoor
+[       OK ] PlanningSceneProfile.RejectsSwitchParentThatIsNotDoor (0 ms)
+[ RUN      ] PlanningSceneProfile.RejectsMultipleDoorsOrSwitches
+[       OK ] PlanningSceneProfile.RejectsMultipleDoorsOrSwitches (0 ms)
+[----------] 7 tests from PlanningSceneProfile (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 7 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 7 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml'
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"planning_scene_profile_test" end time: Aug 21 14:44 CST
+"planning_scene_profile_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+4/12 Testing: operation_validation_policy_test
+4/12 Test: operation_validation_policy_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_validation_policy_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"operation_validation_policy_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 19 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 11 tests from OperationValidationPolicy
+[ RUN      ] OperationValidationPolicy.PlanningOnlyPreparationNeverOwnsBaseMotion
+[       OK ] OperationValidationPolicy.PlanningOnlyPreparationNeverOwnsBaseMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.PhysicalPreparationUsesConfiguredMotionLayers
+[       OK ] OperationValidationPolicy.PhysicalPreparationUsesConfiguredMotionLayers (0 ms)
+[ RUN      ] OperationValidationPolicy.AcceptedOrPendingGoalDoesNotOwnMotionResources
+[       OK ] OperationValidationPolicy.AcceptedOrPendingGoalDoesNotOwnMotionResources (0 ms)
+[ RUN      ] OperationValidationPolicy.ActivePhysicalGoalOwnsResourcesAfterLease
+[       OK ] OperationValidationPolicy.ActivePhysicalGoalOwnsResourcesAfterLease (0 ms)
+[ RUN      ] OperationValidationPolicy.PlanningOnlyNeverOwnsMotionResources
+[       OK ] OperationValidationPolicy.PlanningOnlyNeverOwnsMotionResources (0 ms)
+[ RUN      ] OperationValidationPolicy.UnverifiedControlRequiresPlanningOnly
+[       OK ] OperationValidationPolicy.UnverifiedControlRequiresPlanningOnly (0 ms)
+[ RUN      ] OperationValidationPolicy.VerifiedControlMayUsePhysicalExecution
+[       OK ] OperationValidationPolicy.VerifiedControlMayUsePhysicalExecution (0 ms)
+[ RUN      ] OperationValidationPolicy.ValidationAlwaysBlocksPhysicalMotion
+[       OK ] OperationValidationPolicy.ValidationAlwaysBlocksPhysicalMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.PreflightAndDockingFailuresNeedNoRecoveryMotion
+[       OK ] OperationValidationPolicy.PreflightAndDockingFailuresNeedNoRecoveryMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.ExecutedOperationStillRequiresSafetyRecovery
+[       OK ] OperationValidationPolicy.ExecutedOperationStillRequiresSafetyRecovery (0 ms)
+[ RUN      ] OperationValidationPolicy.EngagementFlagsConservativelyRequireRecovery
+[       OK ] OperationValidationPolicy.EngagementFlagsConservativelyRequireRecovery (0 ms)
+[----------] 11 tests from OperationValidationPolicy (0 ms total)
+
+[----------] 5 tests from StagingSafetyPolicy
+[ RUN      ] StagingSafetyPolicy.UsesAsymmetricFootprintInCabinetDirection
+[       OK ] StagingSafetyPolicy.UsesAsymmetricFootprintInCabinetDirection (0 ms)
+[ RUN      ] StagingSafetyPolicy.IncludesPaddingAndWorstDockingError
+[       OK ] StagingSafetyPolicy.IncludesPaddingAndWorstDockingError (0 ms)
+[ RUN      ] StagingSafetyPolicy.InvalidFootprintFailsClosed
+[       OK ] StagingSafetyPolicy.InvalidFootprintFailsClosed (0 ms)
+[ RUN      ] StagingSafetyPolicy.WideYawIntervalUsesEachVertexRadialExtent
+[       OK ] StagingSafetyPolicy.WideYawIntervalUsesEachVertexRadialExtent (0 ms)
+[ RUN      ] StagingSafetyPolicy.RequiresBothStoppedPoseErrorsWithinTolerance
+[       OK ] StagingSafetyPolicy.RequiresBothStoppedPoseErrorsWithinTolerance (0 ms)
+[----------] 5 tests from StagingSafetyPolicy (0 ms total)
+
+[----------] 3 tests from RotaryOperationPolicy
+[ RUN      ] RotaryOperationPolicy.TransitionMatrixUsesSourceThenTarget
+[       OK ] RotaryOperationPolicy.TransitionMatrixUsesSourceThenTarget (0 ms)
+[ RUN      ] RotaryOperationPolicy.ThreePositionKnobRejectsOnlySkippedDetent
+[       OK ] RotaryOperationPolicy.ThreePositionKnobRejectsOnlySkippedDetent (0 ms)
+[ RUN      ] RotaryOperationPolicy.PartialReleaseCrossesAdjacentDetentMidpoint
+[       OK ] RotaryOperationPolicy.PartialReleaseCrossesAdjacentDetentMidpoint (0 ms)
+[----------] 3 tests from RotaryOperationPolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 19 tests from 3 test suites ran. (0 ms total)
+[  PASSED  ] 19 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml'
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"operation_validation_policy_test" end time: Aug 21 14:44 CST
+"operation_validation_policy_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/12 Testing: action_and_control_state_policy_test
+5/12 Test: action_and_control_state_policy_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/action_and_control_state_policy_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/action_and_control_state_policy_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"action_and_control_state_policy_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/action_and_control_state_policy_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 10 tests from 3 test suites.
+[----------] Global test environment set-up.
+[----------] 5 tests from ActionTerminalPolicy
+[ RUN      ] ActionTerminalPolicy.PhysicalSuccessWinsAConcurrentLateCancel
+[       OK ] ActionTerminalPolicy.PhysicalSuccessWinsAConcurrentLateCancel (0 ms)
+[ RUN      ] ActionTerminalPolicy.CancelWinsOnlyBeforeSuccessIsCommitted
+[       OK ] ActionTerminalPolicy.CancelWinsOnlyBeforeSuccessIsCommitted (0 ms)
+[ RUN      ] ActionTerminalPolicy.AppliesEveryTerminalDispositionExactlyOnce
+[       OK ] ActionTerminalPolicy.AppliesEveryTerminalDispositionExactlyOnce (0 ms)
+[ RUN      ] ActionTerminalPolicy.CancelIsAcceptedBeforePhysicalCommit
+[       OK ] ActionTerminalPolicy.CancelIsAcceptedBeforePhysicalCommit (0 ms)
+[ RUN      ] ActionTerminalPolicy.CancelIsRejectedAfterPhysicalCommit
+[       OK ] ActionTerminalPolicy.CancelIsRejectedAfterPhysicalCommit (0 ms)
+[----------] 5 tests from ActionTerminalPolicy (0 ms total)
+
+[----------] 3 tests from StructuredControlStatePolicy
+[ RUN      ] StructuredControlStatePolicy.RejectsDeclaredInvalidAndNonFiniteSamples
+[       OK ] StructuredControlStatePolicy.RejectsDeclaredInvalidAndNonFiniteSamples (0 ms)
+[ RUN      ] StructuredControlStatePolicy.IgnoresAnotherControlsSample
+[       OK ] StructuredControlStatePolicy.IgnoresAnotherControlsSample (0 ms)
+[ RUN      ] StructuredControlStatePolicy.JointTrafficCannotKeepStructuredStateAlive
+[       OK ] StructuredControlStatePolicy.JointTrafficCannotKeepStructuredStateAlive (0 ms)
+[----------] 3 tests from StructuredControlStatePolicy (0 ms total)
+
+[----------] 2 tests from CabinetGraspSafetyPolicy
+[ RUN      ] CabinetGraspSafetyPolicy.AcceptsOnlySettledPregraspDetent
+[       OK ] CabinetGraspSafetyPolicy.AcceptsOnlySettledPregraspDetent (0 ms)
+[ RUN      ] CabinetGraspSafetyPolicy.FailsClosedForInvalidMeasurementsOrLimits
+[       OK ] CabinetGraspSafetyPolicy.FailsClosedForInvalidMeasurementsOrLimits (0 ms)
+[----------] 2 tests from CabinetGraspSafetyPolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 10 tests from 3 test suites ran. (0 ms total)
+[  PASSED  ] 10 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml'
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"action_and_control_state_policy_test" end time: Aug 21 14:44 CST
+"action_and_control_state_policy_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/12 Testing: cabinet_pose_frame_contract_test
+6/12 Test: cabinet_pose_frame_contract_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/cabinet_pose_frame_contract_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/cabinet_pose_frame_contract_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"cabinet_pose_frame_contract_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/cabinet_pose_frame_contract_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from CabinetPoseFrameContract
+[ RUN      ] CabinetPoseFrameContract.SpawnAndPoseAuthorityShareOdomWorld
+[       OK ] CabinetPoseFrameContract.SpawnAndPoseAuthorityShareOdomWorld (0 ms)
+[----------] 1 test from CabinetPoseFrameContract (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (1 ms total)
+[  PASSED  ] 1 test.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml'
+<end of output>
+Test time =   0.10 sec
+----------------------------------------------------------
+Test Passed.
+"cabinet_pose_frame_contract_test" end time: Aug 21 14:44 CST
+"cabinet_pose_frame_contract_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+7/12 Testing: cabinet_button_operator_kinematics_test
+7/12 Test: cabinet_button_operator_kinematics_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/cabinet_button_operator_kinematics_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"cabinet_button_operator_kinematics_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from ToolProfileKinematicsValidation
+[ RUN      ] ToolProfileKinematicsValidation.NamesGroupWhenRobotModelIsUnavailable
+[       OK ] ToolProfileKinematicsValidation.NamesGroupWhenRobotModelIsUnavailable (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.RejectsAndNamesMissingJointModelGroup
+[INFO] [1787294683.393244415] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787294683.393273399] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787294683.393328294] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[ERROR] [1787294683.393355043] [moveit_robot_model.robot_model]: Group 'missing_arm' not found in model 'kinematics_validation_test_robot'
+[       OK ] ToolProfileKinematicsValidation.RejectsAndNamesMissingJointModelGroup (1 ms)
+[ RUN      ] ToolProfileKinematicsValidation.RejectsExistingGroupWithoutSolver
+[INFO] [1787294683.393442135] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787294683.393449957] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787294683.393463576] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[       OK ] ToolProfileKinematicsValidation.RejectsExistingGroupWithoutSolver (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.ReportsEveryInvalidUniqueProfileGroup
+[INFO] [1787294683.393518122] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787294683.393524198] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787294683.393535093] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[ERROR] [1787294683.393545080] [moveit_robot_model.robot_model]: Group 'missing_arm' not found in model 'kinematics_validation_test_robot'
+[       OK ] ToolProfileKinematicsValidation.ReportsEveryInvalidUniqueProfileGroup (0 ms)
+[----------] 4 tests from ToolProfileKinematicsValidation (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 4 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml'
+<end of output>
+Test time =   0.12 sec
+----------------------------------------------------------
+Test Passed.
+"cabinet_button_operator_kinematics_test" end time: Aug 21 14:44 CST
+"cabinet_button_operator_kinematics_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+8/12 Testing: launch_startup_policy_test
+8/12 Test: launch_startup_policy_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/launch_startup_policy_test.xunit.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/launch_startup_policy_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_control/test/test_launch_startup_policy.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/launch_startup_policy_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/launch_startup_policy_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_control"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"launch_startup_policy_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /usr/bin/python3 -u -m pytest /home/live/work01/xczs_inspection_robot_control/test/test_launch_startup_policy.py -o cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/launch_startup_policy_test/.cache --junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/launch_startup_policy_test.xunit.xml --junit-prefix=xczs_inspection_robot_control
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0
+cachedir: build/xczs_inspection_robot_control/ament_cmake_pytest/launch_startup_policy_test/.cache
+rootdir: /home/live/work01
+plugins: ament-lint-0.12.15, ament-flake8-0.12.15, ament-xmllint-0.12.15, ament-copyright-0.12.15, launch-testing-ros-0.19.13, ament-pep257-0.12.15, launch-testing-1.0.14, anyio-4.14.2, asyncio-0.26.0, colcon-core-0.21.0, cov-3.0.0
+asyncio: mode=strict, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 25 items
+
+../../xczs_inspection_robot_control/test/test_launch_startup_policy.py . [  4%]
+........................                                                 [100%]
+
+=============================== warnings summary ===============================
+../../../../../opt/ros/humble/local/lib/python3.10/dist-packages/xacro/__init__.py:115
+  Warning: private variables, such as '_ConstructUnits__ConstructUnitsValue', will be normal attributes in 3.11
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/launch_startup_policy_test.xunit.xml -
+======================== 25 passed, 1 warning in 0.52s =========================
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/launch_startup_policy_test.xunit.xml'
+<end of output>
+Test time =   1.41 sec
+----------------------------------------------------------
+Test Passed.
+"launch_startup_policy_test" end time: Aug 21 14:44 CST
+"launch_startup_policy_test" time elapsed: 00:00:01
+----------------------------------------------------------
+
+9/12 Testing: verify_initial_pose_test
+9/12 Test: verify_initial_pose_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/verify_initial_pose_test.xunit.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/verify_initial_pose_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_control/test/test_verify_initial_pose.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/verify_initial_pose_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/verify_initial_pose_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_control"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"verify_initial_pose_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /usr/bin/python3 -u -m pytest /home/live/work01/xczs_inspection_robot_control/test/test_verify_initial_pose.py -o cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/verify_initial_pose_test/.cache --junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/verify_initial_pose_test.xunit.xml --junit-prefix=xczs_inspection_robot_control
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0
+cachedir: build/xczs_inspection_robot_control/ament_cmake_pytest/verify_initial_pose_test/.cache
+rootdir: /home/live/work01
+plugins: ament-lint-0.12.15, ament-flake8-0.12.15, ament-xmllint-0.12.15, ament-copyright-0.12.15, launch-testing-ros-0.19.13, ament-pep257-0.12.15, launch-testing-1.0.14, anyio-4.14.2, asyncio-0.26.0, colcon-core-0.21.0, cov-3.0.0
+asyncio: mode=strict, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 8 items
+
+../../xczs_inspection_robot_control/test/test_verify_initial_pose.py ... [ 37%]
+.....                                                                    [100%]
+
+=============================== warnings summary ===============================
+../../../../../opt/ros/humble/local/lib/python3.10/dist-packages/xacro/__init__.py:115
+  Warning: private variables, such as '_ConstructUnits__ConstructUnitsValue', will be normal attributes in 3.11
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/verify_initial_pose_test.xunit.xml -
+========================= 8 passed, 1 warning in 0.61s =========================
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/verify_initial_pose_test.xunit.xml'
+<end of output>
+Test time =   1.56 sec
+----------------------------------------------------------
+Test Passed.
+"verify_initial_pose_test" end time: Aug 21 14:44 CST
+"verify_initial_pose_test" time elapsed: 00:00:01
+----------------------------------------------------------
+
+10/12 Testing: cabinet_knob_grasp_contract_test
+10/12 Test: cabinet_knob_grasp_contract_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_knob_grasp_contract_test.xunit.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/cabinet_knob_grasp_contract_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_control/test/test_cabinet_knob_grasp_contract.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/cabinet_knob_grasp_contract_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_knob_grasp_contract_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_control"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"cabinet_knob_grasp_contract_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /usr/bin/python3 -u -m pytest /home/live/work01/xczs_inspection_robot_control/test/test_cabinet_knob_grasp_contract.py -o cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/cabinet_knob_grasp_contract_test/.cache --junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_knob_grasp_contract_test.xunit.xml --junit-prefix=xczs_inspection_robot_control
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0
+cachedir: build/xczs_inspection_robot_control/ament_cmake_pytest/cabinet_knob_grasp_contract_test/.cache
+rootdir: /home/live/work01
+plugins: ament-lint-0.12.15, ament-flake8-0.12.15, ament-xmllint-0.12.15, ament-copyright-0.12.15, launch-testing-ros-0.19.13, ament-pep257-0.12.15, launch-testing-1.0.14, anyio-4.14.2, asyncio-0.26.0, colcon-core-0.21.0, cov-3.0.0
+asyncio: mode=strict, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 3 items
+
+../../xczs_inspection_robot_control/test/test_cabinet_knob_grasp_contract.py . [ 33%]
+.F                                                                       [100%]
+
+=================================== FAILURES ===================================
+______ test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration _______
+
+    def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
+        builtin = _operator_parameters(ROBOT_ADAPTERS[0])
+        sample = _operator_parameters(ROBOT_ADAPTERS[1])
+>       assert builtin == sample
+E       AssertionError: assert {'allow_repla...in': 1.2, ...} == {'allow_repla...in': 1.2, ...}
+E         
+E         Omitting 38 identical items, use -vv to show
+E         Left contains 1 more item:
+E         {'press_depth': 0.008}
+E         Use -v to get more diff
+
+../../xczs_inspection_robot_control/test/test_cabinet_knob_grasp_contract.py:108: AssertionError
+=============================== warnings summary ===============================
+../../../../../opt/ros/humble/local/lib/python3.10/dist-packages/xacro/__init__.py:115
+  Warning: private variables, such as '_ConstructUnits__ConstructUnitsValue', will be normal attributes in 3.11
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_knob_grasp_contract_test.xunit.xml -
+=========================== short test summary info ============================
+FAILED ../../xczs_inspection_robot_control/test/test_cabinet_knob_grasp_contract.py::test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration
+==================== 1 failed, 2 passed, 1 warning in 1.08s ====================
+-- run_test.py: return code 1
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_knob_grasp_contract_test.xunit.xml'
+<end of output>
+Test time =   1.94 sec
+----------------------------------------------------------
+Test Failed.
+"cabinet_knob_grasp_contract_test" end time: Aug 21 14:44 CST
+"cabinet_knob_grasp_contract_test" time elapsed: 00:00:01
+----------------------------------------------------------
+
+11/12 Testing: operator_tf_buffer_contract_test
+11/12 Test: operator_tf_buffer_contract_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operator_tf_buffer_contract_test.xunit.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/operator_tf_buffer_contract_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_control/test/test_operator_tf_buffer_contract.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/operator_tf_buffer_contract_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operator_tf_buffer_contract_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_control"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"operator_tf_buffer_contract_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /usr/bin/python3 -u -m pytest /home/live/work01/xczs_inspection_robot_control/test/test_operator_tf_buffer_contract.py -o cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/operator_tf_buffer_contract_test/.cache --junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operator_tf_buffer_contract_test.xunit.xml --junit-prefix=xczs_inspection_robot_control
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0
+cachedir: build/xczs_inspection_robot_control/ament_cmake_pytest/operator_tf_buffer_contract_test/.cache
+rootdir: /home/live/work01
+plugins: ament-lint-0.12.15, ament-flake8-0.12.15, ament-xmllint-0.12.15, ament-copyright-0.12.15, launch-testing-ros-0.19.13, ament-pep257-0.12.15, launch-testing-1.0.14, anyio-4.14.2, asyncio-0.26.0, colcon-core-0.21.0, cov-3.0.0
+asyncio: mode=strict, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 3 items
+
+../../xczs_inspection_robot_control/test/test_operator_tf_buffer_contract.py . [ 33%]
+..                                                                       [100%]
+
+=============================== warnings summary ===============================
+../../../../../opt/ros/humble/local/lib/python3.10/dist-packages/xacro/__init__.py:115
+  Warning: private variables, such as '_ConstructUnits__ConstructUnitsValue', will be normal attributes in 3.11
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operator_tf_buffer_contract_test.xunit.xml -
+========================= 3 passed, 1 warning in 0.26s =========================
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operator_tf_buffer_contract_test.xunit.xml'
+<end of output>
+Test time =   1.14 sec
+----------------------------------------------------------
+Test Passed.
+"operator_tf_buffer_contract_test" end time: Aug 21 14:44 CST
+"operator_tf_buffer_contract_test" time elapsed: 00:00:01
+----------------------------------------------------------
+
+12/12 Testing: tool_business_point_contract_test
+12/12 Test: tool_business_point_contract_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/tool_business_point_contract_test.xunit.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/tool_business_point_contract_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_control/test/test_tool_business_point_contract.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/tool_business_point_contract_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/tool_business_point_contract_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_control"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"tool_business_point_contract_test" start time: Aug 21 14:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /usr/bin/python3 -u -m pytest /home/live/work01/xczs_inspection_robot_control/test/test_tool_business_point_contract.py -o cache_dir=/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_pytest/tool_business_point_contract_test/.cache --junit-xml=/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/tool_business_point_contract_test.xunit.xml --junit-prefix=xczs_inspection_robot_control
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0
+cachedir: build/xczs_inspection_robot_control/ament_cmake_pytest/tool_business_point_contract_test/.cache
+rootdir: /home/live/work01
+plugins: ament-lint-0.12.15, ament-flake8-0.12.15, ament-xmllint-0.12.15, ament-copyright-0.12.15, launch-testing-ros-0.19.13, ament-pep257-0.12.15, launch-testing-1.0.14, anyio-4.14.2, asyncio-0.26.0, colcon-core-0.21.0, cov-3.0.0
+asyncio: mode=strict, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 3 items
+
+../../xczs_inspection_robot_control/test/test_tool_business_point_contract.py . [ 33%]
+F.                                                                       [100%]
+
+=================================== FAILURES ===================================
+__________ test_adapter_uses_full_business_point_and_zero_joint_guard __________
+
+    def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
+        builtin = _operator_parameters(ADAPTERS[0])
+        sample = _operator_parameters(ADAPTERS[1])
+>       assert builtin == sample
+E       AssertionError: assert {'allow_repla...in': 1.2, ...} == {'allow_repla...in': 1.2, ...}
+E         
+E         Omitting 38 identical items, use -vv to show
+E         Left contains 1 more item:
+E         {'press_depth': 0.008}
+E         Use -v to get more diff
+
+../../xczs_inspection_robot_control/test/test_tool_business_point_contract.py:92: AssertionError
+=============================== warnings summary ===============================
+../../../../../opt/ros/humble/local/lib/python3.10/dist-packages/xacro/__init__.py:115
+  Warning: private variables, such as '_ConstructUnits__ConstructUnitsValue', will be normal attributes in 3.11
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+- generated xml file: /home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/tool_business_point_contract_test.xunit.xml -
+=========================== short test summary info ============================
+FAILED ../../xczs_inspection_robot_control/test/test_tool_business_point_contract.py::test_adapter_uses_full_business_point_and_zero_joint_guard
+==================== 1 failed, 2 passed, 1 warning in 0.43s ====================
+-- run_test.py: return code 1
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/tool_business_point_contract_test.xunit.xml'
+<end of output>
+Test time =   1.26 sec
+----------------------------------------------------------
+Test Failed.
+"tool_business_point_contract_test" end time: Aug 21 14:44 CST
+"tool_business_point_contract_test" time elapsed: 00:00:01
+----------------------------------------------------------
+
+End testing: Aug 21 14:44 CST
+
+gtest =   0.73 sec*proc
+
+pytest =   7.32 sec*proc
+

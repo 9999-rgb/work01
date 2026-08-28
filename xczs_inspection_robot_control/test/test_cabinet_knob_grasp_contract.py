@@ -42,9 +42,8 @@ OPERATOR_SOURCE = (
 )
 PLUGIN_SOURCE = (
     WORKSPACE
-    / "xczs_inspection_robot_control"
+    / "xczs_inspection_robot_gazebo"
     / "src"
-    / "gazebo"
     / "cabinet_state_plugin.cpp"
 )
 PLANNING_SCENE_SOURCE = (

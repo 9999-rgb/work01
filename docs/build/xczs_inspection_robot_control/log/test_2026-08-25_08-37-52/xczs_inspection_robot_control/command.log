@@ -1,0 +1,2 @@
+Invoking command in '/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_python/xczs_inspection_robot_control': PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest -v
+Invoked command in '/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_python/xczs_inspection_robot_control' returned '0': PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -m unittest -v

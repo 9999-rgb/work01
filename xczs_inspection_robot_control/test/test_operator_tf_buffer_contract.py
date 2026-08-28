@@ -9,14 +9,17 @@ SOURCE = (
     / "cabinet_button_operator.cpp"
 )
 PACKAGE_ROOT = SOURCE.parents[1]
+INTERFACES_ROOT = (
+    SOURCE.parents[2] / "xczs_inspection_robot_interfaces"
+)
 
 
 def test_action_results_expose_conservative_terminal_evidence() -> None:
     """Clients must be able to distinguish side effects from transport."""
-    operate = (PACKAGE_ROOT / "action" / "OperateCabinetControl.action").read_text(
+    operate = (INTERFACES_ROOT / "action" / "OperateCabinetControl.action").read_text(
         encoding="utf-8"
     )
-    press = (PACKAGE_ROOT / "action" / "PressCabinetButton.action").read_text(
+    press = (INTERFACES_ROOT / "action" / "PressCabinetButton.action").read_text(
         encoding="utf-8"
     )
     fields = (

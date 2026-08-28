@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="22" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12" name="AllTests">
+  <testsuite name="ActionTerminalPolicy" tests="5" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12">
+    <testcase name="PhysicalSuccessWinsAConcurrentLateCancel" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.ActionTerminalPolicy" />
+    <testcase name="CancelWinsOnlyBeforeSuccessIsCommitted" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.ActionTerminalPolicy" />
+    <testcase name="AppliesEveryTerminalDispositionExactlyOnce" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.ActionTerminalPolicy" />
+    <testcase name="CancelIsAcceptedBeforePhysicalCommit" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.ActionTerminalPolicy" />
+    <testcase name="CancelIsRejectedAfterPhysicalCommit" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.ActionTerminalPolicy" />
+  </testsuite>
+  <testsuite name="StructuredControlStatePolicy" tests="8" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12">
+    <testcase name="RejectsDeclaredInvalidAndNonFiniteSamples" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="IgnoresAnotherControlsSample" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="JointTrafficCannotKeepStructuredStateAlive" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="AcceptsFreshStationaryInitialDetentSample" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="WaitsForUsableAndStationarySamples" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="DetectsInitialStateOrPositionChange" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="FailsClosedForNonFiniteStabilityInputs" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+    <testcase name="TracksNegativeMotionAsAbsolutePeak" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StructuredControlStatePolicy" />
+  </testsuite>
+  <testsuite name="CabinetGraspSafetyPolicy" tests="9" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12">
+    <testcase name="RequiresGraspExactlyForNonButtons" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="RejectsNonFiniteRobotGraspPoints" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="WatchdogArmsOnlyForOperationActivity" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="ActiveWatchdogFailsClosedOnInvalidTiming" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="OperationSessionRequiresExactControlAndLease" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="StaleReleaseCannotMatchSuccessorLease" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="StaleFaultCannotCancelAnotherLease" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="AcceptsOnlySettledPregraspDetent" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+    <testcase name="FailsClosedForInvalidMeasurementsOrLimits" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetGraspSafetyPolicy" />
+  </testsuite>
+</testsuites>

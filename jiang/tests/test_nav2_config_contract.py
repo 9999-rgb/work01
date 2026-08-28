@@ -32,7 +32,7 @@ ROBOT_ADAPTER = (
     / "cabinet_robot_adapter.yaml"
 )
 RUNNER_SOURCE = WORKSPACE / "jiang" / "control_gateway" / "runner.py"
-WEB_VALIDATOR = WORKSPACE / "scripts" / "validate_cabinet_web"
+WEB_VALIDATOR = WORKSPACE / "scripts" / "validate" / "validate_cabinet_web"
 
 
 def _numeric_constant(path: Path, name: str) -> float:

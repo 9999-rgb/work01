@@ -43,7 +43,13 @@ _LEGACY_DEFAULTS = {
         "y": 0.0,
         "yaw": math.pi / 2.0,
     },
-    "reset_joint_tolerance": 0.02,
+    # Match the arm controllers' goal tolerance (0.10 rad) plus measurement
+    # headroom: a PD-only position hold under gravity rests the arm slightly
+    # off its commanded target, and the gateway must not demand tighter
+    # precision than the motion layer guarantees.  The active tool's
+    # calibration joints keep their own strict tolerance (see
+    # ``reset_tolerance_for_joint``).
+    "reset_joint_tolerance": 0.12,
     "reset_joint_timeout_sec": 15.0,
     "reset_joint_duration_sec": 5.0,
     "arm_controller_topic": "/xczs/arm_controller/joint_trajectory",

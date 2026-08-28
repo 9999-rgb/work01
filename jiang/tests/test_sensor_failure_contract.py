@@ -19,7 +19,7 @@ sys.path.insert(0, str(JIANG_DIR))
 
 class SensorFailureContractTest(unittest.TestCase):
     def test_health_is_degraded_until_both_streams_are_ready(self) -> None:
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState()
         self.assertEqual(state.health()["status"], "degraded")
@@ -34,13 +34,13 @@ class SensorFailureContractTest(unittest.TestCase):
         self.assertEqual(state.health()["status"], "ok")
 
     def test_stale_sensor_samples_are_not_reported_as_ready(self) -> None:
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState()
-        with patch("sensor_bridge.state.time.monotonic", return_value=10.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=10.0):
             state.update_camera(b"jpeg", {"frame_id": "camera"})
             state.update_lidar({"ranges": [1.0], "sample_count": 1})
-        with patch("sensor_bridge.state.time.monotonic", return_value=100.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=100.0):
             health = state.health()
 
         self.assertEqual(health["status"], "degraded")
@@ -50,24 +50,24 @@ class SensorFailureContractTest(unittest.TestCase):
         self.assertTrue(health["lidar"]["stale"])
 
     def test_stale_threshold_is_configurable_and_uses_monotonic_time(self) -> None:
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState(stale_after_seconds=2.0)
-        with patch("sensor_bridge.state.time.monotonic", return_value=0.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=0.0):
             state.update_camera(b"jpeg", {"frame_id": "camera"})
-        with patch("sensor_bridge.state.time.monotonic", return_value=2.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=2.0):
             self.assertTrue(state.health()["camera"]["ready"])
-        with patch("sensor_bridge.state.time.monotonic", return_value=2.01):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=2.01):
             self.assertFalse(state.health()["camera"]["ready"])
 
     def test_fastapi_camera_endpoint_rejects_a_stale_last_frame(self) -> None:
         from fastapi.testclient import TestClient
 
         from app.main import create_app
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState()
-        with patch("sensor_bridge.state.time.monotonic", return_value=10.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=10.0):
             state.update_camera(b"jpeg", {"frame_id": "camera"})
         app = create_app(
             sensor_state=state,
@@ -75,7 +75,7 @@ class SensorFailureContractTest(unittest.TestCase):
             auth_enabled=False,
         )
         with (
-            patch("sensor_bridge.state.time.monotonic", return_value=100.0),
+            patch("transport.sensor_bridge.state.time.monotonic", return_value=100.0),
             TestClient(app) as client,
         ):
             response = client.get("/camera.jpg")
@@ -85,7 +85,7 @@ class SensorFailureContractTest(unittest.TestCase):
         from fastapi.testclient import TestClient
 
         from app.main import create_app
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         app = create_app(
             sensor_state=SensorStreamState(),
@@ -103,7 +103,7 @@ class SensorFailureContractTest(unittest.TestCase):
 
     def test_abrupt_websocket_disconnect_has_idempotent_cleanup(self) -> None:
         from app.sensors.router import lidar_websocket
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState()
         state.update_lidar({"ranges": [1.0], "sample_count": 1})
@@ -146,7 +146,7 @@ class SensorFailureContractTest(unittest.TestCase):
         self,
     ) -> None:
         from app.sensors.router import lidar_websocket
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState()
         state.update_lidar({"ranges": [1.0], "sample_count": 1})
@@ -180,10 +180,10 @@ class SensorFailureContractTest(unittest.TestCase):
 
     def test_websocket_closes_when_the_last_lidar_scan_becomes_stale(self) -> None:
         from app.sensors.router import lidar_websocket
-        from sensor_bridge.state import SensorStreamState
+        from transport.sensor_bridge.state import SensorStreamState
 
         state = SensorStreamState(stale_after_seconds=1.0)
-        with patch("sensor_bridge.state.time.monotonic", return_value=10.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=10.0):
             state.update_lidar({"ranges": [1.0], "sample_count": 1})
         websocket = MagicMock()
         websocket.app = types.SimpleNamespace(
@@ -203,7 +203,7 @@ class SensorFailureContractTest(unittest.TestCase):
         websocket.receive = AsyncMock()
         websocket.close = AsyncMock()
 
-        with patch("sensor_bridge.state.time.monotonic", return_value=12.0):
+        with patch("transport.sensor_bridge.state.time.monotonic", return_value=12.0):
             asyncio.run(lidar_websocket(websocket))
 
         websocket.close.assert_awaited_once_with(

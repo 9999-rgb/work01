@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 
-HISTORY_PATH = Path(__file__).resolve().parents[1] / "history.html"
+HISTORY_PATH = Path(__file__).resolve().parents[1] / "app" / "history.html"
 
 
 def _inline_script() -> str:

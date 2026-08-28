@@ -1,0 +1,8 @@
+# CMake generated Testfile for 
+# Source directory: /home/live/work01/xczs_inspection_robot_nav2
+# Build directory: /home/live/work01/build/xczs_inspection_robot_nav2
+# 
+# This file includes the relevant testing commands required for 
+# testing this directory and lists subdirectories to be tested as well.
+add_test(navigation_launch_policy_test "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml" "--package-name" "xczs_inspection_robot_nav2" "--output-file" "/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_nav2/test/test_navigation_launch_policy.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_nav2")
+set_tests_properties(navigation_launch_policy_test PROPERTIES  LABELS "pytest" TIMEOUT "60" WORKING_DIRECTORY "/home/live/work01/build/xczs_inspection_robot_nav2" _BACKTRACE_TRIPLES "/opt/ros/humble/share/ament_cmake_test/cmake/ament_add_test.cmake;125;add_test;/opt/ros/humble/share/ament_cmake_pytest/cmake/ament_add_pytest_test.cmake;169;ament_add_test;/home/live/work01/xczs_inspection_robot_nav2/CMakeLists.txt;15;ament_add_pytest_test;/home/live/work01/xczs_inspection_robot_nav2/CMakeLists.txt;0;")

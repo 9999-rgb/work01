@@ -294,7 +294,7 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual(0.0, adapter.reset_base_pose.x)
         self.assertEqual(0.0, adapter.reset_base_pose.y)
         self.assertAlmostEqual(pi / 2.0, adapter.reset_base_pose.yaw)
-        self.assertEqual(0.02, adapter.reset_joint_tolerance)
+        self.assertEqual(0.12, adapter.reset_joint_tolerance)
         self.assertEqual(15.0, adapter.reset_joint_timeout_sec)
         self.assertEqual(5.0, adapter.reset_joint_duration_sec)
         defaults = {
@@ -316,7 +316,7 @@ class RobotAdapterTest(unittest.TestCase):
             adapter.reset_tolerance_for_joint("r_three_cyl_finger1_joint"),
         )
         self.assertEqual(
-            0.02,
+            0.12,
             adapter.reset_tolerance_for_joint("l_arm_0_joint"),
         )
         stations = dict(adapter.control_navigation_stations)
@@ -520,7 +520,7 @@ class RobotAdapterTest(unittest.TestCase):
         self.assertEqual("y", adapter.manual_linear_axis)
         self.assertEqual("map", adapter.reset_base_pose.frame_id)
         self.assertAlmostEqual(pi / 2.0, adapter.reset_base_pose.yaw)
-        self.assertEqual(0.02, adapter.reset_joint_tolerance)
+        self.assertEqual(0.12, adapter.reset_joint_tolerance)
         self.assertEqual(15.0, adapter.reset_joint_timeout_sec)
         self.assertEqual(5.0, adapter.reset_joint_duration_sec)
 

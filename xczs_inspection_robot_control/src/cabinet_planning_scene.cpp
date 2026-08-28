@@ -29,7 +29,7 @@
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
 #include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
-#include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
+#include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_control/planning_scene_profile.hpp"
 
 namespace xczs_inspection_robot_control
@@ -39,7 +39,7 @@ namespace
 {
 
 using CabinetControlState =
-  xczs_inspection_robot_control::msg::CabinetControlState;
+  xczs_inspection_robot_interfaces::msg::CabinetControlState;
 
 constexpr std::size_t kExpiredLeaseHistoryLimit = 64U;
 

@@ -9,8 +9,6 @@ endif()
 
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
-find_package(gazebo_dev REQUIRED)
-find_package(gazebo_ros REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
@@ -20,7 +18,6 @@ find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rcl REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(shape_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -29,18 +26,7 @@ find_package(tf2 REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(trajectory_msgs REQUIRED)
-
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "action/OperateCabinetControl.action"
-  "action/PressCabinetButton.action"
-  "msg/CabinetControl.msg"
-  "msg/CabinetControlCatalog.msg"
-  "msg/CabinetControlState.msg"
-  "srv/ManageOperationLease.srv"
-  "srv/SetCabinetGrasp.srv"
-  "srv/SwitchToolset.srv"
-  DEPENDENCIES geometry_msgs std_msgs
-)
+find_package(xczs_inspection_robot_interfaces REQUIRED)
 
 add_executable(keyboard_teleop src/keyboard_teleop.cpp)
 add_executable(inspection_robot_gui src/inspection_robot_gui.cpp)
@@ -60,21 +46,6 @@ add_executable(
 )
 add_executable(base_command_router src/base_command_router.cpp)
 add_executable(cabinet_grasp_aggregator src/cabinet_grasp_aggregator.cpp)
-add_library(
-  xczs_planar_stabilizer
-  SHARED
-  src/gazebo/planar_stabilizer_plugin.cpp
-)
-add_library(
-  xczs_cabinet_state
-  SHARED
-  src/gazebo/cabinet_state_plugin.cpp
-)
-add_library(
-  xczs_ros_global_args_guard
-  SHARED
-  src/gazebo/xczs_ros_global_args_guard.cpp
-)
 
 foreach(target keyboard_teleop inspection_robot_gui)
   target_compile_features(${target} PUBLIC cxx_std_17)
@@ -120,14 +91,9 @@ ament_target_dependencies(
   tf2_geometry_msgs
   tf2_ros
 )
-rosidl_get_typesupport_target(
-  cabinet_planning_scene_typesupport
-  ${PROJECT_NAME}
-  "rosidl_typesupport_cpp"
-)
 target_link_libraries(
   cabinet_planning_scene
-  "${cabinet_planning_scene_typesupport}"
+  "${xczs_inspection_robot_interfaces_TARGETS__rosidl_typesupport_cpp}"
 )
 
 target_compile_features(cabinet_pose_authority PUBLIC cxx_std_17)
@@ -158,14 +124,9 @@ ament_target_dependencies(
   tf2_geometry_msgs
   tf2_ros
 )
-rosidl_get_typesupport_target(
-  cabinet_button_operator_typesupport
-  ${PROJECT_NAME}
-  "rosidl_typesupport_cpp"
-)
 target_link_libraries(
   cabinet_button_operator
-  "${cabinet_button_operator_typesupport}"
+  "${xczs_inspection_robot_interfaces_TARGETS__rosidl_typesupport_cpp}"
 )
 
 target_compile_features(operation_lease_coordinator PUBLIC cxx_std_17)
@@ -176,14 +137,9 @@ target_include_directories(
     "$<INSTALL_INTERFACE:include>"
 )
 ament_target_dependencies(operation_lease_coordinator rclcpp)
-rosidl_get_typesupport_target(
-  operation_lease_coordinator_typesupport
-  ${PROJECT_NAME}
-  "rosidl_typesupport_cpp"
-)
 target_link_libraries(
   operation_lease_coordinator
-  "${operation_lease_coordinator_typesupport}"
+  "${xczs_inspection_robot_interfaces_TARGETS__rosidl_typesupport_cpp}"
 )
 
 target_compile_features(base_command_router PUBLIC cxx_std_17)
@@ -211,52 +167,6 @@ endforeach()
 target_compile_features(cabinet_grasp_aggregator PUBLIC cxx_std_17)
 ament_target_dependencies(cabinet_grasp_aggregator rclcpp std_msgs)
 
-target_compile_features(xczs_planar_stabilizer PUBLIC cxx_std_17)
-ament_target_dependencies(
-  xczs_planar_stabilizer
-  gazebo_dev
-  gazebo_ros
-  geometry_msgs
-  rclcpp
-  std_msgs
-)
-
-target_compile_features(xczs_cabinet_state PUBLIC cxx_std_17)
-target_include_directories(
-  xczs_cabinet_state
-  PUBLIC
-    "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-    "$<INSTALL_INTERFACE:include>"
-)
-ament_target_dependencies(
-  xczs_cabinet_state
-  gazebo_dev
-  gazebo_ros
-  geometry_msgs
-  rclcpp
-  sensor_msgs
-  std_msgs
-  std_srvs
-)
-rosidl_get_typesupport_target(
-  cabinet_state_plugin_typesupport
-  ${PROJECT_NAME}
-  "rosidl_typesupport_cpp"
-)
-target_link_libraries(
-  xczs_cabinet_state
-  "${cabinet_state_plugin_typesupport}"
-)
-
-target_compile_features(xczs_ros_global_args_guard PUBLIC cxx_std_17)
-ament_target_dependencies(
-  xczs_ros_global_args_guard
-  gazebo_dev
-  rcl
-  rclcpp
-  std_srvs
-)
-
 install(
   TARGETS
     keyboard_teleop
@@ -271,29 +181,14 @@ install(
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(
-  TARGETS
-    xczs_planar_stabilizer
-    xczs_cabinet_state
-    xczs_ros_global_args_guard
-  LIBRARY DESTINATION lib
-)
-
 install(DIRECTORY include/ DESTINATION include)
 
 install(
-  DIRECTORY config launch scripts
+  DIRECTORY config
   DESTINATION share/${PROJECT_NAME}
-  PATTERN "__pycache__" EXCLUDE
-  PATTERN "*.pyc" EXCLUDE
 )
 
 ament_export_include_directories(include)
-ament_export_libraries(xczs_planar_stabilizer)
-ament_export_libraries(xczs_cabinet_state)
-ament_export_libraries(xczs_ros_global_args_guard)
-ament_export_dependencies(gazebo_dev)
-ament_export_dependencies(rosidl_default_runtime)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -397,14 +292,9 @@ if(BUILD_TESTING)
     tf2_geometry_msgs
     tf2_ros
   )
-  rosidl_get_typesupport_target(
-    cabinet_button_operator_kinematics_test_typesupport
-    ${PROJECT_NAME}
-    "rosidl_typesupport_cpp"
-  )
   target_link_libraries(
     cabinet_button_operator_kinematics_test
-    "${cabinet_button_operator_kinematics_test_typesupport}"
+    "${xczs_inspection_robot_interfaces_TARGETS__rosidl_typesupport_cpp}"
   )
   ament_add_pytest_test(
     launch_startup_policy_test

@@ -1,0 +1,265 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-f8a8807dd75dc49f7454.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17,
+						18,
+						19
+					]
+				},
+				{
+					"build" : "gtest",
+					"jsonFile" : "directory-gtest-a2408fe1a73b92c5e636.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.8"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 1,
+					"source" : "/opt/ros/humble/src/gtest_vendor",
+					"targetIndexes" : 
+					[
+						8,
+						9
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"childIndexes" : 
+					[
+						1
+					],
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "xczs_inspection_robot_control",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17,
+						18,
+						19
+					]
+				},
+				{
+					"directoryIndexes" : 
+					[
+						1
+					],
+					"name" : "gtest",
+					"parentIndex" : 0,
+					"targetIndexes" : 
+					[
+						8,
+						9
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "action_and_control_state_policy_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-action_and_control_state_policy_test-4e700479eec6676a97f5.json",
+					"name" : "action_and_control_state_policy_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "base_command_router::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-base_command_router-a3a17832c65f46cdaf45.json",
+					"name" : "base_command_router",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cabinet_button_operator::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cabinet_button_operator-9a26ffbe1dff62e98f43.json",
+					"name" : "cabinet_button_operator",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cabinet_button_operator_kinematics_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cabinet_button_operator_kinematics_test-66ecfe4f6136272c0dff.json",
+					"name" : "cabinet_button_operator_kinematics_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cabinet_grasp_aggregator::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cabinet_grasp_aggregator-a0efbbd3c74b18089439.json",
+					"name" : "cabinet_grasp_aggregator",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cabinet_planning_scene::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cabinet_planning_scene-ee7de06faf6f01ff2655.json",
+					"name" : "cabinet_planning_scene",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cabinet_pose_authority::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cabinet_pose_authority-6c12da49f66ff3943a09.json",
+					"name" : "cabinet_pose_authority",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "cabinet_pose_frame_contract_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-cabinet_pose_frame_contract_test-9f6a50349d0b2553c792.json",
+					"name" : "cabinet_pose_frame_contract_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "gtest::@0af4add9fe94340e763e",
+					"jsonFile" : "target-gtest-a41e698cef26b4f7c0d2.json",
+					"name" : "gtest",
+					"projectIndex" : 1
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "gtest_main::@0af4add9fe94340e763e",
+					"jsonFile" : "target-gtest_main-25ab7e28185cbb5fdc2f.json",
+					"name" : "gtest_main",
+					"projectIndex" : 1
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "inspection_robot_gui::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-inspection_robot_gui-a7e640d2d2054b9340ba.json",
+					"name" : "inspection_robot_gui",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "keyboard_teleop::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-keyboard_teleop-5b5b324aee84fbc9503e.json",
+					"name" : "keyboard_teleop",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "legacy_trajectory_router::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-legacy_trajectory_router-ba564247f01db6ac435e.json",
+					"name" : "legacy_trajectory_router",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "operation_lease_coordinator::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-operation_lease_coordinator-309206fe836a07535dde.json",
+					"name" : "operation_lease_coordinator",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "operation_lease_state_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-operation_lease_state_test-7da07cec1242b3459593.json",
+					"name" : "operation_lease_state_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "operation_validation_policy_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-operation_validation_policy_test-f5b0a21c1c123189b3bf.json",
+					"name" : "operation_validation_policy_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "planning_scene_profile_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-planning_scene_profile_test-a5be685947a7e0d5a202.json",
+					"name" : "planning_scene_profile_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "router_utils_test::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-router_utils_test-3322467c63071ebbfae2.json",
+					"name" : "router_utils_test",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-ee7061c8bcf082c0faaa.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_control_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_control_uninstall-e737bdf28de93a71eeea.json",
+					"name" : "xczs_inspection_robot_control_uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/live/work01/build/xczs_inspection_robot_control",
+		"source" : "/home/live/work01/xczs_inspection_robot_control"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

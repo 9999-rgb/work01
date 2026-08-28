@@ -1,0 +1,43 @@
+Start testing: Aug 08 15:41 CST
+----------------------------------------------------------
+1/1 Testing: operation_lease_state_test
+1/1 Test: operation_lease_state_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_lease_state_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"operation_lease_state_test" start time: Aug 08 15:41 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from OperationLeaseState
+[ RUN      ] OperationLeaseState.ExcludesOtherOwnersAndAllowsRelease
+[       OK ] OperationLeaseState.ExcludesOtherOwnersAndAllowsRelease (0 ms)
+[ RUN      ] OperationLeaseState.ConcurrentAcquireHasExactlyOneWinner
+[       OK ] OperationLeaseState.ConcurrentAcquireHasExactlyOneWinner (1 ms)
+[ RUN      ] OperationLeaseState.RenewalExtendsLeaseAndStaleTokenCannotRelease
+[       OK ] OperationLeaseState.RenewalExtendsLeaseAndStaleTokenCannotRelease (0 ms)
+[ RUN      ] OperationLeaseState.ExpiredOwnerCannotRenewAndResourceRecovers
+[       OK ] OperationLeaseState.ExpiredOwnerCannotRenewAndResourceRecovers (0 ms)
+[----------] 4 tests from OperationLeaseState (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 4 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml'
+<end of output>
+Test time =   0.06 sec
+----------------------------------------------------------
+Test Passed.
+"operation_lease_state_test" end time: Aug 08 15:41 CST
+"operation_lease_state_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Aug 08 15:41 CST
+
+gtest =   0.06 sec*proc
+

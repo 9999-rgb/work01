@@ -1,0 +1,1 @@
+ament_cmake_symlink_install_targets("TARGET_FILES" "/home/live/work01/build/xczs_inspection_robot_control/libxczs_planar_stabilizer.so" "/home/live/work01/build/xczs_inspection_robot_control/libxczs_cabinet_state.so" "TARGETS" "xczs_planar_stabilizer" "xczs_cabinet_state" "LIBRARY_DESTINATION" "lib")

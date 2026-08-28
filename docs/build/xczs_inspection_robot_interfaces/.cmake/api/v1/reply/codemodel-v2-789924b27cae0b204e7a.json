@@ -1,0 +1,258 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"childIndexes" : 
+					[
+						1,
+						2
+					],
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-cf8108e754adc1914582.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						18
+					]
+				},
+				{
+					"build" : "xczs_inspection_robot_interfaces__py",
+					"jsonFile" : "directory-xczs_inspection_robot_interfaces__py-3d90865a978e0f963add.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "/home/live/work01/build/xczs_inspection_robot_interfaces/xczs_inspection_robot_interfaces__py",
+					"targetIndexes" : 
+					[
+						5
+					]
+				},
+				{
+					"build" : "xczs_inspection_robot_interfaces__rs",
+					"jsonFile" : "directory-xczs_inspection_robot_interfaces__rs-9a9ef3681f65423b18ad.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"parentIndex" : 0,
+					"projectIndex" : 0,
+					"source" : "/home/live/work01/build/xczs_inspection_robot_interfaces/xczs_inspection_robot_interfaces__rs",
+					"targetIndexes" : 
+					[
+						17
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0,
+						1,
+						2
+					],
+					"name" : "xczs_inspection_robot_interfaces",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2,
+						3,
+						4,
+						5,
+						6,
+						7,
+						8,
+						9,
+						10,
+						11,
+						12,
+						13,
+						14,
+						15,
+						16,
+						17,
+						18
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_build_xczs_inspection_robot_interfaces_egg::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_build_xczs_inspection_robot_interfaces_egg-34e8c462f60088b6aa9c.json",
+					"name" : "ament_cmake_python_build_xczs_inspection_robot_interfaces_egg",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "ament_cmake_python_symlink_xczs_inspection_robot_interfaces::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-ament_cmake_python_symlink_xczs_inspection_robot_interfaces-699c5d8f83660881b945.json",
+					"name" : "ament_cmake_python_symlink_xczs_inspection_robot_interfaces",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-0339522de7ad488cfc62.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces-0208e537b488ebbe726b.json",
+					"name" : "xczs_inspection_robot_interfaces",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__cpp-142d9d4c145a49384e66.json",
+					"name" : "xczs_inspection_robot_interfaces__cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 1,
+					"id" : "xczs_inspection_robot_interfaces__py::@9af260e7b96246a5bf30",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__py-f2f00448fa701f70e511.json",
+					"name" : "xczs_inspection_robot_interfaces__py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_generator_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_generator_c-1496007d8c00460e38b5.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_generator_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_generator_py::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_generator_py-52363fa450a9282e3833.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_generator_py",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_c-f093afbebbe1ccab4412.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_c__pyext-b0b437570da725c94d06.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_cpp-18b53757fd8dc3aad611.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_c-003419fcc89801e2049a.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_c__pyext-d49afdf116de3d60ceb3.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_cpp-da8bb1c8b2563504fa4f.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_fastrtps_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_c::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_c-8791ef2428ac1312c732.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_c",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_c__pyext::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_c__pyext-c189d0c516bea368c834.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_c__pyext",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_cpp::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_cpp-c884d2cde3cd798873c0.json",
+					"name" : "xczs_inspection_robot_interfaces__rosidl_typesupport_introspection_cpp",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 2,
+					"id" : "xczs_inspection_robot_interfaces__rs::@7a6ed8415c892df476bd",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces__rs-05cbe8d272ee195024b5.json",
+					"name" : "xczs_inspection_robot_interfaces__rs",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_interfaces_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_interfaces_uninstall-51131c88c9ba972d0ed7.json",
+					"name" : "xczs_inspection_robot_interfaces_uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/live/work01/build/xczs_inspection_robot_interfaces",
+		"source" : "/home/live/work01/xczs_inspection_robot_interfaces"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

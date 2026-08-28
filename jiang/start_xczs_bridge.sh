@@ -53,7 +53,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORK_DIR="$(dirname "$SCRIPT_DIR")"          # work01 根目录
 JIANG_DIR="$WORK_DIR/jiang"
 ZENOH_BRIDGE="${ZENOH_BRIDGE:-/opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds}"
-ZENOH_BRIDGE_CONFIG="${ZENOH_BRIDGE_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/zenoh_bridge.json5}"
+ZENOH_BRIDGE_CONFIG="${ZENOH_BRIDGE_CONFIG:-$WORK_DIR/jiang/config/zenoh_bridge.json5}"
 BRIDGE_REST_PORT="${BRIDGE_REST_PORT:-8000}"
 BRIDGE_TCP_PORT="${BRIDGE_TCP_PORT:-7447}"
 ZENOH_LAN_ENABLED="${XCZS_ZENOH_LAN_ENABLED:-false}"
@@ -85,7 +85,7 @@ done
 # 首次启动）正常返回空结果；数据库迁移或 schema 错误必须阻止带病启动。
 XCZS_ASSETS_DIR="${XCZS_ASSETS_DIR:-$WORK_DIR/jiang/data/assets}"
 if ! ASSET_SELECTION_LINES="$(
-    "$PYTHON_BIN" "$WORK_DIR/scripts/xczs_import_asset" \
+    "$PYTHON_BIN" "$WORK_DIR/scripts/tools/xczs_import_asset" \
         --assets-dir "$XCZS_ASSETS_DIR" --print-env
 )"; then
     echo "ERROR: 资产选择或数据库迁移失败，已中止启动。" >&2
@@ -105,7 +105,7 @@ CABINET_POSE_PATH="${CABINET_POSE_PATH:-$WORK_DIR/xczs_inspection_robot_control/
 CABINET_ROBOT_ADAPTER_PATH="${CABINET_ROBOT_ADAPTER_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_robot_adapter.yaml}"
 ROBOT_CONTROL_PATH="${ROBOT_CONTROL_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/robot_control.yaml}"
 RECORDINGS_ROOT="${RECORDINGS_ROOT:-$WORK_DIR/recordings}"
-SIMULATION_WORLD_PATH="${SIMULATION_WORLD_PATH:-$WORK_DIR/xczs_inspection_robot_description/worlds/inspection_robot.world}"
+SIMULATION_WORLD_PATH="${SIMULATION_WORLD_PATH:-$WORK_DIR/xczs_inspection_robot_gazebo/worlds/inspection_robot.world}"
 CABINET_XACRO_PATH="${CABINET_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/control_cabinet.urdf.xacro}"
 ROBOT_NAME="${ROBOT_NAME:-xczs_inspection_robot}"
 ROBOT_XACRO_PATH="${ROBOT_XACRO_PATH:-$WORK_DIR/xczs_inspection_robot_description/urdf/xczs_inspection_robot.urdf.xacro}"
@@ -157,7 +157,7 @@ PREFLIGHT_ONLY="${XCZS_PREFLIGHT_ONLY:-false}"
 TOOLSET_HOTSWAP_REQUESTED="${XCZS_TOOLSET_HOTSWAP:-true}"
 TOOLSET_HOTSWAP_ACTIVE="false"
 TOOLSET_HOTSWAP_LABEL="未启用（等待运行模式判定）"
-TOOLSET_SUPERVISOR_SCRIPT="$WORK_DIR/xczs_inspection_robot_control/scripts/toolset_supervisor.py"
+TOOLSET_SUPERVISOR_SCRIPT="$WORK_DIR/jiang/scripts/toolset_supervisor.py"
 
 CONTROL_ORIGINS=()
 NORMALIZED_CONTROL_ORIGINS=()
@@ -1262,9 +1262,15 @@ fi
 
 REQUIRED_ROS_PACKAGES=(
     xczs_inspection_robot_control
+    xczs_inspection_robot_interfaces
+    xczs_inspection_robot_bringup
 )
 if [ "$ROBOT_BRINGUP" = "true" ] || [ "$SPAWN_CABINET" = "true" ]; then
     REQUIRED_ROS_PACKAGES+=(xczs_inspection_robot_description xacro)
+fi
+if [ "$GAZEBO_ENABLED" = "true" ] || [ "$ROBOT_BRINGUP" = "true" ] ||
+    [ "$SPAWN_CABINET" = "true" ]; then
+    REQUIRED_ROS_PACKAGES+=(xczs_inspection_robot_gazebo)
 fi
 if [ "$ROBOT_BRINGUP" = "true" ]; then
     REQUIRED_ROS_PACKAGES+=(
@@ -1322,13 +1328,13 @@ try:
     from PIL import Image
     from app.main import _normalize_allowed_origins, create_app
     from control_gateway import ControlServer
-    from sensor_bridge.ros_node import SensorRosRuntime
-    from sse_bridge import ZenohSource
-    from xczs_inspection_robot_control.action import (
+    from transport.sensor_bridge.ros_node import SensorRosRuntime
+    from transport.sse_bridge import ZenohSource
+    from xczs_inspection_robot_interfaces.action import (
         OperateCabinetControl,
         PressCabinetButton,
     )
-    from xczs_inspection_robot_control.msg import (
+    from xczs_inspection_robot_interfaces.msg import (
         CabinetControl,
         CabinetControlCatalog,
         CabinetControlState,
@@ -1355,7 +1361,7 @@ PY
 fi
 if [ "$WITH_PROXY" = "true" ]; then
     if ! env PYTHONPATH="$JIANG_DIR${PYTHONPATH:+:$PYTHONPATH}" \
-        "$PYTHON_BIN" -c 'import run_xczs_proxy, zenoh'; then
+        "$PYTHON_BIN" -c 'import transport.run_xczs_proxy, zenoh'; then
         echo "ERROR: CDR→JSON 代理的 Python 依赖导入失败。"
         exit 1
     fi
@@ -1370,7 +1376,7 @@ if [ "$CONTROL_MODE" = "web" ] || [ "$CABINET_BRINGUP" = "true" ]; then
         TOOLSET_CONTRACTS=(A B)
     fi
     for _toolset_contract in "${TOOLSET_CONTRACTS[@]}"; do
-        if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_adapter_contract" \
+        if ! "$PYTHON_BIN" "$WORK_DIR/scripts/validate/check_adapter_contract" \
             --robot-adapter "$CABINET_ROBOT_ADAPTER_PATH" \
             --instances "$CABINET_INSTANCES_PATH" \
             --controls "$CABINET_CONTROLS_PATH" \
@@ -1381,13 +1387,13 @@ if [ "$CONTROL_MODE" = "web" ] || [ "$CABINET_BRINGUP" = "true" ]; then
             echo "ERROR: 工具套装 $_toolset_contract 的启动配置合同校验失败。"
             exit 1
         fi
-        if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_cabinet_model" \
+        if ! "$PYTHON_BIN" "$WORK_DIR/scripts/validate/check_cabinet_model" \
             --toolset "$_toolset_contract"; then
             echo "ERROR: 工具套装 $_toolset_contract 的控制柜模型合同校验失败。"
             exit 1
         fi
     done
-    if ! "$PYTHON_BIN" "$WORK_DIR/scripts/check_scene_config" \
+    if ! "$PYTHON_BIN" "$WORK_DIR/scripts/validate/check_scene_config" \
         --scenes "$SCENES_CONFIG" \
         --nav2-params "$NAV2_PARAMS_FILE"; then
         echo "ERROR: 场景目录合同校验失败。"
@@ -1592,6 +1598,33 @@ raise SystemExit(
 '
 }
 
+_scene_switch_is_active() {
+    # A scene switch intentionally drains map, Nav2 and cabinet services for a
+    # bounded reconciliation window (map load, delete-then-spawn, homing,
+    # teleport).  The gateway advertises the window through the read-only
+    # /health document, so the runtime monitor treats it as a maintenance
+    # hold -- exactly like a toolset hot-swap -- instead of a dead stack.
+    # A non-ok gateway is never a hold: the switch's ``finally`` clears the
+    # flag, so a genuinely dead executor still trips the failure counter.
+    "$PYTHON_BIN" -c '
+import json
+import sys
+
+try:
+    health = json.load(sys.stdin)
+except (json.JSONDecodeError, TypeError):
+    raise SystemExit(1)
+
+raise SystemExit(
+    0
+    if isinstance(health, dict)
+    and health.get("status") == "ok"
+    and health.get("scene_switching") is True
+    else 1
+)
+'
+}
+
 _wait_for_task_stack() {
     local url="$1"
     local require_cabinet="$2"
@@ -1752,6 +1785,9 @@ _monitor_managed_processes() {
             )"
             if printf '%s' "$health_body" |
                 _toolset_transition_is_active; then
+                consecutive_health_failures=0
+            elif printf '%s' "$health_body" |
+                _scene_switch_is_active; then
                 consecutive_health_failures=0
             elif printf '%s' "$health_body" |
                 _task_stack_is_ready "$CABINET_ACTION_REQUIRED"; then
@@ -1951,7 +1987,7 @@ if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
     )
     echo "       启动常驻 Gazebo 世界（不含机器人与柜体运行节点）..."
     _start_managed_process WORLD_LAUNCH_PID "Gazebo 世界 launch" \
-        ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+        ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py \
         "${WORLD_LAUNCH_ARGS[@]}"
     # Fixed waiting only catches immediate child-process failures.  The
     # service gate below owns actual Gazebo factory readiness.
@@ -2031,7 +2067,7 @@ else
         LAUNCH_ARGS+=("nav2_map:=$NAV2_MAP_PATH")
     fi
     _start_managed_process LAUNCH_PID "ROS 2 launch" \
-        ros2 launch xczs_inspection_robot_control inspection_robot.launch.py \
+        ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py \
         "${LAUNCH_ARGS[@]}"
     if [ "$LOCAL_LAUNCH_PERSISTENT" = "true" ]; then
         # Each check is 200 ms.  Ten real seconds gives Gazebo sensor plugins
@@ -2066,7 +2102,7 @@ if [ "$WITH_PROXY" = "true" ]; then
     echo "[2/6] 启动 XCZS Zenoh 代理..."
     cd "$JIANG_DIR"
     _start_managed_process PROXY_PID "XCZS Zenoh 代理" \
-        "$PYTHON_BIN" run_xczs_proxy.py \
+        "$PYTHON_BIN" -m transport.run_xczs_proxy \
         --port "$BRIDGE_TCP_PORT" \
         --control-port 0
     _wait_for_stable_processes 5

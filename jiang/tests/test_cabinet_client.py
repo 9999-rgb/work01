@@ -238,12 +238,12 @@ def _load_cabinet_client() -> types.ModuleType:
             "std_srvs.srv",
             Trigger=type("Trigger", (), {"Request": type("Request", (), {})}),
         ),
-        "xczs_inspection_robot_control.action": _module(
-            "xczs_inspection_robot_control.action",
+        "xczs_inspection_robot_interfaces.action": _module(
+            "xczs_inspection_robot_interfaces.action",
             OperateCabinetControl=_Operate,
         ),
-        "xczs_inspection_robot_control.msg": _module(
-            "xczs_inspection_robot_control.msg",
+        "xczs_inspection_robot_interfaces.msg": _module(
+            "xczs_inspection_robot_interfaces.msg",
             CabinetControl=_Control,
             CabinetControlCatalog=object,
             CabinetControlState=object,

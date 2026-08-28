@@ -1,0 +1,4 @@
+# generated from rosidl_cmake/cmake/rosidl_cmake-extras.cmake.in
+
+set(xczs_inspection_robot_control_IDL_FILES "action/OperateCabinetControl.idl;action/PressCabinetButton.idl;msg/CabinetControl.idl;msg/CabinetControlCatalog.idl;msg/CabinetControlState.idl;srv/ManageOperationLease.idl;srv/SetCabinetGrasp.idl;srv/SwitchToolset.idl")
+set(xczs_inspection_robot_control_INTERFACE_FILES "action/OperateCabinetControl.action;action/PressCabinetButton.action;msg/CabinetControl.msg;msg/CabinetControlCatalog.msg;msg/CabinetControlState.msg;srv/ManageOperationLease.srv;srv/ManageOperationLease_Request.msg;srv/ManageOperationLease_Response.msg;srv/SetCabinetGrasp.srv;srv/SetCabinetGrasp_Request.msg;srv/SetCabinetGrasp_Response.msg;srv/SwitchToolset.srv;srv/SwitchToolset_Request.msg;srv/SwitchToolset_Response.msg")

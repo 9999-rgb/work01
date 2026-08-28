@@ -19,7 +19,8 @@ from launch_ros.actions import Node
 
 def _load_launch_module():
     launch_path = (
-        Path(__file__).resolve().parents[1]
+        Path(__file__).resolve().parents[2]
+        / "xczs_inspection_robot_bringup"
         / "launch"
         / "inspection_robot.launch.py"
     )

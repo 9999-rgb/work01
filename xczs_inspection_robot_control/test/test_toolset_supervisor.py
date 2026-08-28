@@ -16,10 +16,13 @@ import pytest
 
 
 CONTROL_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = CONTROL_ROOT.parent
 
 
 def _load_module():
-    script_path = CONTROL_ROOT / "scripts" / "toolset_supervisor.py"
+    script_path = (
+        WORKSPACE_ROOT / "jiang" / "scripts" / "toolset_supervisor.py"
+    )
     spec = spec_from_file_location("toolset_supervisor", script_path)
     assert spec is not None and spec.loader is not None
     module = module_from_spec(spec)
@@ -133,7 +136,7 @@ def test_each_robot_child_gets_a_unique_valid_gazebo_plugin_instance_id():
     supervisor._child_process = None
     supervisor._child_process_group_id = None
     supervisor._child_instance_sequence = 0
-    supervisor._launch_package = "xczs_inspection_robot_control"
+    supervisor._launch_package = "xczs_inspection_robot_bringup"
     supervisor._launch_file = "inspection_robot.launch.py"
     supervisor._launch_arguments = ()
     supervisor._cabinet_bringup = True
@@ -406,7 +409,7 @@ def test_rollback_stops_a_residual_child_even_before_target_started_flag():
 
 def test_supervisor_does_not_forward_child_launch_arguments_to_rcl():
     source = (
-        CONTROL_ROOT / "scripts" / "toolset_supervisor.py"
+        WORKSPACE_ROOT / "jiang" / "scripts" / "toolset_supervisor.py"
     ).read_text(encoding="utf-8")
 
     assert "rclpy.init(args=[])" in source

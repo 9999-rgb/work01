@@ -1,0 +1,111 @@
+#!/usr/bin/python3
+"""Validate the portable robot and cabinet profile contract."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+import sys
+
+
+WORKSPACE = Path(__file__).resolve().parents[2]
+JIANG = WORKSPACE / "jiang"
+sys.path.insert(0, str(JIANG))
+
+from control_gateway.profile_contract import ProfileContractError  # noqa: E402
+from control_gateway.profile_contract import validate_profile  # noqa: E402
+from control_gateway.moveit_kinematics import (  # noqa: E402
+    KinematicsConfigError,
+    validate_kinematics_plugins,
+)
+
+
+CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
+MOVEIT_CONFIG = WORKSPACE / "xczs_inspection_robot_moveit_config" / "config"
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Check the cross-file robot, navigation, cabinet catalog, scene, "
+            "pose, and instance contract without starting ROS."
+        )
+    )
+    parser.add_argument(
+        "--robot-adapter",
+        default=str(CONTROL_CONFIG / "cabinet_robot_adapter.yaml"),
+    )
+    parser.add_argument(
+        "--instances",
+        default=str(CONTROL_CONFIG / "cabinet_instances.yaml"),
+    )
+    parser.add_argument(
+        "--controls",
+        default=str(CONTROL_CONFIG / "cabinet_controls.yaml"),
+    )
+    parser.add_argument(
+        "--scene",
+        default=str(CONTROL_CONFIG / "cabinet_scene.yaml"),
+    )
+    parser.add_argument(
+        "--pose",
+        default=str(CONTROL_CONFIG / "cabinet_pose.yaml"),
+    )
+    parser.add_argument(
+        "--kinematics",
+        default=str(MOVEIT_CONFIG / "kinematics.yaml"),
+        help=(
+            "MoveIt kinematics YAML whose plugin classes must be discoverable "
+            "through the sourced ament environment."
+        ),
+    )
+    parser.add_argument(
+        "--toolset",
+        choices=("A", "B"),
+        default="A",
+        help="active end-effector toolset used to resolve manual joints",
+    )
+    return parser
+
+
+def main() -> int:
+    arguments = _parser().parse_args()
+    try:
+        report = validate_profile(
+            robot_adapter_path=arguments.robot_adapter,
+            instances_path=arguments.instances,
+            controls_path=arguments.controls,
+            scene_path=arguments.scene,
+            pose_path=arguments.pose,
+            toolset=arguments.toolset,
+        )
+        kinematics_report = validate_kinematics_plugins(arguments.kinematics)
+    except (ProfileContractError, KinematicsConfigError) as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    group_summary = ", ".join(
+        f"{name}={count}"
+        for name, count in report.joint_group_counts
+    )
+    print(
+        "PASS: adapter contract; "
+        f"cabinets={report.cabinet_count}, controls={report.control_count} "
+        f"(buttons={report.button_count}, knobs={report.knob_count}, "
+        f"switches={report.switch_count}, doors={report.door_count}), "
+        "operable_control_ids=["
+        + ", ".join(report.operable_control_ids)
+        + "], "
+        f"joint_groups=[{group_summary}], "
+        f"frames={report.planning_frame}/{report.navigation_frame}, "
+        "ik=["
+        + ", ".join(
+            f"{group}={solver}"
+            for group, solver in kinematics_report.group_solvers
+        )
+        + "]"
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

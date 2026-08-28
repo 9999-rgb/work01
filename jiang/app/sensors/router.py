@@ -23,7 +23,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from app.auth.deps import ActiveTokenChecker, resolve_active_user
 from app.database.engine import async_session
-from sensor_bridge.state import SensorStreamState
+from transport.sensor_bridge.state import SensorStreamState
 
 MJPEG_BOUNDARY = "xczs-camera-frame"
 

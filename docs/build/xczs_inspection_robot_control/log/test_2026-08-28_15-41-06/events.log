@@ -1,0 +1,5 @@
+[0.000000] (-) TimerEvent: {}
+[0.000254] (xczs_inspection_robot_control) JobQueued: {'identifier': 'xczs_inspection_robot_control', 'dependencies': OrderedDict([('xczs_inspection_robot_control', '/home/live/work01/build/xczs_inspection_robot_control/install/xczs_inspection_robot_control')])}
+[0.000642] (xczs_inspection_robot_control) JobStarted: {'identifier': 'xczs_inspection_robot_control'}
+[0.005394] (xczs_inspection_robot_control) JobEnded: {'identifier': 'xczs_inspection_robot_control', 'rc': 1}
+[0.016114] (-) EventReactorShutdown: {}

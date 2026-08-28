@@ -1,0 +1,79 @@
+{
+	"configurations" : 
+	[
+		{
+			"directories" : 
+			[
+				{
+					"build" : ".",
+					"hasInstallRule" : true,
+					"jsonFile" : "directory-.-2f4e76171a5863ced795.json",
+					"minimumCMakeVersion" : 
+					{
+						"string" : "3.12"
+					},
+					"projectIndex" : 0,
+					"source" : ".",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"name" : "",
+			"projects" : 
+			[
+				{
+					"directoryIndexes" : 
+					[
+						0
+					],
+					"name" : "xczs_inspection_robot_description",
+					"targetIndexes" : 
+					[
+						0,
+						1,
+						2
+					]
+				}
+			],
+			"targets" : 
+			[
+				{
+					"directoryIndex" : 0,
+					"id" : "uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-uninstall-8be3220db984432ab3ca.json",
+					"name" : "uninstall",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_description_generate_control_cabinet_urdf::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_description_generate_control_cabinet_urdf-18a97efe822e1a3d0acf.json",
+					"name" : "xczs_inspection_robot_description_generate_control_cabinet_urdf",
+					"projectIndex" : 0
+				},
+				{
+					"directoryIndex" : 0,
+					"id" : "xczs_inspection_robot_description_uninstall::@6890427a1f51a3e7e1df",
+					"jsonFile" : "target-xczs_inspection_robot_description_uninstall-a8d6d458a66215f75847.json",
+					"name" : "xczs_inspection_robot_description_uninstall",
+					"projectIndex" : 0
+				}
+			]
+		}
+	],
+	"kind" : "codemodel",
+	"paths" : 
+	{
+		"build" : "/home/live/work01/build/xczs_inspection_robot_description",
+		"source" : "/home/live/work01/xczs_inspection_robot_description"
+	},
+	"version" : 
+	{
+		"major" : 2,
+		"minor" : 3
+	}
+}

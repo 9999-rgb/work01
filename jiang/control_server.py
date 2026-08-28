@@ -195,11 +195,11 @@ def _build_sensor_subsystem(
     fatal_callback: ExecutorFatalCallback | None = None,
 ):
     """构造 SensorStreamState + SensorRosRuntime；失败则返回 (None, None)。"""
-    from sensor_bridge.state import SensorStreamState
+    from transport.sensor_bridge.state import SensorStreamState
 
     state = SensorStreamState()
     try:
-        from sensor_bridge.ros_node import SensorRosRuntime
+        from transport.sensor_bridge.ros_node import SensorRosRuntime
 
         runtime = SensorRosRuntime(
             state=state,
@@ -218,7 +218,7 @@ def _build_sensor_subsystem(
 def _build_zenoh_source(args: argparse.Namespace):
     """构造 ZenohSource；失败则返回 None。"""
     try:
-        from sse_bridge import ZenohSource
+        from transport.sse_bridge import ZenohSource
 
         return ZenohSource(connect_endpoint=args.zenoh)
     except Exception as error:  # noqa: BLE001 - SSE 子系统尽力而为
@@ -329,7 +329,7 @@ def main() -> None:
         sensor_runtime=sensor_runtime,
         zenoh_source=zenoh_source,
         enable_db=True,
-        static_dir=Path(__file__).resolve().parent,
+        static_dir=Path(__file__).resolve().parent / "app",
         allowed_origins=allowed_origins,
     )
     print(f"Control server: http://{args.host}:{args.port}")

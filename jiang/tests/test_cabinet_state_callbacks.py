@@ -20,15 +20,15 @@ from control_gateway.ros_node import RosControlNode  # noqa: E402
 from control_gateway.robot_adapter import ManualJointConfig  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
 from std_msgs.msg import Bool  # noqa: E402
-from xczs_inspection_robot_control.action import (  # noqa: E402
+from xczs_inspection_robot_interfaces.action import (  # noqa: E402
     OperateCabinetControl,
     PressCabinetButton,
 )
-from xczs_inspection_robot_control.msg import CabinetControl  # noqa: E402
-from xczs_inspection_robot_control.msg import (  # noqa: E402
+from xczs_inspection_robot_interfaces.msg import CabinetControl  # noqa: E402
+from xczs_inspection_robot_interfaces.msg import (  # noqa: E402
     CabinetControlCatalog,
 )
-from xczs_inspection_robot_control.msg import (  # noqa: E402
+from xczs_inspection_robot_interfaces.msg import (  # noqa: E402
     CabinetControlState,
 )
 

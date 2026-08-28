@@ -1213,7 +1213,7 @@ class FastAPIAuthGateTest(unittest.TestCase):
             control_server=_FakeControlServer(),
             enable_db=False,
             auth_enabled=True,
-            static_dir=JIANG_DIR,
+            static_dir=JIANG_DIR / "app",
         )
         client = TestClient(app)
         self.assertEqual(client.get("/history.html").status_code, 200)

@@ -20,7 +20,9 @@ MOVEIT_ROOT = WORKSPACE_ROOT / "xczs_inspection_robot_moveit_config"
 
 
 def _load_module():
-    script_path = CONTROL_ROOT / "scripts" / "verify_initial_pose.py"
+    script_path = (
+        WORKSPACE_ROOT / "xczs_inspection_robot_bringup" / "scripts" / "verify_initial_pose.py"
+    )
     spec = spec_from_file_location("verify_initial_pose", script_path)
     assert spec is not None and spec.loader is not None
     module = module_from_spec(spec)

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 
 
-MONITOR_PATH = Path(__file__).resolve().parents[1] / "monitor.html"
+MONITOR_PATH = Path(__file__).resolve().parents[1] / "app" / "monitor.html"
 
 
 def _inline_script() -> str:

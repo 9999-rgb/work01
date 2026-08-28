@@ -1,0 +1,36 @@
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml
+
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from ToolProfileKinematicsValidation
+[ RUN      ] ToolProfileKinematicsValidation.NamesGroupWhenRobotModelIsUnavailable
+[       OK ] ToolProfileKinematicsValidation.NamesGroupWhenRobotModelIsUnavailable (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.RejectsAndNamesMissingJointModelGroup
+[INFO] [1787904792.412902257] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787904792.412926982] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787904792.412960576] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[ERROR] [1787904792.412974894] [moveit_robot_model.robot_model]: Group 'missing_arm' not found in model 'kinematics_validation_test_robot'
+[       OK ] ToolProfileKinematicsValidation.RejectsAndNamesMissingJointModelGroup (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.RejectsExistingGroupWithoutSolver
+[INFO] [1787904792.413037405] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787904792.413044040] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787904792.413056402] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[       OK ] ToolProfileKinematicsValidation.RejectsExistingGroupWithoutSolver (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.ReportsEveryInvalidUniqueProfileGroup
+[INFO] [1787904792.413108436] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787904792.413114093] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787904792.413121706] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[ERROR] [1787904792.413133300] [moveit_robot_model.robot_model]: Group 'missing_arm' not found in model 'kinematics_validation_test_robot'
+[       OK ] ToolProfileKinematicsValidation.ReportsEveryInvalidUniqueProfileGroup (0 ms)
+[----------] 4 tests from ToolProfileKinematicsValidation (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 4 tests.
+
+
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml'

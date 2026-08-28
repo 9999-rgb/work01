@@ -10,7 +10,7 @@
 
 #include "rclcpp/rclcpp.hpp"
 #include "xczs_inspection_robot_control/operation_lease_state.hpp"
-#include "xczs_inspection_robot_control/srv/manage_operation_lease.hpp"
+#include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -19,7 +19,7 @@ namespace
 {
 
 using ManageOperationLease =
-  xczs_inspection_robot_control::srv::ManageOperationLease;
+  xczs_inspection_robot_interfaces::srv::ManageOperationLease;
 
 }  // namespace
 

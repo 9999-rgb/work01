@@ -1,0 +1,81 @@
+{
+	"backtrace" : 2,
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"add_custom_target",
+			"xacro_add_files"
+		],
+		"files" : 
+		[
+			"/opt/ros/humble/share/xacro/cmake/xacro-extras.cmake",
+			"CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 1
+			},
+			{
+				"command" : 1,
+				"file" : 1,
+				"line" : 8,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 143,
+				"parent" : 1
+			}
+		]
+	},
+	"id" : "xczs_inspection_robot_description_generate_control_cabinet_urdf::@6890427a1f51a3e7e1df",
+	"name" : "xczs_inspection_robot_description_generate_control_cabinet_urdf",
+	"paths" : 
+	{
+		"build" : ".",
+		"source" : "."
+	},
+	"sourceGroups" : 
+	[
+		{
+			"name" : "",
+			"sourceIndexes" : 
+			[
+				0
+			]
+		},
+		{
+			"name" : "CMake Rules",
+			"sourceIndexes" : 
+			[
+				1,
+				2
+			]
+		}
+	],
+	"sources" : 
+	[
+		{
+			"backtrace" : 2,
+			"isGenerated" : true,
+			"path" : "/home/live/work01/build/xczs_inspection_robot_description/CMakeFiles/xczs_inspection_robot_description_generate_control_cabinet_urdf",
+			"sourceGroupIndex" : 0
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "/home/live/work01/build/xczs_inspection_robot_description/CMakeFiles/xczs_inspection_robot_description_generate_control_cabinet_urdf.rule",
+			"sourceGroupIndex" : 1
+		},
+		{
+			"backtrace" : 0,
+			"isGenerated" : true,
+			"path" : "/home/live/work01/build/xczs_inspection_robot_description/control_cabinet.urdf.rule",
+			"sourceGroupIndex" : 1
+		}
+	],
+	"type" : "UTILITY"
+}

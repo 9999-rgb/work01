@@ -50,7 +50,7 @@
       x: 0.0
       y: 0.0
       yaw: 1.5707963267948966
-    reset_joint_tolerance: 0.02
+    reset_joint_tolerance: 0.12
     reset_joint_timeout_sec: 15.0
     reset_joint_duration_sec: 5.0
     # 双臂机器人共支持 6 个 JointTrajectoryController：左/右七轴机械臂，

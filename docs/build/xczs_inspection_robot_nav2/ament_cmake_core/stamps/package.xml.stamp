@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>xczs_inspection_robot_nav2</name>
+  <version>1.0.0</version>
+  <description>Nav2 configuration for the XCZS inspection robot.</description>
+
+  <maintainer email="live@example.com">live</maintainer>
+  <license>BSD-3-Clause</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>nav2_bringup</exec_depend>
+  <exec_depend>navigation2</exec_depend>
+  <exec_depend>rviz2</exec_depend>
+  <exec_depend>xczs_inspection_robot_description</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

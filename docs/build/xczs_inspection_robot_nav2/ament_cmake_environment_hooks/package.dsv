@@ -1,0 +1,4 @@
+source;share/xczs_inspection_robot_nav2/local_setup.bash
+source;share/xczs_inspection_robot_nav2/local_setup.dsv
+source;share/xczs_inspection_robot_nav2/local_setup.sh
+source;share/xczs_inspection_robot_nav2/local_setup.zsh

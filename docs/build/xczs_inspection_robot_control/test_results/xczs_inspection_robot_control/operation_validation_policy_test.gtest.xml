@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="19" failures="0" disabled="0" errors="0" time="0.001" timestamp="2026-08-28T16:13:12" name="AllTests">
+  <testsuite name="OperationValidationPolicy" tests="11" failures="0" disabled="0" errors="0" time="0.001" timestamp="2026-08-28T16:13:12">
+    <testcase name="PlanningOnlyPreparationNeverOwnsBaseMotion" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="PhysicalPreparationUsesConfiguredMotionLayers" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="AcceptedOrPendingGoalDoesNotOwnMotionResources" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="ActivePhysicalGoalOwnsResourcesAfterLease" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="PlanningOnlyNeverOwnsMotionResources" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="UnverifiedControlRequiresPlanningOnly" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="VerifiedControlMayUsePhysicalExecution" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="ValidationAlwaysBlocksPhysicalMotion" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="PreflightAndDockingFailuresNeedNoRecoveryMotion" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="ExecutedOperationStillRequiresSafetyRecovery" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+    <testcase name="EngagementFlagsConservativelyRequireRecovery" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.OperationValidationPolicy" />
+  </testsuite>
+  <testsuite name="StagingSafetyPolicy" tests="5" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12">
+    <testcase name="UsesAsymmetricFootprintInCabinetDirection" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StagingSafetyPolicy" />
+    <testcase name="IncludesPaddingAndWorstDockingError" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StagingSafetyPolicy" />
+    <testcase name="InvalidFootprintFailsClosed" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StagingSafetyPolicy" />
+    <testcase name="WideYawIntervalUsesEachVertexRadialExtent" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StagingSafetyPolicy" />
+    <testcase name="RequiresBothStoppedPoseErrorsWithinTolerance" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.StagingSafetyPolicy" />
+  </testsuite>
+  <testsuite name="RotaryOperationPolicy" tests="3" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12">
+    <testcase name="TransitionMatrixUsesSourceThenTarget" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.RotaryOperationPolicy" />
+    <testcase name="ThreePositionKnobRejectsOnlySkippedDetent" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.RotaryOperationPolicy" />
+    <testcase name="PartialReleaseCrossesAdjacentDetentMidpoint" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.RotaryOperationPolicy" />
+  </testsuite>
+</testsuites>

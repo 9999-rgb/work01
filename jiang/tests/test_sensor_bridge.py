@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, call, patch
 
 from rclpy.qos import ReliabilityPolicy
 
-from sensor_bridge.ros_node import SensorStreamNode
-from sensor_bridge.ros_node import SensorRosRuntime
-from sensor_bridge.ros_node import _alternate_camera_topic
+from transport.sensor_bridge.ros_node import SensorStreamNode
+from transport.sensor_bridge.ros_node import SensorRosRuntime
+from transport.sensor_bridge.ros_node import _alternate_camera_topic
 
 
 class SensorBridgeContractTest(unittest.TestCase):
@@ -83,11 +83,11 @@ class SensorBridgeContractTest(unittest.TestCase):
         node = MagicMock()
         executor = MagicMock()
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init") as init,
-            patch("sensor_bridge.ros_node.SensorStreamNode", return_value=node) as cls,
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init") as init,
+            patch("transport.sensor_bridge.ros_node.SensorStreamNode", return_value=node) as cls,
             patch(
-                "sensor_bridge.ros_node.SingleThreadedExecutor",
+                "transport.sensor_bridge.ros_node.SingleThreadedExecutor",
                 return_value=executor,
             ) as executor_cls,
         ):
@@ -108,10 +108,10 @@ class SensorBridgeContractTest(unittest.TestCase):
     def test_runtime_rolls_back_private_context_when_node_init_fails(self) -> None:
         context = MagicMock()
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init"),
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init"),
             patch(
-                "sensor_bridge.ros_node.SensorStreamNode",
+                "transport.sensor_bridge.ros_node.SensorStreamNode",
                 side_effect=RuntimeError("node init failed"),
             ),
         ):
@@ -134,11 +134,11 @@ class SensorBridgeContractTest(unittest.TestCase):
         executor.add_node.side_effect = ValueError("add node failed")
         executor.shutdown.side_effect = RuntimeError("shutdown failed")
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init"),
-            patch("sensor_bridge.ros_node.SensorStreamNode", return_value=node),
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init"),
+            patch("transport.sensor_bridge.ros_node.SensorStreamNode", return_value=node),
             patch(
-                "sensor_bridge.ros_node.SingleThreadedExecutor",
+                "transport.sensor_bridge.ros_node.SingleThreadedExecutor",
                 return_value=executor,
             ),
         ):
@@ -166,11 +166,11 @@ class SensorBridgeContractTest(unittest.TestCase):
             True,
         ]
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init"),
-            patch("sensor_bridge.ros_node.SensorStreamNode", return_value=node),
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init"),
+            patch("transport.sensor_bridge.ros_node.SensorStreamNode", return_value=node),
             patch(
-                "sensor_bridge.ros_node.SingleThreadedExecutor",
+                "transport.sensor_bridge.ros_node.SingleThreadedExecutor",
                 return_value=executor,
             ),
         ):
@@ -215,11 +215,11 @@ class SensorBridgeContractTest(unittest.TestCase):
 
         executor.shutdown.side_effect = shutdown
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init"),
-            patch("sensor_bridge.ros_node.SensorStreamNode", return_value=node),
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init"),
+            patch("transport.sensor_bridge.ros_node.SensorStreamNode", return_value=node),
             patch(
-                "sensor_bridge.ros_node.SingleThreadedExecutor",
+                "transport.sensor_bridge.ros_node.SingleThreadedExecutor",
                 return_value=executor,
             ),
         ):
@@ -271,11 +271,11 @@ class SensorBridgeContractTest(unittest.TestCase):
         executor.wake.side_effect = release_spin.set
         fatal_callback = MagicMock()
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init"),
-            patch("sensor_bridge.ros_node.SensorStreamNode", return_value=node),
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init"),
+            patch("transport.sensor_bridge.ros_node.SensorStreamNode", return_value=node),
             patch(
-                "sensor_bridge.ros_node.SingleThreadedExecutor",
+                "transport.sensor_bridge.ros_node.SingleThreadedExecutor",
                 return_value=executor,
             ),
         ):
@@ -304,11 +304,11 @@ class SensorBridgeContractTest(unittest.TestCase):
         executor.spin_once.side_effect = RuntimeError("DDS reader failed")
         fatal_callback = MagicMock()
         with (
-            patch("sensor_bridge.ros_node.Context", return_value=context),
-            patch("sensor_bridge.ros_node.rclpy.init"),
-            patch("sensor_bridge.ros_node.SensorStreamNode", return_value=node),
+            patch("transport.sensor_bridge.ros_node.Context", return_value=context),
+            patch("transport.sensor_bridge.ros_node.rclpy.init"),
+            patch("transport.sensor_bridge.ros_node.SensorStreamNode", return_value=node),
             patch(
-                "sensor_bridge.ros_node.SingleThreadedExecutor",
+                "transport.sensor_bridge.ros_node.SingleThreadedExecutor",
                 return_value=executor,
             ),
         ):

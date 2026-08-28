@@ -43,7 +43,7 @@ def _robot_parameters() -> dict[str, object]:
             "y": 0.0,
             "yaw": 0.0,
         },
-        "reset_joint_tolerance": 0.02,
+        "reset_joint_tolerance": 0.12,
         "reset_joint_timeout_sec": 15.0,
         "reset_joint_duration_sec": 5.0,
         "arm_controller_topic": "/arm/joint_trajectory",

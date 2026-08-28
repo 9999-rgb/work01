@@ -1,0 +1,35 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from xczs_inspection_robot_control/srv/SwitchToolset.srv
+// generated code does not contain a copyright notice
+
+
+module xczs_inspection_robot_control {
+  module srv {
+    @verbatim (language="comment", text=
+      "Request a world-preserving end-effector change." "\n"
+      "" "\n"
+      "The physical A/B tools have mutually exclusive ROS 2 control and MoveIt" "\n"
+      "topology, so the supervisor replaces only the robot child stack while the" "\n"
+      "Gazebo world remains alive.  ``expected_generation == 0`` means the caller" "\n"
+      "accepts the current generation; non-zero values provide optimistic" "\n"
+      "concurrency protection for Web clients.")
+    struct SwitchToolset_Request {
+      string toolset;
+
+      uint64 expected_generation;
+    };
+    struct SwitchToolset_Response {
+      boolean accepted;
+
+      string state;
+
+      string active_toolset;
+
+      string target_toolset;
+
+      uint64 generation;
+
+      string message;
+    };
+  };
+};

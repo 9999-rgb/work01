@@ -1,4 +1,4 @@
-"""Focused pure-Python tests for ``scripts/check_scene_config``.
+"""Focused pure-Python tests for ``scripts/validate/check_scene_config``.
 
 The checker is exercised through its real CLI so these tests cover catalog,
 map-image and Nav2-parameter parsing together without importing ROS.
@@ -20,7 +20,7 @@ from PIL import Image
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-CHECKER = WORKSPACE / "scripts" / "check_scene_config"
+CHECKER = WORKSPACE / "scripts" / "validate" / "check_scene_config"
 
 DEFAULT_MAP = {
     "image": "map.pgm",

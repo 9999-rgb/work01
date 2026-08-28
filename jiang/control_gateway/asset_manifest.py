@@ -10,7 +10,7 @@ workspace, mirroring :mod:`control_gateway.scene_catalog`.
 An imported asset is *data*: the gateway never interprets its contents beyond
 the schema below.  Cross-file semantic validation (cabinet profile contract,
 scene map existence) is delegated to ``profile_contract.validate_profile`` and
-``scripts/check_scene_config`` at import time, not re-implemented here.
+``scripts/validate/check_scene_config`` at import time, not re-implemented here.
 """
 
 from __future__ import annotations

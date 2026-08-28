@@ -1,0 +1,43 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from xczs_inspection_robot_control/srv/ManageOperationLease.srv
+// generated code does not contain a copyright notice
+
+
+module xczs_inspection_robot_control {
+  module srv {
+    module ManageOperationLease_Request_Constants {
+      const uint8 ACQUIRE = 0;
+      const uint8 RENEW = 1;
+      const uint8 RELEASE = 2;
+    };
+    struct ManageOperationLease_Request {
+      uint8 command;
+
+      string owner_id;
+
+      string lease_id;
+
+      double requested_duration;
+    };
+    module ManageOperationLease_Response_Constants {
+      const uint8 GRANTED = 0;
+      const uint8 RESOURCE_BUSY = 1;
+      const uint8 INVALID_REQUEST = 2;
+      const uint8 NOT_OWNER = 3;
+      const uint8 RELEASED = 4;
+    };
+    struct ManageOperationLease_Response {
+      boolean success;
+
+      uint8 status_code;
+
+      string message;
+
+      string lease_id;
+
+      string owner_id;
+
+      double remaining_duration;
+    };
+  };
+};

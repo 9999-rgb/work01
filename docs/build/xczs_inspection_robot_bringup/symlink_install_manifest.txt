@@ -1,0 +1,17 @@
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/launch/inspection_robot.launch.py
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/scripts/verify_initial_pose.py
+/home/live/work01/install/xczs_inspection_robot_bringup/share/ament_index/resource_index/package_run_dependencies/xczs_inspection_robot_bringup
+/home/live/work01/install/xczs_inspection_robot_bringup/share/ament_index/resource_index/parent_prefix_path/xczs_inspection_robot_bringup
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/environment/ament_prefix_path.sh
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/environment/ament_prefix_path.dsv
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/environment/path.sh
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/environment/path.dsv
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/local_setup.bash
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/local_setup.sh
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/local_setup.zsh
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/local_setup.dsv
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/package.dsv
+/home/live/work01/install/xczs_inspection_robot_bringup/share/ament_index/resource_index/packages/xczs_inspection_robot_bringup
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/cmake/xczs_inspection_robot_bringupConfig.cmake
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/cmake/xczs_inspection_robot_bringupConfig-version.cmake
+/home/live/work01/install/xczs_inspection_robot_bringup/share/xczs_inspection_robot_bringup/package.xml

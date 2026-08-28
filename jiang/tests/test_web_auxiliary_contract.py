@@ -27,7 +27,7 @@ class _Config:
 
 class WebAuxiliaryContractTest(unittest.TestCase):
     def test_standalone_sse_server_defaults_to_loopback(self) -> None:
-        from sse_bridge import _build_argument_parser as sse_parser
+        from transport.sse_bridge import _build_argument_parser as sse_parser
 
         self.assertEqual(sse_parser().parse_args([]).host, "127.0.0.1")
         self.assertEqual(
@@ -36,7 +36,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         )
 
     def test_proxy_legacy_control_is_disabled_by_default(self) -> None:
-        from run_xczs_proxy import _build_argument_parser
+        from transport.run_xczs_proxy import _build_argument_parser
 
         self.assertEqual(
             _build_argument_parser().parse_args([]).control_port,
@@ -44,7 +44,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         )
 
     def test_legacy_control_is_loopback_only_and_warns(self) -> None:
-        from run_xczs_proxy import _start_legacy_control_server
+        from transport.run_xczs_proxy import _start_legacy_control_server
 
         server = MagicMock()
         control_gateway = types.ModuleType("control_gateway")
@@ -66,7 +66,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self.assertIn("loopback", warning.getvalue())
 
     def test_legacy_control_start_failure_stops_constructed_server(self) -> None:
-        from run_xczs_proxy import _start_legacy_control_server
+        from transport.run_xczs_proxy import _start_legacy_control_server
 
         server = MagicMock()
         server.start.side_effect = OSError("address in use")
@@ -83,7 +83,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
     def test_proxy_connection_failure_closes_runner_then_control_server(
         self,
     ) -> None:
-        import run_xczs_proxy
+        import transport.run_xczs_proxy
 
         parser = MagicMock()
         parser.parse_args.return_value = argparse.Namespace(
@@ -100,23 +100,23 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         runner.close.side_effect = lambda: events.append("runner.close")
 
         with (
-            patch.object(run_xczs_proxy, "_build_argument_parser", return_value=parser),
-            patch.object(run_xczs_proxy, "register_standard_types"),
-            patch.object(run_xczs_proxy, "register_xczs_topics"),
+            patch.object(transport.run_xczs_proxy, "_build_argument_parser", return_value=parser),
+            patch.object(transport.run_xczs_proxy, "register_standard_types"),
+            patch.object(transport.run_xczs_proxy, "register_xczs_topics"),
             patch.object(
-                run_xczs_proxy,
+                transport.run_xczs_proxy,
                 "_start_legacy_control_server",
                 return_value=control,
             ),
-            patch("zenoh_proxy.runner.ProxyRunner", return_value=runner),
+            patch("transport.zenoh_proxy.runner.ProxyRunner", return_value=runner),
             self.assertRaisesRegex(RuntimeError, "router unavailable"),
         ):
-            run_xczs_proxy.main()
+            transport.run_xczs_proxy.main()
 
         self.assertEqual(events, ["runner.close", "control.stop"])
 
     def test_shared_key_normalizer_accepts_only_exact_ros_topics(self) -> None:
-        from zenoh_key import normalize_ros_key
+        from transport.zenoh_key import normalize_ros_key
 
         self.assertEqual(
             normalize_ros_key("xczs/joint_states/json"),
@@ -127,15 +127,15 @@ class WebAuxiliaryContractTest(unittest.TestCase):
                 normalize_ros_key(key)
 
     def test_zenoh_source_is_client_only_without_multicast_scouting(self) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         config = _Config()
         session = MagicMock()
         with (
-            patch.object(sse_bridge.zenoh, "Config", return_value=config),
-            patch.object(sse_bridge.zenoh, "open", return_value=session),
+            patch.object(transport.sse_bridge.zenoh, "Config", return_value=config),
+            patch.object(transport.sse_bridge.zenoh, "open", return_value=session),
         ):
-            source = sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
+            source = transport.sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
             source.close()
 
         self.assertEqual(
@@ -149,7 +149,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         session.close.assert_called_once_with()
 
     def test_zenoh_source_releases_lock_before_undeclaring(self) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         config = _Config()
         session = MagicMock()
@@ -176,10 +176,10 @@ class WebAuxiliaryContractTest(unittest.TestCase):
             lambda *_args, **_kwargs: _Subscriber()
         )
         with (
-            patch.object(sse_bridge.zenoh, "Config", return_value=config),
-            patch.object(sse_bridge.zenoh, "open", return_value=session),
+            patch.object(transport.sse_bridge.zenoh, "Config", return_value=config),
+            patch.object(transport.sse_bridge.zenoh, "open", return_value=session),
         ):
-            source = sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
+            source = transport.sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
 
             def callback(*_args) -> None:
                 return None
@@ -197,15 +197,15 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         session.close.assert_called_once_with()
 
     def test_zenoh_source_replays_last_sample_to_late_listener(self) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         config = _Config()
         session = MagicMock()
         with (
-            patch.object(sse_bridge.zenoh, "Config", return_value=config),
-            patch.object(sse_bridge.zenoh, "open", return_value=session),
+            patch.object(transport.sse_bridge.zenoh, "Config", return_value=config),
+            patch.object(transport.sse_bridge.zenoh, "open", return_value=session),
         ):
-            source = sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
+            source = transport.sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
 
             seen: list[tuple[str, str]] = []
 
@@ -225,15 +225,15 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         session.declare_subscriber.assert_called_once()
 
     def test_zenoh_source_does_not_replay_when_no_sample_seen(self) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         config = _Config()
         session = MagicMock()
         with (
-            patch.object(sse_bridge.zenoh, "Config", return_value=config),
-            patch.object(sse_bridge.zenoh, "open", return_value=session),
+            patch.object(transport.sse_bridge.zenoh, "Config", return_value=config),
+            patch.object(transport.sse_bridge.zenoh, "open", return_value=session),
         ):
-            source = sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
+            source = transport.sse_bridge.ZenohSource("tcp/127.0.0.1:17447")
             seen: list[tuple[str, str]] = []
             source.add_listener("xczs/odom", lambda *a: seen.append(a))
             source.close()
@@ -242,7 +242,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         session.declare_subscriber.assert_called_once()
 
     def test_topic_globstar_matches_zero_or_more_segments(self) -> None:
-        from zenoh_proxy.registry import TopicRegistry
+        from transport.zenoh_proxy.registry import TopicRegistry
 
         registry = TopicRegistry()
         message_type = type("Message", (), {})
@@ -279,7 +279,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
             self.assertIsNone(adjacent.regex.fullmatch(topic))
 
     def test_proxy_close_stops_an_external_spin_loop(self) -> None:
-        from zenoh_proxy.runner import ProxyRunner
+        from transport.zenoh_proxy.runner import ProxyRunner
 
         runner = ProxyRunner()
         runner._running = True
@@ -287,7 +287,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self.assertFalse(runner.is_running)
 
     def test_proxy_rejects_spin_before_connect_completes(self) -> None:
-        from zenoh_proxy.runner import ProxyRunner
+        from transport.zenoh_proxy.runner import ProxyRunner
 
         runner = ProxyRunner()
         with self.assertRaisesRegex(RuntimeError, "before connect"):
@@ -299,7 +299,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
     def test_proxy_background_spin_can_be_stopped_and_joined(self) -> None:
         import time
 
-        from zenoh_proxy.runner import ProxyRunner
+        from transport.zenoh_proxy.runner import ProxyRunner
 
         runner = ProxyRunner()
         runner._session = MagicMock()
@@ -317,7 +317,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
     def test_proxy_rejects_two_concurrent_spin_owners(self) -> None:
         import time
 
-        from zenoh_proxy.runner import ProxyRunner
+        from transport.zenoh_proxy.runner import ProxyRunner
 
         runner = ProxyRunner()
         runner._session = MagicMock()
@@ -347,7 +347,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
             self.assertFalse(worker.is_alive())
 
     def test_proxy_rejects_reconnect_until_stopped_spin_has_exited(self) -> None:
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         runner = runner_module.ProxyRunner()
         runner._session = MagicMock()
@@ -373,7 +373,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
             self.assertFalse(worker.is_alive())
 
     def test_proxy_subscriptions_are_serialized_with_close(self) -> None:
-        from zenoh_proxy.runner import ProxyRunner
+        from transport.zenoh_proxy.runner import ProxyRunner
 
         for method_name, manager_method, args in (
             ("subscribe", "subscribe_multiple", (["xczs/odom"],)),
@@ -430,7 +430,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
     def test_proxy_spin_print_failure_still_cleans_claimed_generation(self) -> None:
         import builtins
 
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         runner = runner_module.ProxyRunner()
         runner._sub_mgr = MagicMock()
@@ -457,7 +457,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self.assertIsNone(runner._sub_mgr)
 
     def test_proxy_spin_signal_setup_failures_clean_and_restore(self) -> None:
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         for failure_point in ("getsignal", "signal"):
             with self.subTest(failure_point=failure_point):
@@ -513,7 +513,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
                     self.assertIs(signal_calls[-1], original_handler)
 
     def test_sse_bind_failure_closes_zenoh_source(self) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         parser = MagicMock()
         parser.parse_args.return_value = argparse.Namespace(
@@ -523,31 +523,31 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         )
         source = MagicMock()
         with (
-            patch.object(sse_bridge, "_build_argument_parser", return_value=parser),
-            patch.object(sse_bridge, "ZenohSource", return_value=source),
+            patch.object(transport.sse_bridge, "_build_argument_parser", return_value=parser),
+            patch.object(transport.sse_bridge, "ZenohSource", return_value=source),
             patch.object(
-                sse_bridge,
+                transport.sse_bridge,
                 "ThreadingHTTPServer",
                 side_effect=OSError("address in use"),
             ),
             redirect_stderr(io.StringIO()),
             self.assertRaisesRegex(OSError, "address in use"),
         ):
-            sse_bridge.main()
+            transport.sse_bridge.main()
         source.close.assert_called_once_with()
-        self.assertIsNone(sse_bridge._zenoh_source)
+        self.assertIsNone(transport.sse_bridge._zenoh_source)
 
     def test_sse_subscription_failure_returns_503_before_200(self) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         source = MagicMock()
         source.add_listener.side_effect = RuntimeError("router unavailable")
-        handler = object.__new__(sse_bridge.SSEHandler)
+        handler = object.__new__(transport.sse_bridge.SSEHandler)
         handler.path = "/xczs/odom"
         handler.send_error = MagicMock()
         handler.send_response = MagicMock()
 
-        with patch.object(sse_bridge, "_zenoh_source", source):
+        with patch.object(transport.sse_bridge, "_zenoh_source", source):
             handler.do_GET()
 
         handler.send_error.assert_called_once_with(
@@ -560,12 +560,12 @@ class WebAuxiliaryContractTest(unittest.TestCase):
     def test_sse_response_and_cleanup_use_the_registered_local_source(
         self,
     ) -> None:
-        import sse_bridge
+        import transport.sse_bridge
 
         source = MagicMock()
         replacement = MagicMock()
         events: list[str] = []
-        handler = object.__new__(sse_bridge.SSEHandler)
+        handler = object.__new__(transport.sse_bridge.SSEHandler)
         handler.path = "/xczs/odom"
         handler.send_header = MagicMock()
         handler.end_headers = MagicMock()
@@ -574,7 +574,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
 
         def add_listener(_key, callback) -> None:
             events.append("add")
-            sse_bridge._zenoh_source = replacement
+            transport.sse_bridge._zenoh_source = replacement
             callback("xczs/odom", '{"position": 1}')
 
         def send_response(status) -> None:
@@ -586,7 +586,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         )
         handler.send_response = MagicMock(side_effect=send_response)
 
-        with patch.object(sse_bridge, "_zenoh_source", source):
+        with patch.object(transport.sse_bridge, "_zenoh_source", source):
             handler.do_GET()
 
         self.assertEqual(events, ["add", "response:200", "remove"])
@@ -595,7 +595,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
 
     def test_proxy_runner_is_client_only_without_multicast_scouting(self) -> None:
         import zenoh
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         config = _Config()
         session = MagicMock()
@@ -626,7 +626,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
 
     def test_proxy_runner_closes_session_if_manager_setup_fails(self) -> None:
         import zenoh
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         config = _Config()
         session = MagicMock()
@@ -648,7 +648,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
 
     def test_proxy_runner_can_retry_after_configuration_failure(self) -> None:
         import zenoh
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         config = _Config()
         session = MagicMock()
@@ -679,7 +679,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self,
     ) -> None:
         import zenoh
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         runner = runner_module.ProxyRunner()
         old_open_started = threading.Event()
@@ -758,7 +758,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         new_session.close.assert_called_once_with()
 
     def test_proxy_runner_closes_session_if_subscription_cleanup_fails(self) -> None:
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         runner = runner_module.ProxyRunner()
         subscriptions = MagicMock()
@@ -774,7 +774,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
         self.assertIsNone(runner._sub_mgr)
 
     def test_proxy_close_preserves_first_cleanup_failure(self) -> None:
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         runner = runner_module.ProxyRunner()
         subscriptions = MagicMock()
@@ -791,7 +791,7 @@ class WebAuxiliaryContractTest(unittest.TestCase):
 
     def test_proxy_spin_restores_state_and_signal_after_cleanup_failure(self) -> None:
         import zenoh
-        from zenoh_proxy import runner as runner_module
+        from transport.zenoh_proxy import runner as runner_module
 
         runner = runner_module.ProxyRunner()
         failing_subscriptions = MagicMock()

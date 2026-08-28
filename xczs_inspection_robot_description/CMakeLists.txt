@@ -14,7 +14,7 @@ xacro_add_files(
 )
 
 install(
-  DIRECTORY config meshes urdf worlds
+  DIRECTORY config meshes urdf
   DESTINATION share/${PROJECT_NAME}
 )
 

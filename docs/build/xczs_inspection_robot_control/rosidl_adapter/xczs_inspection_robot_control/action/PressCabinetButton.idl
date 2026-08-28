@@ -1,0 +1,78 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from xczs_inspection_robot_control/action/PressCabinetButton.action
+// generated code does not contain a copyright notice
+
+
+module xczs_inspection_robot_control {
+  module action {
+    @verbatim (language="comment", text=
+      "Goal")
+    struct PressCabinetButton_Goal {
+      string button_id;
+
+      boolean navigate_to_staging_pose;
+    };
+    module PressCabinetButton_Result_Constants {
+      const uint8 SUCCESS = 0;
+      const uint8 INVALID_BUTTON = 1;
+      const uint8 NOT_READY = 2;
+      const uint8 NAVIGATION_FAILED = 3;
+      const uint8 PLANNING_FAILED = 4;
+      const uint8 EXECUTION_FAILED = 5;
+      const uint8 PRESS_NOT_DETECTED = 6;
+      const uint8 RELEASE_NOT_DETECTED = 7;
+      const uint8 CANCELED = 8;
+      const uint8 INTERNAL_ERROR = 9;
+      const uint8 RESOURCE_BUSY = 10;
+      const uint8 LEASE_LOST = 11;
+      const uint8 TOOLSET_MISMATCH = 12;
+      const uint8 ADAPTER_NOT_VALIDATED = 13;
+    };
+    @verbatim (language="comment", text=
+      "Result")
+    struct PressCabinetButton_Result {
+      boolean success;
+
+      uint8 error_code;
+
+      string message;
+
+      double max_travel;
+
+      @verbatim (language="comment", text=
+        "Always empty on success.  On failure this contains the actionable cause.")
+      string failure_reason;
+
+      boolean physical_outcome_confirmed;
+
+      boolean final_state_verified;
+
+      boolean transport_succeeded;
+
+      boolean recovery_succeeded;
+
+      boolean grasp_released;
+    };
+    module PressCabinetButton_Feedback_Constants {
+      const uint8 WAITING_FOR_SYSTEM = 0;
+      const uint8 NAVIGATING = 1;
+      const uint8 MOVING_TO_PREPRESS = 2;
+      const uint8 APPROACHING = 3;
+      const uint8 PRESSING = 4;
+      const uint8 VERIFYING_PRESS = 5;
+      const uint8 RETRACTING = 6;
+      const uint8 VERIFYING_RELEASE = 7;
+    };
+    @verbatim (language="comment", text=
+      "Feedback")
+    struct PressCabinetButton_Feedback {
+      uint8 phase;
+
+      float progress;
+
+      double button_travel;
+
+      string message;
+    };
+  };
+};

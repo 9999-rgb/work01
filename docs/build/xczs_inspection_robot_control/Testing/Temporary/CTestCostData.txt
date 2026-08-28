@@ -1,0 +1,15 @@
+operation_lease_state_test 128 0.000480849
+router_utils_test 122 0.000503933
+planning_scene_profile_test 122 0.000527726
+operation_validation_policy_test 111 0.000568986
+launch_startup_policy_test 102 0.00906276
+action_and_control_state_policy_test 100 0.000656985
+cabinet_pose_frame_contract_test 99 0.000618313
+set_initial_pose_test 5 0.210393
+cabinet_button_operator_kinematics_test 76 0.000997477
+cabinet_knob_grasp_contract_test 68 0.0256408
+verify_initial_pose_test 71 0.0156395
+operator_tf_buffer_contract_test 68 0.0114549
+tool_business_point_contract_test 60 0.0159851
+toolset_supervisor_test 36 0.0267516
+---

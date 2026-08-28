@@ -1,0 +1,134 @@
+Start testing: Aug 13 15:23 CST
+----------------------------------------------------------
+4/7 Testing: operation_validation_policy_test
+4/7 Test: operation_validation_policy_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_validation_policy_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"operation_validation_policy_test" start time: Aug 13 15:23 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 11 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 11 tests from OperationValidationPolicy
+[ RUN      ] OperationValidationPolicy.PlanningOnlyPreparationNeverOwnsBaseMotion
+[       OK ] OperationValidationPolicy.PlanningOnlyPreparationNeverOwnsBaseMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.PhysicalPreparationUsesConfiguredMotionLayers
+[       OK ] OperationValidationPolicy.PhysicalPreparationUsesConfiguredMotionLayers (0 ms)
+[ RUN      ] OperationValidationPolicy.AcceptedOrPendingGoalDoesNotOwnMotionResources
+[       OK ] OperationValidationPolicy.AcceptedOrPendingGoalDoesNotOwnMotionResources (0 ms)
+[ RUN      ] OperationValidationPolicy.ActivePhysicalGoalOwnsResourcesAfterLease
+[       OK ] OperationValidationPolicy.ActivePhysicalGoalOwnsResourcesAfterLease (0 ms)
+[ RUN      ] OperationValidationPolicy.PlanningOnlyNeverOwnsMotionResources
+[       OK ] OperationValidationPolicy.PlanningOnlyNeverOwnsMotionResources (0 ms)
+[ RUN      ] OperationValidationPolicy.UnverifiedControlRequiresPlanningOnly
+[       OK ] OperationValidationPolicy.UnverifiedControlRequiresPlanningOnly (0 ms)
+[ RUN      ] OperationValidationPolicy.VerifiedControlMayUsePhysicalExecution
+[       OK ] OperationValidationPolicy.VerifiedControlMayUsePhysicalExecution (0 ms)
+[ RUN      ] OperationValidationPolicy.ValidationAlwaysBlocksPhysicalMotion
+[       OK ] OperationValidationPolicy.ValidationAlwaysBlocksPhysicalMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.PreflightAndDockingFailuresNeedNoRecoveryMotion
+[       OK ] OperationValidationPolicy.PreflightAndDockingFailuresNeedNoRecoveryMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.ExecutedOperationStillRequiresSafetyRecovery
+[       OK ] OperationValidationPolicy.ExecutedOperationStillRequiresSafetyRecovery (0 ms)
+[ RUN      ] OperationValidationPolicy.EngagementFlagsConservativelyRequireRecovery
+[       OK ] OperationValidationPolicy.EngagementFlagsConservativelyRequireRecovery (0 ms)
+[----------] 11 tests from OperationValidationPolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 11 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 11 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml'
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"operation_validation_policy_test" end time: Aug 13 15:23 CST
+"operation_validation_policy_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+5/7 Testing: action_and_control_state_policy_test
+5/7 Test: action_and_control_state_policy_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/action_and_control_state_policy_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/action_and_control_state_policy_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"action_and_control_state_policy_test" start time: Aug 13 15:23 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/action_and_control_state_policy_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 7 tests from 2 test suites.
+[----------] Global test environment set-up.
+[----------] 4 tests from ActionTerminalPolicy
+[ RUN      ] ActionTerminalPolicy.PhysicalSuccessWinsAConcurrentLateCancel
+[       OK ] ActionTerminalPolicy.PhysicalSuccessWinsAConcurrentLateCancel (0 ms)
+[ RUN      ] ActionTerminalPolicy.CancelWinsOnlyBeforeSuccessIsCommitted
+[       OK ] ActionTerminalPolicy.CancelWinsOnlyBeforeSuccessIsCommitted (0 ms)
+[ RUN      ] ActionTerminalPolicy.CancelIsAcceptedBeforePhysicalCommit
+[       OK ] ActionTerminalPolicy.CancelIsAcceptedBeforePhysicalCommit (0 ms)
+[ RUN      ] ActionTerminalPolicy.CancelIsRejectedAfterPhysicalCommit
+[       OK ] ActionTerminalPolicy.CancelIsRejectedAfterPhysicalCommit (0 ms)
+[----------] 4 tests from ActionTerminalPolicy (0 ms total)
+
+[----------] 3 tests from StructuredControlStatePolicy
+[ RUN      ] StructuredControlStatePolicy.RejectsDeclaredInvalidAndNonFiniteSamples
+[       OK ] StructuredControlStatePolicy.RejectsDeclaredInvalidAndNonFiniteSamples (0 ms)
+[ RUN      ] StructuredControlStatePolicy.IgnoresAnotherControlsSample
+[       OK ] StructuredControlStatePolicy.IgnoresAnotherControlsSample (0 ms)
+[ RUN      ] StructuredControlStatePolicy.JointTrafficCannotKeepStructuredStateAlive
+[       OK ] StructuredControlStatePolicy.JointTrafficCannotKeepStructuredStateAlive (0 ms)
+[----------] 3 tests from StructuredControlStatePolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 7 tests from 2 test suites ran. (0 ms total)
+[  PASSED  ] 7 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/action_and_control_state_policy_test.gtest.xml'
+<end of output>
+Test time =   0.09 sec
+----------------------------------------------------------
+Test Passed.
+"action_and_control_state_policy_test" end time: Aug 13 15:23 CST
+"action_and_control_state_policy_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+6/7 Testing: cabinet_pose_frame_contract_test
+6/7 Test: cabinet_pose_frame_contract_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/cabinet_pose_frame_contract_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/cabinet_pose_frame_contract_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"cabinet_pose_frame_contract_test" start time: Aug 13 15:23 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/cabinet_pose_frame_contract_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 1 test from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 1 test from CabinetPoseFrameContract
+[ RUN      ] CabinetPoseFrameContract.SpawnAndPoseAuthorityShareOdomWorld
+[       OK ] CabinetPoseFrameContract.SpawnAndPoseAuthorityShareOdomWorld (0 ms)
+[----------] 1 test from CabinetPoseFrameContract (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 1 test from 1 test suite ran. (1 ms total)
+[  PASSED  ] 1 test.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_pose_frame_contract_test.gtest.xml'
+<end of output>
+Test time =   0.09 sec
+----------------------------------------------------------
+Test Passed.
+"cabinet_pose_frame_contract_test" end time: Aug 13 15:23 CST
+"cabinet_pose_frame_contract_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Aug 13 15:23 CST
+
+gtest =   0.27 sec*proc
+

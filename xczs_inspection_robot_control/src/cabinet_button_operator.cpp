@@ -50,20 +50,20 @@
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
-#include "xczs_inspection_robot_control/action/operate_cabinet_control.hpp"
-#include "xczs_inspection_robot_control/action/press_cabinet_button.hpp"
+#include "xczs_inspection_robot_interfaces/action/operate_cabinet_control.hpp"
+#include "xczs_inspection_robot_interfaces/action/press_cabinet_button.hpp"
 #include "xczs_inspection_robot_control/action_terminal_policy.hpp"
 #include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
-#include "xczs_inspection_robot_control/msg/cabinet_control.hpp"
-#include "xczs_inspection_robot_control/msg/cabinet_control_catalog.hpp"
-#include "xczs_inspection_robot_control/msg/cabinet_control_state.hpp"
+#include "xczs_inspection_robot_interfaces/msg/cabinet_control.hpp"
+#include "xczs_inspection_robot_interfaces/msg/cabinet_control_catalog.hpp"
+#include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_control/operation_validation_policy.hpp"
 #include "xczs_inspection_robot_control/rotary_operation_policy.hpp"
 #include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/staging_safety_policy.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
-#include "xczs_inspection_robot_control/srv/manage_operation_lease.hpp"
-#include "xczs_inspection_robot_control/srv/set_cabinet_grasp.hpp"
+#include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -73,10 +73,10 @@ namespace
 
 using namespace std::chrono_literals;
 using PressCabinetButton =
-  xczs_inspection_robot_control::action::PressCabinetButton;
+  xczs_inspection_robot_interfaces::action::PressCabinetButton;
 using PressGoalHandle = rclcpp_action::ServerGoalHandle<PressCabinetButton>;
 using OperateCabinetControl =
-  xczs_inspection_robot_control::action::OperateCabinetControl;
+  xczs_inspection_robot_interfaces::action::OperateCabinetControl;
 using OperateGoalHandle =
   rclcpp_action::ServerGoalHandle<OperateCabinetControl>;
 using NavigateToPose = nav2_msgs::action::NavigateToPose;
@@ -84,7 +84,7 @@ using NavigationGoalHandle = rclcpp_action::ClientGoalHandle<NavigateToPose>;
 using MoveGroupInterface =
   moveit::planning_interface::MoveGroupInterface;
 using ManageOperationLease =
-  xczs_inspection_robot_control::srv::ManageOperationLease;
+  xczs_inspection_robot_interfaces::srv::ManageOperationLease;
 
 constexpr char kActionName[] = "press_cabinet_button";
 constexpr char kOperateActionName[] = "operate_cabinet_control";
@@ -235,7 +235,7 @@ struct ButtonRuntime
 struct ButtonSpec
 {
   std::uint8_t control_type{
-    xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON};
+    xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON};
   std::string id;
   std::string display_name;
   std::string joint_name;
@@ -682,7 +682,7 @@ public:
     subscribe_to_button_states();
     control_catalog_publisher_ =
       create_publisher<
-      xczs_inspection_robot_control::msg::CabinetControlCatalog>(
+      xczs_inspection_robot_interfaces::msg::CabinetControlCatalog>(
       control_catalog_topic,
       rclcpp::QoS(1).reliable().transient_local());
     active_control_publisher_ = create_publisher<std_msgs::msg::String>(
@@ -711,7 +711,7 @@ public:
     navigation_mode_client_ = create_client<std_srvs::srv::SetBool>(
       navigation_mode_service);
     grasp_client_ =
-      create_client<xczs_inspection_robot_control::srv::SetCabinetGrasp>(
+      create_client<xczs_inspection_robot_interfaces::srv::SetCabinetGrasp>(
       grasp_service);
     reset_client_callback_group_ = create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
@@ -965,7 +965,7 @@ private:
 
   void load_tool_profiles()
   {
-    using Control = xczs_inspection_robot_control::msg::CabinetControl;
+    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
     tool_profiles_[Control::TYPE_BUTTON] = read_tool_profile("button");
     tool_profiles_[Control::TYPE_KNOB] = read_tool_profile("knob");
     tool_profiles_[Control::TYPE_SWITCH] = read_tool_profile("switch");
@@ -1350,7 +1350,7 @@ private:
   // changing a MoveIt profile or looking up TF.
   bool tool_serves_control(std::uint8_t control_type) const
   {
-    using Control = xczs_inspection_robot_control::msg::CabinetControl;
+    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
     if (toolset_ == "B") {
       return control_type == Control::TYPE_KNOB ||
              control_type == Control::TYPE_SWITCH;
@@ -1361,7 +1361,7 @@ private:
 
   std::string required_toolset_for_control(std::uint8_t control_type) const
   {
-    using Control = xczs_inspection_robot_control::msg::CabinetControl;
+    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
     if (control_type == Control::TYPE_KNOB ||
       control_type == Control::TYPE_SWITCH)
     {
@@ -1491,27 +1491,27 @@ private:
         prefix + "type", "");
       if (type_name == "button") {
         button->control_type =
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
       } else if (type_name == "knob") {
         button->control_type =
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB;
       } else if (type_name == "switch") {
         button->control_type =
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_SWITCH;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_SWITCH;
       } else if (type_name == "door") {
         button->control_type =
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
       } else {
         throw std::invalid_argument(
                 "Unsupported control type '" + type_name + "' for '" +
                 control_id + "'.");
       }
       const bool is_button = button->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
       const bool is_knob = button->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB;
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB;
       const bool is_switch = button->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_SWITCH;
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_SWITCH;
       button->display_name = declare_parameter<std::string>(
         prefix + "display_name", control_id);
       button->joint_name = declare_parameter<std::string>(
@@ -1779,14 +1779,14 @@ private:
       // doors have two-state semantics and may expose TOGGLE.
       if (is_button) {
         button->supported_commands =
-          xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_PRESS;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_PRESS;
       } else {
         button->supported_commands = static_cast<std::uint8_t>(
-          xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_SET_STATE |
-          xczs_inspection_robot_control::msg::CabinetControl::
+          xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_SET_STATE |
+          xczs_inspection_robot_interfaces::msg::CabinetControl::
           SUPPORT_SET_POSITION |
           ((is_knob) ? 0U :
-          xczs_inspection_robot_control::msg::CabinetControl::SUPPORT_TOGGLE));
+          xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_TOGGLE));
       }
       if (button->display_name.empty() || button->joint_name.empty() ||
         button->joint_state_topic.empty() || button->state_topic.empty() ||
@@ -1872,7 +1872,7 @@ private:
                   "' has a cyclic parent_control_id chain.");
         }
         if (parent->second->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON)
         {
           throw std::invalid_argument(
                   "Control '" + control->id +
@@ -1913,11 +1913,11 @@ private:
       }
       control_state_subscriptions_.push_back(
         create_subscription<
-          xczs_inspection_robot_control::msg::CabinetControlState>(
+          xczs_inspection_robot_interfaces::msg::CabinetControlState>(
           button->state_topic,
           rclcpp::QoS(1).reliable().transient_local(),
           [this, button](
-            const xczs_inspection_robot_control::msg::CabinetControlState::
+            const xczs_inspection_robot_interfaces::msg::CabinetControlState::
             SharedPtr message)
           {
             receive_control_state(*button, *message);
@@ -1927,10 +1927,10 @@ private:
 
   void publish_control_catalog()
   {
-    xczs_inspection_robot_control::msg::CabinetControlCatalog catalog;
+    xczs_inspection_robot_interfaces::msg::CabinetControlCatalog catalog;
     catalog.controls.reserve(buttons_in_order_.size());
     for (const auto & button : buttons_in_order_) {
-      xczs_inspection_robot_control::msg::CabinetControl control;
+      xczs_inspection_robot_interfaces::msg::CabinetControl control;
       control.control_id = button->id;
       control.display_name = button->display_name;
       control.control_type =
@@ -1953,7 +1953,7 @@ private:
       control.toolset_compatible = button->toolset_compatible;
       control.adapter_validated = button->adapter_validated;
       if (button->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON)
       {
         control.default_force = button->default_force;
         control.min_trigger_force =
@@ -2223,7 +2223,7 @@ private:
     const auto control = find_button(goal->button_id);
     PendingGoalDisposition disposition =
       control && control->control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON ?
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON ?
       PendingGoalDisposition::EXECUTE : PendingGoalDisposition::INVALID_BUTTON;
     bool expected = false;
     if (disposition == PendingGoalDisposition::EXECUTE &&
@@ -2348,7 +2348,7 @@ private:
       // Bind the button operation's arm group, tip link, contact tool link and
       // transport target to the button type before any MoveIt planning.
       apply_tool_profile(
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON);
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON);
       const bool should_navigate_to_staging_pose =
         goal_handle->get_goal()->navigate_to_staging_pose;
       acquire_operation_lease(
@@ -2756,7 +2756,7 @@ private:
         result->diagnostic_stage = "preflight";
       }
       is_button = control->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
       // Command-level validation: check that the command is compatible with
       // the control type and that its parameters are valid.  This runs inside
       // the accepted goal so that the caller receives a structured failure
@@ -2774,7 +2774,7 @@ private:
           const auto cmd = goal_handle->get_goal()->command;
           if (cmd == OperateCabinetControl::Goal::COMMAND_SET_STATE) {
             command_valid = (control->supported_commands &
-              xczs_inspection_robot_control::msg::CabinetControl::
+              xczs_inspection_robot_interfaces::msg::CabinetControl::
               SUPPORT_SET_STATE) != 0U;
             if (!command_valid) {
               command_reason = "This control does not support setting a state.";
@@ -2794,7 +2794,7 @@ private:
             OperateCabinetControl::Goal::COMMAND_SET_POSITION)
           {
             command_valid = (control->supported_commands &
-              xczs_inspection_robot_control::msg::CabinetControl::
+              xczs_inspection_robot_interfaces::msg::CabinetControl::
               SUPPORT_SET_POSITION) != 0U;
             if (!command_valid) {
               command_reason =
@@ -2822,11 +2822,11 @@ private:
             }
           } else if (cmd == OperateCabinetControl::Goal::COMMAND_TOGGLE) {
             command_valid = (control->supported_commands &
-              xczs_inspection_robot_control::msg::CabinetControl::
+              xczs_inspection_robot_interfaces::msg::CabinetControl::
               SUPPORT_TOGGLE) != 0U && control->state_ids.size() >= 2U;
             if (!command_valid) {
               command_reason = (control->supported_commands &
-                xczs_inspection_robot_control::msg::CabinetControl::
+                xczs_inspection_robot_interfaces::msg::CabinetControl::
                 SUPPORT_TOGGLE) == 0U ?
                 "This control does not support toggle; choose an adjacent "
                 "detent with set_state or set_position." :
@@ -2899,7 +2899,7 @@ private:
           {control.get(), initial_state.state_id, initial_state.position});
       }
       if (control->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR)
       {
         door_arc_progress.initial_position = initial_state.position;
       }
@@ -2928,7 +2928,7 @@ private:
                 "state '" + target_state +
                 "'; select a different physical detent.");
       } else if (control->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
       {
         const auto source_index = control_state_index(*control, initial_state);
         const auto target_index = control_state_index(*control, target_state);
@@ -3217,7 +3217,7 @@ private:
         std::vector<double> rotary_branch_seed;
         const std::vector<double> * rotary_branch_seed_ptr = nullptr;
         if (control->control_type ==
-            xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
         {
           // The post-release retreat target (knob angle at the manipulation
           // position, prepress standoff) must match the retreat the operator
@@ -3245,9 +3245,9 @@ private:
           0.43F, target_position,
           "Approaching the physical grasp point.");
         if (control->control_type ==
-            xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ||
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR ||
           control->control_type ==
-            xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
         {
           // A pose-only OMPL plan can select a ready-pose IK branch that
           // cannot finish the final inward Cartesian approach.  Require an
@@ -3305,7 +3305,7 @@ private:
           0.62F, target_position,
           "Following the control joint arc without commanding the joint.");
         if (control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR)
         {
           // A long door arc can keep MoveIt's Cartesian interpolation on an
           // IK branch that becomes invalid near the end of the sweep.  Short
@@ -3330,7 +3330,7 @@ private:
             0.99, &result->operation_executed);
         }
         if (control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR &&
           std::abs(target_position - initial_state.position) >
           target_tolerance_)
         {
@@ -3346,7 +3346,7 @@ private:
         }
         const bool uses_partial_knob_release =
           control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB &&
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB &&
           control->detent_release_fraction<1.0 &&
             std::abs(target_position - initial_state.position)>
           target_tolerance_;
@@ -3369,7 +3369,7 @@ private:
           "Holding the target detent briefly before grasp release.");
         interruptible_hold(goal_handle, grasp_release_settle_duration_);
         if (control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR &&
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR &&
           std::abs(target_position - initial_state.position) >
           target_tolerance_)
         {
@@ -3388,7 +3388,7 @@ private:
             target_state, release_hold_started);
         }
         const bool is_door = control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
         const double release_clearance = is_door ?
           door_release_clearance_ : prepress_distance_;
         const auto target_ready = calculate_rotary_tool_pose(
@@ -3611,7 +3611,7 @@ private:
     const ButtonSnapshot & current) const
   {
     if (control.control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON)
     {
       return {
         control.state_positions.back(), control.state_ids.back()};
@@ -4064,7 +4064,7 @@ private:
     // of the blade; doors keep the small shared clearance they were tuned with.
     const double pregrasp_clearance =
       control.control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB ?
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB ?
       knob_pregrasp_clearance_ : rotary_pregrasp_clearance_;
     poses.pregrasp_pose = calculate_rotary_tool_pose(
       control, position,
@@ -4106,11 +4106,11 @@ private:
   {
     double release_fraction = 1.0;
     if (control.control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR)
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR)
     {
       release_fraction = door_release_fraction_;
     } else if (control.control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
     {
       release_fraction = control.detent_release_fraction;
     }
@@ -4137,7 +4137,7 @@ private:
       }
     }
     auto request = std::make_shared<
-      xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
+      xczs_inspection_robot_interfaces::srv::SetCabinetGrasp::Request>();
     request->control_id = control_id;
     {
       std::lock_guard<std::mutex> lock(operation_lease_mutex_);
@@ -4194,7 +4194,7 @@ private:
       constexpr int kReleaseAttempts = 2;
       for (int attempt = 1; attempt <= kReleaseAttempts; ++attempt) {
         auto request = std::make_shared<
-          xczs_inspection_robot_control::srv::SetCabinetGrasp::Request>();
+          xczs_inspection_robot_interfaces::srv::SetCabinetGrasp::Request>();
         request->control_id = control_id;
         {
           std::lock_guard<std::mutex> lock(operation_lease_mutex_);
@@ -4486,7 +4486,7 @@ private:
   {
     const double settle_timeout =
       control.control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ?
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR ?
       door_settle_timeout_ : system_wait_timeout_;
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(settle_timeout);
@@ -4654,7 +4654,7 @@ private:
     result->peak_position = std::abs(state.position);
     result->final_state = state.state_id;
     if (control->control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON)
     {
       result->estimated_force =
         state.position * control->spring_stiffness;
@@ -4684,7 +4684,7 @@ private:
         result->diagnostic_stage.c_str());
     }
     const bool is_door = control && control->control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
     bool rollback_and_retreat_succeeded = false;
     if (motion_recovery_allowed && is_door && grasp_attached &&
       door_arc_progress.in_progress &&
@@ -4729,7 +4729,7 @@ private:
       try {
         const auto state = button_snapshot(*control);
         const bool is_button = control->control_type ==
-          xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
         const auto retreat_pose = is_button ?
           calculate_operation_poses(
           *control, press_depth_).prepress_pose :
@@ -4753,7 +4753,7 @@ private:
       result->peak_position = final_state.peak_position;
       result->final_state = final_state.state_id;
       if (control->control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON)
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON)
       {
         result->estimated_force =
           final_state.peak_position * control->spring_stiffness;
@@ -4825,7 +4825,7 @@ private:
 
   void receive_control_state(
     const ButtonSpec & control,
-    const xczs_inspection_robot_control::msg::CabinetControlState & message)
+    const xczs_inspection_robot_interfaces::msg::CabinetControlState & message)
   {
     const auto update = classify_structured_control_state(
       message.control_id == control.id, message.valid, message.position,
@@ -4911,7 +4911,7 @@ private:
           structured_state_fresh)
         {
           if (button.control_type ==
-            xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON &&
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON &&
             button.runtime->state.pressed)
           {
             throw OperationError(
@@ -5726,7 +5726,7 @@ private:
     // a grasp, wait for a physical transition, or write a cabinet joint.
     moveit::core::RobotState virtual_state(current_robot_state);
     const bool is_button = control.control_type ==
-      xczs_inspection_robot_control::msg::CabinetControl::TYPE_BUTTON;
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
     if (is_button) {
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::MOVING_TO_READY,
@@ -5768,9 +5768,9 @@ private:
         rotary_poses.ready_pose, contact_tool_link_, "ready_pose", result,
         &control);
       if (control.control_type ==
-            xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR ||
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR ||
           control.control_type ==
-            xczs_inspection_robot_control::msg::CabinetControl::TYPE_KNOB)
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
       {
         virtual_state = validate_pose_plan_only(
           move_group, goal_handle, virtual_state,
@@ -5786,7 +5786,7 @@ private:
         {rotary_poses.grasp_pose}, 0.99, "approach", result);
 
       const bool is_door = control.control_type ==
-        xczs_inspection_robot_control::msg::CabinetControl::TYPE_DOOR;
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
       const double manipulation_position = rotary_manipulation_position(
         control, initial_state.position, target_position);
       const auto waypoints = calculate_rotation_waypoints(
@@ -7659,7 +7659,7 @@ private:
   rclcpp::Client<std_srvs::srv::SetBool>::SharedPtr navigation_mode_client_;
   rclcpp::Client<ManageOperationLease>::SharedPtr operation_lease_client_;
   rclcpp::Client<
-    xczs_inspection_robot_control::srv::SetCabinetGrasp>::SharedPtr
+    xczs_inspection_robot_interfaces::srv::SetCabinetGrasp>::SharedPtr
     grasp_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_physics_client_;
   rclcpp::CallbackGroup::SharedPtr reset_client_callback_group_;
@@ -7669,7 +7669,7 @@ private:
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr
     manual_base_publisher_;
   rclcpp::Publisher<
-    xczs_inspection_robot_control::msg::CabinetControlCatalog>::SharedPtr
+    xczs_inspection_robot_interfaces::msg::CabinetControlCatalog>::SharedPtr
     control_catalog_publisher_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr
     active_control_publisher_;
@@ -7686,7 +7686,7 @@ private:
   std::vector<rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr>
   button_pressed_subscriptions_;
   std::vector<rclcpp::Subscription<
-      xczs_inspection_robot_control::msg::CabinetControlState>::SharedPtr>
+      xczs_inspection_robot_interfaces::msg::CabinetControlState>::SharedPtr>
   control_state_subscriptions_;
   std::shared_ptr<tf2_ros::Buffer> transform_buffer_;
   std::unique_ptr<tf2_ros::TransformListener> transform_listener_;

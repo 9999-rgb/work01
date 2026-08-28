@@ -1,0 +1,13 @@
+{
+  "package_name": "xczs_inspection_robot_control",
+  "non_idl_tuples": [
+    "/home/live/work01/xczs_inspection_robot_control:action/OperateCabinetControl.action",
+    "/home/live/work01/xczs_inspection_robot_control:action/PressCabinetButton.action",
+    "/home/live/work01/xczs_inspection_robot_control:msg/CabinetControl.msg",
+    "/home/live/work01/xczs_inspection_robot_control:msg/CabinetControlCatalog.msg",
+    "/home/live/work01/xczs_inspection_robot_control:msg/CabinetControlState.msg",
+    "/home/live/work01/xczs_inspection_robot_control:srv/ManageOperationLease.srv",
+    "/home/live/work01/xczs_inspection_robot_control:srv/SetCabinetGrasp.srv",
+    "/home/live/work01/xczs_inspection_robot_control:srv/SwitchToolset.srv"
+  ]
+}

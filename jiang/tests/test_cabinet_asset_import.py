@@ -3,8 +3,8 @@
 覆盖三块：
 
 1. **真实样例端到端**（需要 ROS workspace 提供 ``xacro`` CLI）——
-   ``scripts/xczs_import_asset jiang/samples/demo_cabinet`` 触发真实
-   ``check_cabinet_model --asset`` 语义校验，catalog 落盘 ``validated: true``，
+   ``scripts/tools/xczs_import_asset jiang/samples/demo_cabinet`` 触发真实
+   ``scripts/validate/check_cabinet_model --asset`` 语义校验，catalog 落盘 ``validated: true``，
    选中后 ``--print-env`` 输出 5 个 ``CABINET_*_PATH`` 指针。
 
 2. **非 33 控件参数化证明**（需要 xacro）——从样例派生一台 32 控件合成柜体
@@ -37,8 +37,8 @@ from control_gateway.asset_validators import cabinet_validator
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 SAMPLE_CABINET = WORKSPACE / "jiang" / "samples" / "demo_cabinet"
-CHECKER = WORKSPACE / "scripts" / "check_cabinet_model"
-CLI = WORKSPACE / "scripts" / "xczs_import_asset"
+CHECKER = WORKSPACE / "scripts" / "validate" / "check_cabinet_model"
+CLI = WORKSPACE / "scripts" / "tools" / "xczs_import_asset"
 CABINET_ENV_KEYS = (
     "CABINET_CONTROLS_PATH",
     "CABINET_SCENE_PATH",

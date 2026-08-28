@@ -45,8 +45,12 @@ FINGER_MESH = (
     / "endllink1.STL"
 )
 OPERATOR = PACKAGE / "src" / "cabinet_button_operator.cpp"
-PLUGIN = PACKAGE / "src" / "gazebo" / "cabinet_state_plugin.cpp"
-GRASP_SERVICE = PACKAGE / "srv" / "SetCabinetGrasp.srv"
+PLUGIN = (
+    ROOT / "xczs_inspection_robot_gazebo" / "src" / "cabinet_state_plugin.cpp"
+)
+GRASP_SERVICE = (
+  ROOT / "xczs_inspection_robot_interfaces" / "srv" / "SetCabinetGrasp.srv"
+)
 
 
 def _operator_parameters(path: Path) -> dict[str, object]:

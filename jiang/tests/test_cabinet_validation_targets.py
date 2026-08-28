@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = ROOT / "scripts"
-sys.path.insert(0, str(SCRIPTS))
+sys.path.insert(0, str(SCRIPTS / "tools"))
 
 from cabinet_validation_targets import (  # noqa: E402
     NoAlternativeTargetError,
@@ -48,7 +48,7 @@ class CabinetValidationTargetTests(unittest.TestCase):
             )
 
     def test_web_validator_uses_live_non_noop_target(self) -> None:
-        source = (SCRIPTS / "validate_cabinet_web").read_text(
+        source = (SCRIPTS / "validate" / "validate_cabinet_web").read_text(
             encoding="utf-8"
         )
         selector_start = source.index("operation_body_for_control()")
@@ -72,7 +72,7 @@ class CabinetValidationTargetTests(unittest.TestCase):
         )
 
     def test_web_validator_covers_limited_knob_command_matrix(self) -> None:
-        source = (SCRIPTS / "validate_cabinet_web").read_text(
+        source = (SCRIPTS / "validate" / "validate_cabinet_web").read_text(
             encoding="utf-8"
         )
         contract_start = source.index(
@@ -91,7 +91,7 @@ class CabinetValidationTargetTests(unittest.TestCase):
         self.assertIn(".result.operation_executed == false", source)
 
     def test_web_validator_snapshots_all_controls_for_crosstalk(self) -> None:
-        source = (SCRIPTS / "validate_cabinet_web").read_text(
+        source = (SCRIPTS / "validate" / "validate_cabinet_web").read_text(
             encoding="utf-8"
         )
         snapshot_start = source.index("cabinet_controls_snapshot()")
@@ -122,7 +122,7 @@ class CabinetValidationTargetTests(unittest.TestCase):
         )
 
     def test_low_level_matrix_requires_one_prepositioned_control(self) -> None:
-        source = (SCRIPTS / "validate_cabinet_simulation").read_text(
+        source = (SCRIPTS / "validate" / "validate_cabinet_simulation").read_text(
             encoding="utf-8"
         )
 

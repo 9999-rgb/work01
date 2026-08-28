@@ -1,0 +1,13 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from xczs_inspection_robot_interfaces/msg/CabinetControlCatalog.msg
+// generated code does not contain a copyright notice
+
+#include "xczs_inspection_robot_interfaces/msg/CabinetControl.idl"
+
+module xczs_inspection_robot_interfaces {
+  module msg {
+    struct CabinetControlCatalog {
+      sequence<xczs_inspection_robot_interfaces::msg::CabinetControl> controls;
+    };
+  };
+};

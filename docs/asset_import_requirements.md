@@ -110,7 +110,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 ### 6.1 复用(已有,不重造)
 
 - `jiang/control_gateway/profile_contract.py::validate_profile()` +
-  `scripts/check_adapter_contract` + `scripts/check_scene_config` —— 现成跨文件
+  `scripts/validate/check_adapter_contract` + `scripts/validate/check_scene_config` —— 现成跨文件
   导入校验器,接受任意路径。
 - `jiang/control_gateway/_package_resolver.py::resolve_package_uri()` —— URI 解析扩展点。
 - 现有路径管道:`start_xczs_bridge.sh` 的 `CABINET_*_PATH` / `SCENES_CONFIG` /
@@ -124,7 +124,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 2. **资产库 + catalog + 选择持久化** —— `control_gateway/asset_library.py`
    (store 注入:`YamlAssetStore` 参考实现 / `app.assets.store.SqlAssetStore` 生产实现);
    `jiang/data/assets/` 文件 + SQLite `assets` / `selection` 表(与 auth 同库)。
-3. **CLI 导入脚本** —— `scripts/xczs_import_asset`(脚本化 / CI)。
+3. **CLI 导入脚本** —— `scripts/tools/xczs_import_asset`(脚本化 / CI)。
 4. **Web 导入 / 选择后端 + 前端页** —— `app/api/assets.py` + `monitor.html`「资产」区块。
 5. **URI 解析扩展** —— `package://` / `model://` 引用指向资产库目录。
 6. **启动层消费选中资产集** —— `start_xczs_bridge.sh` 经 CLI `--print-env` 读 SQLite `selection` 表 → 设 env/launch 指针。
@@ -135,7 +135,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 |---|---|---|
 | **1 · 后端核心 + 换场景** | 资产库 + manifest + 导入/校验 + 复用现有管道做「选择」。先只支持**换场景**(柜体不变,零工具×柜体改动),验证 manifest 形状 | CLI 导入一个场景资产 → 校验 → 选择 → `XCZS_PREFLIGHT_ONLY` 预检通过 |
 | **2 · Web 导入/选择页** | 阶段1 后端接 Web(上传、列表、校验、选择、应用) | 登录后导入场景资产,列表/校验/选择/应用闭环;换场景后 `run_all.sh` 用新地图/摆放启动 |
-| **3 · 换柜体** | 柜体资产导入 + 工具×柜体可达性配对(固定工具可达性预写);`scripts/check_cabinet_model` 参数化 | 导入新柜体资产,预检通过,柜体操作闭环验证 |
+| **3 · 换柜体** | 柜体资产导入 + 工具×柜体可达性配对(固定工具可达性预写);`scripts/validate/check_cabinet_model` 参数化 | 导入新柜体资产,预检通过,柜体操作闭环验证 |
 
 ## 8. 验证方式
 
@@ -153,9 +153,9 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 
 | 阶段 | 状态 | 落点 |
 |---|---|---|
-| **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/xczs_import_asset`(CLI 导入)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
+| **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/tools/xczs_import_asset`(CLI 导入)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
 | **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/场景与柜体组合选择；末端 A/B 另设运行态和一键切换；非管理员禁用写操作) |
-| **3 · 换柜体** | ✅ 已实现 | `scripts/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`) |
+| **3 · 换柜体** | ✅ 已实现 | `scripts/validate/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`) |
 
 存储迁移(SQLite,2026-08-19):资产目录 / 选择持久化从 `assets_catalog.yaml` /
 `selection.yaml` 迁移到 SQLite(`assets` / `selection` 表,复用 auth 的异步

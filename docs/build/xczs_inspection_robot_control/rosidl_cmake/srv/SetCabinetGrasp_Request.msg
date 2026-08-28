@@ -1,0 +1,7 @@
+string control_id
+string operation_lease_id
+string robot_model
+string robot_link
+geometry_msgs/Point robot_grasp_point
+string robot_base_link
+bool attach

@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Site BuildName="(empty)"
+	BuildStamp="20260820-0727-Experimental"
+	Name="live"
+	Generator="ctest-3.22.1"
+	CompilerName="/usr/bin/c++"
+	CompilerVersion="11.4.0"
+	OSName="Linux"
+	Hostname="live"
+	OSRelease="6.8.0-136-generic"
+	OSVersion="#136~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul  3 16:29:11 UTC "
+	OSPlatform="x86_64"
+	Is64Bits="1"
+	VendorString="AuthenticAMD"
+	VendorID="Advanced Micro Devices"
+	FamilyID="25"
+	ModelID="80"
+	ProcessorCacheSize="512"
+	NumberOfLogicalCPU="12"
+	NumberOfPhysicalCPU="6"
+	TotalVirtualMemory="19072"
+	TotalPhysicalMemory="15843"
+	LogicalProcessorsPerPhysical="2"
+	ProcessorClockFrequency="3842.74"
+	>
+	<Testing>
+		<StartDateTime>Aug 20 15:27 CST</StartDateTime>
+		<StartTestTime>1787210856</StartTestTime>
+		<TestList>
+			<Test>./navigation_launch_policy_test</Test>
+		</TestList>
+		<Test Status="passed">
+			<Name>navigation_launch_policy_test</Name>
+			<Path>.</Path>
+			<FullName>./navigation_launch_policy_test</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml" "--package-name" "xczs_inspection_robot_nav2" "--output-file" "/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_nav2/test/test_navigation_launch_policy.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_nav2"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.816819</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml" "--package-name" "xczs_inspection_robot_nav2" "--output-file" "/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test.txt" "--command" "/usr/bin/python3" "-u" "-m" "pytest" "/home/live/work01/xczs_inspection_robot_nav2/test/test_navigation_launch_policy.py" "-o" "cache_dir=/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test/.cache" "--junit-xml=/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml" "--junit-prefix=xczs_inspection_robot_nav2"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_nav2':
+ - /usr/bin/python3 -u -m pytest /home/live/work01/xczs_inspection_robot_nav2/test/test_navigation_launch_policy.py -o cache_dir=/home/live/work01/build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test/.cache --junit-xml=/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml --junit-prefix=xczs_inspection_robot_nav2
+============================= test session starts ==============================
+platform linux -- Python 3.10.12, pytest-8.4.2, pluggy-1.6.0
+cachedir: build/xczs_inspection_robot_nav2/ament_cmake_pytest/navigation_launch_policy_test/.cache
+rootdir: /home/live/work01
+plugins: ament-lint-0.12.15, ament-flake8-0.12.15, ament-xmllint-0.12.15, ament-copyright-0.12.15, launch-testing-ros-0.19.13, ament-pep257-0.12.15, launch-testing-1.0.14, anyio-4.14.2, asyncio-0.26.0, colcon-core-0.21.0, cov-3.0.0
+asyncio: mode=strict, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 2 items
+
+../../xczs_inspection_robot_nav2/test/test_navigation_launch_policy.py . [ 50%]
+.                                                                        [100%]
+
+- generated xml file: /home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml -
+============================== 2 passed in 0.07s ===============================
+-- run_test.py: return code 0
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_nav2/test_results/xczs_inspection_robot_nav2/navigation_launch_policy_test.xunit.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>pytest</Label>
+			</Labels>
+		</Test>
+		<EndDateTime>Aug 20 15:27 CST</EndDateTime>
+		<EndTestTime>1787210856</EndTestTime>
+		<ElapsedMinutes>0</ElapsedMinutes>
+	</Testing>
+</Site>

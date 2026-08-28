@@ -3,8 +3,9 @@
 The manifest schema (:mod:`control_gateway.asset_manifest`) and the library
 (:mod:`control_gateway.asset_library`) validate structure and declared-file
 existence.  This module supplies the *semantic* checkers that reuse the existing
-cross-file checkers (``scripts/check_scene_config`` for scenes; the parametrized
-``scripts/check_cabinet_model --asset`` for cabinets).  They run as subprocesses
+cross-file checkers (``scripts/validate/check_scene_config`` for scenes; the
+parametrized ``scripts/validate/check_cabinet_model --asset`` for cabinets).
+They run as subprocesses
 so the CLI and the Web gateway share one implementation, and the returned
 ``validate`` hook is injectable so tests can substitute fakes.
 """
@@ -20,14 +21,14 @@ from .asset_manifest import AssetManifest
 
 
 def _default_scene_checker_path() -> Path:
-    """``jiang/control_gateway/asset_validators.py`` -> workspace ``scripts/``."""
+    """``jiang/control_gateway/asset_validators.py`` -> workspace ``scripts/validate/``."""
     workspace = Path(__file__).resolve().parents[2]
-    return workspace / "scripts" / "check_scene_config"
+    return workspace / "scripts" / "validate" / "check_scene_config"
 
 
 def _default_cabinet_checker_path() -> Path:
     workspace = Path(__file__).resolve().parents[2]
-    return workspace / "scripts" / "check_cabinet_model"
+    return workspace / "scripts" / "validate" / "check_cabinet_model"
 
 
 def scene_validator(

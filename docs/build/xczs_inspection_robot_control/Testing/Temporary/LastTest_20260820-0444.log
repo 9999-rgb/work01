@@ -1,0 +1,54 @@
+Start testing: Aug 20 12:44 CST
+----------------------------------------------------------
+7/9 Testing: cabinet_button_operator_kinematics_test
+7/9 Test: cabinet_button_operator_kinematics_test
+Command: "/usr/bin/python3" "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/cabinet_button_operator_kinematics_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml"
+Directory: /home/live/work01/build/xczs_inspection_robot_control
+"cabinet_button_operator_kinematics_test" start time: Aug 20 12:44 CST
+Output:
+----------------------------------------------------------
+-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from ToolProfileKinematicsValidation
+[ RUN      ] ToolProfileKinematicsValidation.NamesGroupWhenRobotModelIsUnavailable
+[       OK ] ToolProfileKinematicsValidation.NamesGroupWhenRobotModelIsUnavailable (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.RejectsAndNamesMissingJointModelGroup
+[INFO] [1787201099.731085586] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787201099.731130005] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787201099.731176659] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[ERROR] [1787201099.731201453] [moveit_robot_model.robot_model]: Group 'missing_arm' not found in model 'kinematics_validation_test_robot'
+[       OK ] ToolProfileKinematicsValidation.RejectsAndNamesMissingJointModelGroup (1 ms)
+[ RUN      ] ToolProfileKinematicsValidation.RejectsExistingGroupWithoutSolver
+[INFO] [1787201099.731287218] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787201099.731294760] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787201099.731309776] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[       OK ] ToolProfileKinematicsValidation.RejectsExistingGroupWithoutSolver (0 ms)
+[ RUN      ] ToolProfileKinematicsValidation.ReportsEveryInvalidUniqueProfileGroup
+[INFO] [1787201099.731384297] [moveit_robot_model.robot_model]: Loading robot model 'kinematics_validation_test_robot'...
+[INFO] [1787201099.731390443] [moveit_robot_model.robot_model]: No root/virtual joint specified in SRDF. Assuming fixed joint
+[WARN] [1787201099.731404690] [moveit_robot_model.robot_model]: No geometry is associated to any robot links
+[ERROR] [1787201099.731420963] [moveit_robot_model.robot_model]: Group 'missing_arm' not found in model 'kinematics_validation_test_robot'
+[       OK ] ToolProfileKinematicsValidation.ReportsEveryInvalidUniqueProfileGroup (0 ms)
+[----------] 4 tests from ToolProfileKinematicsValidation (1 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (1 ms total)
+[  PASSED  ] 4 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/cabinet_button_operator_kinematics_test.gtest.xml'
+<end of output>
+Test time =   0.08 sec
+----------------------------------------------------------
+Test Passed.
+"cabinet_button_operator_kinematics_test" end time: Aug 20 12:44 CST
+"cabinet_button_operator_kinematics_test" time elapsed: 00:00:00
+----------------------------------------------------------
+
+End testing: Aug 20 12:44 CST
+
+gtest =   0.08 sec*proc
+

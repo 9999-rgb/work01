@@ -1,0 +1,32 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from xczs_inspection_robot_control/srv/SetCabinetGrasp.srv
+// generated code does not contain a copyright notice
+
+#include "geometry_msgs/msg/Point.idl"
+
+module xczs_inspection_robot_control {
+  module srv {
+    struct SetCabinetGrasp_Request {
+      string control_id;
+
+      string operation_lease_id;
+
+      string robot_model;
+
+      string robot_link;
+
+      geometry_msgs::msg::Point robot_grasp_point;
+
+      string robot_base_link;
+
+      boolean attach;
+    };
+    struct SetCabinetGrasp_Response {
+      boolean success;
+
+      string message;
+
+      double distance;
+    };
+  };
+};

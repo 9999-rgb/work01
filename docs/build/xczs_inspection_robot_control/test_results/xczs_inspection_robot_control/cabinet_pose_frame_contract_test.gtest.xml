@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites tests="1" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12" name="AllTests">
+  <testsuite name="CabinetPoseFrameContract" tests="1" failures="0" disabled="0" errors="0" time="0" timestamp="2026-08-28T16:13:12">
+    <testcase name="SpawnAndPoseAuthorityShareOdomWorld" status="run" result="completed" time="0" timestamp="2026-08-28T16:13:12" classname="xczs_inspection_robot_control.CabinetPoseFrameContract" />
+  </testsuite>
+</testsuites>

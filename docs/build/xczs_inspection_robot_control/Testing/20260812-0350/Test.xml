@@ -1,0 +1,255 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Site BuildName="(empty)"
+	BuildStamp="20260812-0350-Experimental"
+	Name="live"
+	Generator="ctest-3.22.1"
+	CompilerName="/usr/bin/c++"
+	CompilerVersion="11.4.0"
+	OSName="Linux"
+	Hostname="live"
+	OSRelease="6.8.0-136-generic"
+	OSVersion="#136~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Fri Jul  3 16:29:11 UTC "
+	OSPlatform="x86_64"
+	Is64Bits="1"
+	VendorString="AuthenticAMD"
+	VendorID="Advanced Micro Devices"
+	FamilyID="25"
+	ModelID="80"
+	ProcessorCacheSize="512"
+	NumberOfLogicalCPU="12"
+	NumberOfPhysicalCPU="6"
+	TotalVirtualMemory="19072"
+	TotalPhysicalMemory="15843"
+	LogicalProcessorsPerPhysical="2"
+	ProcessorClockFrequency="4067.17"
+	>
+	<Testing>
+		<StartDateTime>Aug 12 11:50 CST</StartDateTime>
+		<StartTestTime>1786506616</StartTestTime>
+		<TestList>
+			<Test>./operation_lease_state_test</Test>
+			<Test>./router_utils_test</Test>
+			<Test>./planning_scene_profile_test</Test>
+			<Test>./operation_validation_policy_test</Test>
+		</TestList>
+		<Test Status="passed">
+			<Name>operation_lease_state_test</Name>
+			<Path>.</Path>
+			<FullName>./operation_lease_state_test</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_lease_state_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.0618934</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_lease_state_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/operation_lease_state_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 4 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 4 tests from OperationLeaseState
+[ RUN      ] OperationLeaseState.ExcludesOtherOwnersAndAllowsRelease
+[       OK ] OperationLeaseState.ExcludesOtherOwnersAndAllowsRelease (0 ms)
+[ RUN      ] OperationLeaseState.ConcurrentAcquireHasExactlyOneWinner
+[       OK ] OperationLeaseState.ConcurrentAcquireHasExactlyOneWinner (2 ms)
+[ RUN      ] OperationLeaseState.RenewalExtendsLeaseAndStaleTokenCannotRelease
+[       OK ] OperationLeaseState.RenewalExtendsLeaseAndStaleTokenCannotRelease (0 ms)
+[ RUN      ] OperationLeaseState.ExpiredOwnerCannotRenewAndResourceRecovers
+[       OK ] OperationLeaseState.ExpiredOwnerCannotRenewAndResourceRecovers (0 ms)
+[----------] 4 tests from OperationLeaseState (2 ms total)
+
+[----------] Global test environment tear-down
+[==========] 4 tests from 1 test suite ran. (2 ms total)
+[  PASSED  ] 4 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_lease_state_test.gtest.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>gtest</Label>
+			</Labels>
+		</Test>
+		<Test Status="passed">
+			<Name>router_utils_test</Name>
+			<Path>.</Path>
+			<FullName>./router_utils_test</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/router_utils_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/router_utils_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.0606519</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/router_utils_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/router_utils_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/router_utils_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 5 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 5 tests from RouterUtils
+[ RUN      ] RouterUtils.RotatesPlanarVelocityByConfiguredYaw
+[       OK ] RouterUtils.RotatesPlanarVelocityByConfiguredYaw (0 ms)
+[ RUN      ] RouterUtils.RotationPreservesPlanarMagnitude
+[       OK ] RouterUtils.RotationPreservesPlanarMagnitude (0 ms)
+[ RUN      ] RouterUtils.UsesTheSameOffsetForDockingFrameYaw
+[       OK ] RouterUtils.UsesTheSameOffsetForDockingFrameYaw (0 ms)
+[ RUN      ] RouterUtils.RejectsInvalidJointGroups
+[       OK ] RouterUtils.RejectsInvalidJointGroups (0 ms)
+[ RUN      ] RouterUtils.GatesOnlyEmbeddedNavigationRequests
+[       OK ] RouterUtils.GatesOnlyEmbeddedNavigationRequests (0 ms)
+[----------] 5 tests from RouterUtils (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 5 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 5 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/router_utils_test.gtest.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>gtest</Label>
+			</Labels>
+		</Test>
+		<Test Status="passed">
+			<Name>planning_scene_profile_test</Name>
+			<Path>.</Path>
+			<FullName>./planning_scene_profile_test</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/planning_scene_profile_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/planning_scene_profile_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.0608316</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/planning_scene_profile_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/planning_scene_profile_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/planning_scene_profile_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 7 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 7 tests from PlanningSceneProfile
+[ RUN      ] PlanningSceneProfile.AcceptsButtonAndKnobOnlyDevice
+[       OK ] PlanningSceneProfile.AcceptsButtonAndKnobOnlyDevice (0 ms)
+[ RUN      ] PlanningSceneProfile.AcceptsDoorWithoutSwitch
+[       OK ] PlanningSceneProfile.AcceptsDoorWithoutSwitch (0 ms)
+[ RUN      ] PlanningSceneProfile.AcceptsUnparentedSwitchWithoutDoor
+[       OK ] PlanningSceneProfile.AcceptsUnparentedSwitchWithoutDoor (0 ms)
+[ RUN      ] PlanningSceneProfile.AcceptsSwitchParentedToDoor
+[       OK ] PlanningSceneProfile.AcceptsSwitchParentedToDoor (0 ms)
+[ RUN      ] PlanningSceneProfile.RejectsMissingSwitchParent
+[       OK ] PlanningSceneProfile.RejectsMissingSwitchParent (0 ms)
+[ RUN      ] PlanningSceneProfile.RejectsSwitchParentThatIsNotDoor
+[       OK ] PlanningSceneProfile.RejectsSwitchParentThatIsNotDoor (0 ms)
+[ RUN      ] PlanningSceneProfile.RejectsMultipleDoorsOrSwitches
+[       OK ] PlanningSceneProfile.RejectsMultipleDoorsOrSwitches (0 ms)
+[----------] 7 tests from PlanningSceneProfile (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 7 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 7 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/planning_scene_profile_test.gtest.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>gtest</Label>
+			</Labels>
+		</Test>
+		<Test Status="passed">
+			<Name>operation_validation_policy_test</Name>
+			<Path>.</Path>
+			<FullName>./operation_validation_policy_test</FullName>
+			<FullCommandLine>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_validation_policy_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml"</FullCommandLine>
+			<Results>
+				<NamedMeasurement type="numeric/double" name="Execution Time">
+					<Value>0.0618879</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="numeric/double" name="Processors">
+					<Value>1</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Completion Status">
+					<Value>Completed</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Command Line">
+					<Value>/usr/bin/python3 "-u" "/opt/ros/humble/share/ament_cmake_test/cmake/run_test.py" "/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml" "--package-name" "xczs_inspection_robot_control" "--output-file" "/home/live/work01/build/xczs_inspection_robot_control/ament_cmake_gtest/operation_validation_policy_test.txt" "--command" "/home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test" "--gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml"</Value>
+				</NamedMeasurement>
+				<NamedMeasurement type="text/string" name="Environment">
+					<Value>#CTEST_RESOURCE_GROUP_COUNT=</Value>
+				</NamedMeasurement>
+				<Measurement>
+					<Value>-- run_test.py: invoking following command in '/home/live/work01/build/xczs_inspection_robot_control':
+ - /home/live/work01/build/xczs_inspection_robot_control/operation_validation_policy_test --gtest_output=xml:/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml
+Running main() from /opt/ros/humble/src/gtest_vendor/src/gtest_main.cc
+[==========] Running 6 tests from 1 test suite.
+[----------] Global test environment set-up.
+[----------] 6 tests from OperationValidationPolicy
+[ RUN      ] OperationValidationPolicy.UnverifiedControlRequiresPlanningOnly
+[       OK ] OperationValidationPolicy.UnverifiedControlRequiresPlanningOnly (0 ms)
+[ RUN      ] OperationValidationPolicy.VerifiedControlMayUsePhysicalExecution
+[       OK ] OperationValidationPolicy.VerifiedControlMayUsePhysicalExecution (0 ms)
+[ RUN      ] OperationValidationPolicy.ValidationAlwaysBlocksPhysicalMotion
+[       OK ] OperationValidationPolicy.ValidationAlwaysBlocksPhysicalMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.PreflightAndDockingFailuresNeedNoRecoveryMotion
+[       OK ] OperationValidationPolicy.PreflightAndDockingFailuresNeedNoRecoveryMotion (0 ms)
+[ RUN      ] OperationValidationPolicy.ExecutedOperationStillRequiresSafetyRecovery
+[       OK ] OperationValidationPolicy.ExecutedOperationStillRequiresSafetyRecovery (0 ms)
+[ RUN      ] OperationValidationPolicy.EngagementFlagsConservativelyRequireRecovery
+[       OK ] OperationValidationPolicy.EngagementFlagsConservativelyRequireRecovery (0 ms)
+[----------] 6 tests from OperationValidationPolicy (0 ms total)
+
+[----------] Global test environment tear-down
+[==========] 6 tests from 1 test suite ran. (0 ms total)
+[  PASSED  ] 6 tests.
+-- run_test.py: return code 0
+-- run_test.py: inject classname prefix into gtest result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml'
+-- run_test.py: verify result file '/home/live/work01/build/xczs_inspection_robot_control/test_results/xczs_inspection_robot_control/operation_validation_policy_test.gtest.xml'
+</Value>
+				</Measurement>
+			</Results>
+			<Labels>
+				<Label>gtest</Label>
+			</Labels>
+		</Test>
+		<EndDateTime>Aug 12 11:50 CST</EndDateTime>
+		<EndTestTime>1786506616</EndTestTime>
+		<ElapsedMinutes>0</ElapsedMinutes>
+	</Testing>
+</Site>

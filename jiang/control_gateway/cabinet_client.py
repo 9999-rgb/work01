@@ -26,10 +26,10 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from std_srvs.srv import Trigger
-from xczs_inspection_robot_control.action import OperateCabinetControl
-from xczs_inspection_robot_control.msg import CabinetControl
-from xczs_inspection_robot_control.msg import CabinetControlCatalog
-from xczs_inspection_robot_control.msg import CabinetControlState
+from xczs_inspection_robot_interfaces.action import OperateCabinetControl
+from xczs_inspection_robot_interfaces.msg import CabinetControl
+from xczs_inspection_robot_interfaces.msg import CabinetControlCatalog
+from xczs_inspection_robot_interfaces.msg import CabinetControlState
 
 
 _CABINET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")

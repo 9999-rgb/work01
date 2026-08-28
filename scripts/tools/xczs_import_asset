@@ -1,0 +1,172 @@
+#!/usr/bin/python3
+"""Import a scene / cabinet asset into the asset library.
+
+An asset is a directory with a validated ``manifest.yaml`` at its root plus the
+files it declares.  Import copies the directory into the library, normalizes
+self-contained scene references (relative ``nav2_map`` / ``model.file`` paths
+become absolute inside the library), runs the matching semantic checker
+(``check_scene_config`` for scenes; the adapter contract for cabinets is wired
+in 阶段3) and records the entry in the SQLite catalog (``assets`` table).
+
+Examples::
+
+    scripts/xczs_import_asset jiang/samples/scene_cabinet_operation   # import
+    scripts/xczs_import_asset --select --print-env jiang/samples/scene_cabinet_operation
+    scripts/xczs_import_asset --list
+
+Selection maps onto the existing ``SCENES_CONFIG`` / ``SCENE`` /
+``CABINET_INSTANCES_PATH`` environment pointers via
+:meth:`AssetLibrary.selection_to_env`, which the launch layer already consumes.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import types
+from pathlib import Path
+
+
+WORKSPACE = Path(__file__).resolve().parents[2]
+JIANG = WORKSPACE / "jiang"
+sys.path.insert(0, str(JIANG))
+
+# ``control_gateway.__init__`` exposes the ROS-backed server lazily; the asset
+# modules are pure, so injecting a bare package path keeps this script ROS-free.
+CONTROL_GATEWAY_PACKAGE = types.ModuleType("control_gateway")
+CONTROL_GATEWAY_PACKAGE.__path__ = [str(JIANG / "control_gateway")]
+sys.modules.setdefault("control_gateway", CONTROL_GATEWAY_PACKAGE)
+
+from control_gateway.asset_library import (  # noqa: E402
+    AssetLibrary,
+    AssetLibraryError,
+    AssetSelection,
+    default_library_root,
+)
+from control_gateway.asset_manifest import ManifestError  # noqa: E402
+from control_gateway.asset_manifest import load_manifest  # noqa: E402
+from control_gateway.asset_validators import kind_validator  # noqa: E402
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Import a scene / cabinet asset into the asset library."
+    )
+    parser.add_argument(
+        "source", nargs="?", help="asset directory (with manifest.yaml)"
+    )
+    parser.add_argument(
+        "--assets-dir",
+        default=None,
+        help="asset library root (default: jiang/data/assets)",
+    )
+    parser.add_argument(
+        "--force", action="store_true", help="replace an existing asset"
+    )
+    parser.add_argument(
+        "--skip-validate", action="store_true", help="skip semantic validation"
+    )
+    parser.add_argument(
+        "--select",
+        action="store_true",
+        help="select the imported scene asset as the active run",
+    )
+    parser.add_argument(
+        "--print-env",
+        action="store_true",
+        help="print the selection's environment overrides (informational)",
+    )
+    parser.add_argument(
+        "--list", action="store_true", help="list imported assets and exit"
+    )
+    return parser
+
+
+def main() -> int:
+    arguments = _parser().parse_args()
+    # Importing the production store instantiates and validates application
+    # settings. Keep it after argparse so --help and syntax errors remain pure
+    # CLI operations even when the runtime database configuration is broken.
+    from app.assets.store import SqlAssetStore
+
+    library = AssetLibrary(
+        arguments.assets_dir or default_library_root(), store=SqlAssetStore()
+    )
+
+    if arguments.list:
+        records = library.load_catalog()
+        if not records:
+            print("(no assets imported)")
+            return 0
+        for record in records:
+            status = "validated" if record.validated else "schema-only"
+            print(f"{record.kind:<7} {record.name:<32} v{record.version}  {status}")
+        return 0
+
+    # ``--print-env`` without a source prints the current selection's overrides,
+    # which the launch script consumes to map the selected assets onto the
+    # existing environment pointers.
+    if arguments.print_env and not arguments.source:
+        try:
+            env = library.selection_to_env()
+        except AssetLibraryError as error:
+            print(f"FAIL: {error}", file=sys.stderr)
+            return 1
+        for key, value in sorted(env.items()):
+            print(f"{key}={value}")
+        return 0
+
+    if not arguments.source:
+        print("missing asset directory (or use --list / --print-env)", file=sys.stderr)
+        return 2
+
+    source = Path(arguments.source).expanduser()
+    try:
+        manifest = load_manifest(source / "manifest.yaml")
+    except ManifestError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+
+    validate = (
+        None
+        if arguments.skip_validate
+        else kind_validator(manifest.kind)
+    )
+    try:
+        record = library.import_asset(
+            source, validate=validate, force=arguments.force
+        )
+    except (AssetLibraryError, ManifestError) as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+
+    status = "validated" if record.validated else "schema-only"
+    print(
+        f"imported {record.kind}/{record.name} v{record.version} "
+        f"({status}) into {library.root}"
+    )
+
+    if arguments.select:
+        if record.kind != "scene":
+            print(
+                "warning: --select only applies to scene assets; skipped",
+                file=sys.stderr,
+            )
+        else:
+            library.save_selection(AssetSelection(scene=record.name))
+            print(f"selected scene: {record.name}")
+
+    if arguments.print_env:
+        try:
+            env = library.selection_to_env()
+        except AssetLibraryError as error:
+            print(f"FAIL: {error}", file=sys.stderr)
+            return 1
+        for key, value in sorted(env.items()):
+            print(f"{key}={value}")
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

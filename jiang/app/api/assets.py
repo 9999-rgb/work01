@@ -10,7 +10,7 @@ MoveIt 配置会在启动时共同选择 A 或 B，运行中把 Web 的选择直
 控制层会让规划关节与物理模型不一致。因此工具套装选择只保存为下一次
 人工启动时的待生效配置；绝不通过写标记触发整套仿真自动重启。
 
-校验器与 CLI（``scripts/xczs_import_asset``）共用
+校验器与 CLI（``scripts/tools/xczs_import_asset``）共用
 :mod:`control_gateway.asset_validators`，保证 Web 与脚本两条入口行为一致。
 """
 

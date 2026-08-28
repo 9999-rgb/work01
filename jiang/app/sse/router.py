@@ -1,6 +1,6 @@
 """Zenoh CDR → HTTP SSE 桥（FastAPI 版）。
 
-从 ``sse_bridge.py`` 迁移，复用其 ``ZenohSource``（线程安全、按 key 订阅扇出）。
+从 ``transport/sse_bridge.py`` 迁移，复用其 ``ZenohSource``（线程安全、按 key 订阅扇出）。
 每个 SSE 连接注册一个 listener，用有界 asyncio Queue 和合并调度
 保持浏览器端高频 ROS 2 话题不堆积。
 """
@@ -17,8 +17,8 @@ from fastapi.responses import StreamingResponse
 from starlette.background import BackgroundTask
 
 from app.auth.deps import ActiveTokenChecker
-from sse_bridge import ZenohSource
-from zenoh_key import normalize_ros_key
+from transport.sse_bridge import ZenohSource
+from transport.zenoh_key import normalize_ros_key
 
 MONITOR_UPDATE_INTERVAL_SECONDS = 1.0
 HEARTBEAT_SECONDS = 15.0

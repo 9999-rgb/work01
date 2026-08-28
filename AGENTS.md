@@ -12,15 +12,17 @@
 
 ## 文件放置规范
 
-- 可执行脚本放入 `scripts/`。
-- 自定义消息放入 `msg/`。
-- 启动文件放入 `launch/`。
-- 配置文件放入 `config/`。
-- 其他文件按照 ROS 2 功能包规范分类存放；无法确定时先询问用户。
-- 机器人模型、网格和仿真环境统一放入
+- 验收/校验脚本放入 `scripts/validate/`；开发工具脚本放入 `scripts/tools/`。
+- 自定义消息、服务、动作（msg/srv/action）放入
+  `xczs_inspection_robot_interfaces`。
+- 启动文件放入 `xczs_inspection_robot_bringup/launch/`。
+- Gazebo 插件与仿真世界（worlds）放入 `xczs_inspection_robot_gazebo`。
+- 机器人模型与网格（URDF/Xacro、meshes）放入
   `xczs_inspection_robot_description`。
-- 控制节点和统一启动入口统一放入
-  `xczs_inspection_robot_control`。
+- 控制节点与纯逻辑头放入 `xczs_inspection_robot_control`（`src/`、`include/`）。
+- 场景适配 YAML（instances/scene/controls/adapter/pose）留在
+  `xczs_inspection_robot_control/config/`——它们是跨层合同，按硬编码路径读取。
+- 通用任务层（Web/HTTP/SSE/任务管理/录制回放）放入 `jiang/`。
 - 不提交 `build/`、`install/`、`log/`、Python 缓存和导出日志等生成文件。
 
 ## 项目约定

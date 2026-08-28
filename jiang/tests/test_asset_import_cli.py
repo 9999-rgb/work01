@@ -1,4 +1,4 @@
-"""Integration tests for the ``scripts/xczs_import_asset`` CLI (pure, no ROS).
+"""Integration tests for the ``scripts/tools/xczs_import_asset`` CLI (pure, no ROS).
 
 Runs the real CLI as a subprocess against a scratch asset library, so these
 tests exercise the whole import chain: manifest validation, whole-tree copy,
@@ -23,7 +23,7 @@ import yaml
 
 
 WORKSPACE = Path(__file__).resolve().parents[2]
-CLI = WORKSPACE / "scripts" / "xczs_import_asset"
+CLI = WORKSPACE / "scripts" / "tools" / "xczs_import_asset"
 MAP_FIELDS = {
     "image": "inspection_map.pgm",
     "resolution": 0.05,
