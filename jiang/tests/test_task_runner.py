@@ -576,7 +576,10 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertIsNotNone(goal)
         assert goal is not None
         self.assertEqual(1, client.reset_count)
-        self.assertEqual(1, node.quiesce_count)
+        # Once for the reset admission, once at the start of the base-homing
+        # navigation leg (_execute_navigation_task now quiesces stale manual
+        # outputs before every navigation task/leg).
+        self.assertEqual(2, node.quiesce_count)
         self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
         self.assertAlmostEqual(0.2, node.joint_target_durations[0])
         self.assertAlmostEqual(0.0, goal["x"])
@@ -992,6 +995,62 @@ class TaskRunnerTest(unittest.TestCase):
         self.assertAlmostEqual(-math.pi / 2.0, node.joint_targets[0][1])
         client.finish("success")
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_operation_requires_idle_navigation_before_acceptance(self) -> None:
+        """Operation must reject while Nav2 is still active, mirroring reset.
+
+        A navigate monitor that force-releases its slot with the backend
+        termination unconfirmed leaves Nav2 in an active/canceling state; an
+        operation task admitted in that window would home and move the cabinet
+        while the chassis is still under Nav2 control."""
+        server, node = _server()
+        node.state["state"] = "navigating"
+
+        with self.assertRaises(ControlRequestError) as busy:
+            server.submit_operation_task(
+                "cabinet_a",
+                "button_1",
+                "press",
+                None,
+                None,
+                5.0,
+            )
+
+        self.assertEqual(409, busy.exception.status)
+        self.assertIsNone(server._task_manager.active_task_id)
+
+    def test_navigation_and_operation_quiesce_stale_manual_outputs(self) -> None:
+        """Navigation/operation must stop a lingering manual cmd_vel before
+        homing so stale manual base commands cannot keep driving the chassis
+        while the arm resets (mirrors the reset/replay/toolset paths)."""
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        self.assertEqual(0, node.quiesce_count)
+
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        self.assertTrue(client.submit_event.wait(timeout=1.0))
+        self.assertEqual(1, node.quiesce_count)
+        client.finish("success")
+        server._task_manager.wait(accepted["task_id"], timeout=2.0)
+
+        nav = server.submit_navigation_task("cabinet_a")
+        goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertEqual(2, node.quiesce_count)
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 1.05, "y": 0.0, "yaw": math.pi - 0.03},
+        )
+        task = server._task_manager.wait(nav["task_id"], timeout=2.0)
         self.assertEqual("success", task["status"])
 
     def test_navigation_uses_live_tf_station_when_node_supports_it(self) -> None:

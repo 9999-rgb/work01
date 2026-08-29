@@ -442,6 +442,20 @@ class AssetLibraryTest(unittest.TestCase):
         self.assertFalse((self.library.root / "scene" / "scene_a").exists())
         self.assertEqual([], self.library.load_catalog())
 
+    def test_import_scene_with_extra_scenes_rejected(self) -> None:
+        # 场景资产是一资产一场景：多余的场景条目无法被 resolve_scene /
+        # iter_scene_specs 服务，会在 /scenes 与切换中被静默丢弃，必须拒绝。
+        asset = _write_scene_asset(self.directory / "source", name="scene_a")
+        document = _scene_document("scene_a")
+        document["scenes"].append(_scene_document("scene_b")["scenes"][0])
+        (asset / "scenes.yaml").write_text(
+            yaml.safe_dump(document, sort_keys=False), encoding="utf-8"
+        )
+        with self.assertRaises(AssetLibraryError):
+            self.library.import_asset(asset)
+        self.assertFalse((self.library.root / "scene" / "scene_a").exists())
+        self.assertEqual([], self.library.load_catalog())
+
     def test_import_cabinet_asset(self) -> None:
         source = _write_cabinet_asset(self.directory / "source")
 

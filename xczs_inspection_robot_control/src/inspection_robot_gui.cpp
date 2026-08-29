@@ -124,6 +124,20 @@ private:
 
   void load_parameters()
   {
+    // The base drives along its +Y axis, but the operator-facing "forward"
+    // maps to the adapter-validated manual_linear_sign (-1 in
+    // cabinet_robot_adapter.yaml).  Honor the same parameter as
+    // keyboard_teleop so the GUI's 前进/后退 never contradict the keyboard
+    // teleop or the Web manual control.
+    manual_linear_sign_ = node_->declare_parameter<double>(
+      "manual_linear_sign", -1.0);
+    if (
+      !std::isfinite(manual_linear_sign_) ||
+      (manual_linear_sign_ != -1.0 && manual_linear_sign_ != 1.0))
+    {
+      throw std::invalid_argument(
+              "Parameter 'manual_linear_sign' must be either -1 or 1.");
+    }
     linear_speed_ = positive_parameter("linear_speed", 0.25);
     angular_speed_ = positive_parameter("angular_speed", 0.60);
     linear_acceleration_ = positive_parameter(
@@ -218,10 +232,12 @@ private:
 
     connect(
       forward_button, &QPushButton::pressed, this,
-      [this]() {request_base_motion(linear_speed_, 0.0, "前进");});
+      [this]() {
+        request_base_motion(manual_linear_sign_ * linear_speed_, 0.0, "前进");});
     connect(
       backward_button, &QPushButton::pressed, this,
-      [this]() {request_base_motion(-linear_speed_, 0.0, "后退");});
+      [this]() {
+        request_base_motion(-manual_linear_sign_ * linear_speed_, 0.0, "后退");});
     connect(
       left_button, &QPushButton::pressed, this,
       [this]() {request_base_motion(0.0, angular_speed_, "左转");});
@@ -548,6 +564,7 @@ private:
   std::string cmd_vel_topic_;
   std::string trajectory_topic_;
   std::string joint_state_topic_;
+  double manual_linear_sign_{-1.0};
   double linear_speed_{0.25};
   double angular_speed_{0.60};
   double linear_acceleration_{0.50};

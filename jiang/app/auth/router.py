@@ -14,6 +14,7 @@ admin：
 
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -71,14 +72,22 @@ async def login(
         select(User).where(User.username == body.username)
     )
     user = result.scalar_one_or_none()
+    # bcrypt_sha256 verification is ~190ms of CPU-bound work.  Run it on a
+    # worker thread so an anonymous /auth/login burst cannot stall the event
+    # loop and take down /health, /sse/*, /camera.mjpg and the /task/* control
+    # endpoints (unauthenticated DoS).  The dummy-hash branch runs it too, so
+    # the timing-equality defense is preserved.
     if user is None:
-        # Equalize timing against the known-user/wrong-password path.
-        verify_password(body.password, _dummy_hash())
+        await asyncio.to_thread(verify_password, body.password, _dummy_hash())
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误。",
         )
-    if not verify_password(body.password, user.hashed_password):
+    if not await asyncio.to_thread(
+        verify_password,
+        body.password,
+        user.hashed_password,
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="用户名或密码错误。",

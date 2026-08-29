@@ -121,19 +121,23 @@ public:
           RCLCPP_ERROR(node_->get_logger(), "%s", response->message.c_str());
           return;
         }
-        rcl_arguments_t old = ctx->global_arguments;
+        // Swap the process-global arguments to the clean set.  rcl_arguments_t
+        // is a single-implementation-pointer struct, so this assignment is one
+        // pointer-sized store: a concurrent rcl_node_init (if one were in
+        // flight on another gzserver thread) sees either the old or the new
+        // pointer, never a torn value, so the swap itself cannot race.
         ctx->global_arguments = clean;
-        // The previous arguments were parsed by gazebo_ros2_control and are
-        // never finalized by it (verified in the plugin source), so returning
-        // them here reclaims the leaked polluting arguments.
-        rcl_ret_t fini_ret = rcl_arguments_fini(&old);
-        if (fini_ret != RCL_RET_OK) {
-          RCLCPP_WARN(
-            node_->get_logger(),
-            "could not finalize the polluting rcl arguments (%d): %s",
-            static_cast<int>(fini_ret), rcl_get_error_string().str);
-          rcl_reset_error();
-        }
+        // The old (polluting) arguments are deliberately NOT finalized here.
+        // rcl exposes no lock around context->global_arguments, so a
+        // rcl_node_init that read the pre-swap pointer on another thread could
+        // still be traversing it while rcl_arguments_fini frees it -- a
+        // use-after-free that would take down gzserver.  The supervisor
+        // serializes reset-then-spawn today, but nothing stops a future
+        // unsynchronized caller from racing it.  The swapped-out set is never
+        // read again once the swap is done, so leaving it to the process
+        // lifetime is safe; the leak is one small argument set per toolset
+        // switch (gazebo_ros2_control already leaks its parse of these on
+        // every spawn and never finalizes them).
         response->success = true;
         response->message = "gzserver global rcl arguments reset to --ros-args";
         RCLCPP_INFO(node_->get_logger(), "%s", response->message.c_str());

@@ -1471,6 +1471,12 @@ class TaskManager:
 
     def _run_executor(self, task_id: str, executor: TaskExecutor) -> None:
         context = TaskContext(self, task_id)
+        # Set when an exception escapes the executor body.  The finally block
+        # then releases any terminal-retained slot the executor left behind
+        # (a monitor that failed/canceled the task with retention, then a later
+        # bug escaped its loop); without it the globally-exclusive task slot
+        # leaks and every later /task/* submission returns 409.
+        unwinding = False
         try:
             started = self.start_task(task_id)
             if started["status"] == "canceling":
@@ -1509,39 +1515,69 @@ class TaskManager:
                 backend_succeeded=backend_succeeded,
             )
         except TaskCanceledError as error:
+            unwinding = True
             try:
                 self.mark_canceled(
                     task_id,
                     reason=_exception_message(error, "Task was canceled."),
                 )
             except InvalidTaskTransitionError:
-                return
+                pass
         except TaskExecutionError as error:
-            try:
-                self.fail_task(
-                    task_id,
-                    error.reason,
-                    code=error.code,
-                    details=error.details,
-                    result=error.result,
-                )
-            except InvalidTaskTransitionError:
-                return
+            unwinding = True
+            if self.is_cancel_requested(task_id):
+                # A user cancellation, once requested, wins over a backend
+                # failure: a task the user asked to stop reports "canceled",
+                # not "failed" (e.g. homing that times out after a cancel).
+                # Mirror _finish_executor_result, which already prefers
+                # mark_canceled over a non-success return.
+                try:
+                    self.mark_canceled(
+                        task_id,
+                        reason=(
+                            f"Task was canceled after the backend failed "
+                            f"({error.code}): {error.reason}"
+                        ),
+                    )
+                except InvalidTaskTransitionError:
+                    pass
+            else:
+                try:
+                    self.fail_task(
+                        task_id,
+                        error.reason,
+                        code=error.code,
+                        details=error.details,
+                        result=error.result,
+                    )
+                except InvalidTaskTransitionError:
+                    pass
         except InvalidTaskTransitionError:
             # A result callback may already have completed this task.
-            return
+            unwinding = True
         except Exception as error:  # noqa: BLE001
-            try:
-                self.fail_task(
-                    task_id,
-                    _exception_message(error),
-                    code="internal_error",
-                    details={"exception_type": _exception_type_name(error)},
-                )
-            except InvalidTaskTransitionError:
-                # Cancellation can become terminal while an executor unwinds.
-                return
+            unwinding = True
+            if self.is_cancel_requested(task_id):
+                try:
+                    self.mark_canceled(task_id)
+                except InvalidTaskTransitionError:
+                    pass
+            else:
+                try:
+                    self.fail_task(
+                        task_id,
+                        _exception_message(error),
+                        code="internal_error",
+                        details={"exception_type": _exception_type_name(error)},
+                    )
+                except InvalidTaskTransitionError:
+                    # Cancellation can become terminal while an executor unwinds.
+                    pass
         finally:
+            if unwinding:
+                # A terminal-retained slot must never survive an unwinding
+                # executor; no-op when the reservation is already free.
+                self._release_stranded_reservation(task_id)
             with self._condition:
                 self._workers.pop(task_id, None)
                 self._condition.notify_all()
@@ -1561,6 +1597,27 @@ class TaskManager:
             if cancel_requested and not backend_succeeded:
                 return self.mark_canceled(task_id, result)
             return self.succeed_task(task_id, result)
+
+    def _release_stranded_reservation(self, task_id: str) -> None:
+        """Release a terminal-retained slot left held by an unwinding executor.
+
+        When an exception escapes an executor after the task already became
+        terminal-with-retention (a monitor failed/canceled the task and a later
+        bug escaped its loop, e.g. the navigation monitor has no unconditional
+        ``finally``), the transition-based cleanup in the ``_run_executor``
+        except handlers cannot run and the globally-exclusive task slot would
+        leak, 409-ing every later /task/* submission forever.  ``release_reservation``
+        is a no-op when the reservation is already free (and refuses non-terminal
+        tasks), so calling it on every unwinding path is safe.
+        """
+        try:
+            self.release_reservation(
+                task_id,
+                backend_termination_confirmed=False,
+                details={"reason": "executor unwound with a retained slot"},
+            )
+        except (InvalidTaskTransitionError, KeyError, ValueError):
+            pass
 
 
 def _snapshot(task: Mapping[str, Any]) -> Dict[str, Any]:

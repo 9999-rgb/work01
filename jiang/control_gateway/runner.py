@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import math
 import queue
@@ -77,6 +78,20 @@ from .web_server import ControlHandler
 
 CABINET_SHUTDOWN_TIMEOUT_SEC = 15.0
 NAVIGATION_SHUTDOWN_TIMEOUT_SEC = 15.0
+
+
+def _scene_spec_signature(scene: SceneSpec) -> str:
+    """Content signature for one scene spec.
+
+    ``switch_scene`` uses this to tell a no-op re-switch (same name, same
+    geometry/map/pose) from a re-import that changed the active scene's
+    definition: a force re-import updates the catalog the gateway resolves
+    against, and comparing names alone would silently keep the stale geometry
+    on the world.
+    """
+    return json.dumps(
+        scene.to_dict(), sort_keys=True, separators=(",", ":")
+    )
 TASK_MANAGER_SHUTDOWN_TIMEOUT_SEC = 8.0
 SHUTDOWN_RECHECK_TIMEOUT_SEC = 1.0
 BACKEND_SHUTDOWN_GRACE_SEC = 3.0
@@ -361,6 +376,18 @@ class ControlServer:
         except SceneNotFoundError as error:
             raise RuntimeError(f"Unknown initial scene: {active_scene}") from error
         self._active_scene = active_scene
+        # Content signatures of the scene specs the world currently matches,
+        # so a re-import that changes an *active* scene's geometry/map/pose is
+        # not masked by the switch_scene name-only idempotency short-circuit.
+        # The world is spawned to the boot-time catalog, so record that spec
+        # (not a later provider-resolved one) as the boot baseline.
+        self._applied_scene_signatures: Dict[str, str] = {}
+        try:
+            self._applied_scene_signatures[active_scene] = (
+                _scene_spec_signature(self._scene_specs[active_scene])
+            )
+        except (KeyError, TypeError):
+            pass
         self._cabinet_xacro_path = cabinet_xacro
         self._cabinet_controls_path = controls_path
         self._cabinet_instances_path = instances_path
@@ -374,6 +401,10 @@ class ControlServer:
         self._toolset_transition_generation: Optional[int] = None
         self._robot_entity_name = robot_entity_name.strip()
         self._scene_switch_lock = threading.Lock()
+        # 部分失败的场景切换会留下“世界几何/地图与 _active_scene 记录不符”的
+        # 中间态。置位后 switch_scene 的幂等短接必须失效——再切换到记录场景要
+        # 真正重跑一次对账（delete-then-spawn 收敛），而不是直接返回 unchanged。
+        self._scene_reconcile_pending = False
         try:
             validate_profile(
                 robot_adapter_path=robot_adapter_path,
@@ -1132,6 +1163,9 @@ class ControlServer:
                 "scene_switching": bool(
                     getattr(self, "_scene_switch_in_progress", False)
                 ),
+                "scene_reconcile_pending": bool(
+                    getattr(self, "_scene_reconcile_pending", False)
+                ),
                 "cabinets": cabinet_states,
                 "replay_mode": replay["mode"],
                 "replay_read_only": replay["read_only"],
@@ -1340,8 +1374,34 @@ class ControlServer:
                     entry = scene.to_dict()
                     entry["source"] = "asset"
                     merged[scene.name] = entry
+            # SCENES_CONFIG 覆盖且与出厂 scenes.yaml 分叉时，启动 catalog 里多出
+            # 的场景仍可切换，必须出现在列表里，否则 Web 下拉无法选中它们。
+            startup_catalog = getattr(self, "_scene_catalog", None)
+            if startup_catalog is not None and startup_catalog is not builtin_catalog:
+                for scene in startup_catalog:
+                    if scene.name not in merged:
+                        entry = scene.to_dict()
+                        entry["source"] = "custom"
+                        merged[scene.name] = entry
+            # 活动场景必须始终在列表里：资产被删除后其 spec 仍缓存在
+            # _scene_specs（供回切协调），_scene_lookup 仍能解析；若 /scenes
+            # 漏掉它，Web 端无法高亮当前场景，切换按钮还会把默认目标错指到
+            # 列表首个场景。
+            active = getattr(self, "_active_scene", None)
+            if active and active not in merged:
+                try:
+                    spec = self._scene_lookup(active)
+                except SceneNotFoundError:
+                    pass
+                else:
+                    entry = spec.to_dict()
+                    entry["source"] = "asset"
+                    merged[active] = entry
             return {
                 "active": self._active_scene,
+                "reconcile_pending": bool(
+                    getattr(self, "_scene_reconcile_pending", False)
+                ),
                 "scenes": list(merged.values()),
             }
 
@@ -1391,6 +1451,13 @@ class ControlServer:
         # cabinet work through the inventory only; never block them here.
         if catalog is None or active_name is None:
             return
+        if getattr(self, "_scene_reconcile_pending", False):
+            raise ControlRequestError(
+                f"{operation} is unavailable: the last scene switch failed "
+                "mid-way, leaving the world inconsistent with the recorded "
+                f"scene '{active_name}'. Re-issue switch_scene to reconcile.",
+                409,
+            )
         if not self._scene_lookup(active_name).spawn_cabinet:
             raise ControlRequestError(
                 f"{operation} is unavailable in scene "
@@ -1407,6 +1474,12 @@ class ControlServer:
         ``_task_interlock_scope`` + ``_ensure_backend_quiescent``.  Geometry is
         reconciled with delete-then-spawn, so re-issuing a switch after a
         partial failure converges to the target scene.
+
+        A failed switch marks ``_scene_reconcile_pending``: the world may not
+        match ``_active_scene`` any more, so a re-switch to the recorded scene
+        runs full reconciliation (status ``reconciled``) instead of short-
+        circuiting to ``unchanged``, and cabinet-scoped operations are refused
+        until the next switch succeeds.
         """
         if not isinstance(name, str) or not name.strip():
             raise ControlRequestError(
@@ -1423,7 +1496,27 @@ class ControlServer:
                 self._ensure_backend_quiescent("Scene switch")
                 with self._scene_switch_lock:
                     previous = self._active_scene
-                    if previous == target.name:
+                    # Only short-circuit when the spec the world already
+                    # matches is still the one requested: a force re-import
+                    # that changed this scene's geometry/map/pose must fall
+                    # through to reconciliation, or the new definition would
+                    # silently never take effect.  Fake/legacy servers built
+                    # without ``__init__`` have no signature map and keep the
+                    # historical name-only behavior.
+                    applied_signatures = getattr(
+                        self, "_applied_scene_signatures", None
+                    )
+                    if (
+                        previous == target.name
+                        and not getattr(
+                            self, "_scene_reconcile_pending", False
+                        )
+                        and (
+                            applied_signatures is None
+                            or applied_signatures.get(target.name)
+                            == _scene_spec_signature(target)
+                        )
+                    ):
                         return {"status": "unchanged", "scene": target.name}
                     # Advertise the maintenance window through /health so the
                     # bridge liveness monitor treats the bounded map/geometry
@@ -1432,11 +1525,36 @@ class ControlServer:
                     self._scene_switch_in_progress = True
                     try:
                         self._apply_scene_switch(previous, target)
+                    except BaseException:
+                        # ``_apply_scene_switch`` sets ``_scene_reconcile_pending``
+                        # just before the first world mutation, so the flag is
+                        # already correct for any failure that could have left the
+                        # world diverged from the recorded scene.  A failure
+                        # before any mutation (e.g. load_map with the map_server
+                        # down) leaves the world identical to ``previous`` and
+                        # must not lock cabinet work behind a false pending flag.
+                        raise
                     finally:
                         self._scene_switch_in_progress = False
+                    # Success: the world now matches ``target``.  A previously
+                    # pending reconciliation is resolved whether this switch
+                    # converged back to the recorded scene or to a different
+                    # one.
+                    self._scene_reconcile_pending = False
                     self._active_scene = target.name
+                    applied_signatures = getattr(
+                        self, "_applied_scene_signatures", None
+                    )
+                    if applied_signatures is not None:
+                        applied_signatures[target.name] = (
+                            _scene_spec_signature(target)
+                        )
                     return {
-                        "status": "switched",
+                        "status": (
+                            "switched"
+                            if previous != target.name
+                            else "reconciled"
+                        ),
                         "scene": target.name,
                         "previous": previous,
                     }
@@ -1456,6 +1574,11 @@ class ControlServer:
             # references are resolved to a filesystem path because this
             # map_server is launched without a resolver and rejects URIs.
             self._node.load_map(str(resolve_package_uri(target.nav2_map)))
+            # From here the world may diverge from the recorded scene, so any
+            # failure is a reconciliation-pending state.  A failure *before*
+            # this point (load_map with the map_server down) leaves the world
+            # identical to the recorded scene and must not lock cabinet work.
+            self._scene_reconcile_pending = True
             if previous.model is not None:
                 self._gazebo_client.delete_entity(
                     SCENE_FLOOR_ENTITY, ignore_missing=True
@@ -1962,6 +2085,7 @@ class ControlServer:
                 "force": force_value,
             }
             with self._task_interlock_scope():
+                self._ensure_backend_quiescent("Cabinet operation")
                 replay_owned = self._replay_internal_authorized()
                 try:
                     return self._task_manager.submit(
@@ -2084,8 +2208,9 @@ class ControlServer:
         with self._request_scope():
             with self._task_interlock_scope():
                 self._reject_active_task_types(
-                    {"operate", "reset"},
+                    {"navigate", "operate", "reset"},
                     "Manual joint control",
+                    canceling_allowed_types={"navigate"},
                 )
                 return self._node.set_joint_target(positions)
 
@@ -2790,6 +2915,11 @@ class ControlServer:
         last_snapshot: Mapping[str, Any] = {}
         last_report_at = 0.0
         while True:
+            # A task-level cancel must be honored during homing instead of
+            # only at the timeout: the user asked to stop, and waiting out a
+            # long joint-reset timeout would otherwise mislabel the outcome.
+            if context is not None:
+                context.raise_if_canceled()
             snapshot = self._node.robot_joint_state_snapshot()
             last_snapshot = snapshot
             received_at = snapshot.get("received_monotonic")
@@ -2948,6 +3078,21 @@ class ControlServer:
         station_parent: Optional[Mapping[str, Any]] = None,
     ) -> Mapping[str, Any]:
         context.raise_if_canceled()
+        # The manual cmd_vel publisher keeps re-emitting its last target until
+        # its command timeout expires; quiesce it before homing so a stale
+        # manual base command cannot keep driving the chassis while the arm
+        # resets (mirrors the reset/replay/toolset admission paths).
+        try:
+            self._quiesce_manual_outputs()
+        except ControlRequestError as error:
+            raise TaskExecutionError(
+                str(error),
+                code="robot_quiescence_failed",
+                details=getattr(error, "details", {}),
+                result={
+                    "cabinet": str(station.get("cabinet") or "robot"),
+                },
+            ) from error
         # Homing occupies a small leading slice of the navigation window and
         # reports only once per second (never a final 100% of its slice), so
         # its high-water mark can sit anywhere inside that slice.  The legs
@@ -4482,6 +4627,18 @@ class ControlServer:
         force: Optional[float],
     ) -> Mapping[str, Any]:
         context.raise_if_canceled()
+        # Quiesce stale manual outputs before homing so a lingering manual
+        # cmd_vel cannot keep moving the chassis while the arm resets
+        # (mirrors the reset/replay/toolset admission paths).
+        try:
+            self._quiesce_manual_outputs()
+        except ControlRequestError as error:
+            raise TaskExecutionError(
+                str(error),
+                code="robot_quiescence_failed",
+                details=getattr(error, "details", {}),
+                result={"cabinet": cabinet},
+            ) from error
         # Perform a read-only capability/action-server preflight before any
         # homing or navigation.  In particular, a control belonging to the
         # other mounted end-effector must fail here rather than first moving

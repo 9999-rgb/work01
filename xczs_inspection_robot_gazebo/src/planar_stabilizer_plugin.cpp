@@ -338,7 +338,12 @@ private:
     // new pose as the lock target instead of snapping back through the world:
     // the lock's job is to hold the chassis where it last came to rest, and a
     // teleport is a legitimate new rest point.  Height is deliberately left
-    // alone so the chassis still settles onto the ground under gravity.
+    // alone so the chassis still settles onto the ground under gravity: the
+    // stale height lock is cleared and re-armed after the settling window
+    // (the same idiom Reset uses for a re-spawn) instead of snapping Z back to
+    // the previous rest height on every tick.  A pure Z relocation (e.g. a
+    // lift that leaves the chassis over different ground) is detected as a
+    // teleport too.
     constexpr double teleport_planar_tolerance = 0.1;
     if (planar_pose_is_locked_ &&
       (std::abs(world_pose.Pos().X() - locked_planar_x_) >
@@ -348,11 +353,16 @@ private:
        std::abs(
          std::remainder(
            world_pose.Rot().Yaw() - locked_planar_yaw_,
-           two_pi)) > teleport_planar_tolerance))
+           two_pi)) > teleport_planar_tolerance ||
+       (height_is_locked_ &&
+        std::abs(world_pose.Pos().Z() - locked_height_) >
+          teleport_planar_tolerance)))
     {
       locked_planar_x_ = world_pose.Pos().X();
       locked_planar_y_ = world_pose.Pos().Y();
       locked_planar_yaw_ = world_pose.Rot().Yaw();
+      height_is_locked_ = false;
+      schedule_height_lock();
     }
 
     const bool has_tilt =

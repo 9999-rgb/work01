@@ -537,6 +537,109 @@ class TaskManagerTest(unittest.TestCase):
             ][-2:],
         )
 
+    def test_exception_after_terminal_retention_does_not_leak_slot(self) -> None:
+        """An exception escaping a monitor that already went terminal-retained
+        must release the global slot, otherwise every later /task/* submission
+        raises TaskConflictError forever."""
+        manager = self._manager()
+
+        def fail_then_escape(context: Any) -> None:
+            context.fail_retaining_reservation(
+                "navigation timeout",
+                code="navigation_timeout",
+            )
+            raise RuntimeError("bug escaped the navigation monitor loop")
+
+        failed = manager.submit(
+            "navigate",
+            {"cabinet": "cabinet_a"},
+            fail_then_escape,
+        )
+        terminal = manager.wait(failed["task_id"], timeout=2.0)
+        self.assertEqual("failed", terminal["status"])
+        # The terminal snapshot may be captured before the unwinding executor
+        # releases the retained slot, so poll for the release rather than
+        # asserting on the wait snapshot.
+        deadline = time.monotonic() + 2.0
+        while manager.active_task_id is not None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIsNone(manager.active_task_id)
+        self.assertFalse(manager.get_task(failed["task_id"])["reservation_active"])
+        # The slot must be free: a fresh submission is accepted and runs.
+        following = manager.submit(
+            "operate",
+            {"cabinet": "cabinet_b"},
+            lambda context: context.progress("operating", 0.25)
+            and {"ok": True},
+        )
+        self.assertEqual(
+            "success", manager.wait(following["task_id"], timeout=2.0)["status"]
+        )
+
+    def test_task_execution_error_after_terminal_retention_releases_slot(self) -> None:
+        """The TaskExecutionError unwinding path must also release a retained
+        slot; without it cancel_retaining_reservation followed by an escaped
+        execution error strands the gateway."""
+        manager = self._manager()
+
+        def cancel_then_raise(context: Any) -> None:
+            context.cancel_retaining_reservation(
+                "cancellation unconfirmed by Nav2",
+                details={"cancel_grace_seconds": 10.0},
+            )
+            raise TaskExecutionError(
+                "backend wedged",
+                code="backend_wedged",
+            )
+
+        canceled = manager.submit(
+            "navigate",
+            {"cabinet": "cabinet_a"},
+            cancel_then_raise,
+        )
+        terminal = manager.wait(canceled["task_id"], timeout=2.0)
+        self.assertEqual("canceled", terminal["status"])
+        self.assertFalse(terminal["reservation_active"])
+        self.assertIsNone(manager.active_task_id)
+        manager.submit(
+            "operate",
+            {"cabinet": "cabinet_b"},
+            lambda context: {"ok": True},
+        )
+
+    def test_cancel_requested_wins_over_executor_failure(self) -> None:
+        """A user cancellation, once requested, must be terminal 'canceled'
+        even when the executor fails afterwards (e.g. homing timing out after
+        the user canceled), never 'failed'."""
+        manager = self._manager()
+        executor_started = threading.Event()
+        release = threading.Event()
+
+        def execute(_context: Any) -> None:
+            executor_started.set()
+            release.wait(timeout=2.0)
+            raise TaskExecutionError(
+                "Robot joints did not reach their configured defaults "
+                "before the reset timeout.",
+                code="robot_joint_reset_timeout",
+            )
+
+        task = manager.submit(
+            "operate",
+            {"cabinet": "cabinet_a"},
+            execute,
+            cancel_callback=lambda _task_id: {"accepted": True},
+        )
+        self.assertTrue(executor_started.wait(timeout=1.0))
+        manager.cancel_task(task["task_id"])
+        release.set()
+        terminal = manager.wait(task["task_id"], timeout=2.0)
+
+        self.assertEqual("canceled", terminal["status"])
+        self.assertEqual("canceled", terminal["failure_code"])
+        # The underlying backend failure is preserved in the cancel reason.
+        self.assertIn("robot_joint_reset_timeout", terminal["failure_reason"])
+
     def test_closed_event_stream_does_not_corrupt_task_state(self) -> None:
         manager = self._manager()
         manager.events.close()

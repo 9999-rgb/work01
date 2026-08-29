@@ -65,7 +65,6 @@ class OperateRequest(BaseModel):
     )
     force: StrictFloat | None = Field(
         default=None,
-        gt=0,
         description="按压力（N）。省略时使用控件目录 default_force",
     )
 
@@ -92,7 +91,12 @@ class OperateRequest(BaseModel):
     @field_validator("force")
     @classmethod
     def _force(cls, value: float | None) -> float | None:
-        return finite_number(value, "force") if value is not None else None
+        if value is None:
+            return None
+        result = finite_number(value, "force")
+        if result <= 0.0:
+            raise ValueError("force 必须是正数")
+        return result
 
     @model_validator(mode="after")
     def _command_targets(self) -> "OperateRequest":
@@ -210,6 +214,10 @@ class CabinetOperateRequest(BaseModel):
     target_state: str | None = Field(default=None)
     target_position: StrictFloat | None = Field(default=None)
     navigate_to_staging_pose: StrictBool = Field(default=True)
+    force: StrictFloat | None = Field(
+        default=None,
+        description="操作力度（牛）；缺省时由后端使用默认力度",
+    )
 
     @field_validator("control_id")
     @classmethod
@@ -225,6 +233,16 @@ class CabinetOperateRequest(BaseModel):
     @classmethod
     def _target_position(cls, value: float | None) -> float | None:
         return finite_number(value, "target_position") if value is not None else None
+
+    @field_validator("force")
+    @classmethod
+    def _force(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        result = finite_number(value, "force")
+        if result <= 0.0:
+            raise ValueError("force 必须是正数")
+        return result
 
 
 class RecordingStartRequest(BaseModel):

@@ -190,8 +190,13 @@
       throw new Error('登录已失效，请重新登录');
     }
     if (!response.ok) {
+      // 后端错误信封统一为 {error, failure_code, failure_reason}，无 detail 键；
+      // 依次回退 error → failure_reason → statusText，避免操作员看到英文状态码。
       let detail = response.statusText;
-      try { detail = (await response.json()).detail || detail; } catch (_) { /* ignore */ }
+      try {
+        const body = await response.json();
+        detail = body.error || body.failure_reason || detail;
+      } catch (_) { /* ignore */ }
       throw new Error(detail);
     }
     return response.json();

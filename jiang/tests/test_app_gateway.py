@@ -693,6 +693,14 @@ class FastAPIAppContractTest(unittest.TestCase):
                 {**base, "command": "press", "force": None},
                 "force is required",
             ),
+            (
+                {**base, "command": "press", "force": 0},
+                "force 必须是正数",
+            ),
+            (
+                {**base, "command": "press", "force": -1.0},
+                "force 必须是正数",
+            ),
         )
         for payload, error_fragment in invalid_operations:
             with self.subTest(invalid=payload):

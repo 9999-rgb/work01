@@ -812,6 +812,93 @@ _kill_port_holder() {
     return 2
 }
 
+# 判断进程是否属于当前 ROS 域。桥脚本在启动任何受管进程前 export 了
+# ROS_DOMAIN_ID（line 1221 附近），所有 gzserver/gzclient/launch 及派生节点
+# 都会继承该环境变量。按域过滤使清扫不误杀“同机隔离”并存的其他实例
+# （头部文档支持用不同 ROS_DOMAIN_ID + 端口覆盖启动第二个实例）。
+_has_domain() {
+    local _pid="$1"
+    # 进程 env 缺失/不可读（僵尸、刚退出）视为非本域，交给 ps 状态判定。
+    tr '\0' '\n' < "/proc/$_pid/environ" 2>/dev/null \
+        | grep -q "^ROS_DOMAIN_ID=${ROS_DOMAIN_ID}$"
+}
+
+# 返回候选的本项目 ROS 节点 PID 列表（一行一个）。只匹配“运行中”特征，
+# 避免误伤构建进程（colcon build/cmake 的命令行同样含 /xczs_inspection_robot_，
+# 但既不在 install/ 下也不带 --ros-args）：
+#   - 本项目已安装节点二进制（install/xczs_inspection_robot_*）
+#   - 带 --ros-args 且引用本项目路径的 ROS 进程（map_server/amcl/move_group 等
+#     标准二进制由项目 launch 用 --params-file 指向本项目配置而匹配）
+#   - 本项目 launch 进程、残留 gzclient 与监督/校验脚本
+# 返回值只是“候选”：是否真正清扫由调用方再按 _has_domain 与祖先链过滤。
+_stale_project_pids() {
+    ps -eo pid=,args= 2>/dev/null \
+        | awk '
+            {
+                pid = $1
+                sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+                if ($0 ~ /\/install\/xczs_inspection_robot_[^\/]*\/lib\//) { print pid; next }
+                if ($0 ~ /--ros-args/ && $0 ~ /\/xczs_inspection_robot_/) { print pid; next }
+                if ($0 ~ /ros2 launch xczs_inspection_robot_/) { print pid; next }
+                if ($0 ~ /gzclient/) { print pid; next }
+                if ($0 ~ /toolset_supervisor/) { print pid; next }
+                if ($0 ~ /verify_initial_pose/) { print pid; next }
+            }' \
+        | sort -u
+}
+
+# 清扫上次实例残留的 ROS 节点进程。端口占用检查只处理占用被检端口的主进程
+# （zenoh/gzserver/Web…）；但崩溃、SIGKILL、断电等退出不会触发 EXIT trap，
+# ros2 launch 派生的整棵节点树（map_server/amcl/control 节点等，它们不监听
+# 任何被检查端口）会脱管并在域内继续广播。下次启动时生命周期管理器的
+# ChangeState 服务调用会路由到这些残留节点（“Failed to change state for
+# node: map_server”），表现为 120s 就绪超时。这里按命令行特征在启动任何
+# 进程之前清扫这些残留：只匹配本项目 ROS 特征、排除当前脚本的祖先链；且
+# 预检与外部栈模式不执行（外部栈是合法运行实例，不能误杀）。
+_sweep_stale_project_processes() {
+    [ "$PREFLIGHT_ONLY" = "true" ] && return 0
+    [ "$ROBOT_BRINGUP" = "false" ] && return 0
+    local _pid _pcmd _p _selfchain="$$" _hops=0 _found="false"
+    # 当前脚本的祖先链（bridge→用户 shell→登录 shell…）不可能是残留，排除。
+    _p="$$"
+    while [ "$_hops" -lt 20 ]; do
+        _p="$(ps -o ppid= -p "$_p" 2>/dev/null | tr -d ' ' || true)"
+        if [ -z "$_p" ] || [ "$_p" = "0" ] || [ "$_p" = "1" ]; then
+            break
+        fi
+        case " $_selfchain " in *" $_p "*) break ;; esac
+        _selfchain="$_selfchain $_p"
+        _hops=$((_hops + 1))
+    done
+    for _pid in $(_stale_project_pids); do
+        case " $_selfchain " in *" $_pid "*) continue ;; esac
+        [ "$_pid" = "$$" ] && continue
+        # 域隔离：只清扫与本实例相同 ROS_DOMAIN_ID 的残留，避免误杀同机
+        # 并存的另一个隔离实例（头部文档支持 ROS_DOMAIN_ID 覆盖）。
+        _has_domain "$_pid" || continue
+        _pcmd="$(ps -p "$_pid" -o args= 2>/dev/null || true)"
+        [ -z "$_pcmd" ] && continue
+        echo "  清理上次实例残留进程 pid=$_pid：$(echo "$_pcmd" | awk '{print $1, $2}')"
+        _found="true"
+        kill -TERM "$_pid" 2>/dev/null || true
+    done
+    if [ "$_found" = "true" ]; then
+        # 优雅退出宽限：ROS 节点收到 TERM 通常秒退；等 5 秒后强制终止。
+        sleep 5
+        for _pid in $(_stale_project_pids); do
+            case " $_selfchain " in *" $_pid "*) continue ;; esac
+            [ "$_pid" = "$$" ] && continue
+            _has_domain "$_pid" || continue
+            if kill -0 "$_pid" 2>/dev/null; then
+                echo "  进程 pid=$_pid 未在宽限内退出，发送 SIGKILL。"
+                kill -KILL "$_pid" 2>/dev/null || true
+            fi
+        done
+        sleep 2
+    fi
+    return 0
+}
+
 _require_port_available() {
     local host="$1"
     local port="$2"
@@ -1420,6 +1507,10 @@ if [ "$GAZEBO_ENABLED" = "true" ] &&
     _require_port_available \
         0.0.0.0 "$GAZEBO_MASTER_PORT" "Gazebo Master"
 fi
+
+# 端口检查只清理端口占用者；此处再清扫上次实例脱管的整棵 ROS 节点树，
+# 避免残留 map_server 等节点污染本次启动的 Nav2 生命周期切换。
+_sweep_stale_project_processes
 
 echo "═══════════════════════════════════════════"
 echo "  XCZS 巡操机器人仿真系统"

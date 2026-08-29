@@ -9,6 +9,15 @@
     base_command_rate: 50.0
     command_timeout: 0.75
 
+    # base_command_router 的夹钳参数（/** 通配会把本文件下发到所有节点）。
+    # 路由器的参数名与上面的 GUI/Web 契约键不同（max_linear_speed /
+    # max_angular_speed / publish_rate），必须显式给出契约值；否则 angular
+    # 夹钳回落到节点默认 1.2（恰等于 angular_acceleration，应为笔误），
+    # 是契约 0.60 的 2 倍，且修改 angular_speed 不会生效。
+    max_linear_speed: 0.50
+    max_angular_speed: 0.60
+    publish_rate: 50.0
+
     joint_step: 0.10
     joint_limit: 2.80
     gripper_open_angle: 0.35

@@ -376,6 +376,17 @@ class ControlHandler(BaseHTTPRequestHandler):
 
     def _handle_cabinet_operate(self) -> None:
         body = self._required_body()
+        self._reject_unknown_fields(
+            body,
+            {
+                "control_id",
+                "command",
+                "target_state",
+                "target_position",
+                "navigate_to_staging_pose",
+                "force",
+            },
+        )
         control_id = body.get("control_id")
         command = body.get("command")
         target_state = body.get("target_state")
@@ -387,6 +398,11 @@ class ControlHandler(BaseHTTPRequestHandler):
         navigate_to_staging_pose = body.get(
             "navigate_to_staging_pose",
             True,
+        )
+        force = (
+            self._positive_json_number(body, "force")
+            if "force" in body
+            else None
         )
         if not isinstance(control_id, str) or not control_id.strip():
             raise ControlRequestError(
@@ -417,6 +433,7 @@ class ControlHandler(BaseHTTPRequestHandler):
                 target_state,
                 target_position,
                 navigate_to_staging_pose,
+                force,
             ),
         )
 

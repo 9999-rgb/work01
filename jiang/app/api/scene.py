@@ -33,7 +33,9 @@ async def active_scene(server: ControlServerDep) -> dict[str, Any]:
 
 @router.post(
     "/scene/switch",
-    status_code=202,
+    # 该端点同步执行完整切换并在响应中返回最终结果（status: switched /
+    # unchanged / failed），不是"受理后异步处理"的 202 语义。
+    status_code=200,
     summary="切换场景",
     description="切换 Gazebo 几何、Nav2 地图并重定位机器人；返回切换结果。",
 )

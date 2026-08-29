@@ -509,6 +509,7 @@ class _FakeControlServer:
         target_state: Optional[str],
         target_position: Optional[float],
         navigate_to_staging_pose: bool,
+        force: Optional[float] = None,
     ) -> Dict[str, Any]:
         if control_id not in {
             "box_10_button_1",
@@ -524,6 +525,7 @@ class _FakeControlServer:
             "target_state": target_state,
             "target_position": target_position,
             "navigate_to_staging_pose": navigate_to_staging_pose,
+            "force": force,
         }
         return {"status": "accepted", **self.operation_request}
 
@@ -1470,6 +1472,15 @@ class ControlGatewayHttpTest(unittest.TestCase):
                 None,
                 None,
             ),
+            (
+                {
+                    "control_id": "box_10_button_1",
+                    "command": "press",
+                    "force": 2.5,
+                },
+                None,
+                None,
+            ),
         ]
         for body, expected_state, expected_position in cases:
             with self.subTest(control_id=body["control_id"]):
@@ -1492,6 +1503,13 @@ class ControlGatewayHttpTest(unittest.TestCase):
                     expected_position,
                     self.control_server.operation_request["target_position"],
                 )
+                if body.get("control_id") == "box_10_button_1" and body.get(
+                    "command"
+                ) == "press" and "force" in body:
+                    self.assertEqual(
+                        2.5,
+                        self.control_server.operation_request["force"],
+                    )
 
     def test_operate_rejects_malformed_generic_payloads(self) -> None:
         invalid_bodies = [
@@ -1520,6 +1538,22 @@ class ControlGatewayHttpTest(unittest.TestCase):
                     "navigate_to_staging_pose": "false",
                 },
                 "boolean",
+            ),
+            (
+                {
+                    "control_id": "box_10_button_1",
+                    "command": "press",
+                    "force": 0,
+                },
+                "greater than zero",
+            ),
+            (
+                {
+                    "control_id": "box_10_button_1",
+                    "command": "press",
+                    "force": "heavy",
+                },
+                "number",
             ),
         ]
         for body, error_fragment in invalid_bodies:

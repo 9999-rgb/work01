@@ -5401,10 +5401,13 @@ function updateControlInterlocks() {
   $('spdAngular').disabled = manualBlocked;
 
   document.querySelectorAll('#jointSliders input').forEach(input => {
-    input.disabled = !ctrlConnected || cabinetActive || toolsetLocked || replayLocked;
+    input.disabled =
+      !ctrlConnected || cabinetActive || toolsetLocked || replayLocked ||
+      navigationActive || navigationRetiring;
   });
   $('btnArmZero').disabled =
     !ctrlConnected || cabinetActive || toolsetLocked || replayLocked ||
+    navigationActive || navigationRetiring ||
     manualJointSpecs.length === 0;
 
   $('btnCabinetPress').disabled =
@@ -6671,7 +6674,9 @@ function onJointSlider(manualIndex, val) {
   if (
     replayControlReadOnly ||
     isCabinetOperationActive() ||
-    (typeof toolsetControlLocked === 'function' && toolsetControlLocked())
+    (typeof toolsetControlLocked === 'function' && toolsetControlLocked()) ||
+    navigationActive ||
+    navigationRetiring
   ) return;
   if (manualIndex < 0 || manualIndex >= manualJointSpecs.length) return;
   const parsed = Number.parseFloat(val);

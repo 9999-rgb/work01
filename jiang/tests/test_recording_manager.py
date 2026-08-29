@@ -105,6 +105,21 @@ def _signal_process(process: _FakeProcess, signal_number: int) -> None:
         process.returncode = 0
 
 
+def _raising_signal_only(signal_number: int):
+    """Signal sender that raises ProcessLookupError for one signal only.
+
+    Everything else delegates to ``_signal_process`` so recorder stop (SIGINT /
+    SIGTERM / SIGKILL) and playback lifecycle keep working in the test.
+    """
+
+    def sender(process: _FakeProcess, sig: int) -> None:
+        if sig == signal_number:
+            raise ProcessLookupError(3, "No such process")
+        _signal_process(process, sig)
+
+    return sender
+
+
 def _no_process_group(_process: _FakeProcess) -> bool:
     return False
 
@@ -391,6 +406,79 @@ class RecordingManagerTest(unittest.TestCase):
         loaded_again = manager.load_scenario("scenario_1")
         self.assertEqual(scenario["steps"], loaded_again["steps"])
 
+    def test_timeline_paginates_with_exact_total_and_has_more(self) -> None:
+        """Pages fill via break (not EOF scan); total stays exact via the
+        writer-maintained count cache; has_more flips to False exactly at EOF."""
+        manager = self._manager()
+        manager.start_recording("page_001")
+        for index in range(6):
+            manager.record_task_event(
+                "task_progress",
+                {"step": index},
+                timestamp=1_700_000_000.0 + index,
+            )
+
+        pages = [
+            manager.timeline("page_001", offset=0, limit=2),
+            manager.timeline("page_001", offset=2, limit=2),
+            manager.timeline("page_001", offset=4, limit=2),
+        ]
+        self.assertEqual([2, 2, 2], [len(p["events"]) for p in pages])
+        self.assertEqual([2, 4, 6], [p["next_offset"] for p in pages])
+        self.assertEqual([True, True, False], [p["has_more"] for p in pages])
+        self.assertEqual([6, 6, 6], [p["total"] for p in pages])
+        # The cache tracks the exact line count under the writer lock.
+        self.assertEqual(6, manager._timeline_totals["page_001"])
+
+        # A page past the end reports empty but keeps the exact total.
+        past_end = manager.timeline("page_001", offset=6, limit=2)
+        self.assertEqual([], past_end["events"])
+        self.assertEqual(False, past_end["has_more"])
+        self.assertEqual(6, past_end["total"])
+
+        # Appending more events advances the cached total on the next read.
+        for index in range(6, 8):
+            manager.record_task_event(
+                "task_progress",
+                {"step": index},
+                timestamp=1_700_000_000.0 + index,
+            )
+        tail = manager.timeline("page_001", offset=6, limit=2)
+        self.assertEqual(2, len(tail["events"]))
+        self.assertEqual(False, tail["has_more"])
+        self.assertEqual(8, tail["total"])
+        self.assertEqual(8, manager._timeline_totals["page_001"])
+
+    def test_timeline_counts_uncached_recording_in_one_pass(self) -> None:
+        """A recording written by another manager (empty count cache) still
+        reports an exact total/has_more: the page-break fallback does one cheap
+        line count to EOF and caches it, so later pages stay O(1)."""
+        writer = self._manager()
+        writer.start_recording("ext_001")
+        for index in range(6):
+            writer.record_task_event(
+                "task_progress",
+                {"step": index},
+                timestamp=1_700_000_000.0 + index,
+            )
+
+        # Fresh instance over the same recordings root: no writer cache.
+        reader = self._manager()
+        self.assertEqual({}, reader._timeline_totals)
+        first = reader.timeline("ext_001", offset=0, limit=2)
+        self.assertEqual(2, len(first["events"]))
+        self.assertEqual(True, first["has_more"])
+        self.assertEqual(6, first["total"])
+        # The one-pass count was cached for the fresh instance.
+        self.assertEqual(6, reader._timeline_totals["ext_001"])
+
+        middle = reader.timeline("ext_001", offset=2, limit=2)
+        self.assertEqual(True, middle["has_more"])
+        self.assertEqual(6, middle["total"])
+        last = reader.timeline("ext_001", offset=4, limit=2)
+        self.assertEqual(False, last["has_more"])
+        self.assertEqual(6, last["total"])
+
     def test_ids_root_confinement_and_read_only_topic_validation(self) -> None:
         manager = self._manager()
         for invalid in ("../escape", "/absolute", "UPPER", "", "a" * 65):
@@ -437,6 +525,51 @@ class RecordingManagerTest(unittest.TestCase):
         self.assertEqual("failed", retained["status"])
         self.assertIn("ros2 not installed", retained["result"]["reason"])
         self.assertEqual("idle", manager.active_mode)
+
+    def test_failed_backend_start_reclaims_same_id_on_retry(self) -> None:
+        manager = self._manager()
+        self.factory.fail_with = FileNotFoundError("ros2 not installed")
+        with self.assertRaises(RecordingBackendUnavailableError):
+            manager.start_recording("mission_1")
+        retained = manager.get_recording("mission_1")
+        self.assertEqual("failed", retained["status"])
+
+        # A transient backend failure must not burn the explicit id forever:
+        # a retry reclaims the dead (failed) slot instead of returning 409.
+        self.factory.fail_with = None
+        started = manager.start_recording("mission_1")
+        self.assertEqual("recording", started["state"])
+        self.assertEqual("recording", manager.active_mode)
+        manifest = manager.get_recording("mission_1")
+        self.assertEqual("recording", manifest["status"])
+        self.assertIsNone(manifest["result"])
+
+    def test_completed_recording_id_is_not_reclaimable(self) -> None:
+        manager = self._manager()
+        self._completed_recording(manager, recording_id="done_1")
+        with self.assertRaises(RecordingConflictError):
+            manager.start_recording("done_1")
+
+    def test_pause_playback_oserror_is_a_graceful_conflict(self) -> None:
+        manager = self._manager(
+            signal_sender=_raising_signal_only(signal.SIGSTOP)
+        )
+        self._completed_recording(manager)
+        manager.start_playback("run_001")
+        with self.assertRaises(RecordingConflictError) as raised:
+            manager.pause_playback()
+        self.assertIn("Playback ended", str(raised.exception))
+
+    def test_resume_playback_oserror_is_a_graceful_conflict(self) -> None:
+        manager = self._manager(
+            signal_sender=_raising_signal_only(signal.SIGCONT)
+        )
+        self._completed_recording(manager)
+        manager.start_playback("run_001")
+        manager.pause_playback()
+        with self.assertRaises(RecordingConflictError) as raised:
+            manager.resume_playback()
+        self.assertIn("Playback ended", str(raised.exception))
 
     def test_playback_remaps_every_metadata_topic_and_tracks_controls(self) -> None:
         manager = self._manager()

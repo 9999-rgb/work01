@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     import zenoh
 
 from .converter import deserialize_and_convert, msg_to_dict
-from .registry import TopicRegistry, get_registry
+from .registry import TopicRegistration, TopicRegistry, get_registry
 
 
 class SubscriptionManager:
@@ -84,12 +84,36 @@ class SubscriptionManager:
         This is the recommended mode for plugin-style usage: register your
         handlers, then call ``subscribe_all_registered()`` and the proxy
         automatically picks up all patterns.
+
+        A fully-literal pattern (e.g. ``xczs/cmd_vel``) is skipped when a
+        broader registered pattern (e.g. ``*/cmd_vel``) already matches it:
+        the broader subscriber delivers the sample and the registry lookup
+        resolves it to the most specific registration, so adding a second
+        subscriber would only make Zenoh deliver the same sample twice and
+        republish the JSON twice.
         """
         seen = set()
         for reg in self._registry.registrations:
-            if reg.pattern not in seen:
-                seen.add(reg.pattern)
-                self.subscribe(reg.pattern)
+            if reg.pattern in seen:
+                continue
+            seen.add(reg.pattern)
+            if self._is_shadowed_literal(reg):
+                continue
+            self.subscribe(reg.pattern)
+
+    def _is_shadowed_literal(self, reg: TopicRegistration) -> bool:
+        """Whether ``reg`` is a literal pattern matched by a broader pattern.
+
+        Only fully-literal patterns can be shadowed: a wildcard pattern carries
+        topics no other single pattern necessarily covers, so it is always
+        subscribed.
+        """
+        if "*" in reg.pattern:
+            return False
+        return any(
+            other is not reg and other.regex.match(reg.pattern)
+            for other in self._registry.registrations
+        )
 
     # ------------------------------------------------------------------
     # Close

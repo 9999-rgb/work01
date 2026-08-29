@@ -69,6 +69,7 @@ async def cabinet_operate(
         body.target_state,
         body.target_position,
         body.navigate_to_staging_pose,
+        body.force,
     )
 
 

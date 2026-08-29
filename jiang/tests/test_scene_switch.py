@@ -257,19 +257,22 @@ class SceneSwitchTest(unittest.TestCase):
         self.assertEqual("cabinet_operation", result["previous"])
         self.assertEqual("generator_plant", server._active_scene)
 
-        # Order: load map, then delete 3 cabinets, delete-then-spawn the scene
-        # floor, teleport.
+        # Order: load map, then delete 3 cabinets, teleport the robot into the
+        # cleared world, then delete-then-spawn the incoming scene floor.  The
+        # teleport precedes the spawn so the incoming structure cannot collide
+        # with the robot mid-home (reverse-switch homing timeout).
         kinds = [call[0] for call in gazebo.calls]
         self.assertEqual(
-            ["delete", "delete", "delete", "delete", "spawn", "teleport"],
+            ["delete", "delete", "delete", "teleport", "delete", "spawn"],
             kinds,
         )
         self.assertEqual(
             ["cabinet_a", "cabinet_b", "cabinet_c"],
             [call[1] for call in gazebo.calls[:3]],
         )
-        self.assertEqual("xczs_scene_floor", gazebo.calls[3][1])
+        self.assertEqual("xczs_inspection_robot", gazebo.calls[3][1])
         self.assertEqual("xczs_scene_floor", gazebo.calls[4][1])
+        self.assertEqual("xczs_scene_floor", gazebo.calls[5][1])
 
         self.assertEqual(
             ["/tmp/maps/plant.yaml"],
@@ -277,7 +280,7 @@ class SceneSwitchTest(unittest.TestCase):
         )
         # base_link is a fixed -pi/2 child of the root body link, so the body
         # yaw is the requested map-frame yaw plus pi/2.
-        teleport = gazebo.calls[5]
+        teleport = gazebo.calls[3]
         self.assertEqual("xczs_inspection_robot", teleport[1])
         self.assertAlmostEqual(2.0, teleport[2])
         self.assertAlmostEqual(3.0, teleport[3])
@@ -341,10 +344,11 @@ class SceneSwitchTest(unittest.TestCase):
         self.assertEqual("cabinet_operation", server._active_scene)
 
         kinds = [call[0] for call in gazebo.calls]
-        # delete old floor, then per-cabinet delete-then-spawn reconciliation,
-        # then teleport the robot to the cabinet scene's initial pose.
+        # delete old floor, teleport into the cleared world, then per-cabinet
+        # delete-then-spawn reconciliation (teleport precedes the spawn so the
+        # incoming cabinets cannot collide with the robot mid-home).
         self.assertEqual(
-            ["delete", "delete", "spawn", "delete", "spawn", "teleport"],
+            ["delete", "teleport", "delete", "spawn", "delete", "spawn"],
             kinds,
         )
         self.assertEqual("xczs_scene_floor", gazebo.calls[0][1])
@@ -362,6 +366,63 @@ class SceneSwitchTest(unittest.TestCase):
         self.assertEqual("cabinet_operation", result["scene"])
         self.assertEqual([], gazebo.calls)
         self.assertEqual([], node.loaded_maps)
+
+    def test_reimport_changing_active_scene_content_triggers_reconcile(
+        self,
+    ) -> None:
+        """A re-import that changes the active scene's definition must not be
+        masked by the name-only idempotency short-circuit."""
+        from control_gateway.runner import _scene_spec_signature
+
+        plant_v1 = _spec(
+            "generator_plant",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/maps/plant.yaml",
+            robot_spawn=RobotSpawn(2.0, 3.0, 0.515, 0.0),
+        )
+        catalog = SceneCatalog([plant_v1])
+        server, gazebo, node = self._server(
+            catalog, active="generator_plant"
+        )
+        # Mimic a real server that booted the world to this spec.
+        server._applied_scene_signatures = {
+            "generator_plant": _scene_spec_signature(plant_v1),
+        }
+
+        # Same name, same content -> historical short-circuit.
+        first = server.switch_scene("generator_plant")
+        self.assertEqual("unchanged", first["status"])
+        self.assertEqual([], gazebo.calls)
+
+        # A force re-import replaces the resolved spec with a new definition
+        # (different map and pose) under the same scene name.
+        plant_v2 = _spec(
+            "generator_plant",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/maps/plant_v2.yaml",
+            robot_spawn=RobotSpawn(5.0, 6.0, 0.515, 0.0),
+        )
+        server._scene_specs["generator_plant"] = plant_v2
+
+        second = server.switch_scene("generator_plant")
+        self.assertEqual("reconciled", second["status"])
+        self.assertEqual("generator_plant", second["scene"])
+        # The new map is actually loaded and the new pose teleported to.
+        self.assertEqual(["/tmp/maps/plant_v2.yaml"], node.loaded_maps)
+        self.assertEqual(
+            (5.0, 6.0, 0.0, "map"),
+            node.initial_poses[-1],
+        )
+        # The new definition is now the recorded baseline.
+        self.assertEqual(
+            server._applied_scene_signatures["generator_plant"],
+            _scene_spec_signature(plant_v2),
+        )
+        # And a further re-switch to the now-applied spec is a no-op again.
+        third = server.switch_scene("generator_plant")
+        self.assertEqual("unchanged", third["status"])
 
     def test_unknown_scene_rejects(self) -> None:
         catalog = SceneCatalog([_spec("cabinet_operation", True)])
@@ -400,6 +461,124 @@ class SceneSwitchTest(unittest.TestCase):
         # The map is loaded before any geometry change, so a rejected map leaves
         # the world untouched rather than half-switched.
         self.assertEqual([], gazebo.calls)
+        # Because the failure happened before any mutation, the world is still
+        # consistent with the recorded scene: cabinet work must NOT be locked
+        # behind a false reconciliation-pending flag.  (The gate reads the
+        # pending flag, so exercising it directly verifies cabinet work is open.)
+        self.assertFalse(
+            getattr(server, "_scene_reconcile_pending", False)
+        )
+        self.assertFalse(server.scenes()["reconcile_pending"])
+        server._require_cabinet_scene("cabinet operation")
+
+    def test_partial_failure_marks_reconcile_pending_and_reconciles(self) -> None:
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
+        plant = _spec(
+            "generator_plant",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/maps/plant.yaml",
+            robot_spawn=RobotSpawn(2.0, 2.0, 0.515, 0.0),
+        )
+        catalog = SceneCatalog([cabinet, plant])
+        inventory = (_Cabinet("cabinet_a"),)
+        server, gazebo, _node = self._server(
+            catalog, inventory=inventory, active="cabinet_operation"
+        )
+
+        # Simulate a mid-switch failure during the incoming floor spawn: the
+        # world is on plant's map with the cabinet deleted and the robot
+        # teleported, while _active_scene still names the cabinet scene.
+        with patch.object(
+            runner_module, "read_button_profiles", return_value=({}, {})
+        ), patch.object(runner_module, "build_cabinet_urdf", return_value="<robot/>"), patch.object(
+            ControlServer,
+            "_spawn_scene_floor",
+            side_effect=ControlRequestError("spawn timeout", 503),
+        ):
+            with self.assertRaises(ControlRequestError) as raised:
+                server.switch_scene("generator_plant")
+        self.assertEqual(503, raised.exception.status)
+        self.assertEqual("cabinet_operation", server._active_scene)
+        self.assertTrue(server._scene_reconcile_pending)
+        self.assertTrue(server.scenes()["reconcile_pending"])
+
+        # The failure is mid-switch: geometry was touched (cabinet deleted,
+        # robot teleported) while the map already flipped to plant's.
+        kinds = [call[0] for call in gazebo.calls]
+        self.assertEqual(["delete", "teleport"], kinds)
+
+        # Cabinet-scoped work is refused until a successful switch reconciles.
+        with self.assertRaises(ControlRequestError) as refused:
+            server.submit_operation_task(
+                "cabinet_a", "box_8_button_1", "press", None, None, None
+            )
+        self.assertEqual(409, refused.exception.status)
+        self.assertIn("reconcile", str(refused.exception))
+
+        # Re-issuing the switch to the *recorded* scene must reconcile instead
+        # of short-circuiting to "unchanged".
+        with patch.object(
+            runner_module, "read_button_profiles", return_value=({}, {})
+        ), patch.object(
+            runner_module, "build_cabinet_urdf", return_value="<robot/>"
+        ):
+            result = server.switch_scene("cabinet_operation")
+        self.assertEqual("reconciled", result["status"])
+        self.assertFalse(server._scene_reconcile_pending)
+        self.assertFalse(server.scenes()["reconcile_pending"])
+        self.assertEqual("cabinet_operation", server._active_scene)
+        # The reconciliation re-ran the full apply (map, home, teleport,
+        # delete-then-spawn the cabinets) and converged.
+        self.assertEqual(
+            ["/tmp/maps/plant.yaml", "/tmp/maps/map.yaml"],
+            _node.loaded_maps,
+        )
+
+        # After reconciliation the idempotency short-circuit is armed again.
+        again = server.switch_scene("cabinet_operation")
+        self.assertEqual("unchanged", again["status"])
+
+    def test_clean_switch_clears_reconcile_pending(self) -> None:
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
+        plant = _spec(
+            "generator_plant",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/maps/plant.yaml",
+            robot_spawn=RobotSpawn(2.0, 2.0, 0.515, 0.0),
+        )
+        catalog = SceneCatalog([cabinet, plant])
+
+        # A mid-switch failure (mutation already started) leaves the flag set;
+        # a later successful switch to a different scene clears it.
+        server, gazebo, node = self._server(
+            catalog, active="cabinet_operation"
+        )
+        with patch.object(
+            runner_module, "read_button_profiles", return_value=({}, {})
+        ), patch.object(runner_module, "build_cabinet_urdf", return_value="<robot/>"), patch.object(
+            ControlServer,
+            "_spawn_scene_floor",
+            side_effect=ControlRequestError("spawn timeout", 503),
+        ):
+            with self.assertRaises(ControlRequestError):
+                server.switch_scene("generator_plant")
+        self.assertTrue(server._scene_reconcile_pending)
+        self.assertTrue(server.scenes()["reconcile_pending"])
+
+        result = server.switch_scene("generator_plant")
+        self.assertEqual("switched", result["status"])
+        self.assertFalse(server._scene_reconcile_pending)
+        self.assertEqual("generator_plant", server._active_scene)
 
     def test_scenes_and_active_scene_snapshots(self) -> None:
         catalog = SceneCatalog(
@@ -420,6 +599,50 @@ class SceneSwitchTest(unittest.TestCase):
         active = server.active_scene()
         self.assertEqual("cabinet_operation", active["name"])
         self.assertTrue(active["spawn_cabinet"])
+
+    def test_scenes_lists_deleted_active_asset_scene(self) -> None:
+        """删除仍处于活动状态的资产场景后，/scenes 必须继续列出它。
+
+        资产 spec 在切换时被缓存进 ``_scene_specs``（供回切协调），删除资产
+        后 provider 不再产出它；若 /scenes 漏掉活动场景，Web 端无法高亮当前
+        场景，切换按钮还会把默认目标错指到列表首个场景。
+        """
+        cabinet = _spec(
+            "cabinet_operation",
+            True,
+            robot_spawn=RobotSpawn(0.0, 0.0, 0.515, 1.5707963),
+        )
+        asset_mezzanine = _spec(
+            "electrical_mezzanine",
+            False,
+            model=self.floor_model,
+            nav2_map="/tmp/assets/maps/mezzanine.yaml",
+            robot_spawn=RobotSpawn(1.0, 1.0, 0.515, 0.0),
+        )
+        catalog = SceneCatalog([cabinet])
+        provider = _FakeProvider({"electrical_mezzanine": asset_mezzanine})
+        server, _gazebo, _node = self._server(
+            catalog,
+            inventory=(_Cabinet("cabinet_a"),),
+            active="cabinet_operation",
+            asset_scene_provider=provider,
+        )
+        result = server.switch_scene("electrical_mezzanine")
+        self.assertEqual("switched", result["status"])
+        self.assertEqual("electrical_mezzanine", server._active_scene)
+        # 模拟删除资产：provider 不再产出该场景，但 _scene_specs 缓存仍在。
+        provider._specs.clear()
+
+        scenes = server.scenes()
+        self.assertEqual("electrical_mezzanine", scenes["active"])
+        by_name = {entry["name"]: entry for entry in scenes["scenes"]}
+        self.assertEqual(
+            {"cabinet_operation", "electrical_mezzanine"},
+            set(by_name),
+        )
+        self.assertEqual("asset", by_name["electrical_mezzanine"]["source"])
+        # active_scene() 仍可解析（走缓存），回切协调路径不中断。
+        self.assertEqual("electrical_mezzanine", server.active_scene()["name"])
 
     def test_cabinet_operations_rejected_in_plant_scene(self) -> None:
         catalog = SceneCatalog(

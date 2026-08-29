@@ -691,10 +691,13 @@ def _normalize_scene_refs(
                     reference_root,
                     file.strip(),
                 )
-    if manifest.name not in names:
+    # 场景资产是一资产一场景：resolve_scene / iter_scene_specs 只按资产名服务
+    # 单一场次，多余的场景条目会在 /scenes 列表与切换中被静默丢弃，因此直接
+    # 在导入时拒绝，避免导入成功却无法切换的误导。
+    if names != [manifest.name]:
         raise AssetLibraryError(
-            f"Scene asset {manifest.name}: scenes.yaml must contain a scene "
-            f"named exactly like the asset (found {names!r})."
+            f"Scene asset {manifest.name}: scenes.yaml must contain exactly "
+            f"one scene named like the asset (found {names!r})."
         )
     scenes_path.write_text(
         yaml.safe_dump(document, sort_keys=False, allow_unicode=True),

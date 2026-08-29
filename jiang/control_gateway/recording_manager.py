@@ -19,6 +19,7 @@ import math
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import threading
@@ -245,6 +246,10 @@ class RecordingManager:
         self._recording_started_monotonic: Optional[float] = None
         self._recording_log: Any = None
         self._timeline_sequence = 0
+        # Exact event count per recording, maintained in lock-step by the sole
+        # timeline writer (record_task_event).  Lets timeline() report `total`
+        # in O(1) instead of scanning timeline.jsonl to EOF on every page.
+        self._timeline_totals: dict[str, int] = {}
 
         self._playback_process: Any = None
         self._playback_log: Any = None
@@ -314,9 +319,22 @@ class RecordingManager:
             config_hashes = self._config_hashes()
             path = self._recording_path(identifier, must_exist=False)
             if path.exists():
-                raise RecordingConflictError(
-                    f"Recording already exists: {identifier}"
-                )
+                # A previous attempt that failed before the recorder ever ran
+                # (backend unavailable / recorder_start_failed) leaves a
+                # status="failed" manifest behind.  That slot holds no data and
+                # there is no purge interface, so a retry with the same explicit
+                # id reclaims it instead of returning a spurious 409 forever.
+                # A manifest that is missing, corrupted, or in any live/terminal
+                # recording state stays a hard conflict.
+                try:
+                    prior_status = self._read_manifest(identifier).get("status")
+                except RecordingError:
+                    prior_status = None
+                if prior_status != "failed":
+                    raise RecordingConflictError(
+                        f"Recording already exists: {identifier}"
+                    )
+                shutil.rmtree(path)
             path.mkdir(mode=0o750)
             bag_path = path / "bag"
             manifest = {
@@ -390,6 +408,9 @@ class RecordingManager:
             )
             self._recording_log = log_handle
             self._timeline_sequence = 0
+            # Fresh timeline file was just created empty (exist_ok=False), so a
+            # fresh cache entry is exact.
+            self._timeline_totals[identifier] = 0
             return self.recording_status()
 
     def stop_recording(
@@ -672,6 +693,9 @@ class RecordingManager:
                     + "\n"
                 )
                 stream.flush()
+            # Sequence and timeline line count advance in lock-step, so the
+            # cache stays the exact event count (no other writer exists).
+            self._timeline_totals[self._recording_id] = self._timeline_sequence
             # Only task_accepted / task_completed mutate the extracted scenario
             # (see _write_scenario_locked).  task_progress fires ~1 Hz during
             # navigation, so rebuilding scenario.yaml + manifest.json on every
@@ -763,17 +787,35 @@ class RecordingManager:
                     code="timeline_missing",
                 )
             events: list[dict[str, Any]] = []
-            total = 0
+            total = self._timeline_totals.get(recording_id)
+            last_index = -1
+            saw_eof = False
             try:
                 with timeline_path.open(encoding="utf-8") as stream:
-                    for index, line in enumerate(stream):
-                        total = index + 1
-                        if index < offset or len(events) >= limit:
+                    for last_index, line in enumerate(stream):
+                        if last_index < offset:
                             continue
+                        if len(events) >= limit:
+                            # A page that fills still has a real line queued at
+                            # this index (the loop would otherwise have ended
+                            # naturally), so has_more is guaranteed true and no
+                            # full-file scan is needed.
+                            break
                         value = json.loads(line)
                         if not isinstance(value, dict):
                             raise ValueError("event must be an object")
                         events.append(value)
+                    else:
+                        saw_eof = True
+                    if total is None:
+                        if saw_eof:
+                            total = last_index + 1
+                        else:
+                            # Uncached recording (written by another process)
+                            # whose page broke: one cheap line count to EOF,
+                            # cached so later pages stay O(1).
+                            total = last_index + 1 + sum(1 for _ in stream)
+                        self._timeline_totals[recording_id] = total
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as error:
                 raise RecordingValidationError(
                     f"Timeline for {recording_id} is corrupted: {error}",
@@ -785,7 +827,7 @@ class RecordingManager:
                 "events": events,
                 "offset": offset,
                 "next_offset": next_offset,
-                "has_more": next_offset < total,
+                "has_more": not saw_eof,
                 "total": total,
             }
 
@@ -846,7 +888,15 @@ class RecordingManager:
             if self._playback.get("state") != "playing":
                 raise RecordingConflictError("Playback is not running.")
             position = self._playback_position_locked()
-            self._send_signal(self._playback_process, signal.SIGSTOP)
+            try:
+                self._send_signal(self._playback_process, signal.SIGSTOP)
+            except OSError as error:
+                # The player's process group vanished between refresh and
+                # signal.  Surface a graceful conflict (409) instead of a raw
+                # OSError escaping as HTTP 500.
+                raise RecordingConflictError(
+                    f"Playback ended before it could be paused: {error}"
+                ) from error
             self._playback["position_seconds"] = position
             self._playback["state"] = "paused"
             self._playback["started_monotonic"] = None
@@ -858,7 +908,15 @@ class RecordingManager:
             self._refresh_playback_locked()
             if self._playback.get("state") != "paused":
                 raise RecordingConflictError("Playback is not paused.")
-            self._send_signal(self._playback_process, signal.SIGCONT)
+            try:
+                self._send_signal(self._playback_process, signal.SIGCONT)
+            except OSError as error:
+                # The player's process group vanished between refresh and
+                # signal.  Surface a graceful conflict (409) instead of a raw
+                # OSError escaping as HTTP 500.
+                raise RecordingConflictError(
+                    f"Playback ended before it could be resumed: {error}"
+                ) from error
             self._playback["state"] = "playing"
             self._playback["started_monotonic"] = _finite_time(
                 self._monotonic(),
