@@ -1326,6 +1326,13 @@ fi
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"
+# 本工作区的 colcon build base 是 $WORK_DIR/docs/build（历史约定），interfaces
+# 生成的 Python 绑定经 `docs.build.<pkg>...` 反向引用构建树，需要 `docs`
+# 命名空间在 sys.path 上可解析。Python 以脚本路径运行时不会把 cwd 放进
+# sys.path，所以 supervisor / control_server 等非仓库根 cwd 的进程会在
+# `import docs` 处崩溃（Web 预检用 `python3 -` 恰好把 cwd 放上 sys.path 才
+# 幸免）。把工作区根目录加入 PYTHONPATH，让这些进程在任意 cwd 下都能解析。
+export PYTHONPATH="$WORK_DIR${PYTHONPATH:+:$PYTHONPATH}"
 if ! command -v ros2 >/dev/null 2>&1; then
     echo "ERROR: source 环境后仍找不到 ros2 命令。"
     exit 1

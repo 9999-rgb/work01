@@ -159,7 +159,7 @@ class OccupancyGridBoundary:
 
 @dataclass(frozen=True)
 class CabinetInstance:
-    """One named instance of the shared cabinet model."""
+    """One named instance of the shared cabinet model (or a scene fixture)."""
 
     name: str
     x: float
@@ -169,6 +169,8 @@ class CabinetInstance:
     pitch: float
     yaw: float
     station_override: Optional[Mapping[str, Any]] = None
+    kind: str = "cabinet"
+    associated_scene: str = "cabinet_operation"
 
     @property
     def namespace(self) -> str:
@@ -184,6 +186,8 @@ class CabinetInstance:
             "name": self.name,
             "namespace": self.namespace,
             "frame_id": self.frame_id,
+            "kind": self.kind,
+            "associated_scene": self.associated_scene,
             "pose": {field: getattr(self, field) for field in _POSE_FIELDS},
         }
 
@@ -542,6 +546,13 @@ def _parse_instances(document: Mapping[str, Any]) -> list[CabinetInstance]:
         "pitch",
         "yaw",
         "navigation_station",
+        "kind",
+        "associated_scene",
+        # launch-only per-instance config overrides; accepted and validated
+        # here so the shared contract file stays self-consistent.
+        "controls_config",
+        "scene_config",
+        "adapter_config",
     }
     for index, value in enumerate(values):
         context = f"instances[{index}]"
@@ -561,9 +572,36 @@ def _parse_instances(document: Mapping[str, Any]) -> list[CabinetInstance]:
         if name in names:
             raise InventoryError(f"Duplicate cabinet name: {name}")
         names.add(name)
+        kind = value.get("kind", "cabinet")
+        if kind not in ("cabinet", "fixture"):
+            raise InventoryError(
+                f"{context}.kind must be 'cabinet' or 'fixture'."
+            )
+        associated_scene = value.get("associated_scene", "cabinet_operation")
+        if not isinstance(associated_scene, str) or not associated_scene.strip():
+            raise InventoryError(
+                f"{context}.associated_scene must be a non-empty string."
+            )
+        if any(character.isspace() for character in associated_scene):
+            raise InventoryError(
+                f"{context}.associated_scene must not contain whitespace."
+            )
+        for field in ("controls_config", "scene_config", "adapter_config"):
+            config_value = value.get(field)
+            if config_value is None:
+                continue
+            if not isinstance(config_value, str) or not config_value.strip():
+                raise InventoryError(
+                    f"{context}.{field} must be a non-empty string."
+                )
+        is_fixture = kind == "fixture"
         numeric: Dict[str, float] = {}
         for field in ("x", "y", "z", "roll", "yaw"):
             if field not in value:
+                if is_fixture:
+                    # 夹具随场景模型以单位位姿加载，位姿字段可省略（恒等）。
+                    numeric[field] = 0.0
+                    continue
                 raise InventoryError(f"{context}.{field} is required.")
             numeric[field] = _finite_number(value[field], f"{context}.{field}")
         numeric["pitch"] = _finite_number(
@@ -578,6 +616,8 @@ def _parse_instances(document: Mapping[str, Any]) -> list[CabinetInstance]:
         instances.append(
             CabinetInstance(
                 name=name,
+                kind=kind,
+                associated_scene=associated_scene.strip(),
                 station_override=(
                     dict(station_override) if station_override is not None else None
                 ),

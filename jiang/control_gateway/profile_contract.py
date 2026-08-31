@@ -752,7 +752,16 @@ def validate_profile(
             "robot adapter require_cabinet_pose_valid must be true."
         )
 
+    # 混合库存（共享 profile 的 cabinet 实例 + 夹具注册）中，夹具实例使用
+    # 逐场景 scene_controls/ 三件套，本站校验（共享 adapter/controls/scene）
+    # 只覆盖 kind == cabinet 的实例。若库存全为夹具（逐场景 profile），
+    # 夹具实例照常校验其导航/控制站。
+    has_cabinet_instances = any(
+        instance.kind != "fixture" for instance in inventory
+    )
     for cabinet in inventory:
+        if cabinet.kind == "fixture" and has_cabinet_instances:
+            continue
         station = inventory.station_for(cabinet.name)
         if station.frame_id != adapter.navigation_frame:
             raise ProfileContractError(
@@ -782,8 +791,14 @@ def validate_profile(
         )
         for control_type in _CONTROL_TYPES
     }
+    # 共享 profile 只覆盖 kind == cabinet 的实例（夹具实例用逐场景
+    # scene_controls/ 三件套，由 check_scene_config/check_adapter_contract
+    # 校验），计数与之保持一致。
+    cabinet_count = sum(
+        1 for instance in inventory if instance.kind != "fixture"
+    )
     return ProfileContractReport(
-        cabinet_count=len(inventory),
+        cabinet_count=cabinet_count,
         control_count=len(ordered_ids),
         button_count=counts["button"],
         knob_count=counts["knob"],

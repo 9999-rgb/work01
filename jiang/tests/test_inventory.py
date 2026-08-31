@@ -230,7 +230,13 @@ class CabinetInventoryTest(unittest.TestCase):
             config / "cabinet_robot_adapter.yaml",
             toolset="A",
         )
-        instances = {instance.name: instance for instance in inventory}
+        # 共享柜体布局合同只针对 kind == cabinet 的实例；夹具实例
+        # （如 generator_plant）随场景模型以恒等位姿加载，不属于柜体布局。
+        instances = {
+            instance.name: instance
+            for instance in inventory
+            if instance.kind == "cabinet"
+        }
 
         expected_y = {
             "cabinet_a": 0.33,

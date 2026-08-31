@@ -49,6 +49,10 @@ class _NavigationNode:
         self.joint_targets = []
         self.joint_target_durations = []
         self.joint_target_event = threading.Event()
+        # 关节限位表：与 Gazebo 一致，set_joint_target 会把命令位置钳制到
+        # [min, max]。默认空表（不钳制）；使用真实 adapter 的 homing 测试
+        # 会从 manual_joints 填入，以便复现"overshoot 压到零位"的物理行为。
+        self.joint_limits: Dict[str, tuple[float, float]] = {}
         self.joint_state_available = True
         self.joint_names = (
             "body_arm1",
@@ -218,12 +222,24 @@ class _NavigationNode:
         self,
         positions: list[float],
         duration_sec: float = 0.5,
+        *,
+        lower_limit_margin: dict[str, float] | None = None,
     ) -> list[float]:
         self.joint_targets.append(list(positions))
         self.joint_target_durations.append(duration_sec)
+        clamped = []
+        for name, position in zip(self.joint_names, positions):
+            limits = self.joint_limits.get(name)
+            if limits is not None:
+                lower, upper = limits
+                # 与真实系统一致：margin 只让命令越过下限，关节本身仍被
+                # Gazebo 钳在真限位 —— mock 也按真限位钳制位置读数，因此
+                # 命令 -0.01 时读到 0.0，homing 校验立即通过。
+                position = min(max(position, lower), upper)
+            clamped.append(position)
         self.joint_positions = {
             name: position
-            for name, position in zip(self.joint_names, positions)
+            for name, position in zip(self.joint_names, clamped)
         }
         self.joint_state_received_monotonic = time.monotonic()
         self.joint_target_event.set()
@@ -686,6 +702,10 @@ class TaskRunnerTest(unittest.TestCase):
                 adapter = load_robot_adapter(adapter_path, toolset=toolset)
                 server._robot_adapter = adapter
                 node.joint_names = adapter.manual_joint_names
+                node.joint_limits = {
+                    j.name: (j.min_position, j.max_position)
+                    for j in adapter.manual_joints
+                }
 
                 result = server._home_robot_joints(None, "cabinet_a")
 
@@ -707,6 +727,10 @@ class TaskRunnerTest(unittest.TestCase):
         adapter = load_robot_adapter(adapter_path, toolset="A")
         server._robot_adapter = adapter
         node.joint_names = adapter.manual_joint_names
+        node.joint_limits = {
+            j.name: (j.min_position, j.max_position)
+            for j in adapter.manual_joints
+        }
         node.joint_positions = {
             joint.name: joint.default_position for joint in adapter.manual_joints
         }
@@ -722,7 +746,9 @@ class TaskRunnerTest(unittest.TestCase):
         finger_index = adapter.manual_joint_names.index(
             "r_three_cyl_finger1_joint"
         )
-        self.assertEqual(0.0, node.joint_targets[0][finger_index])
+        # home 对校准手指多发一个 overshoot（-0.01），把手指压死到 0.0 下
+        # 限位，校验仍以默认值 0.0 为准；命令值应体现这个 overshoot。
+        self.assertEqual(-0.01, node.joint_targets[0][finger_index])
 
     def test_homing_accepts_active_tool_at_calibration_tolerance(self) -> None:
         adapter_path = (
@@ -735,6 +761,10 @@ class TaskRunnerTest(unittest.TestCase):
         adapter = load_robot_adapter(adapter_path, toolset="A")
         server._robot_adapter = adapter
         node.joint_names = adapter.manual_joint_names
+        node.joint_limits = {
+            j.name: (j.min_position, j.max_position)
+            for j in adapter.manual_joints
+        }
         node.joint_positions = {
             joint.name: joint.default_position for joint in adapter.manual_joints
         }
@@ -774,15 +804,21 @@ class TaskRunnerTest(unittest.TestCase):
                     reset_joint_duration_sec=0.01,
                 )
                 node.joint_names = adapter.manual_joint_names
+                node.joint_limits = {
+                    j.name: (j.min_position, j.max_position)
+                    for j in adapter.manual_joints
+                }
                 real_set_joint_target = node.set_joint_target
 
                 def set_target_with_missing_state(
                     positions: list[float],
                     duration_sec: float = 0.5,
+                    **kwargs: object,
                 ) -> list[float]:
                     commanded = real_set_joint_target(
                         positions,
                         duration_sec=duration_sec,
+                        **kwargs,
                     )
                     node.joint_positions.pop(missing_name)
                     node.joint_state_available = False

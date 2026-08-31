@@ -15,6 +15,7 @@ from geometry_msgs.msg import Twist
 from nav2_msgs.action import NavigateToPose
 from nav2_msgs.srv import LoadMap
 from nav_msgs.msg import OccupancyGrid
+from nav_msgs.msg import Odometry
 from rclpy.action import ActionClient
 from rclpy.context import Context
 from rclpy.node import Node
@@ -50,6 +51,14 @@ TOOLSET_SWITCH_SERVICE = "/xczs/toolset/switch"
 TOOLSET_STATUS_TOPIC = "/xczs/toolset/status"
 TOOLSET_SWITCH_REQUEST_TIMEOUT_SEC = 5.0
 _TOOLSET_STATES = frozenset({"starting", "switching", "ready", "failed"})
+
+
+def _wrap_angle(radians: float) -> float:
+    """Normalise an angle into [-pi, pi)."""
+    value = math.fmod(float(radians) + math.pi, 2.0 * math.pi)
+    if value < 0.0:
+        value += 2.0 * math.pi
+    return value - math.pi
 
 
 class ControlRequestError(RuntimeError):
@@ -151,6 +160,7 @@ class RosControlNode(Node):
         navigation_mode_topic: str = "/xczs/navigation_mode",
         map_topic: str = "/map",
         localization_pose_topic: str = "/amcl_pose",
+        planar_odom_topic: str = "/xczs/odom",
         map_load_service: str = "/map_server/load_map",
         initial_pose_topic: str = "/initialpose",
         manual_linear_axis: str = "y",
@@ -316,6 +326,17 @@ class RosControlNode(Node):
             localization_pose_topic,
             self._pose_callback,
             10,
+        )
+        # The planar mover (gazebo_ros_planar_move, 20 Hz) publishes the model's
+        # world pose as ``Odometry``.  A scene-switch teleport must be visible in
+        # this stream *before* ``/initialpose`` is published, or AMCL bakes the
+        # pre-teleport reading into map->odom and localizes the robot off-map.
+        self._planar_odom: Optional[Dict[str, float]] = None
+        self.create_subscription(
+            Odometry,
+            planar_odom_topic.strip(),
+            self._planar_odom_callback,
+            qos_profile_sensor_data,
         )
         self._robot_joint_state_subscription = self.create_subscription(
             JointState,
@@ -530,8 +551,19 @@ class RosControlNode(Node):
         self,
         positions: List[float],
         duration_sec: float = DEFAULT_MANUAL_TRAJECTORY_DURATION_SECONDS,
+        *,
+        lower_limit_margin: Optional[Dict[str, float]] = None,
     ) -> List[float]:
-        """Queue one legacy manual joint target."""
+        """Queue one legacy manual joint target.
+
+        ``lower_limit_margin`` extends a named joint's lower clamp by the given
+        metres (only downward).  Homing uses it to command the calibrated
+        fingers a hair *below* their 0.0 stop so the effort controller sustains
+        a closing force that pins the finger shut instead of stalling in the
+        friction deadband a few hundredths of a millimetre short of home.  The
+        joint itself stays clamped at its true limit by Gazebo; only the
+        *command* target is allowed past it.
+        """
         if (
             isinstance(duration_sec, bool)
             or not isinstance(duration_sec, (int, float))
@@ -557,8 +589,12 @@ class RosControlNode(Node):
                 f"({len(self._manual_joints)} values)."
             )
         joint_names = [joint.name for joint in self._manual_joints]
+        margins = lower_limit_margin or {}
         safe_positions = [
-            max(joint.min_position, min(joint.max_position, value))
+            max(
+                joint.min_position - margins.get(joint.name, 0.0),
+                min(joint.max_position, value),
+            )
             for joint, value in zip(self._manual_joints, positions)
         ]
 
@@ -865,6 +901,49 @@ class RosControlNode(Node):
         covariance[35] = 0.06853891945200942  # yaw variance (~0.26 rad std)
         message.pose.covariance = covariance
         self._initial_pose_publisher.publish(message)
+
+    def wait_for_planar_odom(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        *,
+        tolerance_xy: float = 0.06,
+        tolerance_yaw: float = 0.15,
+        timeout_sec: float = 5.0,
+    ) -> bool:
+        """Wait until the planar odometer reports the teleported body pose.
+
+        ``/set_entity_state`` applies the new pose immediately in the physics
+        world, but the planar mover publishes at 20 Hz and AMCL's ``/initialpose``
+        processing reads its *latest* odom frame.  Publishing the hypothesis before
+        a fresh frame lands makes AMCL solve ``map->odom`` against the pre-teleport
+        pose and localize the robot tens of metres off.  Poll the stored odom until
+        it converges to ``(x, y, yaw)`` -- the *body* frame pose (base_link is body
+        rotated -pi/2 about Z).  Returns False on timeout; callers still publish the
+        hypothesis so a marginal timing tolerance never fails a scene switch.
+        """
+        deadline = time.monotonic() + max(0.0, float(timeout_sec))
+        while True:
+            with self._lock:
+                pose = self._planar_odom
+            if pose is not None:
+                dx = pose["x"] - float(x)
+                dy = pose["y"] - float(y)
+                dyaw = _wrap_angle(pose["yaw"] - float(yaw))
+                if (
+                    dx * dx + dy * dy <= float(tolerance_xy) ** 2
+                    and abs(dyaw) <= float(tolerance_yaw)
+                ):
+                    return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+    def localized_pose(self) -> Optional[Dict[str, Any]]:
+        """Return the latest AMCL map pose (a copy), or None before any arrives."""
+        with self._lock:
+            return dict(self._robot_pose) if self._robot_pose is not None else None
 
     def navigation_station_from_tf(
         self,
@@ -4212,6 +4291,15 @@ class RosControlNode(Node):
                 "received_monotonic": time.monotonic(),
                 "sequence": self._robot_pose_sequence,
                 "source": "amcl",
+            }
+
+    def _planar_odom_callback(self, message: Odometry) -> None:
+        with self._lock:
+            self._planar_odom = {
+                "x": float(message.pose.pose.position.x),
+                "y": float(message.pose.pose.position.y),
+                "yaw": self._quaternion_yaw(message.pose.pose.orientation),
+                "received_monotonic": time.monotonic(),
             }
 
     def _validate_navigation_goal(self, x: float, y: float) -> None:

@@ -1,6 +1,13 @@
-# 控制柜实例清单
-# 所有实例共用同一份 cabinet_controls.yaml 和 cabinet_scene.yaml
-# 启动时通过 launch 参数 cabinet_instances:=<path> 传入
+# 控制实例清单（跨层合同：launch 与 jiang/control_gateway 共用）
+# 支持两类实例：
+#   kind: cabinet（默认）——共享柜体模型，启动时按 URDF spawn（位姿字段
+#     x/y/z/roll/pitch/yaw 必填），三件套配置共用默认
+#     cabinet_controls/cabinet_scene/cabinet_robot_adapter。
+#   kind: fixture —— 场景模型自带的夹具（如发电机层按钮/旋钮），不单独
+#     spawn（夹具随场景模型以单位位姿加载），operator/planning-scene/
+#     pose-authority 常驻、按 associated_scene 门控；位姿字段可省略
+#     （缺省恒等），三件套配置逐实例指定（package:// 引用）。
+# 启动时通过 launch 参数 cabinet_instances:=<path> 传入。
 
 instances:
   - name: "cabinet_a"
@@ -27,3 +34,29 @@ instances:
     z: 0.0
     roll: 1.57079632679
     yaw: -1.57079632679
+
+  - name: "generator_plant"
+    # 发电机层 3.0 场景夹具实例：夹具几何随场景模型以单位位姿加载，
+    # 恒等位姿即世界/map 原点；位姿字段显式写零便于将来夹具非恒等
+    # spawn 时覆盖。operator/planning-scene/pose-authority 常驻于
+    # /xczs/cabinet/generator_plant，由 runner 按 associated_scene 门控。
+    kind: fixture
+    associated_scene: generator_plant
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+    controls_config: package://xczs_inspection_robot_control/config/scene_controls/generator_plant_controls.yaml
+    scene_config: package://xczs_inspection_robot_control/config/scene_controls/generator_plant_scene.yaml
+    adapter_config: package://xczs_inspection_robot_control/config/scene_controls/generator_plant_adapter.yaml
+    # 夹具恒等位姿，共享 cabinet_scene.yaml 的停靠 outward_axis=[0,0,1]（本地竖直）
+    # 旋转后仍为竖直，无法得到水平分量 → 必须逐实例覆盖为水平 outward_axis。
+    # 站几何即世界/map 系（夹具随场景模型以单位位姿加载），取 fr135 按钮工位。
+    navigation_station:
+      local_anchor: [-13.1867, 4.8113, 0.0]
+      outward_axis: [0.0, -1.0, 0.0]
+      standoff: 0.914
+      base_yaw_offset: 0.0
+      frame_id: map

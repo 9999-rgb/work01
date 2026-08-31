@@ -1,0 +1,1037 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.5.1-0-g916b5db  Build Version: 1.5.7152.31018
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="电气夹层3.0">
+  <link
+    name="dianqiground">
+    <inertial>
+      <origin
+        xyz="-5.02456755074236 4.0437260140032 2.45617776000711"
+        rpy="0 0 0" />
+      <mass
+        value="8964955.13682937" />
+      <inertia
+        ixx="1036046482.80066"
+        ixy="20572265.3999812"
+        ixz="-4342.41918297833"
+        iyy="2017594245.59303"
+        iyz="-61952.1071978487"
+        izz="3017074673.02833" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/dianqiground.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/dianqiground.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="s1">
+    <inertial>
+      <origin
+        xyz="-0.259058262178243 0.144999598181109 0.129850451534708"
+        rpy="0 0 0" />
+      <mass
+        value="29.8437528104335" />
+      <inertia
+        ixx="0.282842433706676"
+        ixy="3.17555136000134E-06"
+        ixz="3.03662099004193E-05"
+        iyy="0.844050168513507"
+        iyz="-2.51584676720716E-07"
+        izz="0.87938816216385" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="ds1"
+    type="prismatic">
+    <origin
+      xyz="0.0300000000000082 4.43600000000063 1.92999999999969"
+      rpy="0 0 0" />
+    <parent
+      link="dianqiground" />
+    <child
+      link="s1" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="0.3"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s1r">
+    <inertial>
+      <origin
+        xyz="-0.0078398134884905 0.000113937167924405 4.52788185612008E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.117444421998411" />
+      <inertia
+        ixx="8.94477126664695E-05"
+        ixy="-1.71813201464424E-07"
+        ixz="-6.82788497471854E-08"
+        iyy="5.52038052110814E-05"
+        iyz="8.21217267530368E-07"
+        izz="4.77428317663844E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s1r.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s1r.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="s1r"
+    type="revolute">
+    <origin
+      xyz="0.02 0.145 0.16828"
+      rpy="0 0 0" />
+    <parent
+      link="s1" />
+    <child
+      link="s1r" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.5708"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s1p">
+    <inertial>
+      <origin
+        xyz="-0.00838140889091399 0.00799999999999557 0.00217884984539296"
+        rpy="0 0 0" />
+      <mass
+        value="0.000703519534269312" />
+      <inertia
+        ixx="1.64325246660352E-08"
+        ixy="-4.38194811760976E-24"
+        ixz="9.87349732156314E-10"
+        iyy="7.35697582728111E-09"
+        iyz="1.83260326378982E-24"
+        izz="2.09412846233985E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s1p.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s1p.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="s1p"
+    type="prismatic">
+    <origin
+      xyz="0.0690000000000008 0.222000000000001 0.120999999999981"
+      rpy="0 0 0" />
+    <parent
+      link="s1" />
+    <child
+      link="s1p" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.03"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s2">
+    <inertial>
+      <origin
+        xyz="-0.259058262178245 0.144999598181109 0.129850451534708"
+        rpy="0 0 0" />
+      <mass
+        value="29.8437528104335" />
+      <inertia
+        ixx="0.282842433706676"
+        ixy="3.17555135999982E-06"
+        ixz="3.03662099004198E-05"
+        iyy="0.844050168513507"
+        iyz="-2.51584676720718E-07"
+        izz="0.87938816216385" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s2.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s2.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="ds2"
+    type="prismatic">
+    <origin
+      xyz="0.0300000000000065 4.07400000000064 1.3899999999997"
+      rpy="0 0 0" />
+    <parent
+      link="dianqiground" />
+    <child
+      link="s2" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="0.3"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s2r">
+    <inertial>
+      <origin
+        xyz="-0.0078398134884905 0.000113937167924405 4.52788185612008E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.117444421998411" />
+      <inertia
+        ixx="8.94477126664695E-05"
+        ixy="-1.71813201464424E-07"
+        ixz="-6.82788497471854E-08"
+        iyy="5.52038052110814E-05"
+        iyz="8.21217267530368E-07"
+        izz="4.77428317663844E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s2r.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s2r.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="s2r"
+    type="revolute">
+    <origin
+      xyz="0.02 0.145 0.16828"
+      rpy="0 0 0" />
+    <parent
+      link="s2" />
+    <child
+      link="s2r" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.5708"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s2p">
+    <inertial>
+      <origin
+        xyz="-0.0083814088909131 0.00800000000000267 0.00217884984542138"
+        rpy="0 0 0" />
+      <mass
+        value="0.000703519534269312" />
+      <inertia
+        ixx="1.64325246660352E-08"
+        ixy="-4.38194811760976E-24"
+        ixz="9.87349732156314E-10"
+        iyy="7.35697582728111E-09"
+        iyz="1.83260326378982E-24"
+        izz="2.09412846233985E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s2p.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s2p.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="s2p"
+    type="prismatic">
+    <origin
+      xyz="0.0690000000000008 0.222000000000001 0.120999999999981"
+      rpy="0 0 0" />
+    <parent
+      link="s2" />
+    <child
+      link="s2p" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.03"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="b1">
+    <inertial>
+      <origin
+        xyz="-0.262953261718849 0.35302697675862 0.119993047118072"
+        rpy="0 0 0" />
+      <mass
+        value="80.6316495847304" />
+      <inertia
+        ixx="3.49966593283979"
+        ixy="-0.000583459461728248"
+        ixz="0.000150378509414026"
+        iyy="2.23670327058486"
+        iyz="0.000100255906615888"
+        izz="5.07862492616254" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/b1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/b1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="db1"
+    type="prismatic">
+    <origin
+      xyz="0.0300000000000047 4.04700000000064 0.831870606203722"
+      rpy="0 0 0" />
+    <parent
+      link="dianqiground" />
+    <child
+      link="b1" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="0.3"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="100"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="b1r">
+    <inertial>
+      <origin
+        xyz="-0.0129826274339182 -6.14039005313316E-05 -1.71263443746739E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.167713475604662" />
+      <inertia
+        ixx="0.000129661188473554"
+        ixy="1.85189801079827E-07"
+        ixz="5.16518377567576E-08"
+        iyy="8.61897641551603E-05"
+        iyz="-7.24282931231804E-10"
+        izz="7.8541346534438E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/b1r.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/b1r.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="b1r"
+    type="revolute">
+    <origin
+      xyz="0.03 0.16661 0.12017"
+      rpy="0 0 0" />
+    <parent
+      link="b1" />
+    <child
+      link="b1r" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.5708"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="b1p">
+    <inertial>
+      <origin
+        xyz="-0.0083814088909131 0.00800000000000267 0.00217884984536454"
+        rpy="0 0 0" />
+      <mass
+        value="0.000703519534269312" />
+      <inertia
+        ixx="1.64325246660352E-08"
+        ixy="-4.38194811760829E-24"
+        ixz="9.87349732156315E-10"
+        iyy="7.35697582728111E-09"
+        iyz="1.83260326378991E-24"
+        izz="2.09412846233985E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/b1p.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/b1p.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="b1p"
+    type="prismatic">
+    <origin
+      xyz="0.0690000000000026 0.637999999999998 0.168000000000006"
+      rpy="0 0 0" />
+    <parent
+      link="b1" />
+    <child
+      link="b1p" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-0.03"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s3">
+    <inertial>
+      <origin
+        xyz="-0.259058262178251 0.145066060599952 0.129850451534622"
+        rpy="0 0 0" />
+      <mass
+        value="29.843752810436" />
+      <inertia
+        ixx="0.282842433706723"
+        ixy="3.17555135733237E-06"
+        ixz="3.0366209881271E-05"
+        iyy="0.844050168513594"
+        iyz="-2.51584676814485E-07"
+        izz="0.879388162163914" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s3.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s3.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="ds3"
+    type="prismatic">
+    <origin
+      xyz="0.0299999999991529 5.23599999999988 1.38499999999985"
+      rpy="0 0 0" />
+    <parent
+      link="dianqiground" />
+    <child
+      link="s3" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="0.3"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s3r">
+    <inertial>
+      <origin
+        xyz="-0.00783981348848872 0.000113937167924405 4.5278818532779E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.11744442199841" />
+      <inertia
+        ixx="8.94477126664695E-05"
+        ixy="-1.71813201464204E-07"
+        ixz="-6.82788497471262E-08"
+        iyy="5.52038052110812E-05"
+        iyz="8.21217267530342E-07"
+        izz="4.77428317663844E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s3r.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s3r.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="s3r"
+    type="revolute">
+    <origin
+      xyz="0.02 0.145 0.16828"
+      rpy="0 0 0" />
+    <parent
+      link="s3" />
+    <child
+      link="s3r" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.5708"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="s3p">
+    <inertial>
+      <origin
+        xyz="-0.00838140889090333 0.00800000000000267 0.00217884984536454"
+        rpy="0 0 0" />
+      <mass
+        value="0.000703519534271014" />
+      <inertia
+        ixx="1.64325246660909E-08"
+        ixy="1.0378023724909E-22"
+        ixz="9.87349732159352E-10"
+        iyy="7.35697582732421E-09"
+        iyz="4.03911491543194E-23"
+        izz="2.09412846234931E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s3p.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/s3p.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="s3p"
+    type="prismatic">
+    <origin
+      xyz="0.069 0.274 0.121"
+      rpy="0 0 0" />
+    <parent
+      link="s3" />
+    <child
+      link="s3p" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-0.03"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="m1">
+    <inertial>
+      <origin
+        xyz="-0.261012016335981 0.353062659983848 0.0600106259651625"
+        rpy="0 0 0" />
+      <mass
+        value="36.9309689062749" />
+      <inertia
+        ixx="1.48283801198731"
+        ixy="-0.000616992320384629"
+        ixz="-0.000104630395461347"
+        iyy="0.913664193501799"
+        iyz="-6.93981770769649E-05"
+        izz="2.33302858073162" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/m1.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/m1.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="dm1"
+    type="prismatic">
+    <origin
+      xyz="0.0299999999991538 4.84699999999987 0.89499999999984"
+      rpy="0 0 0" />
+    <parent
+      link="dianqiground" />
+    <child
+      link="m1" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="0"
+      upper="0.3"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="m1r">
+    <inertial>
+      <origin
+        xyz="-0.0129826274339182 -6.14039005313316E-05 -1.71263443746739E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.167713475604664" />
+      <inertia
+        ixx="0.000129661188473555"
+        ixy="1.85189801080065E-07"
+        ixz="5.16518377576092E-08"
+        iyy="8.6189764155161E-05"
+        iyz="-7.24282931216588E-10"
+        izz="7.85413465344389E-05" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/m1r.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/m1r.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="m1r"
+    type="revolute">
+    <origin
+      xyz="0.03 0.16661 0.060175"
+      rpy="0 0 0" />
+    <parent
+      link="m1" />
+    <child
+      link="m1r" />
+    <axis
+      xyz="1 0 0" />
+    <limit
+      lower="-1.5708"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+  <link
+    name="m1p">
+    <inertial>
+      <origin
+        xyz="-0.00838140889090422 0.00799999999999557 0.00217884984542138"
+        rpy="0 0 0" />
+      <mass
+        value="0.000703519534271014" />
+      <inertia
+        ixx="1.64325246660909E-08"
+        ixy="1.0378023724909E-22"
+        ixz="9.87349732159352E-10"
+        iyy="7.35697582732421E-09"
+        iyz="4.03911491543194E-23"
+        izz="2.09412846234931E-08" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/m1p.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="1 1 1 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://电气夹层3.0/meshes/m1p.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="m1p"
+    type="prismatic">
+    <origin
+      xyz="0.0689999999999982 0.638000000000005 0.108000000000004"
+      rpy="0 0 0" />
+    <parent
+      link="m1" />
+    <child
+      link="m1p" />
+    <axis
+      xyz="-1 0 0" />
+    <limit
+      lower="-0.03"
+      upper="0"
+      effort="100"
+      velocity="1" />
+    <dynamics
+      damping="0.1"
+      friction="1" />
+    <safety_controller
+      soft_upper="3.14"
+      soft_lower="-3.14"
+      k_position="1"
+      k_velocity="1" />
+  </joint>
+</robot>

@@ -1,0 +1,828 @@
+<?xml version="1.0" ?>
+<sdf xmlns:xacro="http://www.ros.org/wiki/xacro" version="1.6">
+  <model name="electrical_mezzanine">
+    <static>true</static>
+    <link name="dianqiground">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-5.02456755 4.04372601 2.45617776 0 0 0</pose>
+        <mass>8964955.14</mass>
+        <inertia>
+          <ixx>1.03604648e+09</ixx>
+          <ixy>20572265.4</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>2.01759425e+09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>3.01707467e+09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/dianqiground.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+    </link>
+    <link name="s1">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.259058262 0.144999598 0.129850452 0 0 0</pose>
+        <mass>29.8437528</mass>
+        <inertia>
+          <ixx>0.282842434</ixx>
+          <ixy>3.17555136e-06</ixy>
+          <ixz>3.03662099e-05</ixz>
+          <iyy>0.844050169</iyy>
+          <iyz>1e-09</iyz>
+          <izz>0.879388162</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s1r">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00783981349 0.000113937168 4.52788186e-05 0 0 0</pose>
+        <mass>0.117444422</mass>
+        <inertia>
+          <ixx>8.94477127e-05</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>5.52038052e-05</iyy>
+          <iyz>8.21217268e-07</iyz>
+          <izz>4.77428318e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1r.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1r.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s1p">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1.64325247e-08</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>7.35697583e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>2.09412846e-08</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1p.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1p.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s2">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.259058262 0.144999598 0.129850452 0 0 0</pose>
+        <mass>29.8437528</mass>
+        <inertia>
+          <ixx>0.282842434</ixx>
+          <ixy>3.17555136e-06</ixy>
+          <ixz>3.03662099e-05</ixz>
+          <iyy>0.844050169</iyy>
+          <iyz>1e-09</iyz>
+          <izz>0.879388162</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s2r">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00783981349 0.000113937168 4.52788186e-05 0 0 0</pose>
+        <mass>0.117444422</mass>
+        <inertia>
+          <ixx>8.94477127e-05</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>5.52038052e-05</iyy>
+          <iyz>8.21217268e-07</iyz>
+          <izz>4.77428318e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s2p">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1.64325247e-08</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>7.35697583e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>2.09412846e-08</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="b1">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.262953262 0.353026977 0.119993047 0 0 0</pose>
+        <mass>80.6316496</mass>
+        <inertia>
+          <ixx>3.49966593</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>0.000150378509</ixz>
+          <iyy>2.23670327</iyy>
+          <iyz>0.000100255907</iyz>
+          <izz>5.07862493</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="b1r">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.0129826274 -6.14039005e-05 -1.71263444e-05 0 0 0</pose>
+        <mass>0.167713476</mass>
+        <inertia>
+          <ixx>0.000129661188</ixx>
+          <ixy>1.85189801e-07</ixy>
+          <ixz>5.16518378e-08</ixz>
+          <iyy>8.61897642e-05</iyy>
+          <iyz>1e-09</iyz>
+          <izz>7.85413465e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="b1p">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1.64325247e-08</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>7.35697583e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>2.09412846e-08</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s3">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.259058262 0.145066061 0.129850452 0 0 0</pose>
+        <mass>29.8437528</mass>
+        <inertia>
+          <ixx>0.282842434</ixx>
+          <ixy>3.17555136e-06</ixy>
+          <ixz>3.03662099e-05</ixz>
+          <iyy>0.844050169</iyy>
+          <iyz>1e-09</iyz>
+          <izz>0.879388162</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s3r">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00783981349 0.000113937168 4.52788185e-05 0 0 0</pose>
+        <mass>0.117444422</mass>
+        <inertia>
+          <ixx>8.94477127e-05</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>5.52038052e-05</iyy>
+          <iyz>8.21217268e-07</iyz>
+          <izz>4.77428318e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="s3p">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1.64325247e-08</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>7.35697583e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>2.09412846e-08</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="m1">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.261012016 0.35306266 0.060010626 0 0 0</pose>
+        <mass>36.9309689</mass>
+        <inertia>
+          <ixx>1.48283801</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>0.913664194</iyy>
+          <iyz>1e-09</iyz>
+          <izz>2.33302858</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="m1r">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.0129826274 -6.14039005e-05 -1.71263444e-05 0 0 0</pose>
+        <mass>0.167713476</mass>
+        <inertia>
+          <ixx>0.000129661188</ixx>
+          <ixy>1.85189801e-07</ixy>
+          <ixz>5.16518378e-08</ixz>
+          <iyy>8.61897642e-05</iyy>
+          <iyz>1e-09</iyz>
+          <izz>7.85413465e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="m1p">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1.64325247e-08</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>7.35697583e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>2.09412846e-08</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="ds1" type="prismatic">
+      <pose>0.03 4.436 1.93 0 0 0</pose>
+      <parent>dianqiground</parent>
+      <child>s1</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.3</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="s1r_joint" type="revolute">
+      <pose>0.02 0.145 0.16828 0 0 0</pose>
+      <parent>s1</parent>
+      <child>s1r</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1.5708</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="s1p_joint" type="prismatic">
+      <pose>0.069 0.222 0.121 0 0 0</pose>
+      <parent>s1</parent>
+      <child>s1p</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-0.03</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="ds2" type="prismatic">
+      <pose>0.03 4.074 1.39 0 0 0</pose>
+      <parent>dianqiground</parent>
+      <child>s2</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.3</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="s2r_joint" type="revolute">
+      <pose>0.02 0.145 0.16828 0 0 0</pose>
+      <parent>s2</parent>
+      <child>s2r</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1.5708</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="s2p_joint" type="prismatic">
+      <pose>0.069 0.222 0.121 0 0 0</pose>
+      <parent>s2</parent>
+      <child>s2p</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-0.03</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="db1" type="prismatic">
+      <pose>0.03 4.047 0.831870606 0 0 0</pose>
+      <parent>dianqiground</parent>
+      <child>b1</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.3</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="b1r_joint" type="revolute">
+      <pose>0.03 0.16661 0.12017 0 0 0</pose>
+      <parent>b1</parent>
+      <child>b1r</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1.5708</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="b1p_joint" type="prismatic">
+      <pose>0.069 0.638 0.168 0 0 0</pose>
+      <parent>b1</parent>
+      <child>b1p</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-0.03</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="ds3" type="prismatic">
+      <pose>0.03 5.236 1.385 0 0 0</pose>
+      <parent>dianqiground</parent>
+      <child>s3</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.3</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="s3r_joint" type="revolute">
+      <pose>0.02 0.145 0.16828 0 0 0</pose>
+      <parent>s3</parent>
+      <child>s3r</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1.5708</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="s3p_joint" type="prismatic">
+      <pose>0.069 0.274 0.121 0 0 0</pose>
+      <parent>s3</parent>
+      <child>s3p</child>
+      <axis>
+        <xyz>-1 0 0</xyz>
+        <limit>
+          <lower>-0.03</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="dm1" type="prismatic">
+      <pose>0.03 4.847 0.895 0 0 0</pose>
+      <parent>dianqiground</parent>
+      <child>m1</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.3</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="m1r_joint" type="revolute">
+      <pose>0.03 0.16661 0.060175 0 0 0</pose>
+      <parent>m1</parent>
+      <child>m1r</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit>
+          <lower>-1.5708</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="m1p_joint" type="prismatic">
+      <pose>0.069 0.638 0.108 0 0 0</pose>
+      <parent>m1</parent>
+      <child>m1p</child>
+      <axis>
+        <xyz>-1 0 0</xyz>
+        <limit>
+          <lower>-0.03</lower>
+          <upper>0</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+  </model>
+</sdf>

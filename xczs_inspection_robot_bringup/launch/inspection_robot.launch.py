@@ -447,17 +447,45 @@ def _read_instances(path):
         if name in names:
             raise RuntimeError(f"Duplicate cabinet instance name '{name}'.")
         names.add(name)
-        instances.append(
-            {
-                "name": name,
-                "x": _finite_number(raw, "x"),
-                "y": _finite_number(raw, "y"),
-                "z": _finite_number(raw, "z"),
-                "roll": _finite_number(raw, "roll"),
-                "pitch": _finite_number(raw, "pitch", 0.0),
-                "yaw": _finite_number(raw, "yaw"),
-            }
+        kind = raw.get("kind", "cabinet")
+        if kind not in ("cabinet", "fixture"):
+            raise RuntimeError(
+                f"Instance '{name}' kind must be 'cabinet' or 'fixture'."
+            )
+        associated_scene = raw.get("associated_scene", "cabinet_operation")
+        if not isinstance(associated_scene, str) or not associated_scene.strip():
+            raise RuntimeError(
+                f"Instance '{name}' associated_scene must be a non-empty string."
+            )
+        is_fixture = kind == "fixture"
+        numeric = {}
+        for field in ("x", "y", "z", "roll", "yaw"):
+            if field in raw:
+                numeric[field] = _finite_number(raw, field)
+            elif is_fixture:
+                # 夹具随场景模型以单位位姿加载，位姿字段可省略（恒等）。
+                numeric[field] = 0.0
+            else:
+                raise RuntimeError(f"Instance '{name}' is missing field '{field}'.")
+        numeric["pitch"] = (
+            _finite_number(raw, "pitch")
+            if "pitch" in raw
+            else 0.0
         )
+        instance = {
+            "name": name,
+            "kind": kind,
+            "associated_scene": associated_scene.strip(),
+            **numeric,
+        }
+        for field in ("controls_config", "scene_config", "adapter_config"):
+            raw_value = raw.get(field)
+            if raw_value is None:
+                # 缺省回退共享三件套（launch 参数 cabinet_controls 等）。
+                instance[field] = None
+            else:
+                instance[field] = _resolve_package_path(raw_value)
+        instances.append(instance)
     return instances
 
 
@@ -782,8 +810,30 @@ def _cabinet_nodes(context, *, cabinet_xacro):
         name = instance["name"]
         namespace = f"/xczs/cabinet/{name}"
         cabinet_frame = f"{name}_frame"
+        # 夹具实例不 spawn（场景模型承载夹具，随场景切换而生）；三件套配置
+        # 逐实例覆盖，缺省回退共享 launch 参数。
+        is_fixture = instance.get("kind", "cabinet") == "fixture"
+        instance_controls = (
+            instance["controls_config"]
+            if instance.get("controls_config") else controls_config
+        )
+        instance_scene = (
+            instance["scene_config"]
+            if instance.get("scene_config") else scene_config
+        )
+        instance_adapter = (
+            instance["adapter_config"]
+            if instance.get("adapter_config") else adapter_config
+        )
+        # 机器人接口契约（planning_frame/pose_parent_frame/joint_state_topic）
+        # 按实例适配层解析：夹具实例自包含，柜体实例回退共享适配层。
+        instance_adapter_interfaces = adapter_interfaces
+        if instance.get("adapter_config"):
+            instance_adapter_interfaces = _read_robot_adapter_interfaces(
+                Path(instance["adapter_config"]).expanduser()
+            )
         spawn_node = None
-        if spawn_cabinet:
+        if spawn_cabinet and not is_fixture:
             assert generated_directory is not None
             urdf_path = generated_directory / f"{name}.urdf"
             try:
@@ -848,9 +898,9 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                             "pose_source": LaunchConfiguration(
                                 "cabinet_pose_source"
                             ),
-                            "parent_frame": adapter_interfaces.get(
+                            "parent_frame": instance_adapter_interfaces.get(
                                 "pose_parent_frame",
-                                adapter_interfaces["planning_frame"],
+                                instance_adapter_interfaces["planning_frame"],
                             ),
                             "cabinet_frame": cabinet_frame,
                             "static_pose.x": instance["x"],
@@ -875,14 +925,14 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                         name="xczs_cabinet_planning_scene",
                         output="screen",
                         parameters=[
-                            controls_config,
-                            scene_config,
+                            instance_controls,
+                            instance_scene,
                             {
                                 "use_sim_time": ParameterValue(
                                     LaunchConfiguration("use_sim_time"),
                                     value_type=bool,
                                 ),
-                                "frame_id": adapter_interfaces[
+                                "frame_id": instance_adapter_interfaces[
                                     "planning_frame"
                                 ],
                                 "cabinet_frame": cabinet_frame,
@@ -904,12 +954,12 @@ def _cabinet_nodes(context, *, cabinet_xacro):
                         remappings=[
                             (
                                 "joint_states",
-                                adapter_interfaces["joint_state_topic"],
+                                instance_adapter_interfaces["joint_state_topic"],
                             )
                         ],
                         parameters=[
-                            controls_config,
-                            adapter_config,
+                            instance_controls,
+                            instance_adapter,
                             moveit_client_config.robot_description,
                             moveit_client_config.robot_description_semantic,
                             moveit_client_config.robot_description_kinematics,
@@ -989,6 +1039,19 @@ def _scene_floor_nodes(context):
     model_path = _resolve_package_path(model["file"])
     if not Path(model_path).is_file():
         raise RuntimeError(f"Scene floor model does not exist: {model_path}")
+    # Scene models are authored as xacro (root <sdf> so Gazebo keeps the full
+    # meshes); spawn_entity.py has no xacro flag, so expand the source to SDF
+    # now and hand it the concrete file.  The temp file outlives this call --
+    # it must exist until the spawn node reads it -- and is removed at exit.
+    if model_path.endswith(".xacro"):
+        handle = tempfile.NamedTemporaryFile(
+            mode="w", suffix=".sdf", prefix="xczs_scene_",
+            delete=False, encoding="utf-8",
+        )
+        handle.write(xacro.process_file(model_path).documentElement.toxml())
+        handle.close()
+        atexit.register(partial(os.unlink, handle.name))
+        model_path = handle.name
     spawn_node = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",

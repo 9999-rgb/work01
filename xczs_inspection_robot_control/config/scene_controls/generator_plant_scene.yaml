@@ -1,0 +1,75 @@
+/**/xczs_cabinet_planning_scene:
+  ros__parameters:
+    # 发电机层夹具的规划场景适配层。夹具局部系 == 世界系（场景模型单位
+    # 位姿 spawn），frame_parts 直接用 fadianground.xacro 的碰撞盒代理
+    # （collision_0..7，与 Gazebo 动态 SDF 完全一致）。
+    cabinet_frame: generator_plant_frame
+    collision_object_prefix: ""
+    require_pose_valid: true
+    pose_valid_topic: pose_valid
+    operation_watchdog_timeout: 2.0
+
+    # 规划场景只给六组按钮建碰撞圆柱：旋钮体 r*52 仅 5×14×5 mm 且被按钮板
+    # 覆盖，若按目录给旋钮建圆柱，按压路径会与按钮处的旋钮圆柱碰撞。旋钮
+    # 不建碰撞 → 按压到 0.008（指尖局部 y=0.008 已越过旋钮背面 y=0.007）
+    # 全程规划净空。operator 仍从 controls 目录读到全部 12 个控制做状态展示。
+    control_ids:
+      - fr135_button
+      - fr2222_button
+      - fr4332_button
+      - fr12452_button
+      - fr20422_button
+      - fr25452_button
+
+    # Web inventory 的默认导航工位（fr135 按钮正南 0.914 m）。
+    navigation_station:
+      frame_id: map
+      local_anchor: [-13.1867, 4.8113, 0.0]
+      outward_axis: [0.0, -1.0, 0.0]
+      standoff: 0.914
+      base_yaw_offset: 0.0
+
+    # 地面/墙体/设备碰撞盒代理（与 xacro collision_0..7 逐一对应，单位位姿）。
+    frame_part_ids:
+      - collision_0
+      - collision_1
+      - collision_2
+      - collision_3
+      - collision_4
+      - collision_5
+      - collision_6
+      - collision_7
+    frame_parts:
+      collision_0:
+        size: [40.012, 26.4, 0.2]
+        position: [-19.506, 12.7, -0.1]
+      collision_1:
+        size: [39.25, 1.5, 2.5]
+        position: [-19.512, 24.875, 1.45]
+      collision_2:
+        size: [16.25, 16.5, 2.5]
+        position: [-24.512, 15.375, 1.45]
+      collision_3:
+        size: [39.25, 1.5, 2.5]
+        position: [-19.512, 0.625, 1.45]
+      collision_4:
+        size: [8.25, 1.5, 2.061]
+        position: [-29.762, 4.125, 1.23]
+      collision_5:
+        size: [0.5, 1.0, 2.061]
+        position: [-18.387, 4.375, 1.23]
+      collision_6:
+        size: [0.5, 1.0, 2.061]
+        position: [-22.387, 4.375, 1.23]
+      collision_7:
+        size: [0.5, 1.0, 2.061]
+        position: [-14.387, 4.375, 1.23]
+
+    control_collision:
+      # 按钮板 34.6×34.6×8 mm（局部 y∈[0,0.008]，受压面在 y=0）；圆柱高 0.014
+      # 中心偏 0.004 覆盖行程，半径 0.026 包住方形四角（半宽 0.0173√2≈0.0245）。
+      button_size: [0.014, 0.026]
+      button_center_offset: 0.004
+      # 旋钮不建碰撞（见 control_ids 说明），仅声明默认值占位。
+      knob_size: [0.002, 0.005]
+      knob_center_offset: 0.0

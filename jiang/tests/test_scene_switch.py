@@ -20,7 +20,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 from unittest.mock import patch
 
 
@@ -66,6 +66,7 @@ class _FakeGazeboClient:
         timeout_sec: Any = None,
     ) -> None:
         self.calls.append(("teleport", name, x, y, z, yaw))
+        self.last_entity_pose = {"x": x, "y": y, "yaw": yaw, "frame_id": "map"}
 
 
 _JOINT_NAMES = (
@@ -95,6 +96,8 @@ class _FakeNode:
     def __init__(self, fail_load_map: bool = False) -> None:
         self.loaded_maps: list[str] = []
         self.initial_poses: list[tuple[float, float, float, str]] = []
+        self.planar_odom_waits: list[tuple[float, float, float]] = []
+        self._gazebo_client: Optional[_FakeGazeboClient] = None
         self.fail_load_map = fail_load_map
         self.joint_state_available = True
         self.joint_positions: dict[str, float] = dict(_HOME_POSITIONS)
@@ -114,8 +117,40 @@ class _FakeNode:
     ) -> None:
         self.initial_poses.append((x, y, yaw, frame_id))
 
+    def wait_for_planar_odom(
+        self,
+        x: float,
+        y: float,
+        yaw: float,
+        *,
+        tolerance_xy: float = 0.06,
+        tolerance_yaw: float = 0.15,
+        timeout_sec: float = 5.0,
+    ) -> bool:
+        # 测试 fixture 的遥移是瞬时的；记录请求并直接判定到位即可。
+        self.planar_odom_waits.append((x, y, yaw))
+        return True
+
+    def localized_pose(self) -> Optional[Dict[str, Any]]:
+        # 遥移经 gazebo client 写入的是 body 位姿；AMCL 上报的是 base_link
+        # 位姿（base_link 是 body 的固定 -pi/2 子关节），因此 mock 在返回前
+        # 把 body yaw 回转 pi/2，与真实 /amcl_pose 等价。
+        pose = getattr(self._gazebo_client, "last_entity_pose", None)
+        if pose is None:
+            return None
+        return {
+            "x": pose["x"],
+            "y": pose["y"],
+            "yaw": pose["yaw"] - math.pi / 2.0,
+            "frame_id": pose["frame_id"],
+        }
+
     def set_joint_target(
-        self, positions: list[float], duration_sec: float = 0.5
+        self,
+        positions: list[float],
+        duration_sec: float = 0.5,
+        *,
+        lower_limit_margin: dict[str, float] | None = None,
     ) -> list[float]:
         self.joint_targets.append(list(positions))
         self.joint_positions = {
@@ -204,6 +239,8 @@ class SceneSwitchTest(unittest.TestCase):
         server._asset_scene_provider = asset_scene_provider
         server._gazebo_client = _FakeGazeboClient()
         server._node = _FakeNode(fail_load_map=fail_load_map)
+        # 让节点能看到 gazebo client 写入的遥移位姿（见 localized_pose）。
+        server._node._gazebo_client = server._gazebo_client
         server._inventory = inventory
         server._robot_adapter = SimpleNamespace(
             navigation_frame="map",
@@ -450,7 +487,12 @@ class SceneSwitchTest(unittest.TestCase):
         )
         catalog = SceneCatalog([cabinet, plant])
         server, gazebo, _node = self._server(
-            catalog, active="cabinet_operation", fail_load_map=True
+            catalog,
+            active="cabinet_operation",
+            fail_load_map=True,
+            # 真实系统库存恒有 cabinet_operation 实例；空库存会让
+            # _require_cabinet_scene 的实例门控误判为“场景无夹具”。
+            inventory=(_Cabinet("cabinet_a"),),
         )
 
         with self.assertRaises(ControlRequestError) as raised:

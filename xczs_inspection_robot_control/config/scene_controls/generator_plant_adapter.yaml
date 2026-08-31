@@ -1,0 +1,298 @@
+/**:
+  ros__parameters:
+    # 跨节点共享的机器人接口契约（与共享 cabinet_robot_adapter.yaml 相同；
+    # 本文件为发电机层夹具实例自包含的机器人适配层，避免污染共享柜体配置）。
+    planning_frame: odom
+    pose_parent_frame: odom
+    manual_linear_axis: y
+    manual_linear_sign: -1.0
+    navigation_velocity_yaw_offset: -1.57079632679
+    allow_embedded_navigation: false
+    navigation_frame: map
+    navigation_base_frame: base_link
+    navigation_action: /navigate_to_pose
+    navigation_readiness_service: /lifecycle_manager_navigation/is_active
+    navigation_mode_service: /xczs/set_navigation_mode
+    navigation_mode_topic: /xczs/navigation_mode
+    map_topic: /map
+    # 发电机层地板无柜体走廊带；场景 spec 已逐场景置空，此处置 null 兜底。
+    navigation_keepout: null
+    localization_pose_topic: /amcl_pose
+    manual_cmd_vel_topic: /xczs/manual_cmd_vel
+    navigation_cmd_vel_topic: /cmd_vel
+    base_output_topic: /xczs/cmd_vel
+    joint_trajectory_topic: /xczs/joint_trajectory
+    joint_state_topic: /xczs/joint_states
+    reset_base_pose:
+      frame_id: map
+      x: 0.0
+      y: 0.0
+      yaw: 1.5707963267948966
+    reset_joint_tolerance: 0.12
+    reset_joint_timeout_sec: 15.0
+    reset_joint_duration_sec: 5.0
+    controller_namespace: /xczs
+    manual_joint_group_names:
+      - left_arm
+      - right_arm
+      - three_cylinder
+      - two_cylinder
+      - rocker
+      - rotate_button
+    manual_joint_groups:
+      left_arm:
+        - l_arm_0_joint
+        - l_arm_1_joint
+        - l_arm_2_joint
+        - l_arm_3_joint
+        - l_arm_4_joint
+        - l_arm_5_joint
+        - l_arm_6_joint
+      right_arm:
+        - r_arm_0_joint
+        - r_arm_1_joint
+        - r_arm_2_joint
+        - r_arm_3_joint
+        - r_arm_4_joint
+        - r_arm_5_joint
+        - r_arm_6_joint
+      three_cylinder:
+        - r_three_cyl_finger1_joint
+        - r_three_cyl_finger2_joint
+        - r_three_cyl_finger3_joint
+      two_cylinder:
+        - l_two_cyl_finger1_joint
+        - l_two_cyl_finger2_joint
+      rocker:
+        - l_rocker_rotor_joint
+      rotate_button:
+        - r_rotbtn_rotate_joint
+        - r_rotbtn_jaw1_joint
+        - r_rotbtn_jaw2_joint
+    manual_joint_groups_by_toolset:
+      A:
+        - left_arm
+        - right_arm
+        - three_cylinder
+        - two_cylinder
+      B:
+        - left_arm
+        - right_arm
+        - rocker
+        - rotate_button
+    manual_joint_limits:
+      l_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: -1.4}
+      l_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: -0.3}
+      l_arm_4_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      l_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.7}
+      l_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: -0.85}
+      r_arm_0_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_1_joint: {min_position: -2.8, max_position: 2.8, default_position: -1.6}
+      r_arm_2_joint: {min_position: -2.8, max_position: 2.8, default_position: -0.4}
+      r_arm_3_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_4_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.0}
+      r_arm_5_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.8}
+      r_arm_6_joint: {min_position: -2.8, max_position: 2.8, default_position: 0.1}
+      r_three_cyl_finger1_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      r_three_cyl_finger2_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      r_three_cyl_finger3_joint: {min_position: 0.0, max_position: 0.0254, default_position: 0.0}
+      l_two_cyl_finger1_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      l_two_cyl_finger2_joint: {min_position: 0.0, max_position: 0.12, default_position: 0.0}
+      l_rocker_rotor_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
+      r_rotbtn_rotate_joint: {min_position: -3.14, max_position: 3.14, default_position: 0.0}
+      r_rotbtn_jaw1_joint: {min_position: 0.0, max_position: 0.018, default_position: 0.0}
+      r_rotbtn_jaw2_joint: {min_position: 0.0, max_position: 0.018, default_position: 0.0}
+
+/**/xczs_cabinet_button_operator:
+  ros__parameters:
+    # 机器人适配层：tool_profiles 与全局标定沿用共享柜体目录，仅
+    # controls（夹具导航工位）与 operable_control_ids（B1 = fr135_button）
+    # 按发电机层夹具定制。
+    robot_model_name: xczs_inspection_robot
+    move_group_namespace: /
+    planning_time: 10.0
+    planning_attempts: 10
+    planning_velocity_scale: 0.30
+    planning_acceleration_scale: 0.30
+    goal_position_tolerance: 0.005
+    goal_orientation_tolerance: 0.01
+    goal_joint_tolerance: 0.001
+    allow_replanning: true
+    press_depth: 0.008
+    prepress_distance: 0.12
+    docking_base_frame: body
+    docking_base_footprint: [-0.42, -0.42, -0.42, 0.42, 0.55, 0.42, 0.55, -0.42]
+    docking_base_footprint_padding: 0.03
+    grasp_brake_link: body
+    tool_tip_calibration_joint_tolerance: 0.003
+    tool_profiles:
+      button:
+        move_group: right_arm
+        contact_tool_link: r_three_cyl_base
+        transport_named_target: home
+        tool_tip_position: [0.0265, -0.061735, -0.3885]
+        calibration_joint_names:
+          - r_three_cyl_finger1_joint
+          - r_three_cyl_finger2_joint
+          - r_three_cyl_finger3_joint
+        calibration_joint_positions: [0.0, 0.0, 0.0]
+      knob:
+        move_group: right_arm
+        contact_tool_link: r_rotbtn_body
+        grasp_link: r_rotbtn_rotate
+        transport_named_target: home
+        tool_axis_orientation: toward_control
+        tool_tip_position: [-0.0613, -0.006, 0.1885]
+      # 夹具场景暂无 switch/door，但 operator 要求 button 非空时四档
+      # tool_profiles 全声明；沿用共享柜体的同工具集 profile。
+      switch:
+        move_group: left_arm
+        contact_tool_link: l_rocker_body
+        grasp_link: l_rocker_rotor
+        transport_named_target: home
+        tool_axis_orientation: toward_control
+        tool_tip_position: [-0.01, -0.07, 0.2611]
+      door:
+        move_group: right_arm
+        contact_tool_link: r_three_cyl_base
+        grasp_point_position: [0.0265, -0.061735, -0.3885]
+        transport_named_target: home
+        tool_tip_position: [0.0265, -0.061735, -0.3885]
+        calibration_joint_names:
+          - r_three_cyl_finger1_joint
+          - r_three_cyl_finger2_joint
+          - r_three_cyl_finger3_joint
+        calibration_joint_positions: [0.0, 0.0, 0.0]
+    navigation_takeover_distance: 1.0
+    navigation_takeover_yaw_tolerance: 0.35
+    navigation_takeover_stall_timeout: 4.0
+    docking_timeout: 45.0
+    docking_position_tolerance: 0.008
+    docking_yaw_tolerance: 0.070
+    docking_max_linear_speed: 0.15
+    docking_max_angular_speed: 0.45
+    docking_linear_gain: 0.8
+    docking_angular_gain: 1.2
+    operation_lease_service: /xczs/operation_lease
+    operation_lease_duration: 3.0
+    operation_lease_renew_period: 0.75
+    operation_lease_request_timeout: 0.50
+    force_tracking_tolerance: 0.00005
+    force_tracking_max_compensation: 0.0010
+    force_tracking_settle_seconds: 0.15
+    force_tracking_attempts: 3
+    button_press_minimum_cartesian_fraction: 0.95
+    # 夹具按钮工位：夹具局部系 == 世界/map 系（场景模型单位位姿 spawn）。
+    # 停靠点 = 按钮面正南退让 standoff，机器人机头朝 +Y（yaw=π/2）正对
+    # 按钮台。outward (0,-1,0) 自按钮指向机器人。standoff 0.914 沿用柜体
+    # box_5/6 按钮带（z≈1.2 需 0.914），本夹具按钮 z∈[0.55,0.83] 在按压
+    # 工具可达窗口 [0.58,1.547] 内；footprint 前方 0.55 + 裕量 0.588 校验通过。
+    # local_anchor z 取 0（贴地），Nav2/精停只消费 x/y/yaw。
+    controls:
+      fr135_button:
+        navigation_station:
+          local_anchor: [-13.1867, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr2222_button:
+        navigation_station:
+          local_anchor: [-13.787, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr4332_button:
+        navigation_station:
+          local_anchor: [-15.457, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr12452_button:
+        navigation_station:
+          local_anchor: [-21.997, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr20422_button:
+        navigation_station:
+          local_anchor: [-30.1, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr25452_button:
+        navigation_station:
+          local_anchor: [-35.01, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      # 旋钮本阶段仅状态展示，工位仅为 Web/规划验证提供几何参考。
+      fr135_knob:
+        navigation_station:
+          local_anchor: [-13.1867, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr2222_knob:
+        navigation_station:
+          local_anchor: [-13.787, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr4332_knob:
+        navigation_station:
+          local_anchor: [-15.457, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr12452_knob:
+        navigation_station:
+          local_anchor: [-21.997, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr20422_knob:
+        navigation_station:
+          local_anchor: [-30.1, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+      fr25452_knob:
+        navigation_station:
+          local_anchor: [-35.01, 4.8113, 0.0]
+          outward_axis: [0.0, -1.0, 0.0]
+          standoff: 0.914
+          base_yaw_offset: 0.0
+          frame_id: map
+    # 物理执行能力正向清单（B1 阶段仅 fr135_button 通过端到端验收）。
+    # 未列入的控制一律只做实时规划验证，绝不写入夹具状态。
+    operable_control_ids:
+      - fr135_button
+    inoperable_control_reason: >-
+      发电机层夹具其余按钮（fr2222/fr4332/fr12452/fr20422/fr25452）尚未完成
+      带安全退距的按压验收，处于 B2 推进阶段；六组旋钮（fr135…fr25452）为
+      状态展示控制（旋钮体仅 5×14×5 mm，且按钮板覆盖其 -Y 面，旋转按钮工具
+      抓取可行性待 B2 单独评估），未列入可操作清单。未列入控件仅保留状态显示
+      和实时规划验证，不会执行抓取或写入夹具状态。
+    toolset_mismatch_reason: >-
+      当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；
+      套装 B：旋转按钮/摇杆）。控件仍保留状态显示；错套装请求会在导航和
+      机械臂归位前直接失败并返回 toolset_mismatch。可在 Web 一键切换末端
+      套装；切换到对应套装后，若控件已完成适配器验收才可物理执行。
+
+/xczs_operation_lease_coordinator:
+  ros__parameters:
+    service_name: /xczs/operation_lease
+    maximum_lease_duration: 5.0

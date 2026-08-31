@@ -24,6 +24,22 @@ from . import _package_resolver
 _NAME_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _MODEL_POSE_FIELDS = ("x", "y", "z", "roll", "pitch", "yaw")
 _ROBOT_SPAWN_FIELDS = ("x", "y", "z", "yaw")
+# The task-layer keep-out band fields, mirroring the shared robot adapter's
+# NavigationKeepoutConfig contract (see ``robot_adapter.py``).  The scene spec
+# keeps the raw mapping so this module stays self-contained; the runner builds
+# the typed config from it.
+_KEEPOUT_FIELDS = (
+    "x_min", "x_max", "y_min", "y_max",
+    "corridor_offset", "side_clearance",
+)
+
+# Sentinel for "``navigation_keepout`` was not declared in scenes.yaml".  The
+# shared robot adapter's keep-out band then applies (the legacy cabinet scene
+# keeps its corridor without duplicating it).  An explicit ``null`` disables
+# the detour band for that scene instead -- the two factory scenes have no
+# cabinet-row corridor, so the phantom band must not route the robot around
+# empty space on their floors.
+_UNSET = object()
 
 
 class SceneError(ValueError):
@@ -80,9 +96,16 @@ class SceneSpec:
     model: Optional[SceneModel]
     nav2_map: str
     robot_spawn: Optional[RobotSpawn]
+    # ``_UNSET`` (absent) falls back to the shared robot adapter's keep-out
+    # band; ``None`` disables it; a mapping declares a scene-specific band.
+    navigation_keepout: Any = _UNSET
+
+    @property
+    def keepout_falls_back(self) -> bool:
+        return self.navigation_keepout is _UNSET
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        entry: Dict[str, Any] = {
             "name": self.name,
             "spawn_cabinet": self.spawn_cabinet,
             "model": self.model.to_dict() if self.model is not None else None,
@@ -93,6 +116,9 @@ class SceneSpec:
                 else None
             ),
         }
+        if not self.keepout_falls_back:
+            entry["navigation_keepout"] = self.navigation_keepout
+        return entry
 
 
 class SceneCatalog:
@@ -185,7 +211,10 @@ def _parse_scene(value: Any, index: int) -> SceneSpec:
     context = f"scenes[{index}]"
     if not isinstance(value, Mapping):
         raise SceneError(f"{context} must be a mapping.")
-    allowed = {"name", "spawn_cabinet", "model", "nav2_map", "robot_spawn"}
+    allowed = {
+        "name", "spawn_cabinet", "model", "nav2_map", "robot_spawn",
+        "navigation_keepout",
+    }
     unknown = set(value) - allowed
     if unknown:
         raise SceneError(
@@ -207,12 +236,16 @@ def _parse_scene(value: Any, index: int) -> SceneSpec:
     robot_spawn = _parse_robot_spawn(
         value.get("robot_spawn"), f"{context}.robot_spawn"
     )
+    keepout = _parse_navigation_keepout(
+        value.get("navigation_keepout"), f"{context}.navigation_keepout"
+    )
     return SceneSpec(
         name=name,
         spawn_cabinet=spawn_cabinet,
         model=model,
         nav2_map=nav2_map.strip(),
         robot_spawn=robot_spawn,
+        navigation_keepout=keepout,
     )
 
 
@@ -251,6 +284,44 @@ def _parse_robot_spawn(value: Any, context: str) -> Optional[RobotSpawn]:
     z = _finite_number(value.get("z"), f"{context}.z")
     yaw = _finite_number(value.get("yaw"), f"{context}.yaw")
     return RobotSpawn(x=x, y=y, z=z, yaw=yaw)
+
+
+def _parse_navigation_keepout(value: Any, context: str) -> Any:
+    """Parse an optional scene-level navigation keep-out band.
+
+    ``None`` disables the detour band for the scene; a mapping declares a
+    scene-specific band with the six shared-adapter fields; an absent key
+    returns the :data:`_UNSET` sentinel so the runner falls back to the robot
+    adapter's band (the legacy cabinet scene).
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise SceneError(f"{context} must be a mapping or null.")
+    unknown = set(value) - set(_KEEPOUT_FIELDS)
+    if unknown:
+        raise SceneError(
+            f"{context} has unknown fields: "
+            + ", ".join(sorted(str(field) for field in unknown))
+        )
+    missing = [field for field in _KEEPOUT_FIELDS if field not in value]
+    if missing:
+        raise SceneError(
+            f"{context} is missing fields: " + ", ".join(missing)
+        )
+    keepout = {
+        field: _finite_number(value[field], f"{context}.{field}")
+        for field in _KEEPOUT_FIELDS
+    }
+    if keepout["x_min"] >= keepout["x_max"]:
+        raise SceneError(f"{context}.x_min must be less than {context}.x_max.")
+    if keepout["y_min"] >= keepout["y_max"]:
+        raise SceneError(f"{context}.y_min must be less than {context}.y_max.")
+    if keepout["corridor_offset"] <= 0.0:
+        raise SceneError(f"{context}.corridor_offset must be positive.")
+    if keepout["side_clearance"] <= 0.0:
+        raise SceneError(f"{context}.side_clearance must be positive.")
+    return keepout
 
 
 def _parse_pose(

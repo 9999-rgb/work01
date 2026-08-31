@@ -1,0 +1,991 @@
+<?xml version="1.0" ?>
+<sdf xmlns:xacro="http://www.ros.org/wiki/xacro" version="1.6">
+  <model name="generator_plant">
+    <static>false</static>
+    <link name="fadianground">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-22.858 13.999 2.2036 0 0 0</pose>
+        <mass>10911000</mass>
+        <inertia>
+          <ixx>683840000</ixx>
+          <ixy>30998000</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>655570000</iyy>
+          <iyz>2376700</iyz>
+          <izz>1.3027e+09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/fadianground.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision_0">
+        <pose>-19.506 12.7 -0.1 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>40.012 26.4 0.2</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="collision_1">
+        <pose>-24.512 15.25 1.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>16.5 17 2.5</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="collision_2">
+        <pose>-19.512 0.5 1.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>39.5 1.5 2.5</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="collision_3">
+        <pose>-19.512 24.75 1.25 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>39.5 2 2.5</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="collision_4">
+        <pose>-30.012 4.25 1.13 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>8.5 2 2.261</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r1352">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -2.13873363e-12 0 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>4.91937412e-09</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>1e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>4.91937412e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1352.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1352.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r1351">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>1.42108547e-14 -0.00298032725 -2.84217094e-14 0 0 0</pose>
+        <mass>0.0273523458</mass>
+        <inertia>
+          <ixx>1.91413422e-06</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1.40460666e-06</ixz>
+          <iyy>3.53437888e-06</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1.91413422e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1351.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.752941 0.752941 0.752941 1</ambient>
+          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1351.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r2222">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -2.13162821e-12 0 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>4.91937412e-09</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>1e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>4.91937412e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2222.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2222.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r2221">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>1.42108547e-14 -0.00298032725 0 0 0 0</pose>
+        <mass>0.0273523458</mass>
+        <inertia>
+          <ixx>1.91413422e-06</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1.40460666e-06</ixz>
+          <iyy>3.53437888e-06</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1.91413422e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2221.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.752941 0.752941 0.752941 1</ambient>
+          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2221.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r4332">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -2.13162821e-12 0 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>4.91937412e-09</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>1e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>4.91937412e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4332.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4332.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r4331">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>7.10542736e-15 -0.00298032725 -2.84217094e-14 0 0 0</pose>
+        <mass>0.0273523458</mass>
+        <inertia>
+          <ixx>1.91413422e-06</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1.40460666e-06</ixz>
+          <iyy>3.53437888e-06</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1.91413422e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4331.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.752941 0.752941 0.752941 1</ambient>
+          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4331.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r12452">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -2.13162821e-12 0 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>4.91937412e-09</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>1e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>4.91937412e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12452.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12452.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r12451">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>7.10542736e-15 -0.00298032725 2.84217094e-14 0 0 0</pose>
+        <mass>0.0273523458</mass>
+        <inertia>
+          <ixx>1.91413422e-06</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1.40460666e-06</ixz>
+          <iyy>3.53437888e-06</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1.91413422e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12451.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.752941 0.752941 0.752941 1</ambient>
+          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12451.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r20422">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -2.13162821e-12 0 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>4.91937412e-09</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>1e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>4.91937412e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20422.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20422.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r20421">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 -0.00298032725 2.84217094e-14 0 0 0</pose>
+        <mass>0.0273523458</mass>
+        <inertia>
+          <ixx>1.91413422e-06</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1.40460666e-06</ixz>
+          <iyy>3.53437888e-06</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1.91413422e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20421.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.752941 0.752941 0.752941 1</ambient>
+          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20421.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r25452">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.001</mass>
+        <inertia>
+          <ixx>1e-09</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1e-09</ixz>
+          <iyy>1e-09</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1e-09</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25452.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25452.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <link name="r25451">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>-3.55271368e-15 -0.00298032725 0 0 0 0</pose>
+        <mass>0.0273523458</mass>
+        <inertia>
+          <ixx>1.91413422e-06</ixx>
+          <ixy>1e-09</ixy>
+          <ixz>1.40460666e-06</ixz>
+          <iyy>3.53437888e-06</iyy>
+          <iyz>1e-09</iyz>
+          <izz>1.91413422e-06</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25451.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>0.752941 0.752941 0.752941 1</ambient>
+          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25451.STL</uri>
+          </mesh>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="anchor_fadianground" type="fixed">
+      <parent>world</parent>
+      <child>fadianground</child>
+    </joint>
+    <joint name="fr135" type="revolute">
+      <pose>-13.1867 4.8113 0.691314593 0 0 0</pose>
+      <parent>fadianground</parent>
+      <child>r1352</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.8</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="r1352_1" type="prismatic">
+      <pose>0 0.007 0 0 0 0</pose>
+      <parent>r1352</parent>
+      <child>r1351</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.01</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="fr2222" type="revolute">
+      <pose>-13.787 4.8113 0.83131 0 0 0</pose>
+      <parent>fadianground</parent>
+      <child>r2222</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.8</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="r2222_1" type="prismatic">
+      <pose>0 0.007 0 0 0 0</pose>
+      <parent>r2222</parent>
+      <child>r2221</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.01</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="fr4332" type="revolute">
+      <pose>-15.457 4.8113 0.69131 0 0 0</pose>
+      <parent>fadianground</parent>
+      <child>r4332</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.8</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="r4332_1" type="prismatic">
+      <pose>0 0.007 0 0 0 0</pose>
+      <parent>r4332</parent>
+      <child>r4331</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.01</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="fr12452" type="revolute">
+      <pose>-21.997 4.8113 0.55131 0 0 0</pose>
+      <parent>fadianground</parent>
+      <child>r12452</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.8</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="r12452_1" type="prismatic">
+      <pose>0 0.007 0 0 0 0</pose>
+      <parent>r12452</parent>
+      <child>r12451</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.01</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="fr20422" type="revolute">
+      <pose>-30.1 4.8113 0.55131 0 0 0</pose>
+      <parent>fadianground</parent>
+      <child>r20422</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.8</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="r20422_1" type="prismatic">
+      <pose>0 0.007 0 0 0 0</pose>
+      <parent>r20422</parent>
+      <child>r20421</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.01</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="fr25452" type="revolute">
+      <pose>-35.01 4.8113 0.551314593 0 0 0</pose>
+      <parent>fadianground</parent>
+      <child>r25452</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.8</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <joint name="r25452_1" type="prismatic">
+      <pose>0 0.007 0 0 0 0</pose>
+      <parent>r25452</parent>
+      <child>r25451</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.01</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>1</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <plugin name="xczs_generator_plant_state" filename="libxczs_cabinet_state.so">
+      <ros>
+        <namespace>/xczs/cabinet/generator_plant</namespace>
+      </ros>
+      <state_publish_rate>20.0</state_publish_rate>
+      <reset_service>/xczs/cabinet/generator_plant/reset_physics</reset_service>
+      <grasp_service>/xczs/cabinet/generator_plant/grasp</grasp_service>
+      <grasp_active_topic>/xczs/cabinet/generator_plant/grasp_active</grasp_active_topic>
+      <active_control_topic>/xczs/cabinet/generator_plant/active_control</active_control_topic>
+      <operation_heartbeat_topic>/xczs/cabinet/generator_plant/operation_heartbeat</operation_heartbeat_topic>
+      <operation_fault_topic>/xczs/cabinet/generator_plant/operation_fault</operation_fault_topic>
+      <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
+      <control>
+        <control_id>fr135_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>r1352_1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr135_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr135_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr135_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.006</press_threshold>
+        <release_threshold>0.003</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fr2222_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>r2222_1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr2222_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr2222_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr2222_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.006</press_threshold>
+        <release_threshold>0.003</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fr4332_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>r4332_1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr4332_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr4332_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr4332_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.006</press_threshold>
+        <release_threshold>0.003</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fr12452_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>r12452_1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr12452_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr12452_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr12452_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.006</press_threshold>
+        <release_threshold>0.003</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fr20422_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>r20422_1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr20422_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr20422_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr20422_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.006</press_threshold>
+        <release_threshold>0.003</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fr25452_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>r25452_1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr25452_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr25452_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr25452_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.006</press_threshold>
+        <release_threshold>0.003</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fr135_knob</control_id>
+        <control_type>knob</control_type>
+        <joint_name>fr135</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr135_knob/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr135_knob/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr135_knob/state</state_topic>
+        <state_ids>left center right</state_ids>
+        <detents>0.0 0.4 0.8</detents>
+        <detent_stiffness>0.6</detent_stiffness>
+        <spring_damping>0.08</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.005</grasp_coupling_damping>
+        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <motion_tolerance>0.025</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+      <control>
+        <control_id>fr2222_knob</control_id>
+        <control_type>knob</control_type>
+        <joint_name>fr2222</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr2222_knob/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr2222_knob/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr2222_knob/state</state_topic>
+        <state_ids>left center right</state_ids>
+        <detents>0.0 0.4 0.8</detents>
+        <detent_stiffness>0.6</detent_stiffness>
+        <spring_damping>0.08</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.005</grasp_coupling_damping>
+        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <motion_tolerance>0.025</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+      <control>
+        <control_id>fr4332_knob</control_id>
+        <control_type>knob</control_type>
+        <joint_name>fr4332</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr4332_knob/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr4332_knob/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr4332_knob/state</state_topic>
+        <state_ids>left center right</state_ids>
+        <detents>0.0 0.4 0.8</detents>
+        <detent_stiffness>0.6</detent_stiffness>
+        <spring_damping>0.08</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.005</grasp_coupling_damping>
+        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <motion_tolerance>0.025</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+      <control>
+        <control_id>fr12452_knob</control_id>
+        <control_type>knob</control_type>
+        <joint_name>fr12452</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr12452_knob/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr12452_knob/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr12452_knob/state</state_topic>
+        <state_ids>left center right</state_ids>
+        <detents>0.0 0.4 0.8</detents>
+        <detent_stiffness>0.6</detent_stiffness>
+        <spring_damping>0.08</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.005</grasp_coupling_damping>
+        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <motion_tolerance>0.025</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+      <control>
+        <control_id>fr20422_knob</control_id>
+        <control_type>knob</control_type>
+        <joint_name>fr20422</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr20422_knob/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr20422_knob/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr20422_knob/state</state_topic>
+        <state_ids>left center right</state_ids>
+        <detents>0.0 0.4 0.8</detents>
+        <detent_stiffness>0.6</detent_stiffness>
+        <spring_damping>0.08</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.005</grasp_coupling_damping>
+        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <motion_tolerance>0.025</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+      <control>
+        <control_id>fr25452_knob</control_id>
+        <control_type>knob</control_type>
+        <joint_name>fr25452</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fr25452_knob/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fr25452_knob/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fr25452_knob/state</state_topic>
+        <state_ids>left center right</state_ids>
+        <detents>0.0 0.4 0.8</detents>
+        <detent_stiffness>0.6</detent_stiffness>
+        <spring_damping>0.08</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.005</grasp_coupling_damping>
+        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <motion_tolerance>0.025</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0 0 0</grasp_point>
+      </control>
+    </plugin>
+  </model>
+  <gazebo reference="fr135">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="r1352_1">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="fr2222">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="r2222_1">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="fr4332">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="r4332_1">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="fr12452">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="r12452_1">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="fr20422">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="r20422_1">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="fr25452">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+  <gazebo reference="r25452_1">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
+</sdf>
