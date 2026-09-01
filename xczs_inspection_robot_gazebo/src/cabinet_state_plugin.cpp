@@ -41,6 +41,8 @@
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_bimanual_grasp.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_unlock.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -54,6 +56,10 @@ using CabinetControlState =
   xczs_inspection_robot_interfaces::msg::CabinetControlState;
 using SetCabinetGrasp =
   xczs_inspection_robot_interfaces::srv::SetCabinetGrasp;
+using SetCabinetBimanualGrasp =
+  xczs_inspection_robot_interfaces::srv::SetCabinetBimanualGrasp;
+using SetCabinetUnlock =
+  xczs_inspection_robot_interfaces::srv::SetCabinetUnlock;
 
 constexpr auto kPhysicsRequestTimeout = std::chrono::seconds(2);
 constexpr auto kWatchdogReleaseRetryDelay = std::chrono::milliseconds(100);
@@ -62,6 +68,19 @@ constexpr std::size_t kExpiredLeaseHistoryLimit = 64U;
 constexpr char kRuntimeGraspJointName[] = "xczs_cabinet_runtime_grasp";
 constexpr char kRuntimeBaseBrakeJointName[] =
   "xczs_cabinet_runtime_base_brake";
+// A bimanual drawer attaches the left tool to the left handle and the right
+// tool to the right handle, so two runtime fixed joints plus the shared base
+// brake are created together (both or neither).
+constexpr char kRuntimeBimanualLeftJointName[] =
+  "xczs_cabinet_runtime_bimanual_left";
+constexpr char kRuntimeBimanualRightJointName[] =
+  "xczs_cabinet_runtime_bimanual_right";
+// While a drawer is latched (locked) it is parked at the closed detent by a
+// firm centering spring so it cannot drift out of the rail gate.
+constexpr double kDefaultDrawerLatchStiffness = 500.0;
+// Re-latch only when the drawer has settled below this linear speed so a
+// closing push that is still in flight cannot trip the lock early.
+constexpr double kDrawerReLatchVelocityThreshold = 0.05;
 
 enum class ControlKind
 {
@@ -70,6 +89,7 @@ enum class ControlKind
   kSwitch,
   kDoor,
   kSlider,
+  kDrawer,
 };
 
 std::string required_text(
@@ -175,6 +195,9 @@ ControlKind parse_kind(const std::string & value)
   if (value == "slider") {
     return ControlKind::kSlider;
   }
+  if (value == "drawer") {
+    return ControlKind::kDrawer;
+  }
   throw std::invalid_argument(
           "Unsupported cabinet control type: " + value);
 }
@@ -192,6 +215,8 @@ std::uint8_t message_type(ControlKind kind)
       return CabinetControl::TYPE_DOOR;
     case ControlKind::kSlider:
       return CabinetControl::TYPE_SLIDER;
+    case ControlKind::kDrawer:
+      return CabinetControl::TYPE_DRAWER;
   }
   return CabinetControl::TYPE_BUTTON;
 }
@@ -236,6 +261,8 @@ public:
     }
     reset_service_.reset();
     grasp_service_.reset();
+    bimanual_grasp_service_.reset();
+    unlock_service_.reset();
     active_control_subscription_.reset();
     operation_heartbeat_subscription_.reset();
     update_connection_.reset();
@@ -303,6 +330,10 @@ public:
         "reset_service", "/xczs/cabinet/reset_physics").first;
       grasp_service_name_ = sdf->Get<std::string>(
         "grasp_service", "/xczs/cabinet/grasp").first;
+      bimanual_grasp_service_name_ = sdf->Get<std::string>(
+        "bimanual_grasp_service", "/xczs/cabinet/bimanual_grasp").first;
+      unlock_service_name_ = sdf->Get<std::string>(
+        "unlock_service", "/xczs/cabinet/unlock").first;
       grasp_active_topic_ = sdf->Get<std::string>(
         "grasp_active_topic", "/xczs/cabinet/grasp_active").first;
       active_control_topic_ = sdf->Get<std::string>(
@@ -315,6 +346,9 @@ public:
         "/xczs/cabinet/operation_fault").first;
       require_absolute_topic(reset_service_name_, "reset_service");
       require_absolute_topic(grasp_service_name_, "grasp_service");
+      require_absolute_topic(
+        bimanual_grasp_service_name_, "bimanual_grasp_service");
+      require_absolute_topic(unlock_service_name_, "unlock_service");
       require_absolute_topic(grasp_active_topic_, "grasp_active_topic");
       require_absolute_topic(active_control_topic_, "active_control_topic");
       require_absolute_topic(
@@ -409,6 +443,76 @@ public:
         response->message = outcome.message;
         response->distance = outcome.distance;
       });
+    bimanual_grasp_service_ = ros_node_->create_service<SetCabinetBimanualGrasp>(
+      bimanual_grasp_service_name_,
+      [callback_lifetime](
+        const std::shared_ptr<SetCabinetBimanualGrasp::Request> request,
+        std::shared_ptr<SetCabinetBimanualGrasp::Response> response)
+      {
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          response->success = false;
+          response->message = "Cabinet state plugin is shutting down.";
+          response->left_distance =
+            std::numeric_limits<double>::quiet_NaN();
+          response->right_distance =
+            std::numeric_limits<double>::quiet_NaN();
+          return;
+        }
+        ServiceCallbackLease lease(callback_lifetime);
+        const auto outcome = owner->submit_bimanual_request(
+          request->control_id,
+          request->operation_lease_id,
+          request->robot_model,
+          request->left_robot_link,
+          request->right_robot_link,
+          ignition::math::Vector3d(
+            request->left_robot_grasp_point.x,
+            request->left_robot_grasp_point.y,
+            request->left_robot_grasp_point.z),
+          ignition::math::Vector3d(
+            request->right_robot_grasp_point.x,
+            request->right_robot_grasp_point.y,
+            request->right_robot_grasp_point.z),
+          request->robot_base_link,
+          request->attach);
+        response->success = outcome.success;
+        response->message = outcome.message;
+        response->left_grasped = !std::isnan(outcome.left_distance);
+        response->right_grasped = !std::isnan(outcome.right_distance);
+        response->left_distance = outcome.left_distance;
+        response->right_distance = outcome.right_distance;
+      });
+    unlock_service_ = ros_node_->create_service<SetCabinetUnlock>(
+      unlock_service_name_,
+      [callback_lifetime](
+        const std::shared_ptr<SetCabinetUnlock::Request> request,
+        std::shared_ptr<SetCabinetUnlock::Response> response)
+      {
+        auto * owner = acquire_service_callback(callback_lifetime);
+        if (!owner) {
+          response->success = false;
+          response->message = "Cabinet state plugin is shutting down.";
+          response->distance = std::numeric_limits<double>::quiet_NaN();
+          return;
+        }
+        ServiceCallbackLease lease(callback_lifetime);
+        const auto outcome = owner->submit_unlock_request(
+          request->control_id,
+          request->operation_lease_id,
+          request->robot_model,
+          request->right_robot_link,
+          ignition::math::Vector3d(
+            request->right_robot_grasp_point.x,
+            request->right_robot_grasp_point.y,
+            request->right_robot_grasp_point.z),
+          request->unlock);
+        response->success = outcome.success;
+        response->message = outcome.message;
+        response->distance = outcome.distance;
+        response->drawer_unlocked = outcome.success &&
+          request->unlock;
+      });
 
     const double simulation_time = world_->SimTime().Double();
     last_publish_time_ = simulation_time - publish_period_;
@@ -429,9 +533,11 @@ public:
       });
     RCLCPP_INFO(
       ros_node_->get_logger(),
-      "Cabinet state plugin loaded %zu controls; reset=%s grasp=%s.",
+      "Cabinet state plugin loaded %zu controls; reset=%s grasp=%s "
+      "bimanual=%s unlock=%s.",
       controls_.size(), reset_service_name_.c_str(),
-      grasp_service_name_.c_str());
+      grasp_service_name_.c_str(), bimanual_grasp_service_name_.c_str(),
+      unlock_service_name_.c_str());
   }
 
   void Reset() override
@@ -501,6 +607,19 @@ private:
     bool slider_released{false};
     bool graspable{false};
     ignition::math::Vector3d grasp_point{0.0, 0.0, 0.0};
+    // Bimanual drawer geometry, all in the local frame of the prismatic drawer
+    // link.  The left handle reuses grasp_point; the right handle and the
+    // unlock zone are drawer-only fields.
+    ignition::math::Vector3d right_grasp_point{0.0, 0.0, 0.0};
+    ignition::math::Vector3d unlock_zone_point{0.0, 0.0, 0.0};
+    double unlock_distance_threshold{0.10};
+    double drawer_latch_stiffness{kDefaultDrawerLatchStiffness};
+    // Rail latch: locked means the drawer is parked at the closed detent and a
+    // bimanual attach is refused.  Unlock (right tool in the logical unlock
+    // zone) clears the flag; the latch re-engages automatically once the drawer
+    // has been opened at least once, returned to closed, and settled.
+    bool drawer_unlocked{false};
+    bool drawer_has_opened{false};
     std::size_t reset_state_index{0U};
     std::size_t detent_target_index{0U};
     std::size_t state_index{0U};
@@ -522,11 +641,14 @@ private:
     bool success{false};
     std::string message;
     double distance{std::numeric_limits<double>::quiet_NaN()};
+    // Bimanual drawer outcomes carry per-side distances.
+    double left_distance{std::numeric_limits<double>::quiet_NaN()};
+    double right_distance{std::numeric_limits<double>::quiet_NaN()};
   };
 
   struct PhysicsRequest
   {
-    enum class Kind {kReset, kGrasp};
+    enum class Kind {kReset, kGrasp, kBimanualGrasp, kUnlock};
     enum class State {kPending, kExecuting, kCanceled, kCompleted};
     Kind kind{Kind::kReset};
     std::string control_id;
@@ -537,6 +659,15 @@ private:
     ignition::math::Vector3d robot_grasp_point{0.0, 0.0, 0.0};
     std::string robot_base_link;
     bool attach{false};
+    // Bimanual drawer fields.
+    std::string left_robot_link;
+    std::string right_robot_link;
+    ignition::math::Vector3d left_robot_grasp_point{0.0, 0.0, 0.0};
+    ignition::math::Vector3d right_robot_grasp_point{0.0, 0.0, 0.0};
+    ignition::math::Vector3d left_handle_point{0.0, 0.0, 0.0};
+    ignition::math::Vector3d right_handle_point{0.0, 0.0, 0.0};
+    ignition::math::Vector3d unlock_zone_point{0.0, 0.0, 0.0};
+    bool drawer_unlock{false};
     std::promise<PhysicsOutcome> promise;
     std::atomic<State> state{State::kPending};
     std::atomic<bool> completed{false};
@@ -848,6 +979,52 @@ private:
             }
           }
         }
+        // A drawer is a bimanual pull-out: left tool attaches to the left
+        // handle (grasp_point), right tool to the right handle, and the rail
+        // latch is released by pushing the right tool into the logical unlock
+        // zone.  No compliant coupling, no push-push release — those are
+        // single-handed semantics.
+        if (control.kind == ControlKind::kDrawer) {
+          if (!control.graspable) {
+            throw std::invalid_argument(
+                    "Cabinet drawer controls must be graspable: " + control.id);
+          }
+          if (!element->HasElement("right_grasp_point") ||
+            !element->HasElement("unlock_zone_point"))
+          {
+            throw std::invalid_argument(
+                    "Cabinet drawer control requires <right_grasp_point> and "
+                    "<unlock_zone_point>: " + control.id);
+          }
+          control.right_grasp_point = parse_vector3(
+            element->Get<std::string>("right_grasp_point"));
+          control.unlock_zone_point = parse_vector3(
+            element->Get<std::string>("unlock_zone_point"));
+          control.unlock_distance_threshold = optional_double(
+            element, "unlock_distance_threshold", 0.10);
+          control.drawer_latch_stiffness = optional_double(
+            element, "drawer_latch_stiffness", kDefaultDrawerLatchStiffness);
+          if (control.detents.size() != 2U) {
+            throw std::invalid_argument(
+                    "Cabinet drawer controls require exactly two detents "
+                    "(closed open): " + control.id);
+          }
+          if (control.unlock_distance_threshold <= 0.0 ||
+            control.drawer_latch_stiffness <= 0.0)
+          {
+            throw std::invalid_argument(
+                    "Cabinet drawer unlock_distance_threshold and "
+                    "drawer_latch_stiffness must be positive: " + control.id);
+          }
+          if (control.grasp_coupling_stiffness > 0.0 ||
+            control.grasp_coupling_damping > 0.0 ||
+            control.grasp_coupling_max_effort > 0.0)
+          {
+            throw std::invalid_argument(
+                    "Cabinet drawer controls do not support compliant grasp "
+                    "coupling: " + control.id);
+          }
+        }
       }
 
       control.joint_state_publisher =
@@ -882,6 +1059,22 @@ private:
         max_grasp_linear_error_,
         relative_pose.Pos().Distance(grasp_relative_pose_.Pos()));
     }
+    if (bimanual_grasp_is_active() && active_control_link_ &&
+      active_left_robot_link_ptr_ && active_right_robot_link_ptr_)
+    {
+      const auto left_relative_pose =
+        active_control_link_->WorldPose().Inverse() *
+        active_left_robot_link_ptr_->WorldPose();
+      const auto right_relative_pose =
+        active_control_link_->WorldPose().Inverse() *
+        active_right_robot_link_ptr_->WorldPose();
+      max_left_grasp_linear_error_ = std::max(
+        max_left_grasp_linear_error_,
+        left_relative_pose.Pos().Distance(left_grasp_relative_pose_.Pos()));
+      max_right_grasp_linear_error_ = std::max(
+        max_right_grasp_linear_error_,
+        right_relative_pose.Pos().Distance(right_grasp_relative_pose_.Pos()));
+    }
     const double simulation_time = world_->SimTime().Double();
     for (auto & control : controls_) {
       const double raw_position = control.joint->Position(0);
@@ -907,7 +1100,58 @@ private:
         // the latch to the other detent, and the spring then assists the
         // remaining travel; releasing it leaves the panel parked at the
         // nearest detent.
-        if (control.kind == ControlKind::kSlider &&
+        //
+        // A drawer is bimanual and follows the physical position exactly like
+        // a slider, but only while its rail latch is released.  While locked
+        // the drawer is parked at the closed detent; once the unlock zone has
+        // been engaged and the drawer has opened at least once, the latch
+        // re-engages automatically when the drawer returns to the closed
+        // position and settles (the operator releases and the ODE rail comes
+        // to rest).
+        if (control.kind == ControlKind::kDrawer) {
+          if (control.drawer_unlocked) {
+            while (control.detent_target_index + 1U < control.detents.size()) {
+              const double boundary = 0.5 * (
+                control.detents[control.detent_target_index] +
+                control.detents[control.detent_target_index + 1U]) +
+                control.detent_hysteresis;
+              if (raw_position <= boundary) {
+                break;
+              }
+              ++control.detent_target_index;
+            }
+            while (control.detent_target_index > 0U) {
+              const double boundary = 0.5 * (
+                control.detents[control.detent_target_index - 1U] +
+                control.detents[control.detent_target_index]) -
+                control.detent_hysteresis;
+              if (raw_position >= boundary) {
+                break;
+              }
+              --control.detent_target_index;
+            }
+            if (control.detent_target_index >= 1U) {
+              control.drawer_has_opened = true;
+            }
+            if (control.drawer_has_opened &&
+              !bimanual_grasp_is_active() &&
+              raw_position <= control.detents.front() +
+                control.motion_tolerance &&
+              std::abs(velocity) <= kDrawerReLatchVelocityThreshold)
+            {
+              control.drawer_unlocked = false;
+              control.drawer_has_opened = false;
+              control.detent_target_index = control.reset_state_index;
+              RCLCPP_INFO(
+                ros_node_->get_logger(),
+                "Drawer '%s' returned to the closed position and settled; "
+                "the rail latch re-engaged.",
+                control.id.c_str());
+            }
+          } else {
+            control.detent_target_index = control.reset_state_index;
+          }
+        } else if (control.kind == ControlKind::kSlider &&
           control.slider_released)
         {
           // The push-release latch stays tripped while the panel falls back to
@@ -971,8 +1215,15 @@ private:
       }
       const double effective_damping = control_is_being_grasped ?
         control.grasp_damping : control.damping;
-      const double effective_stiffness = control_is_being_grasped ?
+      double effective_stiffness = control_is_being_grasped ?
         control.grasp_stiffness : control.stiffness;
+      if (control.kind == ControlKind::kDrawer &&
+        !control.drawer_unlocked)
+      {
+        // The locked rail holds the drawer firmly at the closed detent so it
+        // cannot drift out of the gate between operations.
+        effective_stiffness = control.drawer_latch_stiffness;
+      }
       control.effort =
         -effective_stiffness * (raw_position - target) -
         effective_damping * velocity;
@@ -1044,9 +1295,16 @@ private:
     }
   }
 
+  bool bimanual_grasp_is_active() const
+  {
+    return static_cast<bool>(left_grasp_joint_) ||
+      static_cast<bool>(right_grasp_joint_);
+  }
+
   bool grasp_is_active() const
   {
-    return static_cast<bool>(grasp_joint_) || compliant_grasp_active_;
+    return static_cast<bool>(grasp_joint_) || compliant_grasp_active_ ||
+      bimanual_grasp_is_active();
   }
 
   void reset_pregrasp_tracking_locked() noexcept
@@ -1771,6 +2029,10 @@ private:
       control->joint->SetPosition(0, control->reset_position, false);
       control->detent_target_index = control->reset_state_index;
       control->slider_released = false;
+      if (control->kind == ControlKind::kDrawer) {
+        control->drawer_unlocked = false;
+        control->drawer_has_opened = false;
+      }
     }
     // Moving an articulated parent can transfer velocity back into nested
     // controls in ODE.  Clear every joint again after the complete hierarchy
@@ -1807,29 +2069,9 @@ private:
     return {true, "Cabinet physics reset complete.", 0.0};
   }
 
-  PhysicsOutcome submit_physics_request(
-    PhysicsRequest::Kind kind,
-    std::string control_id,
-    std::string operation_lease_id,
-    std::string robot_model,
-    std::string robot_link,
-    ignition::math::Vector3d robot_grasp_point,
-    std::string robot_base_link,
-    bool attach)
+  PhysicsOutcome run_physics_request(
+    const std::shared_ptr<PhysicsRequest> & request)
   {
-    auto request = std::make_shared<PhysicsRequest>();
-    request->kind = kind;
-    request->control_id = std::move(control_id);
-    request->operation_lease_id = std::move(operation_lease_id);
-    request->robot_model = std::move(robot_model);
-    request->robot_link = std::move(robot_link);
-    request->robot_grasp_point = robot_grasp_point;
-    request->robot_base_link = std::move(robot_base_link);
-    request->attach = attach;
-    if (kind == PhysicsRequest::Kind::kGrasp && attach) {
-      std::lock_guard<std::mutex> lock(active_control_mutex_);
-      request->active_control_generation = active_control_generation_;
-    }
     auto result = request->promise.get_future();
     {
       std::lock_guard<std::mutex> lock(request_mutex_);
@@ -1856,6 +2098,84 @@ private:
     return result.get();
   }
 
+  PhysicsOutcome submit_physics_request(
+    PhysicsRequest::Kind kind,
+    std::string control_id,
+    std::string operation_lease_id,
+    std::string robot_model,
+    std::string robot_link,
+    ignition::math::Vector3d robot_grasp_point,
+    std::string robot_base_link,
+    bool attach)
+  {
+    auto request = std::make_shared<PhysicsRequest>();
+    request->kind = kind;
+    request->control_id = std::move(control_id);
+    request->operation_lease_id = std::move(operation_lease_id);
+    request->robot_model = std::move(robot_model);
+    request->robot_link = std::move(robot_link);
+    request->robot_grasp_point = robot_grasp_point;
+    request->robot_base_link = std::move(robot_base_link);
+    request->attach = attach;
+    if (kind == PhysicsRequest::Kind::kGrasp && attach) {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      request->active_control_generation = active_control_generation_;
+    }
+    return run_physics_request(request);
+  }
+
+  PhysicsOutcome submit_unlock_request(
+    std::string control_id,
+    std::string operation_lease_id,
+    std::string robot_model,
+    std::string right_robot_link,
+    ignition::math::Vector3d right_robot_grasp_point,
+    bool unlock)
+  {
+    auto request = std::make_shared<PhysicsRequest>();
+    request->kind = PhysicsRequest::Kind::kUnlock;
+    request->control_id = std::move(control_id);
+    request->operation_lease_id = std::move(operation_lease_id);
+    request->robot_model = std::move(robot_model);
+    request->right_robot_link = std::move(right_robot_link);
+    request->right_robot_grasp_point = right_robot_grasp_point;
+    request->drawer_unlock = unlock;
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      request->active_control_generation = active_control_generation_;
+    }
+    return run_physics_request(request);
+  }
+
+  PhysicsOutcome submit_bimanual_request(
+    std::string control_id,
+    std::string operation_lease_id,
+    std::string robot_model,
+    std::string left_robot_link,
+    std::string right_robot_link,
+    ignition::math::Vector3d left_robot_grasp_point,
+    ignition::math::Vector3d right_robot_grasp_point,
+    std::string robot_base_link,
+    bool attach)
+  {
+    auto request = std::make_shared<PhysicsRequest>();
+    request->kind = PhysicsRequest::Kind::kBimanualGrasp;
+    request->control_id = std::move(control_id);
+    request->operation_lease_id = std::move(operation_lease_id);
+    request->robot_model = std::move(robot_model);
+    request->left_robot_link = std::move(left_robot_link);
+    request->right_robot_link = std::move(right_robot_link);
+    request->left_robot_grasp_point = left_robot_grasp_point;
+    request->right_robot_grasp_point = right_robot_grasp_point;
+    request->robot_base_link = std::move(robot_base_link);
+    request->attach = attach;
+    if (attach) {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      request->active_control_generation = active_control_generation_;
+    }
+    return run_physics_request(request);
+  }
+
   void process_physics_requests()
   {
     std::deque<std::shared_ptr<PhysicsRequest>> requests;
@@ -1876,8 +2196,20 @@ private:
       }
       PhysicsOutcome outcome;
       try {
-        outcome = request->kind == PhysicsRequest::Kind::kReset ?
-          reset_controls() : handle_grasp_request(*request);
+        switch (request->kind) {
+          case PhysicsRequest::Kind::kReset:
+            outcome = reset_controls();
+            break;
+          case PhysicsRequest::Kind::kBimanualGrasp:
+            outcome = handle_bimanual_grasp_request(*request);
+            break;
+          case PhysicsRequest::Kind::kUnlock:
+            outcome = handle_unlock_request(*request);
+            break;
+          default:
+            outcome = handle_grasp_request(*request);
+            break;
+        }
       } catch (const std::exception & error) {
         outcome = {
           false,
@@ -1975,6 +2307,417 @@ private:
       distance};
   }
 
+  PhysicsOutcome recover_failed_bimanual_attach(
+    Control & control,
+    const PhysicsRequest & request,
+    double left_distance,
+    double right_distance,
+    const std::string & failure) noexcept
+  {
+    bool release_completed = false;
+    std::string cleanup_failure;
+    try {
+      const auto release = release_bimanual_grasp_constraint();
+      release_completed = release.success;
+      if (!release.success) {
+        cleanup_failure = release.message;
+      }
+    } catch (const std::exception & error) {
+      cleanup_failure = error.what();
+    } catch (...) {
+      cleanup_failure = "unknown Gazebo bimanual release exception";
+    }
+
+    if (!release_completed) {
+      // The caller holds active_control_mutex_ across the attach commit and
+      // this cleanup path.  Permanently reject this failed lease session before
+      // publishing its fault so delayed heartbeats/requests cannot resurrect a
+      // partially recovered bimanual grasp.
+      const auto now = std::chrono::steady_clock::now();
+      remember_expired_operation_lease_locked(request.operation_lease_id);
+      active_control_received_ = true;
+      active_operation_control_.clear();
+      ++active_control_generation_;
+      operation_heartbeat_received_ = false;
+      operation_heartbeat_lease_id_.clear();
+      operation_last_heartbeat_ =
+        std::chrono::steady_clock::time_point{};
+      ++operation_heartbeat_sequence_;
+      reset_pregrasp_tracking_locked();
+      watchdog_recovery_pending_ = true;
+      watchdog_release_completed_ = release_completed;
+      watchdog_recovery_control_ = control.id;
+      watchdog_recovery_lease_id_ = request.operation_lease_id;
+      watchdog_release_retry_not_before_ = now + kWatchdogReleaseRetryDelay;
+      log_watchdog_release_failure(cleanup_failure, now);
+      publish_operation_fault(request.operation_lease_id);
+    }
+
+    return {false,
+      "Failed to create bimanual drawer grasp constraint: " + failure +
+      (cleanup_failure.empty() ? "" :
+      "; fail-safe cleanup is pending: " + cleanup_failure),
+      std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+  }
+
+  PhysicsOutcome handle_unlock_request(const PhysicsRequest & request)
+  {
+    const auto control_it = control_indices_.find(request.control_id);
+    if (control_it == control_indices_.end()) {
+      return {false, "Unknown drawer unlock control: " + request.control_id,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    auto & control = controls_[control_it->second];
+    if (control.kind != ControlKind::kDrawer) {
+      return {false, "Unlock is only supported for drawer controls: " + control.id,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (!request.drawer_unlock) {
+      // Explicit re-lock used by cancel / reset cleanup.  It only tightens a
+      // rail latch, so it is always safe and needs no session authority.
+      control.drawer_unlocked = false;
+      control.drawer_has_opened = false;
+      control.detent_target_index = control.reset_state_index;
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Drawer '%s' rail latch re-engaged by explicit unlock=false.",
+        control.id.c_str());
+      return {true, "Drawer rail latch re-engaged.", 0.0};
+    }
+
+    if (request.operation_lease_id.empty()) {
+      return {false,
+        "Drawer unlock requires a non-empty operation lease identity.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (watchdog_recovery_pending_) {
+      return {false,
+        "Cabinet watchdog recovery is still releasing the previous physical "
+        "operation; an unlock is not yet safe.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (bimanual_grasp_is_active() && active_grasp_control_ == control.id) {
+      return {false,
+        "The drawer is already grasped; unlock must happen before attach.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (!robot_grasp_point_is_finite(
+        request.right_robot_grasp_point.X(),
+        request.right_robot_grasp_point.Y(),
+        request.right_robot_grasp_point.Z()))
+    {
+      return {false,
+        "Right robot grasp point must contain three finite link-local "
+        "coordinates.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      if (!operation_heartbeat_authorizes_grasp_locked(request)) {
+        return {false,
+          "Drawer unlock requires a fresh heartbeat from the exact active "
+          "control and global operation lease session.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+    }
+    if (request.robot_model.empty() || request.right_robot_link.empty()) {
+      return {false,
+        "robot_model and right_robot_link are required for unlock.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    const auto robot_model = world_->ModelByName(request.robot_model);
+    if (!robot_model || robot_model == model_) {
+      return {false, "Robot model was not found or is invalid: " +
+        request.robot_model, std::numeric_limits<double>::quiet_NaN()};
+    }
+    const auto right_link = robot_model->GetLink(request.right_robot_link);
+    if (!right_link) {
+      return {false, "Robot right link was not found: " +
+        request.right_robot_link, std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    // The unlock zone is a configured logical contact region near the right
+    // handle (not the *p indicator).  It lives in the drawer link frame, so the
+    // distance check tracks the drawer whether it is open or closed.
+    const auto target_pose = control.link->WorldPose();
+    const auto unlock_zone_world = target_pose.Pos() +
+      target_pose.Rot().RotateVector(control.unlock_zone_point);
+    const auto right_pose = right_link->WorldPose();
+    const auto right_tool_world = right_pose.Pos() +
+      right_pose.Rot().RotateVector(request.right_robot_grasp_point);
+    const double distance = right_tool_world.Distance(unlock_zone_world);
+    if (!std::isfinite(distance) ||
+      distance > control.unlock_distance_threshold)
+    {
+      return {false,
+        "Right tool is not inside the drawer unlock zone (distance " +
+        std::to_string(distance) + " m exceeds threshold " +
+        std::to_string(control.unlock_distance_threshold) + " m).",
+        distance};
+    }
+    if (control.drawer_unlocked) {
+      return {true, "Drawer is already unlocked.", distance};
+    }
+    control.drawer_unlocked = true;
+    control.drawer_has_opened = false;
+    control.detent_target_index = control.reset_state_index;
+    RCLCPP_INFO(
+      ros_node_->get_logger(),
+      "Drawer '%s' rail latch released by the right tool at the unlock zone "
+      "(distance %.6f m).",
+      control.id.c_str(), distance);
+    return {true, "Drawer unlocked.", distance};
+  }
+
+  PhysicsOutcome handle_bimanual_grasp_request(const PhysicsRequest & request)
+  {
+    if (!robot_grasp_point_is_finite(
+        request.left_robot_grasp_point.X(),
+        request.left_robot_grasp_point.Y(),
+        request.left_robot_grasp_point.Z()) ||
+      !robot_grasp_point_is_finite(
+        request.right_robot_grasp_point.X(),
+        request.right_robot_grasp_point.Y(),
+        request.right_robot_grasp_point.Z()))
+    {
+      return {false,
+        "Both robot grasp points must contain three finite link-local "
+        "coordinates.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    const auto control_it = control_indices_.find(request.control_id);
+    if (control_it == control_indices_.end()) {
+      return {false, "Unknown cabinet bimanual grasp control: " +
+        request.control_id, std::numeric_limits<double>::quiet_NaN()};
+    }
+    auto & control = controls_[control_it->second];
+    if (control.kind != ControlKind::kDrawer) {
+      return {false,
+        "Bimanual grasp is only supported for drawer controls: " + control.id,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    if (!request.attach) {
+      if (!bimanual_grasp_is_active()) {
+        return {true, "Bimanual drawer grasp is already released.", 0.0};
+      }
+      if (active_grasp_control_ != control.id) {
+        return {false,
+          "A different cabinet control is currently grasped: " +
+          active_grasp_control_,
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      if (!operation_session_matches(
+          active_grasp_control_, active_grasp_lease_id_, control.id,
+          request.operation_lease_id))
+      {
+        return {false,
+          "Bimanual drawer grasp release requires the exact active operation "
+          "lease identity.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      return release_bimanual_grasp_constraint();
+    }
+
+    if (request.operation_lease_id.empty()) {
+      return {false,
+        "Bimanual drawer grasp attach requires a non-empty operation lease "
+        "identity.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (watchdog_recovery_pending_) {
+      return {false,
+        "Cabinet watchdog recovery is still releasing the previous physical "
+        "operation; a new grasp is not yet safe.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (!control.drawer_unlocked) {
+      return {false,
+        "Drawer is locked; unlock it first (SetCabinetUnlock): " + control.id,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      if (!operation_heartbeat_authorizes_grasp_locked(request)) {
+        return {false,
+          "Bimanual drawer grasp attach requires a fresh heartbeat from the "
+          "exact active control and global operation lease session.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      if (grasp_is_active() || base_brake_joint_) {
+        if (active_grasp_control_ == control.id &&
+          active_grasp_lease_id_ == request.operation_lease_id &&
+          active_robot_model_ == request.robot_model &&
+          active_left_robot_link_ == request.left_robot_link &&
+          active_right_robot_link_ == request.right_robot_link)
+        {
+          return {true, "Bimanual drawer grasp is already attached.", 0.0};
+        }
+        return {false,
+          "Another cabinet grasp or operation lease is active: " +
+          active_grasp_control_,
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+    }
+    if (request.robot_model.empty() || request.left_robot_link.empty() ||
+      request.right_robot_link.empty() || request.robot_base_link.empty())
+    {
+      return {false,
+        "robot_model, left_robot_link, right_robot_link and robot_base_link "
+        "are required for bimanual attach.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    const double raw_position = control.joint->Position(0);
+    const double raw_velocity = control.joint->GetVelocity(0);
+    const double latched_detent =
+      control.detents.at(control.detent_target_index);
+    bool approach_disturbed = pregrasp_detent_is_disturbed(
+      raw_position, raw_velocity, latched_detent,
+      control.motion_tolerance, control.motion_tolerance);
+    double maximum_position_error = std::abs(raw_position - latched_detent);
+    double maximum_velocity = std::abs(raw_velocity);
+    {
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      if (pregrasp_disturbance_detected_ &&
+        pregrasp_disturbance_control_ == control.id)
+      {
+        approach_disturbed = true;
+        maximum_position_error = std::max(
+          maximum_position_error, pregrasp_max_position_error_);
+        maximum_velocity = std::max(
+          maximum_velocity, pregrasp_max_velocity_);
+      }
+    }
+    if (approach_disturbed) {
+      return {false,
+        "Unsafe pre-grasp movement was detected for cabinet drawer '" +
+        control.id + "' (maximum detent error " +
+        std::to_string(maximum_position_error) +
+        " m, maximum velocity " + std::to_string(maximum_velocity) +
+        " m/s). The ready/approach path may have contacted the drawer.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    const auto robot_model = world_->ModelByName(request.robot_model);
+    if (!robot_model || robot_model == model_) {
+      return {false, "Robot model was not found or is invalid: " +
+        request.robot_model, std::numeric_limits<double>::quiet_NaN()};
+    }
+    const auto left_link = robot_model->GetLink(request.left_robot_link);
+    if (!left_link) {
+      return {false, "Robot left link was not found: " +
+        request.left_robot_link, std::numeric_limits<double>::quiet_NaN()};
+    }
+    const auto right_link = robot_model->GetLink(request.right_robot_link);
+    if (!right_link) {
+      return {false, "Robot right link was not found: " +
+        request.right_robot_link, std::numeric_limits<double>::quiet_NaN()};
+    }
+    const auto robot_base_link = robot_model->GetLink(request.robot_base_link);
+    if (!robot_base_link) {
+      return {false, "Robot base brake link was not found: " +
+        request.robot_base_link, std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    // Both tools must be simultaneously inside the grasp distance threshold of
+    // their handle.  A single-side clamp would rack the drawer under the pull
+    // torque, so the attach is rejected unless BOTH distances pass.
+    const auto target_pose = control.link->WorldPose();
+    const auto left_handle_world = target_pose.Pos() +
+      target_pose.Rot().RotateVector(control.grasp_point);
+    const auto right_handle_world = target_pose.Pos() +
+      target_pose.Rot().RotateVector(control.right_grasp_point);
+    const auto left_pose = left_link->WorldPose();
+    const auto left_tool_world = left_pose.Pos() +
+      left_pose.Rot().RotateVector(request.left_robot_grasp_point);
+    const auto right_pose = right_link->WorldPose();
+    const auto right_tool_world = right_pose.Pos() +
+      right_pose.Rot().RotateVector(request.right_robot_grasp_point);
+    const double left_distance = left_tool_world.Distance(left_handle_world);
+    const double right_distance = right_tool_world.Distance(right_handle_world);
+    if (!std::isfinite(left_distance) ||
+      left_distance > grasp_distance_threshold_ ||
+      !std::isfinite(right_distance) ||
+      right_distance > grasp_distance_threshold_)
+    {
+      return {false,
+        "Bimanual drawer grasp requires BOTH tools inside the grasp distance "
+        "threshold; single-side attach is rejected.",
+        std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+    }
+
+    // Revalidate immediately before the irreversible Gazebo operations and
+    // hold the short session lock through commit.
+    std::unique_lock<std::mutex> active_session_lock(active_control_mutex_);
+    if (!operation_heartbeat_authorizes_grasp_locked(request)) {
+      return {false,
+        "Bimanual drawer grasp lease/heartbeat changed before physical "
+        "attachment.",
+        std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+    }
+    try {
+      // Anchor the chassis for the lifetime of the physical grasp so the pull
+      // reaction cannot drag the whole robot away from the world-frame path.
+      base_brake_joint_ = model_->CreateJoint(
+        kRuntimeBaseBrakeJointName, "fixed", gazebo::physics::LinkPtr(),
+        robot_base_link);
+      if (!base_brake_joint_) {
+        return {false, "Gazebo could not create the robot base brake joint.",
+          std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+      }
+      base_brake_joint_->Init();
+      left_grasp_joint_ = model_->CreateJoint(
+        kRuntimeBimanualLeftJointName, "fixed", control.link, left_link);
+      if (!left_grasp_joint_) {
+        return recover_failed_bimanual_attach(
+          control, request, left_distance, right_distance,
+          "Gazebo could not create the left bimanual drawer grasp joint.");
+      }
+      left_grasp_joint_->Init();
+      right_grasp_joint_ = model_->CreateJoint(
+        kRuntimeBimanualRightJointName, "fixed", control.link, right_link);
+      if (!right_grasp_joint_) {
+        return recover_failed_bimanual_attach(
+          control, request, left_distance, right_distance,
+          "Gazebo could not create the right bimanual drawer grasp joint.");
+      }
+      right_grasp_joint_->Init();
+      active_control_link_ = control.link;
+      active_left_robot_link_ptr_ = left_link;
+      active_right_robot_link_ptr_ = right_link;
+      left_grasp_relative_pose_ =
+        control.link->WorldPose().Inverse() * left_link->WorldPose();
+      right_grasp_relative_pose_ =
+        control.link->WorldPose().Inverse() * right_link->WorldPose();
+      max_left_grasp_linear_error_ = 0.0;
+      max_right_grasp_linear_error_ = 0.0;
+      active_grasp_control_ = control.id;
+      active_grasp_lease_id_ = request.operation_lease_id;
+      active_grasp_control_generation_ = request.active_control_generation;
+      active_robot_model_ = request.robot_model;
+      active_left_robot_link_ = request.left_robot_link;
+      active_right_robot_link_ = request.right_robot_link;
+      active_left_robot_grasp_point_ = request.left_robot_grasp_point;
+      active_right_robot_grasp_point_ = request.right_robot_grasp_point;
+      publish_grasp_active(true);
+      // Once a grasp attaches, the control leaves its pre-grasp phase: the
+      // operation's release-settle motion is its own outcome, not an unsafe
+      // pre-grasp disturbance.
+      grasp_engaged_during_operation_ = true;
+      suppress_actuation_collision(control, request.operation_lease_id);
+    } catch (const std::exception & error) {
+      return recover_failed_bimanual_attach(
+        control, request, left_distance, right_distance, error.what());
+    } catch (...) {
+      return recover_failed_bimanual_attach(
+        control, request, left_distance, right_distance,
+        "unknown Gazebo bimanual attach exception");
+    }
+    return {true, "Bimanual drawer grasp attached.",
+      std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+  }
+
   PhysicsOutcome handle_grasp_request(const PhysicsRequest & request)
   {
     if (!robot_grasp_point_is_finite(
@@ -1991,6 +2734,14 @@ private:
         std::numeric_limits<double>::quiet_NaN()};
     }
     auto & control = controls_[control_it->second];
+    if (control.kind == ControlKind::kDrawer) {
+      // A drawer is bimanual by design: a single-side grasp would only clamp
+      // one handle and let the drawer rack under the pull torque, so the
+      // single grasp service must not touch it.
+      return {false,
+        "Drawer controls require the bimanual grasp service: " + control.id,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
     if (!control.graspable || control.kind == ControlKind::kButton) {
       return {false, "Cabinet control does not support grasping: " + control.id,
         std::numeric_limits<double>::quiet_NaN()};
@@ -2215,7 +2966,7 @@ private:
     return {true, "Cabinet grasp attached.", distance};
   }
 
-  PhysicsOutcome release_grasp_constraint()
+  PhysicsOutcome release_single_grasp_constraint()
   {
     const auto released_control = active_grasp_control_;
     const auto released_robot_link = active_robot_link_ptr_;
@@ -2281,6 +3032,96 @@ private:
     schedule_actuation_collision_restore(
       released_control, released_robot_link, released_robot_grasp_point);
     return {true, "Cabinet grasp released.", 0.0};
+  }
+
+  PhysicsOutcome release_bimanual_grasp_constraint()
+  {
+    const auto released_control = active_grasp_control_;
+    const auto released_left_link = active_left_robot_link_ptr_;
+    const auto released_left_grasp_point = active_left_robot_grasp_point_;
+    if (!released_control.empty() &&
+      (left_grasp_joint_ || right_grasp_joint_))
+    {
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Releasing bimanual drawer grasp '%s' (maximum fixed-constraint "
+        "linear errors left %.6f m, right %.6f m).",
+        released_control.c_str(), max_left_grasp_linear_error_,
+        max_right_grasp_linear_error_);
+    }
+    for (const auto & entry : {
+      std::make_pair(kRuntimeBimanualLeftJointName, &left_grasp_joint_),
+      std::make_pair(kRuntimeBimanualRightJointName, &right_grasp_joint_)})
+    {
+      const char * const joint_name = entry.first;
+      auto & joint = *entry.second;
+      if (!joint) {
+        continue;
+      }
+      joint->Detach();
+      if (!model_ || !model_->GetJoint(joint_name)) {
+        joint.reset();
+      } else if (!model_->RemoveJoint(joint_name)) {
+        return {false,
+          "Gazebo could not remove runtime bimanual grasp joint '" +
+          std::string(joint_name) + ".",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      joint.reset();
+    }
+    if (base_brake_joint_) {
+      base_brake_joint_->Detach();
+      if (!model_ || !model_->GetJoint(kRuntimeBaseBrakeJointName)) {
+        base_brake_joint_.reset();
+      } else if (!model_->RemoveJoint(kRuntimeBaseBrakeJointName)) {
+        return {false,
+          "Gazebo could not remove runtime robot base brake joint '" +
+          std::string(kRuntimeBaseBrakeJointName) + "'.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      base_brake_joint_.reset();
+    }
+    active_grasp_control_.clear();
+    active_grasp_lease_id_.clear();
+    active_grasp_control_generation_ = 0U;
+    active_robot_model_.clear();
+    active_left_robot_link_.clear();
+    active_right_robot_link_.clear();
+    active_left_robot_grasp_point_.Set(0.0, 0.0, 0.0);
+    active_right_robot_grasp_point_.Set(0.0, 0.0, 0.0);
+    active_control_link_.reset();
+    active_left_robot_link_ptr_.reset();
+    active_right_robot_link_ptr_.reset();
+    left_grasp_relative_pose_ = ignition::math::Pose3d::Zero;
+    right_grasp_relative_pose_ = ignition::math::Pose3d::Zero;
+    max_left_grasp_linear_error_ = 0.0;
+    max_right_grasp_linear_error_ = 0.0;
+    publish_grasp_active(false);
+    // The auto re-latch in on_update re-engages the rail lock once the drawer
+    // returns to the closed position and settles.
+    schedule_actuation_collision_restore(
+      released_control, released_left_link, released_left_grasp_point);
+    return {true, "Bimanual drawer grasp released.", 0.0};
+  }
+
+  // Release whichever physical grasp session is active (single or bimanual).
+  // The two sessions are mutually exclusive, so at most one owns the base brake
+  // and the shared active-grasp bookkeeping at any instant.
+  PhysicsOutcome release_grasp_constraint()
+  {
+    const auto single = release_single_grasp_constraint();
+    const auto bimanual = release_bimanual_grasp_constraint();
+    if (!single.success && !bimanual.success) {
+      return {false, single.message + "; " + bimanual.message,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (!single.success) {
+      return {false, single.message, std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (!bimanual.success) {
+      return {false, bimanual.message, std::numeric_limits<double>::quiet_NaN()};
+    }
+    return {true, "Cabinet grasp constraints released.", 0.0};
   }
 
   static void complete_request(
@@ -2378,6 +3219,8 @@ private:
   std::unordered_map<std::string, std::size_t> control_indices_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;
   rclcpp::Service<SetCabinetGrasp>::SharedPtr grasp_service_;
+  rclcpp::Service<SetCabinetBimanualGrasp>::SharedPtr bimanual_grasp_service_;
+  rclcpp::Service<SetCabinetUnlock>::SharedPtr unlock_service_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr grasp_active_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     active_control_subscription_;
@@ -2387,6 +3230,8 @@ private:
     operation_fault_publisher_;
   std::string reset_service_name_;
   std::string grasp_service_name_;
+  std::string bimanual_grasp_service_name_;
+  std::string unlock_service_name_;
   std::string grasp_active_topic_;
   std::string active_control_topic_;
   std::string operation_heartbeat_topic_;
@@ -2432,11 +3277,22 @@ private:
 
   gazebo::physics::JointPtr grasp_joint_;
   bool compliant_grasp_active_{false};
+  // Bimanual drawer session: two fixed joints (left tool to left handle, right
+  // tool to right handle) plus the shared base brake.  Mutually exclusive with
+  // the single-hand session above.
+  gazebo::physics::JointPtr left_grasp_joint_;
+  gazebo::physics::JointPtr right_grasp_joint_;
   gazebo::physics::JointPtr base_brake_joint_;
   gazebo::physics::LinkPtr active_control_link_;
   gazebo::physics::LinkPtr active_robot_link_ptr_;
+  gazebo::physics::LinkPtr active_left_robot_link_ptr_;
+  gazebo::physics::LinkPtr active_right_robot_link_ptr_;
   ignition::math::Pose3d grasp_relative_pose_;
+  ignition::math::Pose3d left_grasp_relative_pose_;
+  ignition::math::Pose3d right_grasp_relative_pose_;
   double max_grasp_linear_error_{0.0};
+  double max_left_grasp_linear_error_{0.0};
+  double max_right_grasp_linear_error_{0.0};
   double grasp_initial_position_{0.0};
   ignition::math::Quaterniond grasp_tool_rotation_{
     ignition::math::Quaterniond::Identity};
@@ -2452,6 +3308,10 @@ private:
   std::string active_robot_model_;
   std::string active_robot_link_;
   ignition::math::Vector3d active_robot_grasp_point_{0.0, 0.0, 0.0};
+  std::string active_left_robot_link_;
+  std::string active_right_robot_link_;
+  ignition::math::Vector3d active_left_robot_grasp_point_{0.0, 0.0, 0.0};
+  ignition::math::Vector3d active_right_robot_grasp_point_{0.0, 0.0, 0.0};
 };
 
 GZ_REGISTER_MODEL_PLUGIN(CabinetStatePlugin)

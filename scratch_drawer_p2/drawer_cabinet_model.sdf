@@ -1,0 +1,89 @@
+<?xml version="1.0" ?>
+<!-- P2 drawer cabinet model, spawned via gz factory after world load (the
+     real stack spawns cabinets dynamically; inline-world plugins Load before
+     ODE joints exist and would read uninitialized joints). -->
+<sdf version="1.6">
+  <model name="drawer_test_cabinet">
+    <static>false</static>
+    <link name="base">
+      <collision name="base_col">
+        <geometry><box><size>1.0 0.9 0.4</size></box></geometry>
+      </collision>
+      <visual name="base_vis">
+        <geometry><box><size>1.0 0.9 0.4</size></box></geometry>
+      </visual>
+      <inertial>
+        <mass>100.0</mass>
+        <inertia>
+          <ixx>10.0</ixx><iyy>10.0</iyy><izz>10.0</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+    </link>
+    <link name="drawer">
+      <pose>0.0 0.0 0.5 0 0 0</pose>
+      <collision name="drawer_col">
+        <geometry><box><size>0.7 0.65 0.24</size></box></geometry>
+      </collision>
+      <visual name="drawer_vis">
+        <geometry><box><size>0.7 0.65 0.24</size></box></geometry>
+      </visual>
+      <inertial>
+        <mass>8.0</mass>
+        <inertia>
+          <ixx>0.5</ixx><iyy>0.3</iyy><izz>0.5</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+    </link>
+    <joint name="anchor_base" type="fixed">
+      <parent>world</parent>
+      <child>base</child>
+    </joint>
+    <joint name="drawer_slide" type="prismatic">
+      <parent>base</parent>
+      <child>drawer</child>
+      <axis>
+        <xyz>1 0 0</xyz>
+        <limit><lower>0</lower><upper>0.3</upper><effort>1000</effort><velocity>10</velocity></limit>
+      </axis>
+    </joint>
+    <plugin name="xczs_drawer_p2_state" filename="libxczs_cabinet_state.so">
+      <ros>
+        <namespace>/xczs/cabinet/test</namespace>
+      </ros>
+      <state_publish_rate>50.0</state_publish_rate>
+      <reset_service>/xczs/cabinet/test/reset_physics</reset_service>
+      <grasp_service>/xczs/cabinet/test/grasp</grasp_service>
+      <bimanual_grasp_service>/xczs/cabinet/test/bimanual_grasp</bimanual_grasp_service>
+      <unlock_service>/xczs/cabinet/test/unlock</unlock_service>
+      <grasp_active_topic>/xczs/cabinet/test/grasp_active</grasp_active_topic>
+      <active_control_topic>/xczs/cabinet/test/active_control</active_control_topic>
+      <operation_heartbeat_topic>/xczs/cabinet/test/operation_heartbeat</operation_heartbeat_topic>
+      <operation_fault_topic>/xczs/cabinet/test/operation_fault</operation_fault_topic>
+      <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
+      <control>
+        <control_id>test_drawer</control_id>
+        <control_type>drawer</control_type>
+        <joint_name>drawer_slide</joint_name>
+        <joint_state_topic>/xczs/cabinet/test/test_drawer/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/test/test_drawer/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/test/test_drawer/state</state_topic>
+        <state_ids>closed open</state_ids>
+        <detents>0.0 0.3</detents>
+        <detent_stiffness>12</detent_stiffness>
+        <spring_damping>1</spring_damping>
+        <detent_hysteresis>0.01</detent_hysteresis>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>true</graspable>
+        <grasp_point>0.069 0.10 0.12</grasp_point>
+        <right_grasp_point>0.069 0.50 0.12</right_grasp_point>
+        <unlock_zone_point>0.12 0.50 0.12</unlock_zone_point>
+        <unlock_distance_threshold>0.1</unlock_distance_threshold>
+        <drawer_latch_stiffness>500</drawer_latch_stiffness>
+      </control>
+    </plugin>
+  </model>
+</sdf>

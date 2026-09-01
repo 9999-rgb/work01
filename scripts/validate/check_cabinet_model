@@ -207,6 +207,7 @@ TYPE_TO_JOINT = {
     "knob": "revolute",
     "switch": "revolute",
     "door": "revolute",
+    "drawer": "prismatic",
 }
 EXPECTED_COUNTS = {
     "button": 20,
@@ -804,6 +805,7 @@ def validate_cabinet_asset() -> None:
                 "knob": 0.020,
                 "switch": 0.012,
                 "door": 0.0145,
+                "drawer": 0.005,
             }[control_type]
             configured_offset = float(
                 spec.get("grasp_outward_offset", grasp_offset)
@@ -1631,8 +1633,8 @@ def main() -> int:
         # -0.3506 button-family shoulder offset (box_5_knob's /compute_ik
         # sweep proved the legacy +0.35 knob sign was a historical error).
         BUTTON_CALIBRATION = {
-            "box_3_button_1": (-0.3506, 0.780),
-            "box_3_button_2": (-0.3506, 0.780),
+            "box_3_button_1": (-0.3506, 0.730),
+            "box_3_button_2": (-0.3506, 0.730),
             "box_4_button_1": (-0.3506, 0.780),
             "box_4_button_2": (-0.3506, 0.780),
             "box_5_button_1": (-0.3506, 0.914),
@@ -2100,6 +2102,7 @@ def main() -> int:
                     "knob": 0.020,
                     "switch": 0.012,
                     "door": 0.0145,
+                    "drawer": 0.005,
                 }[control_type]
                 configured_offset = float(
                     spec.get("grasp_outward_offset", grasp_offset)

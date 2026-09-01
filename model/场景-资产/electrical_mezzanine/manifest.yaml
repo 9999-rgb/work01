@@ -1,7 +1,7 @@
 # 场景资产：电气夹层巡检场景（electrical_mezzanine）。
 #
-# 自包含 Nav2 地图；地板沿用 description 包的静态 SDF
-# （package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.sdf），
+# 自包含 Nav2 地图；地板沿用 description 包的场景 xacro
+# （package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.xacro），
 # 属固定资产引用，导入时原样保留。spawn_cabinet: false，不带柜体。
 kind: scene
 name: electrical_mezzanine

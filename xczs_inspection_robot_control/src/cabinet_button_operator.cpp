@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -63,7 +64,9 @@
 #include "xczs_inspection_robot_control/staging_safety_policy.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
 #include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_bimanual_grasp.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_unlock.hpp"
 
 namespace xczs_inspection_robot_control
 {
@@ -206,6 +209,30 @@ struct ToolProfile
   std::vector<double> calibration_joint_positions;
 };
 
+// Per-arm tool profile for a bimanual drawer operation.  The right
+// three-cylinder (right_arm) unlocks and grasps the right handle; the left
+// two-cylinder (left_arm) grasps the left handle.  Two separate MoveIt move
+// groups and two separate trajectory controllers let both arms move in
+// synchrony during the pull/push.
+struct BimanualToolProfile
+{
+  std::string move_group;
+  std::string contact_tool_link;
+  tf2::Vector3 tool_tip_position{0.0, 0.0, 0.0};
+  std::vector<std::string> calibration_joint_names;
+  std::vector<double> calibration_joint_positions;
+  std::string transport_named_target{"home"};
+};
+
+// Which of the two drawer side tools a pose belongs to.  Every drawer-side
+// target is computed against that side's tool profile (business-point offset,
+// contact link, calibration joints and transport target).
+enum class DrawerSide
+{
+  LEFT,
+  RIGHT
+};
+
 struct ButtonSnapshot
 {
   bool received{false};
@@ -309,6 +336,45 @@ struct ButtonSpec
   // closed and the ~4 N closed spring drags the panel (and the tool) back to
   // the closed detent (boots 14/17).
   double slider_close_press_offset{0.0};
+  // Front-drawer operation: the robot docks on the panel's OUTWARD side and
+  // grasps the panel front face (plugin fixed grasp joint) instead of pushing
+  // the west push-push latch.  The operator then drags the panel linearly
+  // along its slide axis -- pull to open, push to close.  graspable=true in
+  // the scene SDF is the physical precondition; this flag switches the
+  // execution branch from the push-push flow to the grasp-drag flow.
+  bool grasp_operated{false};
+  // ---- Bimanual pull-out drawer contract (TYPE_DRAWER) ----
+  // All points live in the cabinet/local fixture frame (== world/map for a
+  // unit-pose scene spawn) and are frozen by the P0 geometry contract.  The
+  // drawer slides along drawer_axis (P0 measured +X = east, toward the robot).
+  // The right three-cylinder pushes into the logical unlock zone beside the
+  // right handle, both tools then grasp both handles (plugin bimanual fixed
+  // joints), and the two arms pull/push the drawer in synchrony along the axis.
+  bool drawer_bimanual{false};
+  tf2::Vector3 drawer_axis{0.0, 0.0, 0.0};
+  bool has_left_handle_point{false};
+  tf2::Vector3 left_handle_point{0.0, 0.0, 0.0};
+  bool has_right_handle_point{false};
+  tf2::Vector3 right_handle_point{0.0, 0.0, 0.0};
+  bool has_left_support_point{false};
+  tf2::Vector3 left_support_point{0.0, 0.0, 0.0};
+  bool has_right_support_point{false};
+  tf2::Vector3 right_support_point{0.0, 0.0, 0.0};
+  bool has_unlock_zone_point{false};
+  tf2::Vector3 unlock_zone_point{0.0, 0.0, 0.0};
+  // Per-drawer approach extension: how far each tool's business point rides
+  // OUTWARD (along the drawer outward normal) from its handle when grasping.
+  // Two- and three-cylinder effective contact reach differs, so the extension
+  // is read from each drawer's contract rather than hard-coded globally.
+  double drawer_grasp_outward_offset{0.020};
+  // Right-tool distance from the unlock zone accepted by the plugin latch
+  // release; mirrors the scene <unlock_distance_threshold>.
+  double drawer_unlock_distance_threshold{0.100};
+  // Maximum left/right tool-tip translation mismatch tolerated during the
+  // synchronized pull/push before the operation aborts and detaches.
+  double drawer_sync_tolerance{0.050};
+  double drawer_open_position{0.30};
+  double drawer_closed_position{0.0};
   // Optional named MoveIt joint seed for the ready-pose IK.  A redundant arm
   // can otherwise reach the same pose through a branch that cannot continue
   // through the subsequent Cartesian manipulation.
@@ -492,6 +558,10 @@ public:
       "cabinet_pose_rotation_tolerance", 0.035);
     const auto grasp_service = declare_parameter<std::string>(
       "grasp_service", "grasp");
+    const auto bimanual_grasp_service = declare_parameter<std::string>(
+      "bimanual_grasp_service", "bimanual_grasp");
+    const auto unlock_service = declare_parameter<std::string>(
+      "unlock_service", "unlock");
     const auto reset_physics_service = declare_parameter<std::string>(
       "reset_physics_service", "reset_physics");
     const auto manual_cmd_vel_topic = required_string_parameter(
@@ -677,6 +747,8 @@ public:
       "planning_scene_settle_seconds", 0.50);
     rotation_waypoint_step_ = positive_parameter(
       "rotation_waypoint_step", 0.03490658504);
+    drawer_waypoint_step_ = positive_parameter(
+      "drawer_waypoint_step", 0.03);
     cartesian_velocity_scale_ = unit_interval_parameter(
       "cartesian_velocity_scale", 0.08);
     cartesian_acceleration_scale_ = unit_interval_parameter(
@@ -744,6 +816,12 @@ public:
     grasp_client_ =
       create_client<xczs_inspection_robot_interfaces::srv::SetCabinetGrasp>(
       grasp_service);
+    bimanual_grasp_client_ = create_client<
+      xczs_inspection_robot_interfaces::srv::SetCabinetBimanualGrasp>(
+      bimanual_grasp_service);
+    unlock_client_ =
+      create_client<xczs_inspection_robot_interfaces::srv::SetCabinetUnlock>(
+      unlock_service);
     reset_client_callback_group_ = create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
     reset_physics_client_ = create_client<std_srvs::srv::Trigger>(
@@ -994,6 +1072,79 @@ private:
     return profile;
   }
 
+  BimanualToolProfile read_bimanual_tool_profile(const std::string & side)
+  {
+    const std::string prefix = "drawer_tools." + side + ".";
+    BimanualToolProfile profile;
+    profile.move_group = declare_parameter<std::string>(
+      prefix + "move_group", "");
+    profile.contact_tool_link = declare_parameter<std::string>(
+      prefix + "contact_tool_link", "");
+    const auto tool_tip_position = declare_parameter<std::vector<double>>(
+      prefix + "tool_tip_position", std::vector<double>{0.0, 0.0, 0.0});
+    if (tool_tip_position.size() != 3U ||
+      std::any_of(
+        tool_tip_position.begin(), tool_tip_position.end(),
+        [](double value) {return !std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "Parameter '" + prefix +
+              "tool_tip_position' must contain three finite values.");
+    }
+    profile.tool_tip_position = tf2::Vector3(
+      tool_tip_position[0], tool_tip_position[1], tool_tip_position[2]);
+    profile.calibration_joint_names =
+      declare_parameter<std::vector<std::string>>(
+      prefix + "calibration_joint_names", std::vector<std::string>{});
+    profile.calibration_joint_positions =
+      declare_parameter<std::vector<double>>(
+      prefix + "calibration_joint_positions", std::vector<double>{});
+    const std::unordered_set<std::string> unique_calibration_joints(
+      profile.calibration_joint_names.begin(),
+      profile.calibration_joint_names.end());
+    if (profile.calibration_joint_names.size() !=
+      profile.calibration_joint_positions.size() ||
+      unique_calibration_joints.size() !=
+      profile.calibration_joint_names.size() ||
+      std::any_of(
+        profile.calibration_joint_names.begin(),
+        profile.calibration_joint_names.end(),
+        [](const std::string & value) {return value.empty();}) ||
+      std::any_of(
+        profile.calibration_joint_positions.begin(),
+        profile.calibration_joint_positions.end(),
+        [](double value) {return !std::isfinite(value);}))
+    {
+      throw std::invalid_argument(
+              "Drawer tool '" + side +
+              "' calibration joint names/positions must be finite, unique "
+              "and have equal length.");
+    }
+    profile.transport_named_target = declare_parameter<std::string>(
+      prefix + "transport_named_target", profile.transport_named_target);
+    if (profile.transport_named_target.empty()) {
+      throw std::invalid_argument(
+              "Drawer tool '" + side +
+              "' transport_named_target must be non-empty.");
+    }
+    return profile;
+  }
+
+  void require_drawer_tools_configured() const
+  {
+    if (!drawer_tools_configured_ ||
+      drawer_left_tool_.move_group.empty() ||
+      drawer_right_tool_.move_group.empty() ||
+      drawer_left_tool_.contact_tool_link.empty() ||
+      drawer_right_tool_.contact_tool_link.empty())
+    {
+      throw std::invalid_argument(
+              "Bimanual drawer control requires 'drawer_tools.left' and "
+              "'drawer_tools.right' tool profiles (move_group and "
+              "contact_tool_link each).");
+    }
+  }
+
   void load_tool_profiles()
   {
     using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
@@ -1035,6 +1186,17 @@ private:
       }
     }
     apply_tool_profile(Control::TYPE_BUTTON);
+
+    // Bimanual drawer tool profiles are optional at the parameter level (a
+    // legacy adapter without drawers declares neither), but required by
+    // require_drawer_tools_configured() the moment any drawer control exists.
+    drawer_left_tool_ = read_bimanual_tool_profile("left");
+    drawer_right_tool_ = read_bimanual_tool_profile("right");
+    drawer_tools_configured_ =
+      !drawer_left_tool_.move_group.empty() &&
+      !drawer_right_tool_.move_group.empty() &&
+      !drawer_left_tool_.contact_tool_link.empty() &&
+      !drawer_right_tool_.contact_tool_link.empty();
   }
 
   void apply_tool_profile(std::uint8_t control_type)
@@ -1057,6 +1219,27 @@ private:
     tool_tip_calibration_joint_names_ = profile.calibration_joint_names;
     tool_tip_calibration_joint_positions_ =
       profile.calibration_joint_positions;
+  }
+
+  // Bind the legacy single-arm members to the RIGHT drawer tool so the shared
+  // transport / docking / calibration code drives the right arm for a drawer
+  // operation.  The left arm is driven only through the bimanual helpers
+  // (plan_and_execute_bimanual_poses / execute_bimanual_segmented_cartesian
+  // _path), which always name their own group and contact link.  The tool-axis
+  // orientation is intentionally left untouched: the bimanual drawer uses the
+  // same ALONG_OUTWARD convention as the mounted Set-A right tool.
+  void apply_drawer_tool_profiles()
+  {
+    require_drawer_tools_configured();
+    move_group_name_ = drawer_right_tool_.move_group;
+    contact_tool_link_ = drawer_right_tool_.contact_tool_link;
+    grasp_link_ = drawer_right_tool_.contact_tool_link;
+    transport_named_target_ = drawer_right_tool_.transport_named_target;
+    tool_tip_position_ = drawer_right_tool_.tool_tip_position;
+    tool_tip_calibration_joint_names_ =
+      drawer_right_tool_.calibration_joint_names;
+    tool_tip_calibration_joint_positions_ =
+      drawer_right_tool_.calibration_joint_positions;
   }
 
   void verify_tool_tip_calibration_state(
@@ -1102,11 +1285,13 @@ private:
   // 返回前轮询标定关节直到实际回到业务位姿（或超时），并把合拢后的最新
   // 状态返回给调用方立即校验，避免校验读到 execute 之前的陈旧快照。
   template<typename GoalHandleT>
-  moveit::core::RobotStatePtr ensure_tool_calibration_position(
+  moveit::core::RobotStatePtr ensure_calibration_position_for_arm(
     MoveGroupInterface & arm_move_group,
-    const std::shared_ptr<GoalHandleT> & goal_handle)
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const std::vector<std::string> & calibration_joint_names,
+    const std::vector<double> & calibration_joint_positions)
   {
-    if (tool_tip_calibration_joint_names_.empty()) {
+    if (calibration_joint_names.empty()) {
       // 该工具 profile 无标定关节（knob/switch），无需合拢
       return synchronized_current_robot_state(arm_move_group);
     }
@@ -1114,20 +1299,20 @@ private:
       synchronized_current_robot_state(arm_move_group);
     bool already_calibrated = true;
     for (std::size_t index = 0U;
-      index < tool_tip_calibration_joint_names_.size(); ++index)
+      index < calibration_joint_names.size(); ++index)
     {
       double measured;
       try {
         measured = current_state->getVariablePosition(
-          tool_tip_calibration_joint_names_[index]);
+          calibration_joint_names[index]);
       } catch (const std::exception & error) {
         throw OperationError(
                 PressCabinetButton::Result::NOT_READY,
                 "Tool calibration references unknown joint '" +
-                tool_tip_calibration_joint_names_[index] + "': " +
+                calibration_joint_names[index] + "': " +
                 error.what());
       }
-      const double expected = tool_tip_calibration_joint_positions_[index];
+      const double expected = calibration_joint_positions[index];
       if (!std::isfinite(measured) ||
         std::abs(measured - expected) > tool_tip_calibration_joint_tolerance_)
       {
@@ -1142,7 +1327,7 @@ private:
     std::string calibration_group;
     for (const auto * group : robot_model->getJointModelGroups()) {
       bool contains_all = true;
-      for (const auto & joint_name : tool_tip_calibration_joint_names_) {
+      for (const auto & joint_name : calibration_joint_names) {
         if (group->getJointModel(joint_name) == nullptr) {
           contains_all = false;
           break;
@@ -1179,8 +1364,8 @@ private:
     tool_group.setGoalJointTolerance(goal_joint_tolerance_);
     tool_group.allowReplanning(allow_replanning_);
     tool_group.setJointValueTarget(
-      tool_tip_calibration_joint_names_,
-      tool_tip_calibration_joint_positions_);
+      calibration_joint_names,
+      calibration_joint_positions);
     MoveGroupInterface::Plan plan;
     const auto planning_result = tool_group.plan(plan);
     if (planning_result != moveit::core::MoveItErrorCode::SUCCESS) {
@@ -1213,20 +1398,20 @@ private:
         synchronized_current_robot_state(arm_move_group);
       bool within_tolerance = true;
       for (std::size_t index = 0U;
-        index < tool_tip_calibration_joint_names_.size(); ++index)
+        index < calibration_joint_names.size(); ++index)
       {
         double measured;
         try {
           measured = settled_state->getVariablePosition(
-            tool_tip_calibration_joint_names_[index]);
+            calibration_joint_names[index]);
         } catch (const std::exception & error) {
           throw OperationError(
                   PressCabinetButton::Result::NOT_READY,
                   "Tool calibration references unknown joint '" +
-                  tool_tip_calibration_joint_names_[index] + "': " +
+                  calibration_joint_names[index] + "': " +
                   error.what());
         }
-        const double expected = tool_tip_calibration_joint_positions_[index];
+        const double expected = calibration_joint_positions[index];
         if (!std::isfinite(measured) ||
           std::abs(measured - expected) > tool_tip_calibration_joint_tolerance_)
         {
@@ -1244,19 +1429,19 @@ private:
     std::string detail;
     const auto final_state = synchronized_current_robot_state(arm_move_group);
     for (std::size_t index = 0U;
-      index < tool_tip_calibration_joint_names_.size(); ++index)
+      index < calibration_joint_names.size(); ++index)
     {
       double measured = std::numeric_limits<double>::quiet_NaN();
       try {
         measured = final_state->getVariablePosition(
-          tool_tip_calibration_joint_names_[index]);
+          calibration_joint_names[index]);
       } catch (const std::exception &) {
       }
-      const double expected = tool_tip_calibration_joint_positions_[index];
+      const double expected = calibration_joint_positions[index];
       if (!detail.empty()) {
         detail += "; ";
       }
-      detail += tool_tip_calibration_joint_names_[index] + "=" +
+      detail += calibration_joint_names[index] + "=" +
         (std::isfinite(measured) ? std::to_string(measured) : "nan") +
         " (expected " + std::to_string(expected) + ")";
     }
@@ -1266,6 +1451,36 @@ private:
             "business-point positions within " +
             std::to_string(tool_calibration_settle_timeout_) + " s after "
             "the joint-close trajectory: " + detail);
+  }
+  // 单臂调用点：以当前已应用的工具 profile 的标定关节执行合拢。
+  template<typename GoalHandleT>
+  moveit::core::RobotStatePtr ensure_tool_calibration_position(
+    MoveGroupInterface & arm_move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle)
+  {
+    return ensure_calibration_position_for_arm(
+      arm_move_group, goal_handle,
+      tool_tip_calibration_joint_names_, tool_tip_calibration_joint_positions_);
+  }
+
+  // Close BOTH drawer tool profiles' calibration joints before any bimanual
+  // arm motion.  The right arm reuses the single-arm path (the members are
+  // bound to the right drawer profile); the left arm closes its own joints.
+  // Returns the settled states in (left, right) order for immediate verify.
+  template<typename GoalHandleT>
+  std::pair<moveit::core::RobotStatePtr, moveit::core::RobotStatePtr>
+  ensure_bimanual_calibration_position(
+    MoveGroupInterface & left_group,
+    MoveGroupInterface & right_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle)
+  {
+    const auto right_state =
+      ensure_tool_calibration_position(right_group, goal_handle);
+    const auto left_state = ensure_calibration_position_for_arm(
+      left_group, goal_handle,
+      drawer_left_tool_.calibration_joint_names,
+      drawer_left_tool_.calibration_joint_positions);
+    return {left_state, right_state};
   }
 
   void require_absolute_ros_name(
@@ -1569,7 +1784,8 @@ private:
     }
     return control_type == Control::TYPE_BUTTON ||
            control_type == Control::TYPE_DOOR ||
-           control_type == Control::TYPE_SLIDER;
+           control_type == Control::TYPE_SLIDER ||
+           control_type == Control::TYPE_DRAWER;
   }
 
   std::string required_toolset_for_control(std::uint8_t control_type) const
@@ -1587,6 +1803,12 @@ private:
   {
     using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
     return control_type == Control::TYPE_SLIDER;
+  }
+
+  static bool is_drawer_type(std::uint8_t control_type)
+  {
+    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
+    return control_type == Control::TYPE_DRAWER;
   }
 
   static bool is_grasp_free_type(std::uint8_t control_type)
@@ -1730,6 +1952,9 @@ private:
       } else if (type_name == "slider") {
         button->control_type =
           xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_SLIDER;
+      } else if (type_name == "drawer") {
+        button->control_type =
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DRAWER;
       } else {
         throw std::invalid_argument(
                 "Unsupported control type '" + type_name + "' for '" +
@@ -1979,18 +2204,33 @@ private:
       }
       button->parent_control_id = declare_parameter<std::string>(
         prefix + "parent_control_id", "");
+      button->grasp_operated = declare_parameter<bool>(
+        prefix + "grasp_operated", false);
+      const bool is_drawer = is_drawer_type(button->control_type);
+      if (button->grasp_operated && !is_slider && !is_drawer) {
+        throw std::invalid_argument(
+                "Control '" + control_id +
+                "' grasp_operated is only supported for slider and drawer "
+                "controls.");
+      }
+      // A front-operated drawer (grasp_operated) is no longer a grasp-free
+      // control: its execution branch attaches the probe to the panel and drags
+      // it.  Derive the effective grasp-free flag so requires_grasp, the grasp
+      // outward offset and the unit all follow the intended branch.
+      const bool is_grasp_free =
+        is_grasp_free_type(button->control_type) && !button->grasp_operated;
       button->requires_grasp = declare_parameter<bool>(
-        prefix + "requires_grasp", !is_grasp_free_type(button->control_type));
+        prefix + "requires_grasp", !is_grasp_free);
       if (!grasp_requirement_matches_control_kind(
-          is_grasp_free_type(button->control_type), button->requires_grasp))
+          is_grasp_free, button->requires_grasp))
       {
         throw std::invalid_argument(
                 "Control '" + control_id + "' requires_grasp must be " +
-                (is_grasp_free_type(button->control_type) ?
+                (is_grasp_free ?
                 "false for a button or slider." :
                 "true for a knob, switch or door."));
       }
-      if (!is_grasp_free_type(button->control_type)) {
+      if (!is_grasp_free) {
         const double default_grasp_offset = is_knob ?
           grasp_outward_offset_ : (is_switch ? 0.012 : 0.015);
         button->grasp_outward_offset = declare_parameter<double>(
@@ -2003,8 +2243,90 @@ private:
                   "' has an invalid grasp outward offset.");
         }
       }
-      button->unit =
-        is_grasp_free_type(button->control_type) ? "m" : "rad";
+      // A drawer travels linearly along its rail (m); a grasped rotary control
+      // reports angular travel (rad).
+      button->unit = (is_grasp_free || is_drawer) ? "m" : "rad";
+      if (is_drawer) {
+        // Bimanual pull-out drawer contract (P0-frozen geometry).  The drawer
+        // branch drives two arms, so it requires the full dual-side contract
+        // (left/right handles, supports, the right-hand unlock zone and the
+        // slide axis).  Missing fields fail loudly at startup rather than at
+        // operation time.
+        require_drawer_tools_configured();
+        button->drawer_bimanual = true;
+        button->drawer_axis = checked_vector3(
+          declare_parameter<std::vector<double>>(
+            prefix + "drawer_axis", std::vector<double>{}),
+          prefix + "drawer_axis");
+        if (button->drawer_axis.length2() <= 1.0e-12) {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' drawer_axis must be a non-zero vector.");
+        }
+        button->drawer_axis.normalize();
+        const auto require_point = [&](const char * key,
+            tf2::Vector3 & target) {
+          target = checked_vector3(
+            declare_parameter<std::vector<double>>(
+              prefix + key, std::vector<double>{}),
+            prefix + key);
+        };
+        require_point("left_handle_point", button->left_handle_point);
+        button->has_left_handle_point = true;
+        require_point("right_handle_point", button->right_handle_point);
+        button->has_right_handle_point = true;
+        require_point("left_support_point", button->left_support_point);
+        button->has_left_support_point = true;
+        require_point("right_support_point", button->right_support_point);
+        button->has_right_support_point = true;
+        require_point("unlock_zone_point", button->unlock_zone_point);
+        button->has_unlock_zone_point = true;
+        button->drawer_grasp_outward_offset = declare_parameter<double>(
+          prefix + "drawer_grasp_outward_offset",
+          button->drawer_grasp_outward_offset);
+        if (!std::isfinite(button->drawer_grasp_outward_offset) ||
+          button->drawer_grasp_outward_offset < 0.0)
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' drawer_grasp_outward_offset must be finite and "
+                  "non-negative.");
+        }
+        button->drawer_unlock_distance_threshold = declare_parameter<double>(
+          prefix + "drawer_unlock_distance_threshold",
+          button->drawer_unlock_distance_threshold);
+        if (!std::isfinite(button->drawer_unlock_distance_threshold) ||
+          button->drawer_unlock_distance_threshold <= 0.0)
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' drawer_unlock_distance_threshold must be positive and "
+                  "finite.");
+        }
+        button->drawer_sync_tolerance = declare_parameter<double>(
+          prefix + "drawer_sync_tolerance", button->drawer_sync_tolerance);
+        if (!std::isfinite(button->drawer_sync_tolerance) ||
+          button->drawer_sync_tolerance <= 0.0)
+        {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' drawer_sync_tolerance must be positive and finite.");
+        }
+        if (button->state_ids.size() >= 2U &&
+          button->state_positions.size() >= 2U)
+        {
+          // closed/open detents are the operation endpoints; the remaining
+          // fields fall back to the frozen 0.0 / 0.30 defaults.
+          button->drawer_closed_position = button->state_positions.front();
+          button->drawer_open_position = button->state_positions.back();
+        }
+        if (button->drawer_open_position <= button->drawer_closed_position) {
+          throw std::invalid_argument(
+                  "Control '" + control_id +
+                  "' open detent must be strictly greater than the closed "
+                  "detent.");
+        }
+      }
       if (is_slider) {
         button->slider_release_position = declare_parameter<double>(
           prefix + "slider_release_position",
@@ -2053,7 +2375,7 @@ private:
           xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_SET_STATE |
           xczs_inspection_robot_interfaces::msg::CabinetControl::
           SUPPORT_SET_POSITION |
-          ((is_knob) ? 0U :
+          ((is_knob || is_drawer) ? 0U :
           xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_TOGGLE));
       }
       if (button->display_name.empty() || button->joint_name.empty() ||
@@ -2096,7 +2418,11 @@ private:
                 "Control '" + control_id +
                 "' has invalid limits or state presets.");
       }
-      if (is_slider &&
+      // A front-operated drawer (grasp_operated) has no push-push release
+      // mechanism: the panel is dragged along the slide axis and there is no
+      // over-travel trip point, so slider_release_position is intentionally
+      // absent for such controls.
+      if (is_slider && !button->grasp_operated &&
         (!std::isfinite(button->slider_release_position) ||
         button->state_positions.empty() ||
         button->slider_release_position <= button->state_positions.back() ||
@@ -2959,6 +3285,9 @@ private:
     OperationPoses button_poses;
     OperationPoses slider_poses;
     RotaryOperationPoses rotary_poses;
+    // Grasp-drag staging for a front-operated drawer (grasp_operated slider).
+    RotaryOperationPoses drawer_poses;
+    std::vector<geometry_msgs::msg::Pose> drawer_waypoints;
     std::optional<ControlStagingPoses> staging_poses;
     bool should_attempt_retreat = false;
     bool grasp_attached = false;
@@ -2974,6 +3303,16 @@ private:
     bool button_should_trigger = false;
     bool is_button = false;
     bool is_slider = false;
+    bool is_drawer = false;
+    // Bimanual drawer state: the left arm runs on its own group, the right arm
+    // on the shared move_group.  drawer_bimanual_attached tracks the plugin's
+    // two-sided fixed constraint so recovery knows whether the drawer is still
+    // rigidly held before it retreats either arm.
+    std::shared_ptr<MoveGroupInterface> drawer_left_move_group;
+    bool drawer_bimanual_attached = false;
+    DrawerBimanualPoses drawer_bimanual_poses;
+    std::vector<geometry_msgs::msg::Pose> drawer_left_waypoints;
+    std::vector<geometry_msgs::msg::Pose> drawer_right_waypoints;
     const bool validation_only = control &&
       requires_planning_only_validation(control->operable);
     const auto preparation_policy = operation_preparation_policy(
@@ -3029,7 +3368,14 @@ private:
       }
       // Bind this operation's arm group, tip link, contact tool link and
       // transport target to the control's type before any MoveIt planning.
-      apply_tool_profile(control->control_type);
+      // A bimanual drawer binds the single-arm members to the RIGHT drawer
+      // tool so the shared transport/calibration/docking code drives the right
+      // arm; the left arm is driven only through the bimanual helpers.
+      if (is_drawer_type(control->control_type)) {
+        apply_drawer_tool_profiles();
+      } else {
+        apply_tool_profile(control->control_type);
+      }
       if (validation_only) {
         result->policy_reason = control->unavailable_reason.empty() ?
           "The selected control has not passed this robot adapter's complete "
@@ -3040,6 +3386,7 @@ private:
       is_button = control->control_type ==
         xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
       is_slider = is_slider_type(control->control_type);
+      is_drawer = is_drawer_type(control->control_type);
       // Command-level validation: check that the command is compatible with
       // the control type and that its parameters are valid.  This runs inside
       // the accepted goal so that the caller receives a structured failure
@@ -3235,6 +3582,25 @@ private:
       if (is_button) {
         button_poses = calculate_operation_poses(
           *control, button_press_depth);
+      } else if (is_drawer) {
+        // Bimanual drawer: left/right ready, support, grasp and the right-arm
+        // unlock pose are fixed against the (frozen) P0 geometry; the matched
+        // left/right waypoint pairs command the same drawer rail position.
+        drawer_bimanual_poses = calculate_drawer_bimanual_operation_poses(
+          *control, initial_state.position);
+        calculate_drawer_bimanual_waypoints(
+          *control, initial_state.position, target_position,
+          drawer_left_waypoints, drawer_right_waypoints);
+      } else if (is_slider && control->grasp_operated) {
+        // Front-drawer: grasp-drag flow.  The manipulation waypoints follow
+        // the slide axis from the panel's current position to the requested
+        // detent -- pull east to open, push west to close -- with the probe
+        // rigidly attached to the panel front face.
+        drawer_poses = calculate_drawer_operation_poses(
+          *control, initial_state.position, rotary_tool_roll_offset);
+        drawer_waypoints = calculate_drawer_waypoints(
+          *control, initial_state.position, target_position,
+          rotary_tool_roll_offset);
       } else if (is_slider) {
         // The press face adapts to the current slide position.  Opening pushes
         // the panel forward to the target detent (target > current).  Closing
@@ -3293,9 +3659,35 @@ private:
         motion_execute_serial_->wedged_lock.reset();
       }
       configure_move_group(*move_group);
-      const auto current_robot_state =
-        ensure_tool_calibration_position(*move_group, goal_handle);
-      verify_tool_tip_calibration_state(*current_robot_state);
+      moveit::core::RobotStatePtr calibrated_robot_state;
+      if (is_drawer) {
+        // The bimanual drawer also owns the left arm: create and configure its
+        // group up front so recovery can always retreat it, then close BOTH
+        // tool profiles' calibration joints before the first arm motion.
+        drawer_left_move_group = std::make_shared<MoveGroupInterface>(
+          shared_from_this(),
+          MoveGroupInterface::Options(
+            drawer_left_tool_.move_group, "robot_description",
+            move_group_namespace_),
+          transform_buffer_,
+          rclcpp::Duration::from_seconds(system_wait_timeout_));
+        // The LEFT arm's EEF is the left tool's contact link, NOT the active
+        // right tool (contact_tool_link_).  Setting the right-tool link on the
+        // left group made move_group resolve the Cartesian path for
+        // 'r_three_cyl_base' against a left-arm group whose tip is 'l_arm_6',
+        // failing every IK query (P3-8 db1 Cartesian 0%).
+        configure_move_group(
+          *drawer_left_move_group, drawer_left_tool_.contact_tool_link);
+        const auto bimanual_states = ensure_bimanual_calibration_position(
+          *drawer_left_move_group, *move_group, goal_handle);
+        verify_bimanual_tool_calibration_state(
+          *bimanual_states.first, *bimanual_states.second);
+        calibrated_robot_state = bimanual_states.second;
+      } else {
+        calibrated_robot_state =
+          ensure_tool_calibration_position(*move_group, goal_handle);
+        verify_tool_tip_calibration_state(*calibrated_robot_state);
+      }
 
       if (validation_only) {
         result->operation_executed = false;
@@ -3303,7 +3695,7 @@ private:
         validate_inoperable_control_path(
           *move_group, goal_handle, *control, initial_state,
           target_position, is_slider ? slider_poses : button_poses,
-          rotary_poses, rotary_tool_roll_offset, *current_robot_state, result);
+          rotary_poses, rotary_tool_roll_offset, *calibrated_robot_state, result);
         result->diagnostic_stage = "complete";
         result->path_fraction = 1.0;
         result->required_fraction = 1.0;
@@ -3355,6 +3747,18 @@ private:
         if (is_button) {
           button_poses = calculate_operation_poses(
             *control, button_press_depth);
+        } else if (is_drawer) {
+          drawer_bimanual_poses = calculate_drawer_bimanual_operation_poses(
+            *control, initial_state.position);
+          calculate_drawer_bimanual_waypoints(
+            *control, initial_state.position, target_position,
+            drawer_left_waypoints, drawer_right_waypoints);
+        } else if (is_slider && control->grasp_operated) {
+          drawer_poses = calculate_drawer_operation_poses(
+            *control, initial_state.position, rotary_tool_roll_offset);
+          drawer_waypoints = calculate_drawer_waypoints(
+            *control, initial_state.position, target_position,
+            rotary_tool_roll_offset);
         } else if (is_slider) {
           const double slider_press_target =
             target_position < initial_state.position ?
@@ -3389,9 +3793,16 @@ private:
         verify_staging_pose_before_arm_motion(
           goal_handle, staging_poses->planning_pose);
       }
-      const auto predelivery_robot_state =
-        ensure_tool_calibration_position(*move_group, goal_handle);
-      verify_tool_tip_calibration_state(*predelivery_robot_state);
+      if (is_drawer) {
+        const auto bimanual_states = ensure_bimanual_calibration_position(
+          *drawer_left_move_group, *move_group, goal_handle);
+        verify_bimanual_tool_calibration_state(
+          *bimanual_states.first, *bimanual_states.second);
+      } else {
+        const auto predelivery_robot_state =
+          ensure_tool_calibration_position(*move_group, goal_handle);
+        verify_tool_tip_calibration_state(*predelivery_robot_state);
+      }
 
       if (is_button) {
         result->diagnostic_stage = "ready";
@@ -3500,6 +3911,274 @@ private:
         // The press and spring return are both verified above.  Commit before
         // safety transport so a late client cancel cannot cause a duplicate
         // physical press on retry.
+        if (!commit_active_goal_physical_outcome(
+            ActiveGoalType::OPERATE, goal_handle->get_goal_id()))
+        {
+          check_cancel(goal_handle);
+        }
+        result->physical_outcome_confirmed = true;
+        result->final_state_verified = true;
+      } else if (is_drawer) {
+        // 正面双手抽屉：与单臂 slider 抓拖流程不同，这是真正的双手操作
+        // （执行方案 §4.1/§4.2/§5 状态机）。打开时：解锁 → 支撑 → 双爪 →
+        // 同步抽出 → 开位确认 → 释放 → 撤回/收起；关闭时：双手重新到达开位
+        // 把手 → 支撑 → 双爪 → 同步推回 → 关位确认（恢复锁止）→ 释放 →
+        // 撤回/收起。抽拉与推回段都是双臂同一时间基准的同步运动；关闭不
+        // 重复打开阶段的解锁推进。
+        const bool closing = target_position < initial_state.position;
+        result->diagnostic_stage = "ready";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MOVING_TO_READY,
+          0.25F, target_position,
+          "Planning both arms to the drawer ready poses.");
+        plan_and_execute_bimanual_poses(
+          drawer_left_move_group, move_group, goal_handle,
+          drawer_bimanual_poses.left_ready_pose,
+          drawer_bimanual_poses.right_ready_pose,
+          &result->operation_executed, "drawer ready");
+        should_attempt_retreat = true;
+        if (!closing) {
+          // 右手三电缸进入右把手附近的解锁推进区并完成解锁推进；解锁区是
+          // 逻辑接触区（合同 unlock_zone_point），不是 *p 指示灯。
+          result->diagnostic_stage = "unlock";
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::APPROACHING,
+            0.35F, target_position,
+            "Advancing the right tool into the drawer unlock zone.");
+          plan_and_execute_pose(
+            *move_group, goal_handle, drawer_bimanual_poses.unlock_pose,
+            contact_tool_link_, &result->operation_executed, control.get());
+          set_drawer_unlock(goal_handle, *control, true, true);
+        }
+        result->diagnostic_stage = "support";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::APPROACHING,
+          0.40F, target_position,
+          "Placing both tool supports against the drawer face.");
+        plan_and_execute_bimanual_poses(
+          drawer_left_move_group, move_group, goal_handle,
+          drawer_bimanual_poses.left_support_pose,
+          drawer_bimanual_poses.right_support_pose,
+          &result->operation_executed, "drawer support");
+        result->diagnostic_stage = "approach";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::APPROACHING,
+          0.43F, target_position,
+          "Approaching both drawer handles for the bimanual grasp.");
+        plan_and_execute_bimanual_poses(
+          drawer_left_move_group, move_group, goal_handle,
+          drawer_bimanual_poses.left_pregrasp_pose,
+          drawer_bimanual_poses.right_pregrasp_pose,
+          &result->operation_executed, "drawer pregrasp");
+        {
+          std::size_t approach_waypoints = 0U;
+          execute_bimanual_segmented_cartesian_path(
+            drawer_left_move_group, move_group, goal_handle,
+            {drawer_bimanual_poses.left_grasp_pose},
+            {drawer_bimanual_poses.right_grasp_pose},
+            1U, cartesian_velocity_scale_ * 0.5,
+            cartesian_acceleration_scale_ * 0.5,
+            approach_waypoints, &result->operation_executed);
+        }
+        result->diagnostic_stage = "grasp";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::GRASPING,
+          0.52F, target_position,
+          "Attaching both end effectors to the drawer handles.");
+        set_drawer_bimanual_grasp(goal_handle, *control, true);
+        drawer_bimanual_attached = true;
+        interruptible_hold(goal_handle, grasp_attach_settle_duration_);
+        result->diagnostic_stage = "manipulation";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MANIPULATING,
+          closing ? 0.72F : 0.62F, target_position,
+          closing ?
+          "Pushing the drawer closed with both arms." :
+          "Pulling the drawer open with both arms.");
+        {
+          std::size_t drawer_completed_waypoints = 0U;
+          execute_bimanual_segmented_cartesian_path(
+            drawer_left_move_group, move_group, goal_handle,
+            drawer_left_waypoints, drawer_right_waypoints,
+            static_cast<std::size_t>(door_cartesian_segment_waypoints_),
+            cartesian_velocity_scale_ * 0.5,
+            cartesian_acceleration_scale_ * 0.5,
+            drawer_completed_waypoints, &result->operation_executed);
+        }
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::VERIFYING,
+          0.84F, target_position,
+          "Verifying that the drawer reached its requested detent.");
+        if (!wait_for_slider_detent(
+            goal_handle, *control, target_state, target_position,
+            door_settle_timeout_))
+        {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::CONTACT_DETECTION_TIMEOUT,
+                  "The drawer did not reach the requested detent '" +
+                  target_state + "' with both arms.");
+        }
+        result->diagnostic_stage = "release";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::RELEASING,
+          0.90F, target_position,
+          "Releasing the bimanual drawer grasp at the requested detent.");
+        set_drawer_bimanual_grasp(goal_handle, *control, false);
+        drawer_bimanual_attached = false;
+        result->grasp_released = true;
+        result->diagnostic_stage = "retreat";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::RETREATING,
+          0.94F, target_position,
+          "Retreating both arms before stowing.");
+        best_effort_bimanual_retreat_and_stow(
+          drawer_left_move_group, move_group, *control,
+          &result->operation_executed);
+        should_attempt_retreat = false;
+        const auto drawer_state = button_snapshot(*control);
+        result->peak_position = drawer_state.peak_position;
+        result->button_triggered = target_state != initial_state.state_id;
+        if (!commit_active_goal_physical_outcome(
+            ActiveGoalType::OPERATE, goal_handle->get_goal_id()))
+        {
+          check_cancel(goal_handle);
+        }
+        result->physical_outcome_confirmed = true;
+        result->final_state_verified = true;
+      } else if (is_slider && control->grasp_operated) {
+        // 正面抽拉抽屉：与 door/knob 的 grasp 流程同构，但为平移关节 --
+        // ready 停在面板前方 prepress，精确规划到 near-grasp pregrasp 后用短
+        // 直线逼近前脸，set_control_grasp(true) 把探针刚性地附着到面板，再沿
+        // 滑动轴拖拽到目标 detent（拉出/推回），验证、释放、撤回。slider 无
+        // 过中点释放机制，拖拽即是全部行程。
+        const bool closing = target_position < initial_state.position;
+        result->diagnostic_stage = "ready";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MOVING_TO_READY,
+          0.25F, target_position,
+          "Planning the probe to the drawer ready pose.");
+        plan_and_execute_pose(
+          *move_group, goal_handle, drawer_poses.ready_pose,
+          contact_tool_link_, &result->operation_executed, control.get());
+        should_attempt_retreat = true;
+        result->diagnostic_stage = "approach";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::APPROACHING,
+          0.43F, target_position,
+          "Approaching the drawer panel grasp point.");
+        // 同 door/knob：先精确规划到 near-grasp pregrasp，避免 ready-pose 的
+        // IK 分支无法完成长直线内推（r_arm_0 <-> r_arm_2 自碰撞）。
+        plan_and_execute_pose(
+          *move_group, goal_handle, drawer_poses.pregrasp_pose,
+          contact_tool_link_, &result->operation_executed, control.get());
+        wait_for_pregrasp_controls_stable(
+          goal_handle, *control, pregrasp_stability_references,
+          std::chrono::steady_clock::now());
+        execute_cartesian_path(
+          *move_group, goal_handle, {drawer_poses.grasp_pose},
+          cartesian_velocity_scale_ * 0.5,
+          cartesian_acceleration_scale_ * 0.5,
+          0.99, &result->operation_executed);
+        result->diagnostic_stage = "grasp";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::GRASPING,
+          0.52F, target_position,
+          "Attaching the probe at the drawer panel front face.");
+        set_control_grasp(goal_handle, control->id, true);
+        grasp_attached = true;
+        interruptible_hold(goal_handle, grasp_attach_settle_duration_);
+        result->diagnostic_stage = "manipulation";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MANIPULATING,
+          0.62F, target_position,
+          closing ?
+          "Dragging the drawer panel closed to its detent." :
+          "Pulling the drawer panel open to its detent.");
+        // 分段直线拖拽（同 door 长弧的分段机制）：每段从实测机器人状态重启，
+        // 避免整段 Cartesian 插值在 IK 分支中途失效。
+        std::size_t drawer_completed_waypoints = 0U;
+        execute_segmented_cartesian_path(
+          *move_group, goal_handle, drawer_waypoints,
+          static_cast<std::size_t>(door_cartesian_segment_waypoints_),
+          cartesian_velocity_scale_ * 0.5,
+          cartesian_acceleration_scale_ * 0.5,
+          drawer_completed_waypoints, &result->operation_executed);
+        if (std::abs(target_position - initial_state.position) >
+          target_tolerance_)
+        {
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING,
+            0.71F, target_position,
+            "Verifying that the drawer panel reached its requested detent.");
+          if (!wait_for_slider_detent(
+              goal_handle, *control, target_state, target_position,
+              press_detection_timeout_))
+          {
+            throw GenericOperationError(
+                    OperateCabinetControl::Result::CONTACT_DETECTION_TIMEOUT,
+                    "The drawer panel did not reach the requested detent '" +
+                    target_state + "'.");
+          }
+        }
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MANIPULATING,
+          0.74F, target_position,
+          "Holding the target detent briefly before grasp release.");
+        interruptible_hold(goal_handle, grasp_release_settle_duration_);
+        result->diagnostic_stage = "release";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::RELEASING,
+          0.78F, target_position,
+          "Releasing the drawer grasp at the requested detent.");
+        set_control_grasp(goal_handle, control->id, false);
+        grasp_attached = false;
+        result->grasp_released = true;
+        result->diagnostic_stage = "retreat";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::RETREATING,
+          0.84F, target_position,
+          "Retreating before verifying the released drawer.");
+        const auto drawer_retreat_pose = calculate_drawer_tool_pose(
+          *control, target_position, prepress_distance_);
+        execute_cartesian_path(
+          *move_group, goal_handle, {drawer_retreat_pose},
+          cartesian_velocity_scale_, cartesian_acceleration_scale_,
+          0.99, &result->operation_executed);
+        should_attempt_retreat = false;
+        result->diagnostic_stage = "verification";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::VERIFYING,
+          0.90F, target_position,
+          "Verifying that the drawer panel settled at its detent.");
+        if (!wait_for_slider_detent(
+            goal_handle, *control, target_state, target_position,
+            door_settle_timeout_))
+        {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::RELEASE_FAILED,
+                  "The drawer panel did not latch at the requested detent.");
+        }
+        const auto drawer_state = button_snapshot(*control);
+        result->peak_position = drawer_state.peak_position;
+        result->button_triggered = target_state != initial_state.state_id;
         if (!commit_active_goal_physical_outcome(
             ActiveGoalType::OPERATE, goal_handle->get_goal_id()))
         {
@@ -3973,7 +4652,8 @@ private:
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
           grasp_attached, door_arc_progress, rotary_tool_roll_offset,
-          is_operate_goal_canceling(goal_handle));
+          is_operate_goal_canceling(goal_handle),
+          drawer_bimanual_attached, drawer_left_move_group);
       }
     } catch (const OperationError & error) {
       result->success = false;
@@ -3985,7 +4665,8 @@ private:
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
           grasp_attached, door_arc_progress, rotary_tool_roll_offset,
-          is_operate_goal_canceling(goal_handle));
+          is_operate_goal_canceling(goal_handle),
+          drawer_bimanual_attached, drawer_left_move_group);
       }
     } catch (const std::exception & error) {
       result->success = false;
@@ -4008,7 +4689,8 @@ private:
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
           grasp_attached, door_arc_progress, rotary_tool_roll_offset,
-          is_operate_goal_canceling(goal_handle));
+          is_operate_goal_canceling(goal_handle),
+          drawer_bimanual_attached, drawer_left_move_group);
       }
     } catch (...) {
       result->success = false;
@@ -4027,7 +4709,8 @@ private:
         recover_failed_operate_goal(
           result, control, move_group, should_attempt_retreat,
           grasp_attached, door_arc_progress, rotary_tool_roll_offset,
-          is_operate_goal_canceling(goal_handle));
+          is_operate_goal_canceling(goal_handle),
+          drawer_bimanual_attached, drawer_left_move_group);
       }
     }
 
@@ -4540,6 +5223,343 @@ private:
     return poses;
   }
 
+  /**
+   * Place the measured business point on a sliding drawer front face.
+   *
+   * A prismatic drawer differs from a rotary control: the grasp point does not
+   * swing about a pivot, it translates linearly with the panel.  The tool
+   * orientation stays fixed (outward along the face normal) and only the tip
+   * rides the slide axis -- local_grasp = grasp_zero + axis * position.  The
+   * planner-facing geometry (grasp_zero, axis, approach_normal) comes from the
+   * same resolved control geometry as the rotary path, so the front station
+   * and the tool calibration are unchanged.
+   */
+  geometry_msgs::msg::Pose calculate_drawer_tool_pose(
+    const ButtonSpec & control,
+    double position,
+    double outward_offset,
+    double tool_roll_offset = 0.0)
+  {
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const auto geometry = resolve_control_geometry(control, true);
+    const tf2::Vector3 local_grasp =
+      geometry.grasp_zero + geometry.axis * position;
+    const tf2::Vector3 grasp = cabinet * local_grasp;
+    const tf2::Vector3 outward = tf2::quatRotate(
+      cabinet.getRotation(), geometry.approach_normal).normalized();
+    const tf2::Vector3 tool_axis_reference =
+      tool_axis_orientation_ ==
+      ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
+      -outward : outward;
+    const tf2::Quaternion tool_zero =
+      tool_rotation_from_outward(tool_axis_reference);
+    tf2::Quaternion tool_roll;
+    tool_roll.setRotation(tf2::Vector3(0.0, 0.0, 1.0), tool_roll_offset);
+    tool_roll.normalize();
+    tf2::Quaternion tool_rotation = tool_zero * tool_roll;
+    tool_rotation.normalize();
+
+    geometry_msgs::msg::Pose pose;
+    // Place the measured 3-D business point, rather than the contact-link
+    // origin, on the desired grasp point (same convention as the rotary tool).
+    const tf2::Vector3 desired_tip_position =
+      grasp + outward * outward_offset;
+    const tf2::Vector3 position_world = desired_tip_position -
+      tf2::quatRotate(tool_rotation, tool_tip_position_);
+    pose.position.x = position_world.x();
+    pose.position.y = position_world.y();
+    pose.position.z = position_world.z();
+    pose.orientation = to_message(tool_rotation);
+    return pose;
+  }
+
+  RotaryOperationPoses calculate_drawer_operation_poses(
+    const ButtonSpec & control,
+    double position,
+    double tool_roll_offset = 0.0)
+  {
+    // Same ready/pregrasp/grasp shape as the rotary flow: the pose-planned
+    // pregrasp keeps the final inward approach short so any IK branch can
+    // complete it (see the ready-branch comment in the grasp flow).
+    RotaryOperationPoses poses;
+    poses.ready_pose = calculate_drawer_tool_pose(
+      control, position, prepress_distance_, tool_roll_offset);
+    poses.pregrasp_pose = calculate_drawer_tool_pose(
+      control, position,
+      control.grasp_outward_offset + rotary_pregrasp_clearance_,
+      tool_roll_offset);
+    poses.grasp_pose = calculate_drawer_tool_pose(
+      control, position, control.grasp_outward_offset, tool_roll_offset);
+    return poses;
+  }
+
+  std::vector<geometry_msgs::msg::Pose> calculate_drawer_waypoints(
+    const ButtonSpec & control,
+    double initial_position,
+    double target_position,
+    double tool_roll_offset = 0.0)
+  {
+    // A linear drag from the panel's current slide position to the target
+    // detent, sampled at drawer_waypoint_step_ so each segment is short enough
+    // to re-plan from the measured robot state (same rationale as the door
+    // segmented arc).  The tool is rigidly attached to the panel, so the panel
+    // follows the tool tip exactly along the slide axis.
+    const double travel = target_position - initial_position;
+    const std::size_t count = std::max<std::size_t>(
+      1U, static_cast<std::size_t>(
+        std::ceil(std::abs(travel) / drawer_waypoint_step_)));
+    std::vector<geometry_msgs::msg::Pose> waypoints;
+    waypoints.reserve(count);
+    for (std::size_t index = 1U; index <= count; ++index) {
+      const double ratio = static_cast<double>(index) /
+        static_cast<double>(count);
+      waypoints.push_back(calculate_drawer_tool_pose(
+        control, initial_position + travel * ratio,
+        control.grasp_outward_offset, tool_roll_offset));
+    }
+    return waypoints;
+  }
+
+  const BimanualToolProfile & drawer_tool_profile(DrawerSide side) const
+  {
+    return side == DrawerSide::LEFT ? drawer_left_tool_ : drawer_right_tool_;
+  }
+
+  tf2::Vector3 drawer_side_point(
+    const ButtonSpec & control, DrawerSide side) const
+  {
+    switch (side) {
+      case DrawerSide::LEFT:
+        if (!control.has_left_handle_point) {
+          throw OperationError(
+                  PressCabinetButton::Result::NOT_READY,
+                  "Drawer '" + control.id +
+                  "' is missing its left handle point contract.");
+        }
+        return control.left_handle_point;
+      case DrawerSide::RIGHT:
+        if (!control.has_right_handle_point) {
+          throw OperationError(
+                  PressCabinetButton::Result::NOT_READY,
+                  "Drawer '" + control.id +
+                  "' is missing its right handle point contract.");
+        }
+        return control.right_handle_point;
+    }
+    return tf2::Vector3(0.0, 0.0, 0.0);
+  }
+
+  std::string drawer_side_name(DrawerSide side) const
+  {
+    return side == DrawerSide::LEFT ? "left" : "right";
+  }
+
+  /**
+   * Place one side's measured tool business point on the drawer.
+   *
+   * A bimanual drawer differs from the legacy single-arm drawer flow in that
+   * the left and right tools have different business-point offsets and
+   * approach the two handles from their own arm chains.  The drawer slides
+   * along drawer_axis (P0: +X, toward the robot); at rail position p the
+   * side's handle point sits at side_point + axis*p in cabinet frame.  The
+   * tool orientation convention matches calculate_drawer_tool_pose (tool axis
+   * along the outward normal), and the pose compensates the side's own
+   * business-point offset so the measured tip lands on the target.
+   */
+  geometry_msgs::msg::Pose calculate_drawer_side_tool_pose(
+    const ButtonSpec & control,
+    DrawerSide side,
+    double position,
+    double outward_offset,
+    double tool_roll_offset = 0.0)
+  {
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const tf2::Vector3 axis = tf2::quatRotate(
+      cabinet.getRotation(), control.drawer_axis).normalized();
+    const tf2::Vector3 outward = tf2::quatRotate(
+      cabinet.getRotation(), control.approach_normal).normalized();
+    const tf2::Vector3 side_point = drawer_side_point(control, side);
+    const tf2::Vector3 local_target = side_point + axis * position;
+    const tf2::Vector3 target = cabinet * local_target;
+    const tf2::Vector3 tool_axis_reference =
+      tool_axis_orientation_ ==
+      ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
+      -outward : outward;
+    const tf2::Quaternion tool_zero =
+      tool_rotation_from_outward(tool_axis_reference);
+    tf2::Quaternion tool_roll;
+    tool_roll.setRotation(tf2::Vector3(0.0, 0.0, 1.0), tool_roll_offset);
+    tool_roll.normalize();
+    tf2::Quaternion tool_rotation = tool_zero * tool_roll;
+    tool_rotation.normalize();
+
+    geometry_msgs::msg::Pose pose;
+    const auto & profile = drawer_tool_profile(side);
+    const tf2::Vector3 desired_tip_position =
+      target + outward * outward_offset;
+    const tf2::Vector3 position_world = desired_tip_position -
+      tf2::quatRotate(tool_rotation, profile.tool_tip_position);
+    pose.position.x = position_world.x();
+    pose.position.y = position_world.y();
+    pose.position.z = position_world.z();
+    pose.orientation = to_message(tool_rotation);
+    return pose;
+  }
+
+  // The support pose keeps the side tool hovering drawer_grasp_outward_offset
+  // east of the cabinet face below its handle, ready for the bimanual grasp.
+  // P3-8: it deliberately does NOT press the face - the face panel is a
+  // free-sliding link, so a press pushes the drawer toward closed and trips
+  // the plugin's pre-grasp disturbance guard.  The support point rides the
+  // drawer rail like the handle point (support + axis * position), so the
+  // support tracks the drawer whether it is being opened from the closed
+  // position or closed from the open position.
+  geometry_msgs::msg::Pose calculate_drawer_support_pose(
+    const ButtonSpec & control, DrawerSide side, double position)
+  {
+    const bool is_left = side == DrawerSide::LEFT;
+    const tf2::Vector3 support = is_left ?
+      control.left_support_point : control.right_support_point;
+    if (!is_left && !control.has_right_support_point) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Drawer '" + control.id +
+              "' is missing its right support point contract.");
+    }
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const tf2::Vector3 axis = tf2::quatRotate(
+      cabinet.getRotation(), control.drawer_axis).normalized();
+    const tf2::Vector3 outward = tf2::quatRotate(
+      cabinet.getRotation(), control.approach_normal).normalized();
+    const tf2::Vector3 tool_axis_reference =
+      tool_axis_orientation_ ==
+      ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
+      -outward : outward;
+    const tf2::Quaternion tool_rotation =
+      tool_rotation_from_outward(tool_axis_reference);
+    const auto & profile = drawer_tool_profile(side);
+    const tf2::Vector3 target = cabinet * (support + axis * position);
+    const tf2::Vector3 desired_tip_position =
+      target + outward * control.drawer_grasp_outward_offset;
+    const tf2::Vector3 position_world = desired_tip_position -
+      tf2::quatRotate(tool_rotation, profile.tool_tip_position);
+    geometry_msgs::msg::Pose pose;
+    pose.position.x = position_world.x();
+    pose.position.y = position_world.y();
+    pose.position.z = position_world.z();
+    pose.orientation = to_message(tool_rotation);
+    return pose;
+  }
+
+  // The right tool's unlock pose places its tip at the logical unlock-zone
+  // center (right handle front edge plus ~0.02 m, not the *p indicator).  The
+  // plugin authorizes the unlock only while the tip sits inside that zone.
+  geometry_msgs::msg::Pose calculate_drawer_unlock_pose(
+    const ButtonSpec & control)
+  {
+    if (!control.has_unlock_zone_point) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Drawer '" + control.id +
+              "' is missing its unlock-zone point contract.");
+    }
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const tf2::Vector3 outward = tf2::quatRotate(
+      cabinet.getRotation(), control.approach_normal).normalized();
+    const tf2::Vector3 tool_axis_reference =
+      tool_axis_orientation_ ==
+      ToolProfile::ToolAxisOrientation::TOWARD_CONTROL ?
+      -outward : outward;
+    const tf2::Quaternion tool_rotation =
+      tool_rotation_from_outward(tool_axis_reference);
+    const auto & profile = drawer_tool_profile(DrawerSide::RIGHT);
+    const tf2::Vector3 target = cabinet * control.unlock_zone_point;
+    const tf2::Vector3 position_world = target -
+      tf2::quatRotate(tool_rotation, profile.tool_tip_position);
+    geometry_msgs::msg::Pose pose;
+    pose.position.x = position_world.x();
+    pose.position.y = position_world.y();
+    pose.position.z = position_world.z();
+    pose.orientation = to_message(tool_rotation);
+    return pose;
+  }
+
+  struct DrawerBimanualPoses
+  {
+    geometry_msgs::msg::Pose left_ready_pose;
+    geometry_msgs::msg::Pose right_ready_pose;
+    geometry_msgs::msg::Pose left_pregrasp_pose;
+    geometry_msgs::msg::Pose right_pregrasp_pose;
+    geometry_msgs::msg::Pose left_grasp_pose;
+    geometry_msgs::msg::Pose right_grasp_pose;
+    geometry_msgs::msg::Pose left_support_pose;
+    geometry_msgs::msg::Pose right_support_pose;
+    geometry_msgs::msg::Pose unlock_pose;
+  };
+
+  DrawerBimanualPoses calculate_drawer_bimanual_operation_poses(
+    const ButtonSpec & control,
+    double initial_position)
+  {
+    DrawerBimanualPoses poses;
+    poses.unlock_pose = calculate_drawer_unlock_pose(control);
+    poses.left_support_pose = calculate_drawer_support_pose(
+      control, DrawerSide::LEFT, initial_position);
+    poses.right_support_pose = calculate_drawer_support_pose(
+      control, DrawerSide::RIGHT, initial_position);
+    // ready: both arms hover at a safe distance on the outward side of the
+    // handles; pregrasp: short final Cartesian approach; grasp: measured tips
+    // at the handles (fingers wrap the plate with the configured offset).
+    poses.left_ready_pose = calculate_drawer_side_tool_pose(
+      control, DrawerSide::LEFT, initial_position, prepress_distance_);
+    poses.right_ready_pose = calculate_drawer_side_tool_pose(
+      control, DrawerSide::RIGHT, initial_position, prepress_distance_);
+    poses.left_pregrasp_pose = calculate_drawer_side_tool_pose(
+      control, DrawerSide::LEFT, initial_position,
+      control.drawer_grasp_outward_offset + rotary_pregrasp_clearance_);
+    poses.right_pregrasp_pose = calculate_drawer_side_tool_pose(
+      control, DrawerSide::RIGHT, initial_position,
+      control.drawer_grasp_outward_offset + rotary_pregrasp_clearance_);
+    poses.left_grasp_pose = calculate_drawer_side_tool_pose(
+      control, DrawerSide::LEFT, initial_position,
+      control.drawer_grasp_outward_offset);
+    poses.right_grasp_pose = calculate_drawer_side_tool_pose(
+      control, DrawerSide::RIGHT, initial_position,
+      control.drawer_grasp_outward_offset);
+    return poses;
+  }
+
+  // Matched waypoints for both arms: the i-th entry of each vector commands
+  // the SAME drawer rail position, so the two arms traverse the rail in lock
+  // step and the drawer never sees one-sided travel.
+  void calculate_drawer_bimanual_waypoints(
+    const ButtonSpec & control,
+    double initial_position,
+    double target_position,
+    std::vector<geometry_msgs::msg::Pose> & left_waypoints,
+    std::vector<geometry_msgs::msg::Pose> & right_waypoints)
+  {
+    const double travel = target_position - initial_position;
+    const std::size_t count = std::max<std::size_t>(
+      1U, static_cast<std::size_t>(
+        std::ceil(std::abs(travel) / drawer_waypoint_step_)));
+    left_waypoints.clear();
+    right_waypoints.clear();
+    left_waypoints.reserve(count);
+    right_waypoints.reserve(count);
+    for (std::size_t index = 1U; index <= count; ++index) {
+      const double ratio = static_cast<double>(index) /
+        static_cast<double>(count);
+      const double position = initial_position + travel * ratio;
+      left_waypoints.push_back(calculate_drawer_side_tool_pose(
+        control, DrawerSide::LEFT, position,
+        control.drawer_grasp_outward_offset));
+      right_waypoints.push_back(calculate_drawer_side_tool_pose(
+        control, DrawerSide::RIGHT, position,
+        control.drawer_grasp_outward_offset));
+    }
+  }
+
   std::vector<geometry_msgs::msg::Pose> calculate_rotation_waypoints(
     const ButtonSpec & control,
     double initial_position,
@@ -4696,6 +5716,262 @@ private:
     } catch (const std::exception & error) {
       RCLCPP_ERROR(
         get_logger(), "Emergency grasp release failed: %s", error.what());
+    }
+  }
+
+  void verify_bimanual_tool_calibration_state(
+    const moveit::core::RobotState & left_state,
+    const moveit::core::RobotState & right_state) const
+  {
+    const auto verify_one = [this](const BimanualToolProfile & profile,
+        const moveit::core::RobotState & robot_state,
+        const std::string & side) {
+        for (std::size_t index = 0U;
+          index < profile.calibration_joint_names.size(); ++index)
+        {
+          double measured;
+          try {
+            measured = robot_state.getVariablePosition(
+              profile.calibration_joint_names[index]);
+          } catch (const std::exception & error) {
+            throw OperationError(
+                    PressCabinetButton::Result::NOT_READY,
+                    "Drawer " + side +
+                    " tool business-point calibration references unknown "
+                    "joint '" + profile.calibration_joint_names[index] +
+                    "': " + error.what());
+          }
+          if (!std::isfinite(measured) ||
+            std::abs(measured - profile.calibration_joint_positions[index]) >
+            tool_tip_calibration_joint_tolerance_)
+          {
+            throw OperationError(
+                    PressCabinetButton::Result::NOT_READY,
+                    "Drawer " + side + " tool joint '" +
+                    profile.calibration_joint_names[index] + "' is at " +
+                    std::to_string(measured) +
+                    " rad/m, outside its calibrated business-point position " +
+                    std::to_string(profile.calibration_joint_positions[index]) +
+                    " +/- " +
+                    std::to_string(tool_tip_calibration_joint_tolerance_) +
+                    "; bimanual motion was blocked. Reset the tool first.");
+          }
+        }
+      };
+    verify_one(drawer_left_tool_, left_state, "left");
+    verify_one(drawer_right_tool_, right_state, "right");
+  }
+
+  template<typename GoalHandleT>
+  void set_drawer_unlock(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    bool unlock,
+    bool require_unlocked)
+  {
+    const auto service_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    while (!unlock_client_->wait_for_service(50ms)) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= service_deadline) {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::NOT_READY,
+                "Cabinet drawer unlock service is unavailable.");
+      }
+    }
+    auto request = std::make_shared<
+      xczs_inspection_robot_interfaces::srv::SetCabinetUnlock::Request>();
+    request->control_id = control.id;
+    {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      if (unlock &&
+        (!operation_lease_held_.load() || operation_lease_lost_.load() ||
+        operation_lease_id_.empty()))
+      {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::NOT_READY,
+                "Drawer unlock requires an active global operation lease.");
+      }
+      request->operation_lease_id = operation_lease_id_;
+    }
+    request->robot_model = robot_model_name_;
+    request->right_robot_link = drawer_right_tool_.contact_tool_link;
+    // The unlock pose places the tool TIP on the unlock-zone center, so tell
+    // the plugin the effective tool point in the contact-link frame (tip
+    // offset).  Sending (0,0,0) made the plugin measure the link ORIGIN, which
+    // sits |tip| ~0.39 m away from the zone and always failed the check.
+    request->right_robot_grasp_point.x = drawer_right_tool_.tool_tip_position.x();
+    request->right_robot_grasp_point.y = drawer_right_tool_.tool_tip_position.y();
+    request->right_robot_grasp_point.z = drawer_right_tool_.tool_tip_position.z();
+    request->unlock_zone_point.x = control.unlock_zone_point.x();
+    request->unlock_zone_point.y = control.unlock_zone_point.y();
+    request->unlock_zone_point.z = control.unlock_zone_point.z();
+    request->unlock = unlock;
+    auto future = unlock_client_->async_send_request(request);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    while (future.wait_for(50ms) != std::future_status::ready) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::NOT_READY,
+                "Drawer unlock request timed out.");
+      }
+    }
+    const auto response = future.get();
+    if (!response->success) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              response->message + " (distance " +
+              std::to_string(response->distance) + " m)");
+    }
+    if (require_unlocked && !response->drawer_unlocked) {
+      throw GenericOperationError(
+              OperateCabinetControl::Result::NOT_READY,
+              "Drawer unlock was acknowledged but the rail latch stayed "
+              "engaged: " + response->message);
+    }
+  }
+
+  template<typename GoalHandleT>
+  void set_drawer_bimanual_grasp(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    bool attach)
+  {
+    const auto service_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    while (!bimanual_grasp_client_->wait_for_service(50ms)) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= service_deadline) {
+        throw GenericOperationError(
+                attach ? OperateCabinetControl::Result::GRASP_FAILED :
+                OperateCabinetControl::Result::RELEASE_FAILED,
+                "Cabinet bimanual grasp service is unavailable.");
+      }
+    }
+    auto request = std::make_shared<
+      xczs_inspection_robot_interfaces::srv::SetCabinetBimanualGrasp::Request>();
+    request->control_id = control.id;
+    {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      if (attach &&
+        (!operation_lease_held_.load() || operation_lease_lost_.load() ||
+        operation_lease_id_.empty()))
+      {
+        throw GenericOperationError(
+                OperateCabinetControl::Result::GRASP_FAILED,
+                "Bimanual drawer grasp attach requires an active global "
+                "operation lease.");
+      }
+      request->operation_lease_id = operation_lease_id_;
+    }
+    request->robot_model = robot_model_name_;
+    request->left_robot_link = drawer_left_tool_.contact_tool_link;
+    request->right_robot_link = drawer_right_tool_.contact_tool_link;
+    // Both tools' approach poses place their TIPS on the handle points, so the
+    // plugin's distance check must be fed the tip offsets (contact-link frame),
+    // not the link origin.  Mirrors the unlock request above.
+    request->left_robot_grasp_point.x = drawer_left_tool_.tool_tip_position.x();
+    request->left_robot_grasp_point.y = drawer_left_tool_.tool_tip_position.y();
+    request->left_robot_grasp_point.z = drawer_left_tool_.tool_tip_position.z();
+    request->right_robot_grasp_point.x = drawer_right_tool_.tool_tip_position.x();
+    request->right_robot_grasp_point.y = drawer_right_tool_.tool_tip_position.y();
+    request->right_robot_grasp_point.z = drawer_right_tool_.tool_tip_position.z();
+    request->left_handle_point.x = control.left_handle_point.x();
+    request->left_handle_point.y = control.left_handle_point.y();
+    request->left_handle_point.z = control.left_handle_point.z();
+    request->right_handle_point.x = control.right_handle_point.x();
+    request->right_handle_point.y = control.right_handle_point.y();
+    request->right_handle_point.z = control.right_handle_point.z();
+    request->robot_base_link = grasp_brake_link_;
+    request->attach = attach;
+    auto future = bimanual_grasp_client_->async_send_request(request);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    while (future.wait_for(50ms) != std::future_status::ready) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw GenericOperationError(
+                attach ? OperateCabinetControl::Result::GRASP_FAILED :
+                OperateCabinetControl::Result::RELEASE_FAILED,
+                "Bimanual drawer grasp request timed out.");
+      }
+    }
+    const auto response = future.get();
+    if (!response->success) {
+      throw GenericOperationError(
+              attach ? OperateCabinetControl::Result::GRASP_FAILED :
+              OperateCabinetControl::Result::RELEASE_FAILED,
+              response->message + " (left " +
+              std::to_string(response->left_distance) + " m, right " +
+              std::to_string(response->right_distance) + " m)");
+    }
+  }
+
+  void release_drawer_bimanual_grasp_noexcept(
+    const ButtonSpec & control) noexcept
+  {
+    try {
+      if (!bimanual_grasp_client_->wait_for_service(1s)) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Emergency bimanual grasp release service is unavailable for '%s'.",
+          control.id.c_str());
+        return;
+      }
+      constexpr int kReleaseAttempts = 2;
+      for (int attempt = 1; attempt <= kReleaseAttempts; ++attempt) {
+        auto request = std::make_shared<
+          xczs_inspection_robot_interfaces::srv::SetCabinetBimanualGrasp::
+          Request>();
+        request->control_id = control.id;
+        {
+          std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+          request->operation_lease_id = operation_lease_id_;
+        }
+        request->robot_model = robot_model_name_;
+        request->left_robot_link = drawer_left_tool_.contact_tool_link;
+        request->right_robot_link = drawer_right_tool_.contact_tool_link;
+        request->left_robot_grasp_point.x = drawer_left_tool_.tool_tip_position.x();
+        request->left_robot_grasp_point.y = drawer_left_tool_.tool_tip_position.y();
+        request->left_robot_grasp_point.z = drawer_left_tool_.tool_tip_position.z();
+        request->right_robot_grasp_point.x = drawer_right_tool_.tool_tip_position.x();
+        request->right_robot_grasp_point.y = drawer_right_tool_.tool_tip_position.y();
+        request->right_robot_grasp_point.z = drawer_right_tool_.tool_tip_position.z();
+        request->left_handle_point.x = control.left_handle_point.x();
+        request->left_handle_point.y = control.left_handle_point.y();
+        request->left_handle_point.z = control.left_handle_point.z();
+        request->right_handle_point.x = control.right_handle_point.x();
+        request->right_handle_point.y = control.right_handle_point.y();
+        request->right_handle_point.z = control.right_handle_point.z();
+        request->robot_base_link = grasp_brake_link_;
+        request->attach = false;
+        auto future = bimanual_grasp_client_->async_send_request(request);
+        if (future.wait_for(2s) != std::future_status::ready) {
+          RCLCPP_ERROR(
+            get_logger(),
+            "Emergency bimanual release timed out for '%s' (attempt %d/%d).",
+            control.id.c_str(), attempt, kReleaseAttempts);
+          continue;
+        }
+        const auto response = future.get();
+        if (response->success) {
+          return;
+        }
+        RCLCPP_ERROR(
+          get_logger(),
+          "Emergency bimanual release failed for '%s' (attempt %d/%d): %s",
+          control.id.c_str(), attempt, kReleaseAttempts,
+          response->message.c_str());
+      }
+      RCLCPP_ERROR(
+        get_logger(),
+        "Emergency bimanual release exhausted all attempts for '%s'.",
+        control.id.c_str());
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Emergency bimanual release failed: %s", error.what());
     }
   }
 
@@ -5134,7 +6410,10 @@ private:
     bool grasp_attached,
     const DoorArcProgress & door_arc_progress,
     double rotary_tool_roll_offset,
-    bool canceled) noexcept
+    bool canceled,
+    bool drawer_bimanual_attached = false,
+    const std::shared_ptr<MoveGroupInterface> & drawer_left_move_group =
+      std::shared_ptr<MoveGroupInterface>()) noexcept
   {
     const bool physical_recovery_required = physical_recovery_is_required(
       result->operation_executed, should_attempt_retreat, grasp_attached);
@@ -5146,6 +6425,44 @@ private:
         "Skipping arm/grasp recovery after '%s': the operation failed "
         "before any manipulator command, grasp, or required retreat.",
         result->diagnostic_stage.c_str());
+    }
+    // Bimanual drawer recovery: release the two-sided fixed constraint FIRST
+    // (the drawer is still rigidly held while it is attached -- retreating
+    // with the grasp on would drag the drawer), then retreat and stow BOTH
+    // arms.  The single-arm retreat/stow and grasp-release paths below are
+    // for door/knob/slider/button only.
+    if (control && is_drawer_type(control->control_type)) {
+      if (physical_recovery_required &&
+        (drawer_bimanual_attached || control->requires_grasp))
+      {
+        result->operation_executed = true;
+        release_drawer_bimanual_grasp_noexcept(*control);
+      }
+      if (motion_recovery_allowed && drawer_left_move_group &&
+        move_group && rclcpp::ok())
+      {
+        best_effort_bimanual_retreat_and_stow(
+          drawer_left_move_group, move_group, *control,
+          &result->operation_executed);
+      }
+      if (control) {
+        const auto final_state = button_snapshot(*control);
+        result->final_position = final_state.position;
+        result->peak_position = final_state.peak_position;
+        result->final_state = final_state.state_id;
+      }
+      if (operation_lease_lost_.load() && !canceled) {
+        result->success = false;
+        result->error_code = OperateCabinetControl::Result::LEASE_LOST;
+        result->message =
+          "The global robot operation lease was lost; all motion was stopped.";
+      } else if (canceled) {
+        result->success = false;
+        result->error_code = OperateCabinetControl::Result::CANCELED;
+        result->message = "Cabinet operation was canceled.";
+      }
+      RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
+      return;
     }
     const bool is_door = control && control->control_type ==
       xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
@@ -5748,7 +7065,14 @@ private:
     return make_face_press_poses(button, face_current, press_depth);
   }
 
-  void configure_move_group(MoveGroupInterface & move_group)
+  // Configure a MoveIt group for Cartesian tool motion.  The end-effector link
+  // is normally the active tool's contact link (contact_tool_link_); bimanual
+  // drawer flow configures the LEFT arm group with the LEFT tool's contact
+  // link, so the caller can override the EEF per side.  The default keeps the
+  // single-tool call sites unchanged.
+  void configure_move_group(
+    MoveGroupInterface & move_group,
+    const std::string & end_effector_link = std::string())
   {
     const auto robot_model = move_group.getRobotModel();
     std::vector<std::string> profile_move_groups;
@@ -5764,12 +7088,14 @@ private:
               PressCabinetButton::Result::NOT_READY,
               *kinematics_error);
     }
-    if (!robot_model->getLinkModel(contact_tool_link_)) {
+    const std::string & configured_end_effector_link =
+      end_effector_link.empty() ? contact_tool_link_ : end_effector_link;
+    if (!robot_model->getLinkModel(configured_end_effector_link)) {
       throw OperationError(
               PressCabinetButton::Result::NOT_READY,
               "The robot adapter tool profile for MoveIt JointModelGroup '" +
               move_group_name_ + "' references missing contact tool link '" +
-              contact_tool_link_ + "'.");
+              configured_end_effector_link + "'.");
     }
     const auto named_targets = move_group.getNamedTargets();
     if (std::find(
@@ -5781,11 +7107,11 @@ private:
               "The robot adapter transport target '" +
               transport_named_target_ + "' does not exist in the SRDF.");
     }
-    if (!move_group.setEndEffectorLink(contact_tool_link_)) {
+    if (!move_group.setEndEffectorLink(configured_end_effector_link)) {
       throw OperationError(
               PressCabinetButton::Result::NOT_READY,
               "MoveIt cannot use configured contact tool link '" +
-              contact_tool_link_ + "'.");
+              configured_end_effector_link + "'.");
     }
     move_group.setPoseReferenceFrame(planning_frame_);
     move_group.setPlanningTime(planning_time_);
@@ -7019,6 +8345,377 @@ private:
     return code;
   }
 
+  void retime_cartesian_trajectory_for_group(
+    MoveGroupInterface & move_group,
+    const std::string & group_name,
+    moveit_msgs::msg::RobotTrajectory & trajectory_message,
+    double velocity_scale,
+    double acceleration_scale)
+  {
+    const auto current_state = synchronized_current_robot_state(move_group);
+    robot_trajectory::RobotTrajectory trajectory(
+      move_group.getRobotModel(), group_name);
+    trajectory.setRobotTrajectoryMsg(*current_state, trajectory_message);
+    trajectory_processing::TimeOptimalTrajectoryGeneration time_parameterizer;
+    if (!time_parameterizer.computeTimeStamps(
+        trajectory,
+        velocity_scale,
+        acceleration_scale))
+    {
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              "MoveIt could not generate a low-speed Cartesian trajectory "
+              "for drawer group '" + group_name + "'.");
+    }
+    trajectory.getRobotTrajectoryMsg(trajectory_message);
+  }
+
+  struct BimanualExecutionResult
+  {
+    bool left_started{false};
+    bool right_started{false};
+    moveit::core::MoveItErrorCode left_code{
+      moveit::core::MoveItErrorCode::FAILURE};
+    moveit::core::MoveItErrorCode right_code{
+      moveit::core::MoveItErrorCode::FAILURE};
+  };
+
+  // Concurrent two-arm execution primitive for the bimanual drawer.
+  //
+  // The left and right arms are driven by SEPARATE FollowJointTrajectory
+  // controllers through distinct MoveGroupInterface instances, so both
+  // execute() calls can genuinely run in parallel.  The single-arm
+  // execute_motion_bounded serializes every execute() on one shared mutex,
+  // which would defeat the synchronization; this primitive instead runs both
+  // workers under ONE hold of that serialization (both plans belong to the
+  // same drawer operation), and stops BOTH arms on cancel/deadline by way of
+  // stop_active_motion(), which now also cancels bimanual_active_move_groups_.
+  //
+  // The wedge path mirrors execute_motion_bounded: on a lost controller
+  // result both workers are detached and the serialization lock is transferred
+  // into motion_execute_serial_->wedged_lock.  Only the LAST worker to return
+  // clears that wedge (shared atomic counter), so a normally-returning right
+  // worker cannot clear the wedge while the wedged left worker is still inside
+  // execute() on the left group.
+  BimanualExecutionResult execute_bimanual_trajectories_bounded(
+    const std::shared_ptr<MoveGroupInterface> & left_group,
+    const moveit_msgs::msg::RobotTrajectory & left_trajectory,
+    const std::shared_ptr<MoveGroupInterface> & right_group,
+    const moveit_msgs::msg::RobotTrajectory & right_trajectory,
+    const std::function<bool()> & should_stop,
+    const std::chrono::steady_clock::duration & hard_deadline,
+    const std::string & description)
+  {
+    BimanualExecutionResult result;
+    const auto serial = motion_execute_serial_;
+    std::unique_lock<std::mutex> execute_serial(
+      serial->execute_mutex, std::try_to_lock);
+    if (!execute_serial.owns_lock()) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Bimanual '%s' refused: a previous bounded motion is still in flight "
+        "(wedged backend).",
+        description.c_str());
+      return result;
+    }
+    {
+      std::lock_guard<std::mutex> lock(motion_mutex_);
+      bimanual_active_move_groups_ = {left_group, right_group};
+    }
+    struct BimanualWorkerState
+    {
+      std::mutex guard_mutex;
+      std::atomic<int> remaining_workers{2};
+      bool cleared_wedge{false};
+    };
+    const auto worker_state = std::make_shared<BimanualWorkerState>();
+    const auto left_promise = std::make_shared<
+      std::promise<moveit::core::MoveItErrorCode>>();
+    auto left_future = left_promise->get_future();
+    const auto right_promise = std::make_shared<
+      std::promise<moveit::core::MoveItErrorCode>>();
+    auto right_future = right_promise->get_future();
+    const rclcpp::Logger bounded_logger = get_logger();
+    const auto run_one = [&, serial, worker_state](
+        const std::shared_ptr<MoveGroupInterface> & group,
+        const moveit_msgs::msg::RobotTrajectory & trajectory,
+        const std::shared_ptr<std::promise<moveit::core::MoveItErrorCode>> &
+        promise) {
+        moveit::core::MoveItErrorCode code =
+          moveit::core::MoveItErrorCode::FAILURE;
+        try {
+          code = group->execute(trajectory);
+        } catch (const std::exception & error) {
+          RCLCPP_ERROR(
+            bounded_logger, "Bimanual worker threw: %s", error.what());
+        } catch (...) {
+        }
+        try {
+          promise->set_value(code);
+        } catch (...) {
+        }
+        if (worker_state->remaining_workers.fetch_sub(1) == 1) {
+          std::lock_guard<std::mutex> lock(serial->guard_mutex);
+          serial->wedged_lock.reset();
+        }
+      };
+    std::thread left_worker(run_one, left_group, std::cref(left_trajectory),
+      left_promise);
+    std::thread right_worker(run_one, right_group, std::cref(right_trajectory),
+      right_promise);
+    result.left_started = true;
+    result.right_started = true;
+
+    const auto deadline_time =
+      std::chrono::steady_clock::now() + hard_deadline;
+    bool left_wedged = false;
+    bool right_wedged = false;
+    bool worker_detached = false;
+    while (true) {
+      const auto left_ready = left_future.wait_for(
+        std::chrono::milliseconds(50)) == std::future_status::ready;
+      const auto right_ready = right_future.wait_for(
+        std::chrono::milliseconds(0)) == std::future_status::ready;
+      if (left_ready && right_ready) {
+        result.left_code = left_future.get();
+        result.right_code = right_future.get();
+        break;
+      }
+      const auto now = std::chrono::steady_clock::now();
+      const bool stop_requested =
+        (should_stop && should_stop()) || now >= deadline_time;
+      if (!stop_requested) {
+        continue;
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "Bimanual '%s' hit its deadline or was canceled; stopping both arms.",
+        description.c_str());
+      stop_active_motion();
+      const auto grace_deadline = now + std::chrono::milliseconds(2500);
+      while (true) {
+        const auto grace_left_ready = left_future.wait_for(
+          std::chrono::milliseconds(50)) == std::future_status::ready;
+        const auto grace_right_ready = right_future.wait_for(
+          std::chrono::milliseconds(0)) == std::future_status::ready;
+        if (grace_left_ready && grace_right_ready) {
+          break;
+        }
+        if (std::chrono::steady_clock::now() >= grace_deadline) {
+          break;
+        }
+      }
+      if (left_future.wait_for(std::chrono::seconds(0)) ==
+        std::future_status::ready)
+      {
+        result.left_code = left_future.get();
+      } else {
+        left_wedged = true;
+      }
+      if (right_future.wait_for(std::chrono::seconds(0)) ==
+        std::future_status::ready)
+      {
+        result.right_code = right_future.get();
+      } else {
+        right_wedged = true;
+      }
+      if (left_wedged || right_wedged) {
+        RCLCPP_ERROR(
+          get_logger(),
+          "Bimanual '%s' is permanently wedged on %s%s%s; abandoning both "
+          "motion workers and failing the operation.",
+          description.c_str(),
+          left_wedged ? "left" : "",
+          left_wedged && right_wedged ? "+" : "",
+          right_wedged ? "right" : "");
+        {
+          std::lock_guard<std::mutex> lock(serial->guard_mutex);
+          serial->wedged_lock.emplace(std::move(execute_serial));
+        }
+        worker_detached = true;
+        left_worker.detach();
+        right_worker.detach();
+      }
+      break;
+    }
+    if (!worker_detached) {
+      if (left_worker.joinable()) {
+        left_worker.join();
+      }
+      if (right_worker.joinable()) {
+        right_worker.join();
+      }
+    }
+    {
+      std::lock_guard<std::mutex> lock(motion_mutex_);
+      bimanual_active_move_groups_ = {};
+    }
+    return result;
+  }
+
+  // Plan one arm's Cartesian segment from its measured state and retime it.
+  // Used by the bimanual segmented path so BOTH arm plans exist before either
+  // executes (a one-sided execute would yank the drawer).
+  template<typename GoalHandleT>
+  moveit_msgs::msg::RobotTrajectory plan_drawer_cartesian_segment(
+    MoveGroupInterface & move_group,
+    const std::string & group_name,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const std::vector<geometry_msgs::msg::Pose> & waypoints,
+    double velocity_scale,
+    double acceleration_scale,
+    const std::string & description,
+    double minimum_fraction = 0.99)
+  {
+    check_cancel(goal_handle);
+    moveit_msgs::msg::RobotTrajectory trajectory_message;
+    double best_fraction = -1.0;
+    for (int attempt = 0; attempt < cartesian_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      const auto current_state = synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
+      moveit_msgs::msg::RobotTrajectory candidate;
+      double fraction = -1.0;
+      try {
+        fraction = move_group.computeCartesianPath(
+          waypoints, 0.002, cartesian_jump_threshold_, candidate, true);
+      } catch (const std::exception & error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Drawer '%s' Cartesian planning threw on attempt %d: %s",
+          description.c_str(), attempt + 1, error.what());
+      }
+      if (fraction > best_fraction) {
+        best_fraction = fraction;
+        trajectory_message = std::move(candidate);
+      }
+      if (best_fraction >= minimum_fraction) {
+        break;
+      }
+    }
+    if (best_fraction < minimum_fraction) {
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              "Drawer '" + description + "' Cartesian segment completed only " +
+              std::to_string(std::max(0.0, best_fraction) * 100.0) + "% of "
+              "the path (needs " +
+              std::to_string(minimum_fraction * 100.0) + "%).");
+    }
+    retime_cartesian_trajectory_for_group(
+      move_group, group_name, trajectory_message,
+      velocity_scale, acceleration_scale);
+    check_cancel(goal_handle);
+    return trajectory_message;
+  }
+
+  // Segmented, matched, concurrent drawer pull/push.  Each segment is planned
+  // for BOTH arms from their measured states and then executed concurrently;
+  // the i-th left/right waypoint always command the same drawer rail position.
+  // A segment that cannot be planned on either arm is retried one waypoint at
+  // a time; a single unplannable waypoint fails the operation (the caller
+  // stops, releases the bimanual grasp and retreats both arms).
+  template<typename GoalHandleT>
+  void execute_bimanual_segmented_cartesian_path(
+    const std::shared_ptr<MoveGroupInterface> & left_group,
+    const std::shared_ptr<MoveGroupInterface> & right_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const std::vector<geometry_msgs::msg::Pose> & left_waypoints,
+    const std::vector<geometry_msgs::msg::Pose> & right_waypoints,
+    std::size_t maximum_segment_waypoints,
+    double velocity_scale,
+    double acceleration_scale,
+    std::size_t & completed_waypoints,
+    bool * operation_executed = nullptr)
+  {
+    if (left_waypoints.size() != right_waypoints.size()) {
+      throw std::invalid_argument(
+              "Bimanual drawer waypoint vectors must have equal length.");
+    }
+    if (maximum_segment_waypoints == 0U) {
+      throw std::invalid_argument(
+              "Bimanual drawer Cartesian segment size must be greater than "
+              "zero.");
+    }
+    completed_waypoints = 0U;
+    const auto run_segment = [&](
+        std::size_t begin, std::size_t end,
+        const std::vector<geometry_msgs::msg::Pose> & left_segment,
+        const std::vector<geometry_msgs::msg::Pose> & right_segment) {
+        check_cancel(goal_handle);
+        const auto left_trajectory = plan_drawer_cartesian_segment(
+          *left_group, drawer_left_tool_.move_group, goal_handle,
+          left_segment, velocity_scale, acceleration_scale, "left");
+        const auto right_trajectory = plan_drawer_cartesian_segment(
+          *right_group, drawer_right_tool_.move_group, goal_handle,
+          right_segment, velocity_scale, acceleration_scale, "right");
+        const auto execution = execute_bimanual_trajectories_bounded(
+          left_group, left_trajectory,
+          right_group, right_trajectory,
+          [this, &goal_handle]() { return goal_should_stop(goal_handle); },
+          std::chrono::seconds(120), "drawer segment");
+        if (execution.left_code != moveit::core::MoveItErrorCode::SUCCESS ||
+          execution.right_code != moveit::core::MoveItErrorCode::SUCCESS)
+        {
+          check_cancel(goal_handle);
+          throw OperationError(
+                  PressCabinetButton::Result::EXECUTION_FAILED,
+                  "Drawer bimanual segment execution failed (left=" +
+                  std::to_string(execution.left_code.val) + " right=" +
+                  std::to_string(execution.right_code.val) + ").");
+        }
+        if (operation_executed) {
+          *operation_executed = true;
+        }
+        completed_waypoints = end;
+      };
+    const std::size_t segment_count =
+      (left_waypoints.size() + maximum_segment_waypoints - 1U) /
+      maximum_segment_waypoints;
+    std::size_t segment_index = 0U;
+    for (std::size_t begin = 0U; begin < left_waypoints.size();
+      begin += maximum_segment_waypoints)
+    {
+      ++segment_index;
+      const auto end = std::min(
+        begin + maximum_segment_waypoints, left_waypoints.size());
+      const std::vector<geometry_msgs::msg::Pose> left_segment(
+        left_waypoints.begin() + begin, left_waypoints.begin() + end);
+      const std::vector<geometry_msgs::msg::Pose> right_segment(
+        right_waypoints.begin() + begin, right_waypoints.begin() + end);
+      RCLCPP_INFO(
+        get_logger(),
+        "Starting drawer bimanual segment %zu/%zu [%zu, %zu); "
+        "%zu/%zu waypoints already executed.",
+        segment_index, segment_count, begin, end,
+        completed_waypoints, left_waypoints.size());
+      try {
+        run_segment(begin, end, left_segment, right_segment);
+      } catch (const OperationError & error) {
+        if (error.error_code != PressCabinetButton::Result::PLANNING_FAILED ||
+          left_segment.size() == 1U)
+        {
+          throw;
+        }
+        RCLCPP_WARN(
+          get_logger(),
+          "Drawer bimanual segment %zu/%zu was not fully plannable on both "
+          "arms; retrying one waypoint at a time.",
+          segment_index, segment_count);
+        for (std::size_t offset = 0U; offset < left_segment.size(); ++offset) {
+          run_segment(
+            begin + offset, begin + offset + 1U,
+            {left_segment[offset]}, {right_segment[offset]});
+          RCLCPP_INFO(
+            get_logger(),
+            "Drawer bimanual fallback waypoint %zu/%zu completed; "
+            "%zu/%zu waypoints executed.",
+            offset + 1U, left_segment.size(), completed_waypoints,
+            left_waypoints.size());
+        }
+      }
+    }
+  }
+
   bool best_effort_cartesian_move(
     MoveGroupInterface & move_group,
     const std::vector<geometry_msgs::msg::Pose> & waypoints,
@@ -7187,6 +8884,218 @@ private:
     } catch (const std::exception & error) {
       RCLCPP_ERROR(get_logger(), "Safety stow failed: %s", error.what());
     }
+  }
+
+  void best_effort_stow_named_target(
+    MoveGroupInterface & move_group,
+    const std::string & target_name,
+    bool * operation_executed = nullptr) noexcept
+  {
+    try {
+      move_group.stop();
+      const auto current_state = synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
+      if (!move_group.setNamedTarget(target_name)) {
+        RCLCPP_ERROR(
+          get_logger(), "Safety target '%s' is not configured.",
+          target_name.c_str());
+        return;
+      }
+      MoveGroupInterface::Plan plan;
+      if (move_group.plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(get_logger(), "Safety stow planning failed for '%s'.",
+          target_name.c_str());
+        return;
+      }
+      if (operation_executed) {
+        *operation_executed = true;
+      }
+      const auto stow_code = execute_motion_bounded(
+        [&move_group, &plan]() { return move_group.execute(plan); },
+        std::function<bool()>(), std::chrono::seconds(60),
+        "safety stow '" + target_name + "'");
+      if (stow_code != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(
+          get_logger(), "Safety stow execution failed for '%s'.",
+          target_name.c_str());
+      }
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(get_logger(), "Safety stow failed: %s", error.what());
+    }
+  }
+
+  template<typename GoalHandleT>
+  MoveGroupInterface::Plan plan_arm_pose(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const geometry_msgs::msg::Pose & target,
+    const std::string & tool_link,
+    const std::string & description)
+  {
+    check_cancel(goal_handle);
+    MoveGroupInterface::Plan plan;
+    bool planned = false;
+    for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+      check_cancel(goal_handle);
+      const auto current_state = synchronized_current_robot_state(move_group);
+      move_group.setStartState(*current_state);
+      move_group.setPoseTarget(target, tool_link);
+      const auto planning_result = move_group.plan(plan);
+      move_group.clearPoseTargets();
+      if (planning_result == moveit::core::MoveItErrorCode::SUCCESS) {
+        planned = true;
+        break;
+      }
+      RCLCPP_WARN(
+        get_logger(),
+        "Drawer '%s' pose planning failed (attempt %d/%d).",
+        description.c_str(), attempt, motion_planning_attempts_);
+    }
+    if (!planned) {
+      throw OperationError(
+              PressCabinetButton::Result::PLANNING_FAILED,
+              "MoveIt could not plan drawer '" + description +
+              "' to its target pose after " +
+              std::to_string(motion_planning_attempts_) + " attempts.");
+    }
+    check_cancel(goal_handle);
+    return plan;
+  }
+
+  template<typename GoalHandleT>
+  void plan_and_execute_bimanual_poses(
+    const std::shared_ptr<MoveGroupInterface> & left_group,
+    const std::shared_ptr<MoveGroupInterface> & right_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const geometry_msgs::msg::Pose & left_target,
+    const geometry_msgs::msg::Pose & right_target,
+    bool * operation_executed,
+    const std::string & description)
+  {
+    const auto left_plan = plan_arm_pose(
+      *left_group, goal_handle, left_target,
+      drawer_left_tool_.contact_tool_link, description + " (left)");
+    const auto right_plan = plan_arm_pose(
+      *right_group, goal_handle, right_target,
+      drawer_right_tool_.contact_tool_link, description + " (right)");
+    const auto execution = execute_bimanual_trajectories_bounded(
+      left_group, left_plan.trajectory_,
+      right_group, right_plan.trajectory_,
+      [this, &goal_handle]() { return goal_should_stop(goal_handle); },
+      std::chrono::seconds(120), description);
+    if (execution.left_code != moveit::core::MoveItErrorCode::SUCCESS ||
+      execution.right_code != moveit::core::MoveItErrorCode::SUCCESS)
+    {
+      check_cancel(goal_handle);
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "MoveIt failed to execute bimanual '" + description +
+              "' (left=" + std::to_string(execution.left_code.val) +
+              " right=" + std::to_string(execution.right_code.val) + ").");
+    }
+    if (operation_executed) {
+      *operation_executed = true;
+    }
+    check_cancel(goal_handle);
+  }
+
+  // Best-effort concurrent pose motion for both arms, used by the drawer
+  // safety recovery.  No goal handle (deadline-only), never throws.
+  bool best_effort_bimanual_pose_move(
+    const std::shared_ptr<MoveGroupInterface> & left_group,
+    const std::shared_ptr<MoveGroupInterface> & right_group,
+    const geometry_msgs::msg::Pose & left_target,
+    const geometry_msgs::msg::Pose & right_target,
+    const std::string & description) noexcept
+  {
+    if (!left_group || !right_group) {
+      return false;
+    }
+    bool ok = false;
+    try {
+      MoveGroupInterface::Plan left_plan;
+      MoveGroupInterface::Plan right_plan;
+      bool left_planned = false;
+      bool right_planned = false;
+      for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+        if (!left_planned) {
+          const auto state = synchronized_current_robot_state(*left_group);
+          left_group->setStartState(*state);
+          left_group->setPoseTarget(
+            left_target, drawer_left_tool_.contact_tool_link);
+          if (left_group->plan(left_plan) ==
+            moveit::core::MoveItErrorCode::SUCCESS)
+          {
+            left_group->clearPoseTargets();
+            left_planned = true;
+          } else {
+            left_group->clearPoseTargets();
+          }
+        }
+        if (!right_planned) {
+          const auto state = synchronized_current_robot_state(*right_group);
+          right_group->setStartState(*state);
+          right_group->setPoseTarget(
+            right_target, drawer_right_tool_.contact_tool_link);
+          if (right_group->plan(right_plan) ==
+            moveit::core::MoveItErrorCode::SUCCESS)
+          {
+            right_group->clearPoseTargets();
+            right_planned = true;
+          } else {
+            right_group->clearPoseTargets();
+          }
+        }
+        if (left_planned && right_planned) {
+          break;
+        }
+      }
+      if (left_planned && right_planned) {
+        const auto execution = execute_bimanual_trajectories_bounded(
+          left_group, left_plan.trajectory_,
+          right_group, right_plan.trajectory_,
+          std::function<bool()>(), std::chrono::seconds(60), description);
+        ok = execution.left_code == moveit::core::MoveItErrorCode::SUCCESS &&
+          execution.right_code == moveit::core::MoveItErrorCode::SUCCESS;
+      }
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Best-effort bimanual %s failed: %s",
+        description.c_str(), error.what());
+    }
+    return ok;
+  }
+
+  void best_effort_bimanual_retreat_and_stow(
+    const std::shared_ptr<MoveGroupInterface> & left_group,
+    const std::shared_ptr<MoveGroupInterface> & right_group,
+    const ButtonSpec & control,
+    bool * operation_executed = nullptr) noexcept
+  {
+    if (!left_group || !right_group) {
+      return;
+    }
+    try {
+      const auto state = button_snapshot(control);
+      const double position = state.received ?
+        state.position : control.drawer_closed_position;
+      best_effort_bimanual_pose_move(
+        left_group, right_group,
+        calculate_drawer_side_tool_pose(
+          control, DrawerSide::LEFT, position, prepress_distance_),
+        calculate_drawer_side_tool_pose(
+          control, DrawerSide::RIGHT, position, prepress_distance_),
+        "drawer retreat");
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(), "Drawer best-effort retreat failed: %s", error.what());
+    }
+    best_effort_stow_named_target(
+      *left_group, drawer_left_tool_.transport_named_target,
+      operation_executed);
+    best_effort_stow_named_target(
+      *right_group, drawer_right_tool_.transport_named_target,
+      operation_executed);
   }
 
   template<typename GoalHandleT>
@@ -7934,8 +9843,13 @@ private:
       owner_id = operation_lease_owner_id_;
       lease_id = operation_lease_id_;
     }
+    RCLCPP_INFO(
+      get_logger(), "[dbg] lease renew enter owner='%s' lease='%s'",
+      owner_id.c_str(), lease_id.c_str());
 
     if (!operation_lease_client_->service_is_ready()) {
+      RCLCPP_WARN(
+        get_logger(), "[dbg] lease renew: service not ready");
       mark_operation_lease_lost(
         "The global operation lease service became unavailable.");
       return;
@@ -7955,6 +9869,8 @@ private:
           return;
         }
         if (std::chrono::steady_clock::now() >= deadline) {
+          RCLCPP_WARN(
+            get_logger(), "[dbg] lease renew TIMED OUT (0.5s)");
           mark_operation_lease_lost(
             "The global operation lease renewal timed out.");
           return;
@@ -7966,6 +9882,14 @@ private:
         !std::isfinite(response->remaining_duration) ||
         response->remaining_duration <= 0.0)
       {
+        RCLCPP_WARN(
+          get_logger(),
+          "[dbg] lease renew REJECTED resp_success=%d resp_lease='%s' "
+          "resp_owner='%s' msg='%s'",
+          response ? response->success : -1,
+          response ? response->lease_id.c_str() : "?",
+          response ? response->owner_id.c_str() : "?",
+          response ? response->message.c_str() : "?");
         mark_operation_lease_lost(
           response && !response->message.empty() ? response->message :
           "The global operation lease renewal was rejected.");
@@ -7973,6 +9897,9 @@ private:
         // Reuse the successful global-lease renewal as the cabinet physics
         // liveness heartbeat.  Only a currently published non-empty control
         // is repeated; idle operators never arm the Gazebo watchdog.
+        RCLCPP_INFO(
+          get_logger(), "[dbg] lease renew OK rem=%.2f",
+          response->remaining_duration);
         publish_operation_heartbeat();
       }
     } catch (const std::exception & error) {
@@ -8288,18 +10215,27 @@ private:
   void stop_active_motion() noexcept
   {
     std::shared_ptr<MoveGroupInterface> move_group;
+    std::array<std::shared_ptr<MoveGroupInterface>, 2> bimanual_groups{};
     {
       std::lock_guard<std::mutex> lock(motion_mutex_);
       move_group = active_move_group_;
+      bimanual_groups = bimanual_active_move_groups_;
     }
-    if (move_group) {
-      try {
-        move_group->getMoveGroupClient().async_cancel_all_goals();
-        move_group->stop();
-      } catch (const std::exception & error) {
-        RCLCPP_ERROR(
-          get_logger(), "Failed to stop MoveIt: %s", error.what());
-      }
+    const auto stop_one = [this](const std::shared_ptr<MoveGroupInterface> & group) {
+        if (!group) {
+          return;
+        }
+        try {
+          group->getMoveGroupClient().async_cancel_all_goals();
+          group->stop();
+        } catch (const std::exception & error) {
+          RCLCPP_ERROR(
+            get_logger(), "Failed to stop MoveIt: %s", error.what());
+        }
+      };
+    stop_one(move_group);
+    for (const auto & group : bimanual_groups) {
+      stop_one(group);
     }
   }
 
@@ -8345,6 +10281,12 @@ private:
   rclcpp::Client<
     xczs_inspection_robot_interfaces::srv::SetCabinetGrasp>::SharedPtr
     grasp_client_;
+  rclcpp::Client<
+    xczs_inspection_robot_interfaces::srv::SetCabinetBimanualGrasp>::SharedPtr
+    bimanual_grasp_client_;
+  rclcpp::Client<
+    xczs_inspection_robot_interfaces::srv::SetCabinetUnlock>::SharedPtr
+    unlock_client_;
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_physics_client_;
   rclcpp::CallbackGroup::SharedPtr reset_client_callback_group_;
   rclcpp::CallbackGroup::SharedPtr operation_lease_client_callback_group_;
@@ -8379,6 +10321,10 @@ private:
   std::vector<std::shared_ptr<ButtonSpec>> buttons_in_order_;
   std::mutex motion_mutex_;
   std::shared_ptr<MoveGroupInterface> active_move_group_;
+  // Left/right move groups registered while a bimanual drawer motion is in
+  // flight, so stop_active_motion() (and the wedge watchdog) cancel BOTH arms
+  // instead of only the single active_move_group_.
+  std::array<std::shared_ptr<MoveGroupInterface>, 2> bimanual_active_move_groups_{};
   // Shared serialization for MoveGroupInterface::execute() across bounded
   // motions (see execute_motion_bounded).  The mutexes are heap-shared so a
   // detached wedge worker can safely clear the transferred lock even if the
@@ -8444,6 +10390,13 @@ private:
   double tool_tip_calibration_joint_tolerance_{0.001};
   double tool_calibration_settle_timeout_{6.0};
   std::unordered_map<std::uint8_t, ToolProfile> tool_profiles_;
+  // Bimanual drawer tools: right three-cylinder (right_arm) + left
+  // two-cylinder (left_arm), read from the adapter's drawer section.  Only
+  // configured when at least one drawer control is operable.
+  BimanualToolProfile drawer_left_tool_;
+  BimanualToolProfile drawer_right_tool_;
+  bool drawer_tools_configured_{false};
+  std::string drawer_transport_named_target_;
   double planning_time_{10.0};
   int planning_attempts_{10};
   double planning_velocity_scale_{0.20};
@@ -8506,6 +10459,8 @@ private:
   double door_release_clearance_{0.30};
   double planning_scene_settle_seconds_{0.50};
   double rotation_waypoint_step_{0.03490658504};
+  // Linear spacing (m) of the drawer grasp-drag waypoints along the slide axis.
+  double drawer_waypoint_step_{0.03};
   double cartesian_velocity_scale_{0.08};
   double cartesian_acceleration_scale_{0.08};
   double cartesian_jump_threshold_{2.0};

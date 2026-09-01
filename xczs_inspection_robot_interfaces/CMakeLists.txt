@@ -14,7 +14,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CabinetControlCatalog.msg"
   "msg/CabinetControlState.msg"
   "srv/ManageOperationLease.srv"
+  "srv/SetCabinetBimanualGrasp.srv"
   "srv/SetCabinetGrasp.srv"
+  "srv/SetCabinetUnlock.srv"
   "srv/SwitchToolset.srv"
   DEPENDENCIES geometry_msgs std_msgs
 )

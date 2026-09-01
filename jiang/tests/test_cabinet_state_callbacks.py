@@ -490,6 +490,11 @@ class CabinetStateCallbackTest(unittest.TestCase):
                 CabinetControl.SUPPORT_SET_STATE,
             ),
             ("door", CabinetControl.TYPE_DOOR, CabinetControl.SUPPORT_TOGGLE),
+            (
+                "drawer",
+                CabinetControl.TYPE_DRAWER,
+                CabinetControl.SUPPORT_SET_STATE,
+            ),
         ]
         for control_id, control_type, supported_commands in specifications:
             entry = CabinetControl()
@@ -512,10 +517,10 @@ class CabinetStateCallbackTest(unittest.TestCase):
         node._cabinet_control_catalog_callback(catalog)
 
         self.assertEqual(
-            ["button", "knob", "switch", "door"],
+            ["button", "knob", "switch", "door", "drawer"],
             list(node._cabinet_controls),
         )
-        self.assertEqual(4, len(created))
+        self.assertEqual(5, len(created))
         self.assertTrue(node._cabinet_catalog_received)
         self.assertEqual(
             CabinetControl.TYPE_DOOR,

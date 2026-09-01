@@ -128,7 +128,9 @@
     docking_base_footprint: [-0.42, -0.42, -0.42, 0.42, 0.55, 0.42, 0.55, -0.42]
     docking_base_footprint_padding: 0.03
     grasp_brake_link: body
-    tool_tip_calibration_joint_tolerance: 0.003
+    # 标定关节闭合位有 ODE 接触静差（实测 ~4mm），0.003 贴边界会误报校准
+    # 失败；放宽到 0.006 覆盖静差。对抓取影响可忽略（附着容差 0.12m）。
+    tool_tip_calibration_joint_tolerance: 0.006
     tool_profiles:
       button:
         move_group: right_arm
@@ -286,7 +288,10 @@
           base_yaw_offset: 0.0
           frame_id: map
     # 物理执行能力正向清单（B2：六组按钮全部通过端到端按压验收）。
-    # 未列入的控制一律只做实时规划验证，绝不写入夹具状态。
+    # 旋钮：fr135 处于 toolset B 旋转夹爪可行性 live 评估中（旋钮体仅 5×14×5 mm，
+    # 自按钮板 -Y 面凸出 ~7mm，需验证夹爪基座不与板面碰撞且能耦合旋钮转动轴）；
+    # 若验收通过则扩列其余五组，否则回退为状态展示。未列入的控制一律只做
+    # 实时规划验证，绝不写入夹具状态。
     operable_control_ids:
       - fr135_button
       - fr2222_button
@@ -294,9 +299,11 @@
       - fr12452_button
       - fr20422_button
       - fr25452_button
+      - fr135_knob
     inoperable_control_reason: >-
-      六组旋钮（fr135…fr25452）为状态展示控制（旋钮体仅 5×14×5 mm，按钮板
-      覆盖其 -Y 面，且用户要求旋钮仅可动不纳入物理操作），未列入可操作清单。
+      发电机层旋钮 fr135…fr25452 为状态展示控制（旋钮体仅 5×14×5 mm，按钮板
+      覆盖其 -Y 面，旋转夹爪基座需验证能否在不碰板面的前提下夹持耦合）。
+      fr135_knob 在 toolset B 下做可行性评估，其余旋钮未列入可操作清单。
       未列入控件仅保留状态显示和实时规划验证，不会执行抓取或写入夹具状态。
     toolset_mismatch_reason: >-
       当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；

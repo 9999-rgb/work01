@@ -20,12 +20,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/fadianground.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/fadianground.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.55 0.55 0.58 1</ambient>
+          <diffuse>0.55 0.55 0.58 1</diffuse>
         </material>
       </visual>
       <collision name="collision_0">
@@ -87,12 +86,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1352.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1352.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.02 0.02 0.025 1</ambient>
+          <diffuse>0.02 0.02 0.025 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -122,12 +120,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1351.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1351.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.752941 0.752941 0.752941 1</ambient>
-          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -161,12 +158,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2222.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2222.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.02 0.02 0.025 1</ambient>
+          <diffuse>0.02 0.02 0.025 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -196,12 +192,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2221.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2221.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.752941 0.752941 0.752941 1</ambient>
-          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+          <ambient>0.04 0.65 0.12 1</ambient>
+          <diffuse>0.04 0.65 0.12 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -235,12 +230,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4332.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4332.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.02 0.02 0.025 1</ambient>
+          <diffuse>0.02 0.02 0.025 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -270,12 +264,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4331.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4331.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.752941 0.752941 0.752941 1</ambient>
-          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -309,12 +302,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12452.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12452.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.02 0.02 0.025 1</ambient>
+          <diffuse>0.02 0.02 0.025 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -344,12 +336,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12451.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12451.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.752941 0.752941 0.752941 1</ambient>
-          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+          <ambient>0.04 0.65 0.12 1</ambient>
+          <diffuse>0.04 0.65 0.12 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -383,12 +374,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20422.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20422.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.02 0.02 0.025 1</ambient>
+          <diffuse>0.02 0.02 0.025 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -418,12 +408,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20421.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20421.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.752941 0.752941 0.752941 1</ambient>
-          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -457,12 +446,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25452.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25452.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.02 0.02 0.025 1</ambient>
+          <diffuse>0.02 0.02 0.025 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -492,12 +480,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25451.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25451.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.752941 0.752941 0.752941 1</ambient>
-          <diffuse>0.752941 0.752941 0.752941 1</diffuse>
+          <ambient>0.04 0.65 0.12 1</ambient>
+          <diffuse>0.04 0.65 0.12 1</diffuse>
         </material>
       </visual>
             <collision name="collision">

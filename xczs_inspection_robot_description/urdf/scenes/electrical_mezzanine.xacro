@@ -20,12 +20,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/dianqiground.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/dianqiground.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.55 0.55 0.58 1</ambient>
+          <diffuse>0.55 0.55 0.58 1</diffuse>
         </material>
       </visual>
       <!-- 地面碰撞：SW2URDF 导出的 dianqiground 仅有 visual、无 collision，导致
@@ -69,12 +68,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.7 0.73 0.78 1</ambient>
+          <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -85,70 +83,42 @@
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="s1r">
-      <pose>0.02 0.145 0.16828 0 0 0</pose>
-      <inertial>
-        <pose>-0.00783981349 0.000113937168 4.52788186e-05 0 0 0</pose>
-        <mass>0.117444422</mass>
-        <inertia>
-          <ixx>8.94477127e-05</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>5.52038052e-05</iyy>
-          <iyz>8.21217268e-07</iyz>
-          <izz>4.77428318e-05</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <!-- 圆形机构 s1r（固定装饰）与指示灯 s1p（仅显示）原为固定关节子体；
+           Gazebo Classic 11 下带偏置的 fixed 关节不焊接（子体在模型原点附近
+           散落坠落，见实测），故并入抽屉本体 s1 作为附加 visual/collision。
+           外观与相对位置完全不变（同一 STL、同一偏移），物理外观无改动。 -->
+      <visual name="visual_r">
+        <pose>0.02 0.145 0.16828 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1r.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.2 0.2 0.22 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_r">
+        <pose>0.02 0.145 0.16828 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1r.STL</uri>
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="s1p">
-      <pose>0.069 0.222 0.121 0 0 0</pose>
-      <inertial>
-        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
-        <mass>0.001</mass>
-        <inertia>
-          <ixx>1.64325247e-08</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>7.35697583e-09</iyy>
-          <iyz>1e-09</iyz>
-          <izz>2.09412846e-08</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <visual name="visual_p">
+        <pose>0.069 0.222 0.121 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1p.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_p">
+        <pose>0.069 0.222 0.121 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s1p.STL</uri>
@@ -156,6 +126,8 @@
         </geometry>
       </collision>
     </link>
+    
+    
     <link name="s2">
       <pose>0.03 4.074 1.39 0 0 0</pose>
       <inertial>
@@ -174,12 +146,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.7 0.73 0.78 1</ambient>
+          <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -190,70 +161,39 @@
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="s2r">
-      <pose>0.02 0.145 0.16828 0 0 0</pose>
-      <inertial>
-        <pose>-0.00783981349 0.000113937168 4.52788186e-05 0 0 0</pose>
-        <mass>0.117444422</mass>
-        <inertia>
-          <ixx>8.94477127e-05</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>5.52038052e-05</iyy>
-          <iyz>8.21217268e-07</iyz>
-          <izz>4.77428318e-05</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <!-- 圆形机构 s2r（固定装饰）与指示灯 s2p（仅显示）并入抽屉本体 s2。 -->
+      <visual name="visual_r">
+        <pose>0.02 0.145 0.16828 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.2 0.2 0.22 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_r">
+        <pose>0.02 0.145 0.16828 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri>
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="s2p">
-      <pose>0.069 0.222 0.121 0 0 0</pose>
-      <inertial>
-        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
-        <mass>0.001</mass>
-        <inertia>
-          <ixx>1.64325247e-08</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>7.35697583e-09</iyy>
-          <iyz>1e-09</iyz>
-          <izz>2.09412846e-08</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <visual name="visual_p">
+        <pose>0.069 0.222 0.121 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_p">
+        <pose>0.069 0.222 0.121 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri>
@@ -261,6 +201,8 @@
         </geometry>
       </collision>
     </link>
+    
+    
     <link name="b1">
       <pose>0.03 4.047 0.831870606 0 0 0</pose>
       <inertial>
@@ -279,12 +221,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.7 0.73 0.78 1</ambient>
+          <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -295,70 +236,39 @@
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="b1r">
-      <pose>0.03 0.16661 0.12017 0 0 0</pose>
-      <inertial>
-        <pose>-0.0129826274 -6.14039005e-05 -1.71263444e-05 0 0 0</pose>
-        <mass>0.167713476</mass>
-        <inertia>
-          <ixx>0.000129661188</ixx>
-          <ixy>1.85189801e-07</ixy>
-          <ixz>5.16518378e-08</ixz>
-          <iyy>8.61897642e-05</iyy>
-          <iyz>1e-09</iyz>
-          <izz>7.85413465e-05</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <!-- 圆形机构 b1r（固定装饰）与指示灯 b1p（仅显示）并入抽屉本体 b1。 -->
+      <visual name="visual_r">
+        <pose>0.03 0.16661 0.12017 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.2 0.2 0.22 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_r">
+        <pose>0.03 0.16661 0.12017 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri>
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="b1p">
-      <pose>0.069 0.638 0.168 0 0 0</pose>
-      <inertial>
-        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
-        <mass>0.001</mass>
-        <inertia>
-          <ixx>1.64325247e-08</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>7.35697583e-09</iyy>
-          <iyz>1e-09</iyz>
-          <izz>2.09412846e-08</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <visual name="visual_p">
+        <pose>0.069 0.638 0.168 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_p">
+        <pose>0.069 0.638 0.168 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri>
@@ -366,6 +276,8 @@
         </geometry>
       </collision>
     </link>
+    
+    
     <link name="s3">
       <pose>0.03 5.236 1.385 0 0 0</pose>
       <inertial>
@@ -384,12 +296,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.7 0.73 0.78 1</ambient>
+          <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -400,70 +311,39 @@
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="s3r">
-      <pose>0.02 0.145 0.16828 0 0 0</pose>
-      <inertial>
-        <pose>-0.00783981349 0.000113937168 4.52788185e-05 0 0 0</pose>
-        <mass>0.117444422</mass>
-        <inertia>
-          <ixx>8.94477127e-05</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>5.52038052e-05</iyy>
-          <iyz>8.21217268e-07</iyz>
-          <izz>4.77428318e-05</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <!-- 圆形机构 s3r（固定装饰）与指示灯 s3p（仅显示）并入抽屉本体 s3。 -->
+      <visual name="visual_r">
+        <pose>0.02 0.145 0.16828 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.2 0.2 0.22 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_r">
+        <pose>0.02 0.145 0.16828 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri>
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="s3p">
-      <pose>0.069 0.274 0.121 0 0 0</pose>
-      <inertial>
-        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
-        <mass>0.001</mass>
-        <inertia>
-          <ixx>1.64325247e-08</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>7.35697583e-09</iyy>
-          <iyz>1e-09</iyz>
-          <izz>2.09412846e-08</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <visual name="visual_p">
+        <pose>0.069 0.274 0.121 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_p">
+        <pose>0.069 0.274 0.121 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri>
@@ -471,6 +351,8 @@
         </geometry>
       </collision>
     </link>
+    
+    
     <link name="m1">
       <pose>0.03 4.847 0.895 0 0 0</pose>
       <inertial>
@@ -489,12 +371,11 @@
         <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.7 0.73 0.78 1</ambient>
+          <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -505,70 +386,39 @@
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="m1r">
-      <pose>0.03 0.16661 0.060175 0 0 0</pose>
-      <inertial>
-        <pose>-0.0129826274 -6.14039005e-05 -1.71263444e-05 0 0 0</pose>
-        <mass>0.167713476</mass>
-        <inertia>
-          <ixx>0.000129661188</ixx>
-          <ixy>1.85189801e-07</ixy>
-          <ixz>5.16518378e-08</ixz>
-          <iyy>8.61897642e-05</iyy>
-          <iyz>1e-09</iyz>
-          <izz>7.85413465e-05</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <!-- 圆形机构 m1r（固定装饰）与指示灯 m1p（仅显示）并入抽屉本体 m1。 -->
+      <visual name="visual_r">
+        <pose>0.03 0.16661 0.060175 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.2 0.2 0.22 1</ambient>
+          <diffuse>0.2 0.2 0.22 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_r">
+        <pose>0.03 0.16661 0.060175 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri>
           </mesh>
         </geometry>
       </collision>
-    </link>
-    <link name="m1p">
-      <pose>0.069 0.638 0.108 0 0 0</pose>
-      <inertial>
-        <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
-        <mass>0.001</mass>
-        <inertia>
-          <ixx>1.64325247e-08</ixx>
-          <ixy>1e-09</ixy>
-          <ixz>1e-09</ixz>
-          <iyy>7.35697583e-09</iyy>
-          <iyz>1e-09</iyz>
-          <izz>2.09412846e-08</izz>
-        </inertia>
-      </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
+      <visual name="visual_p">
+        <pose>0.069 0.638 0.108 0 0 0</pose>
         <geometry>
           <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri>
-          </mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>1 1 1 1</ambient>
-          <diffuse>1 1 1 1</diffuse>
+          <ambient>0.85 0.04 0.04 1</ambient>
+          <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <collision name="collision_p">
+        <pose>0.069 0.638 0.108 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri>
@@ -576,6 +426,8 @@
         </geometry>
       </collision>
     </link>
+    
+    
     <joint name="ds1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
@@ -597,16 +449,8 @@
         </dynamics>
       </axis>
     </joint>
-    <joint name="s1r_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>s1</parent>
-      <child>s1r</child>
-</joint>
-    <joint name="s1p_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>s1</parent>
-      <child>s1p</child>
-</joint>
+    
+    
     <joint name="ds2" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
@@ -628,16 +472,8 @@
         </dynamics>
       </axis>
     </joint>
-    <joint name="s2r_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>s2</parent>
-      <child>s2r</child>
-</joint>
-    <joint name="s2p_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>s2</parent>
-      <child>s2p</child>
-</joint>
+    
+    
     <joint name="db1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
@@ -650,26 +486,19 @@
           <effort>100</effort>
           <velocity>1</velocity>
         </limit>
-        <!-- db1 为 slider：关节摩擦必须远小于 detent 弹簧刚度（12 N/m），
-             否则关门时弹簧力(<1N)顶不过静摩擦，门会停在中途(~0.04m)，
-             触发插件 pre-grasp 扰动检测（motion_tolerance 0.025）。
-             0.2N 摩擦 → 死区 ±0.017m，落在容差内。 -->
+        <!-- db1 为双手抽拉抽屉：关门/开门由双臂固定关节拖拽驱动（非弹簧拉回），
+             故无需 slider 那套"弹簧顶过静摩擦"约束；0.2N 摩擦仅保证双臂释放后
+             面板停在 detent 处不漂移（open detent 0.3 处无外力，80kg 惯性 +
+             0.2N 摩擦 ≈ 静置）。detent 弹簧 12N/m 在双臂拉出/推回时提供
+             闩位手感，插件锁止弹簧 500N/m 在解锁前把抽屉钉在关位。 -->
         <dynamics>
           <damping>30</damping>
           <friction>0.2</friction>
         </dynamics>
       </axis>
     </joint>
-    <joint name="b1r_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>b1</parent>
-      <child>b1r</child>
-</joint>
-    <joint name="b1p_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>b1</parent>
-      <child>b1p</child>
-</joint>
+    
+    
     <joint name="ds3" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
@@ -691,16 +520,8 @@
         </dynamics>
       </axis>
     </joint>
-    <joint name="s3r_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>s3</parent>
-      <child>s3r</child>
-</joint>
-    <joint name="s3p_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>s3</parent>
-      <child>s3p</child>
-</joint>
+    
+    
     <joint name="dm1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
@@ -722,16 +543,8 @@
         </dynamics>
       </axis>
     </joint>
-    <joint name="m1r_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>m1</parent>
-      <child>m1r</child>
-</joint>
-    <joint name="m1p_joint" type="fixed">
-      <pose>0 0 0 0 0 0</pose>
-      <parent>m1</parent>
-      <child>m1p</child>
-</joint>
+    
+    
     <!-- 电气夹层 3.0 动态化：整模型取消 static，地面经固定关节锚定世界，
          五扇滑门（ds1/ds2/db1/ds3/dm1，prismatic (1,0,0)）保留可动。门为
          push-push 闩锁 slider（B3b live 验证）：开 = 推至 detent 0.3 闩住；
@@ -756,6 +569,12 @@
       <state_publish_rate>20.0</state_publish_rate>
       <reset_service>/xczs/cabinet/electrical_mezzanine/reset_physics</reset_service>
       <grasp_service>/xczs/cabinet/electrical_mezzanine/grasp</grasp_service>
+      <!-- P3 双手抽拉抽屉合同：bimanual_grasp / unlock 服务由 plugin 在抽屉
+           <control> 上按需创建（db1 等 drawer 合同控件）。服务名必须在插件级
+           显式声明为夹层命名空间，避免落到共享默认
+           /xczs/cabinet/{bimanual_grasp,unlock} 与其它场景冲突。 -->
+      <bimanual_grasp_service>/xczs/cabinet/electrical_mezzanine/bimanual_grasp</bimanual_grasp_service>
+      <unlock_service>/xczs/cabinet/electrical_mezzanine/unlock</unlock_service>
       <grasp_active_topic>/xczs/cabinet/electrical_mezzanine/grasp_active</grasp_active_topic>
       <active_control_topic>/xczs/cabinet/electrical_mezzanine/active_control</active_control_topic>
       <operation_heartbeat_topic>/xczs/cabinet/electrical_mezzanine/operation_heartbeat</operation_heartbeat_topic>
@@ -781,7 +600,13 @@
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <graspable>false</graspable>
+        <!-- 正面抽拉：把手/指示灯为固定装饰（用户确认"只是指示灯"），操作改为
+             grasp 固定关节附着面板前脸 + 沿滑动轴线性拖拽（operator
+             grasp_operated 分支），不再用西侧 push-push。grasp_point 为面板
+             s1 前脸中心（面板局部系，s 型面板 bbox x∈[-0.53,0.069] y∈[0,0.29]
+             z∈[0,0.26]）。 -->
+        <graspable>true</graspable>
+        <grasp_point>0.069 0.145 0.13</grasp_point>
       </control>
       <control>
         <control_id>ds2</control_id>
@@ -799,11 +624,13 @@
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <graspable>false</graspable>
+        <!-- 正面抽拉（grasp 固定关节 + 线性拖拽），grasp_point = s2 前脸中心。 -->
+        <graspable>true</graspable>
+        <grasp_point>0.069 0.145 0.13</grasp_point>
       </control>
       <control>
         <control_id>db1</control_id>
-        <control_type>slider</control_type>
+        <control_type>drawer</control_type>
         <joint_name>db1</joint_name>
         <joint_state_topic>/xczs/cabinet/electrical_mezzanine/db1/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/electrical_mezzanine/db1/pressed</pressed_topic>
@@ -813,22 +640,22 @@
         <detent_stiffness>12</detent_stiffness>
         <spring_damping>1</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
-        <!-- release 必须严格高于开门按压的物理峰值。B3b 实测开门推至目标时
-             面板实际可到 ~0.307~0.332（工具有效接触面比标定业务点深
-             ~0.025~0.031，且随按压冲量波动），故 release 选 0.34 并在
-             operator 侧用 slider_open_press_offset 把开门目标压到 0.28
-             （开门峰值 ≤~0.312，留 ~0.028 裕量）。关门按压目标 =
-             slider_release_position + slider_close_press_offset = 0.36
-             （严格越过 0.34 触发；不得等于 release 本身，boot18 停在阈值下
-             0.3399x 不触发）。关节 upper 0.38 为关门按压留行程。 -->
-        <slider_release_position>0.34</slider_release_position>
-        <slider_release_reengage_position>0.13</slider_release_reengage_position>
-        <!-- 面板静置 ~0.008 且低摩擦易被轻推 ±0.02：motion_tolerance 放宽
-             到 0.05，避免 pre-grasp 扰动误报（ratchet 边界仍由 detent_hysteresis
-             决定，不受此影响）。 -->
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <graspable>false</graspable>
+        <!-- 双手抽拉（bimanual drawer 合同）：左两电缸探针附着左把手立板、
+             右三电缸探针附着右把手立板，解锁推进区 = 右把手前方不可见逻辑区
+             （不是 *p 指示灯）。P0 几何冻结（世界 == 夹具局部系，b1 根
+             (0.030,4.047,0.832)）：左立板局部 (0.069,0.060,0.120) =
+             世界 (0.099,4.107,0.952)；右立板局部 (0.069,0.646,0.120) =
+             (0.099,4.693,0.952)；解锁区局部 (0.085,0.646,0.120) =
+             世界 (0.115,4.693,0.952)。grasp/unlock 点均位于抽屉子 link b1
+             局部系（plugin 以 control.link WorldPose 叠加，随抽屉同步滑动）。 -->
+        <graspable>true</graspable>
+        <grasp_point>0.069 0.060 0.120</grasp_point>
+        <right_grasp_point>0.069 0.646 0.120</right_grasp_point>
+        <unlock_zone_point>0.085 0.646 0.120</unlock_zone_point>
+        <unlock_distance_threshold>0.1</unlock_distance_threshold>
+        <drawer_latch_stiffness>500</drawer_latch_stiffness>
       </control>
       <control>
         <control_id>ds3</control_id>
@@ -846,7 +673,9 @@
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <graspable>false</graspable>
+        <!-- 正面抽拉（grasp 固定关节 + 线性拖拽），grasp_point = s3 前脸中心。 -->
+        <graspable>true</graspable>
+        <grasp_point>0.069 0.145 0.13</grasp_point>
       </control>
       <control>
         <control_id>dm1</control_id>
@@ -864,7 +693,10 @@
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <graspable>false</graspable>
+        <!-- 正面抽拉（grasp 固定关节 + 线性拖拽），grasp_point = m1 前脸中心
+             （m 型面板 bbox y∈[0,0.706] z∈[0,0.12]）。 -->
+        <graspable>true</graspable>
+        <grasp_point>0.069 0.353 0.06</grasp_point>
       </control>
     </plugin>
   </model>

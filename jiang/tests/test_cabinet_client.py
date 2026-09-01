@@ -204,6 +204,8 @@ class _Control:
     TYPE_KNOB = 1
     TYPE_SWITCH = 2
     TYPE_DOOR = 3
+    TYPE_SLIDER = 4
+    TYPE_DRAWER = 5
     SUPPORT_PRESS = 1
     SUPPORT_SET_STATE = 2
     SUPPORT_SET_POSITION = 4

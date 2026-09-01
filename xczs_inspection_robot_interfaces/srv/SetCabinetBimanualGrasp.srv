@@ -1,0 +1,30 @@
+# 双手抓取服务：把左右机器人工具同时刚性附着到同一抽屉的左右把手上。
+#
+# attach 要求：
+#   - 抽屉处于解锁状态（先完成 SetCabinetUnlock，见 §6.3 锁止语义）；
+#   - 左右工具抓取点同时处于对应把手的距离容差内（两侧都成立才允许）；
+#   - 租约心跳与活动控制会话有效；任一侧超差则整体拒绝，绝不单侧附着。
+# detach：两侧同时解除，抽屉回到关位稳定后插件自动恢复锁止。
+#
+# 左右把手点位于抽屉链路（prismatic 子链路）局部系，随抽屉一起移动；
+# 左右工具抓取点位于对应机器人链路局部系。插件在世界系求距离并与
+# grasp_distance_threshold 比较，故开位/关位都能正确计算。
+
+string control_id
+string operation_lease_id
+string robot_model
+string left_robot_link
+string right_robot_link
+geometry_msgs/Point left_robot_grasp_point
+geometry_msgs/Point right_robot_grasp_point
+geometry_msgs/Point left_handle_point
+geometry_msgs/Point right_handle_point
+string robot_base_link
+bool attach
+---
+bool success
+string message
+bool left_grasped
+bool right_grasped
+float64 left_distance
+float64 right_distance

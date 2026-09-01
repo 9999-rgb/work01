@@ -5,6 +5,11 @@ uint8 TYPE_DOOR=3
 # A prismatic slider (linear push along its axis) with detent latching.  The
 # robot presses the face, the plugin latches the door to the nearest detent.
 uint8 TYPE_SLIDER=4
+# A bimanual pull-out drawer: a prismatic joint along the cabinet's outward
+# normal with left/right handle grasp points.  The right three-cylinder
+# unlocks near the right handle, both tools grasp both handles, and the arms
+# pull/push in synchrony along the rail.
+uint8 TYPE_DRAWER=5
 
 uint8 SUPPORT_PRESS=1
 uint8 SUPPORT_SET_STATE=2

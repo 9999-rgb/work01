@@ -1,13 +1,18 @@
 # 发电机厂巡检场景（单一场景，名称与资产名一致）。
 #
-# model.file 用 package:// 引用 description 包静态地板（SDF 内部 mesh 走
+# model.file 用 package:// 引用 description 包场景 xacro（xacro 内部 mesh 走
 # model://，运行时经 gazebo resource path 解析）；nav2_map 用资产目录内
 # 相对路径，导入时归一化为资产库内绝对路径。
+
 scenes:
   - name: generator_plant
     spawn_cabinet: false
     model:
-      file: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.sdf
+      file: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.xacro
       pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
     nav2_map: maps/inspection_map_generator_plant.yaml
-    robot_spawn: {x: 2.0, y: 2.0, z: 0.515, yaw: 0.0}
+    # 出生点取按钮排（y=4.81）正南通道 (x=-16, y=2)，机头朝 +Y（yaw=π/2）
+    # 正对按钮台；check_scene_config 已验证带朝向 footprint 全落 FREE 格。
+    # 地板无柜体走廊，绕行带置空。
+    navigation_keepout: null
+    robot_spawn: {x: -16.0, y: 2.0, z: 0.515, yaw: 1.5707963267948966}

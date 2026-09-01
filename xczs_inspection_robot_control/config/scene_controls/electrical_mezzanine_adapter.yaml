@@ -22,7 +22,8 @@
     base_output_topic: /xczs/cmd_vel
     joint_trajectory_topic: /xczs/joint_trajectory
     joint_state_topic: /xczs/joint_states
-    # 夹具场景重置基座位姿 = 场景 robot_spawn（(4,4) 机头朝 +X）。
+    # 夹具场景重置基座位姿 = 场景 robot_spawn（(4,4) 机头朝 +X，位于柜体正面
+    # 东侧）。
     reset_base_pose:
       frame_id: map
       x: 4.0
@@ -108,8 +109,8 @@
 /**/xczs_cabinet_button_operator:
   ros__parameters:
     # 机器人适配层：tool_profiles 与全局标定沿用共享柜体目录，仅 controls
-    # （夹具导航工位）与 operable_control_ids（B3b = db1/dm1 两扇低门）按
-    # 电气夹层夹具定制。
+    # （夹具导航工位）与 operable_control_ids（B3b = db1/dm1 两扇低门 + 顶缘
+    # ds2/ds3）按电气夹层夹具定制。
     robot_model_name: xczs_inspection_robot
     move_group_namespace: /
     planning_time: 10.0
@@ -126,7 +127,11 @@
     docking_base_footprint: [-0.42, -0.42, -0.42, 0.42, 0.55, 0.42, 0.55, -0.42]
     docking_base_footprint_padding: 0.03
     grasp_brake_link: body
-    tool_tip_calibration_joint_tolerance: 0.003
+    # 两指/三指工具的标定关节在闭合位会发生接触碰撞，ODE 把二者推到接触
+    # 平衡，实测静息位约 2.5-4mm（finger2 最高 0.003976）。容差 0.003 贴在
+    # 静息位边界上，任一间隙变化就触发校准失败；放宽到 0.006 覆盖静差。
+    # 对抓取的影响可忽略（bimanual 附着容差 0.12m）。
+    tool_tip_calibration_joint_tolerance: 0.006
     tool_profiles:
       button:
         move_group: right_arm
@@ -165,6 +170,33 @@
           - r_three_cyl_finger2_joint
           - r_three_cyl_finger3_joint
         calibration_joint_positions: [0.0, 0.0, 0.0]
+    # 双手抽拉抽屉工具（P3）：左电缸两指探针（two_cylinder）+ 右电缸三指探针
+    # （three_cylinder）。tool_tip_position 为该侧工具最深指端（业务点）在
+    # contact_tool_link 局部系的位置：
+    #   - 右三指：沿用 button/door 实测标定 [0.0265, -0.061735, -0.3885]；
+    #   - 左两指：finger2(endlink2) 最深，几何指端 (-0.034, -0.061735, -0.3885)
+    #     （P3-8 实测复核；bimanual 附着容差 0.12m 可吸收微差）。
+    # calibration_joint_* 闭合手指至零位，使工具处于已标定外形。
+    drawer_tools:
+      left:
+        move_group: left_arm
+        contact_tool_link: l_two_cyl_base
+        transport_named_target: home
+        tool_tip_position: [-0.034, -0.061735, -0.3885]
+        calibration_joint_names:
+          - l_two_cyl_finger1_joint
+          - l_two_cyl_finger2_joint
+        calibration_joint_positions: [0.0, 0.0]
+      right:
+        move_group: right_arm
+        contact_tool_link: r_three_cyl_base
+        transport_named_target: home
+        tool_tip_position: [0.0265, -0.061735, -0.3885]
+        calibration_joint_names:
+          - r_three_cyl_finger1_joint
+          - r_three_cyl_finger2_joint
+          - r_three_cyl_finger3_joint
+        calibration_joint_positions: [0.0, 0.0, 0.0]
     navigation_takeover_distance: 1.0
     navigation_takeover_yaw_tolerance: 0.35
     navigation_takeover_stall_timeout: 4.0
@@ -184,50 +216,57 @@
     force_tracking_settle_seconds: 0.15
     force_tracking_attempts: 3
     button_press_minimum_cartesian_fraction: 0.95
-    # 夹具门工位：夹具局部系 == 世界/map 系（场景模型单位位姿 spawn）。
-    # 停靠点 = 门推面（x=-0.50）正西退让 standoff；outward (-1,0,0) 自
-    # 推面指向机器人。base_yaw_offset 取 π/2（B3a live 实测的推门几何：
-    # 机器人以 body yaw≈π / base yaw≈88° 停靠，右臂越过机身左侧把推面直推
-    # 0.3m 成功；boot10 试过 base_yaw_offset=0 令 base 正对推面，反而 ready
-    # 预压位 OMPL 无法采到有效 IK 目标，说明 base 88° 才是可达窗口内的姿态）。
-    # standoff 1.4（base x=-1.9）是 ready 唯一可靠档位：
-    #   * standoff ≤1.1（base ≥-1.6）时预压位 tool_link 距 base ≤0.60m，右臂
-    #     折叠太紧自碰机身，OMPL 预压目标 IK 采样全部失败（boot11/12 实测
-    #     "Unable to sample any valid states"）；1.4 时 tool_link 距 base
-    #     0.89m，手臂侧伸自然、ready 可靠通过（boot9 实测）。
-    #   * 推压段：单段 Cartesian 0→0.3 在 1.4 只能完成 ~14%（boot9，接近
-    #     奇异区退化解），但 operator 的 slider 力跟踪重推（track_slider_force，
-    #     与 button 型 track_button_force 同机制）从当前物理位置重推，逐次
-    #     收敛到目标 detent —— B3a 的 button 型探针在同一站位 1.4 就是靠
-    #     这个机制把门推满 0.3m 的。standoff 不能再小，否则 ready 不过。
-    # 已通过站位安全门限（最小安全 standoff≈0.46m）。local_anchor z 取 0。
+    # 抽屉正面工位：夹具局部系 == 世界/map 系（场景模型单位位姿 spawn）。
+    # 停靠点 = 抽屉前脸（x=0.099）正东退让 standoff；outward (1,0,0) 自前脸
+    # 指向机器人（东侧）。base_yaw_offset 取 0：导航目标 yaw = atan2(-1,0,0
+    # 反)-0 = π，机器人正对面板（朝西），右臂自东向西伸到前脸，grasp 固定
+    # 关节附着后沿滑动轴拉出（向东）/ 推回（向西）。
+    # 可达性复标（2026-09-01 Gazebo /compute_ik）：双臂对 ready/grasp/support
+    # 位姿在机器人基座 x≈1.50 时无 IK 解（NO_IK_SOLUTION），x≤1.30 可解。
+    # 为留足停靠容差余量，四站 standoff 统一 1.1（机器人基座 x=1.199，相对
+    # 前脸 x=0.099 退让 1.10m，双臂可达余量 ~0.1m）。
     controls:
       db1:
         navigation_station:
-          local_anchor: [-0.5, 4.4, 0.0]
-          outward_axis: [-1.0, 0.0, 0.0]
-          standoff: 1.4
-          base_yaw_offset: 1.5707963267948966
+          local_anchor: [0.099, 4.4, 0.0]
+          outward_axis: [1.0, 0.0, 0.0]
+          standoff: 1.1
+          base_yaw_offset: 0.0
           frame_id: map
       dm1:
-        # 与 db1 同合同：停靠点 = dm1 推面（x=-0.50, y=5.20）正西 standoff 1.4。
         navigation_station:
-          local_anchor: [-0.5, 5.2, 0.0]
-          outward_axis: [-1.0, 0.0, 0.0]
-          standoff: 1.4
-          base_yaw_offset: 1.5707963267948966
+          local_anchor: [0.099, 5.2, 0.0]
+          outward_axis: [1.0, 0.0, 0.0]
+          standoff: 1.1
+          base_yaw_offset: 0.0
           frame_id: map
-    # 物理执行能力正向清单（B3b：db1、dm1 两扇低门推门 + push-push 关门
-    # live 验证；其余三扇高门状态展示）。未列入的控制一律只做实时规划验证，
-    # 绝不写入夹具状态。
+      ds2:
+        navigation_station:
+          local_anchor: [0.099, 4.219, 0.0]
+          outward_axis: [1.0, 0.0, 0.0]
+          standoff: 1.1
+          base_yaw_offset: 0.0
+          frame_id: map
+      ds3:
+        navigation_station:
+          local_anchor: [0.099, 5.381, 0.0]
+          outward_axis: [1.0, 0.0, 0.0]
+          standoff: 1.1
+          base_yaw_offset: 0.0
+          frame_id: map
+    # 物理执行能力正向清单（B3b：db1/dm1 低门；2026-09-01 增补 ds2/ds3 顶缘
+    # 门）。本阶段全部抽屉改为正面抽拉操作（grasp 拉出/推回），经 Gazebo 实测
+    # 验收。ds1 前脸 z=2.06 超出可达窗口上缘，保持状态展示。
+    # 未列入的控制一律只做实时规划验证，绝不写入夹具状态。
     operable_control_ids:
       - db1
       - dm1
+      - ds2
+      - ds3
     inoperable_control_reason: >-
-      电气夹层 ds1/ds2/ds3 三扇高门本阶段为状态展示控制（推面 z≈1.5~2.06m，
-      位于右臂可达窗口 0.58~1.547m 上缘甚至之外；B3b 仅验证了低门 db1/dm1
-      的推门 + push-push 关门）。未列入控件仅保留状态显示和实时规划验证，
-      不会执行推门。
+      电气夹层 ds1 高抽屉本阶段为状态展示控制（前脸 z=2.06m，超出右臂可达窗口
+      0.58~1.547m 上缘）。未列入控件仅保留状态显示和实时规划验证，不会执行
+      抽拉操作。
     toolset_mismatch_reason: >-
       当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；
       套装 B：旋转按钮/摇杆）。控件仍保留状态显示；错套装请求会在导航和

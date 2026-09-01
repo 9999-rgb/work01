@@ -98,10 +98,21 @@ private:
     response.lease_id = reply.lease_id;
     response.owner_id = reply.owner_id;
     response.remaining_duration = reply.remaining_duration;
+    RCLCPP_INFO(
+      get_logger(),
+      "[dbg] req cmd=%d owner='%s' lease='%s' dur=%.2f -> status=%u rem=%.2f "
+      "held_owner='%s' held_lease='%s' msg='%s'",
+      request.command, request.owner_id.c_str(), request.lease_id.c_str(),
+      request.requested_duration, static_cast<unsigned>(reply.status),
+      reply.remaining_duration, state_owner_for_log().c_str(),
+      state_lease_for_log().c_str(), reply.message.c_str());
   }
 
   double maximum_lease_duration_{5.0};
   OperationLeaseState state_;
+
+  std::string state_owner_for_log() { return state_.held_owner(); }
+  std::string state_lease_for_log() { return state_.held_lease(); }
   rclcpp::Service<ManageOperationLease>::SharedPtr service_;
   rclcpp::TimerBase::SharedPtr expiry_timer_;
 };

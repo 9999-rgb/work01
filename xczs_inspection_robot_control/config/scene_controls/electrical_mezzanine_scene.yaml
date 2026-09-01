@@ -2,7 +2,7 @@
   ros__parameters:
     # 电气夹层夹具的规划场景适配层（B3a 探针）。夹具局部系 == 世界系
     # （场景模型单位位姿 spawn）。
-    # 探针阶段刻意不给门面板/夹层地板建全量碰撞代理：db1 推门 0.3 m 直线
+    # 探针阶段刻意不给抽屉面板/夹层地板建全量碰撞代理：正面抽拉 0.3 m 直线
     # 拖曳在规划场景中按"净空"规划，实际碰撞由 Gazebo 物理承载——这正
     # 是要验证的物理问题。frame_part_ids 不可为空（代码强制），放一个
     # 远在东北方的占位盒，永不触碰门区操作路径。
@@ -22,33 +22,33 @@
     controls:
       ds1:
         type: button
-        local_position: [-0.5, 4.581, 2.06]
+        local_position: [0.099, 4.581, 2.06]
         axis: [1.0, 0.0, 0.0]
       ds2:
         type: button
-        local_position: [-0.5, 4.219, 1.52]
+        local_position: [0.099, 4.219, 1.52]
         axis: [1.0, 0.0, 0.0]
       db1:
         type: button
-        local_position: [-0.5, 4.4, 0.952]
+        local_position: [0.099, 4.4, 0.952]
         axis: [1.0, 0.0, 0.0]
       ds3:
         type: button
-        local_position: [-0.5, 5.381, 1.515]
+        local_position: [0.099, 5.381, 1.515]
         axis: [1.0, 0.0, 0.0]
       dm1:
         type: button
-        local_position: [-0.5, 5.2, 0.955]
+        local_position: [0.099, 5.2, 0.955]
         axis: [1.0, 0.0, 0.0]
 
-    # Web inventory 的默认导航工位（db1 推面正西 1.4 m；与 adapter 一致，
-    # 1.4 是 ready 预压位唯一可靠档位，推压靠 slider 力跟踪收敛）。
+    # Web inventory 的默认导航工位（db1 前脸正东 1.4 m；与 adapter 一致，
+    # 机器人自东侧正面停靠，grasp 拉出/推回）。
     navigation_station:
       frame_id: map
-      local_anchor: [-0.5, 4.4, 0.0]
-      outward_axis: [-1.0, 0.0, 0.0]
+      local_anchor: [0.099, 4.4, 0.0]
+      outward_axis: [1.0, 0.0, 0.0]
       standoff: 1.4
-      base_yaw_offset: 1.5707963267948966
+      base_yaw_offset: 0.0
 
     # frame_part_ids 非空占位（见文件头注释）。东北方偏远盒，与门区无交叠。
     frame_part_ids:
@@ -59,7 +59,7 @@
         position: [16.0, 10.0, 1.25]
 
     control_collision:
-      # 门推面处的小按钮圆柱：操作时被豁免（active control 移除碰撞对象），
+      # 抽屉前脸处的小按钮圆柱：操作时被豁免（active control 移除碰撞对象），
       # 仅非操作时作为规划净空参考。
       button_size: [0.014, 0.026]
       button_center_offset: 0.004

@@ -1,0 +1,23 @@
+# 抽屉解锁服务：右手三电缸进入右把手附近的解锁推进区并推进。
+#
+# 解锁推进区是不可见逻辑接触区（右把手前方，见实施执行方案 §6.3/§11.1，
+# 并非 *p 指示灯）。unlock=true 时，插件先校验右工具抓取点世界位置处于
+# 解锁区内（距离 ≤ unlock_distance_threshold），随后才解除该抽屉的锁止，
+# 解除后才允许 SetCabinetBimanualGrasp attach。unlock=false 用于复位/取消
+# 时显式恢复锁止；抽屉回到关位并稳定后也会自动恢复锁止。
+#
+# unlock_zone_point 位于抽屉链路局部系；right_robot_grasp_point 位于
+# 右工具链路局部系。
+
+string control_id
+string operation_lease_id
+string robot_model
+string right_robot_link
+geometry_msgs/Point right_robot_grasp_point
+geometry_msgs/Point unlock_zone_point
+bool unlock
+---
+bool success
+string message
+float64 distance
+bool drawer_unlocked

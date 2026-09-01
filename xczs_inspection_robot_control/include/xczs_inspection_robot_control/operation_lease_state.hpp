@@ -129,6 +129,19 @@ public:
     return expire_locked(now);
   }
 
+  // Debug accessors (temporary diagnostics).
+  std::string held_owner()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return owner_id_;
+  }
+
+  std::string held_lease()
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return lease_id_;
+  }
+
 private:
   static bool valid_request(
     const std::string & owner_id,
