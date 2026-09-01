@@ -25,7 +25,7 @@ _CONTROL_ID_PATTERN = re.compile(r"^[a-z][a-z0-9_]{0,62}$")
 _RELATIVE_TOPIC_PATTERN = re.compile(
     r"^[A-Za-z_][A-Za-z0-9_]*(?:/[A-Za-z_][A-Za-z0-9_]*)*$"
 )
-_CONTROL_TYPES = {"button", "knob", "switch", "door"}
+_CONTROL_TYPES = {"button", "knob", "switch", "door", "slider"}
 
 
 class ProfileContractError(ValueError):

@@ -1,7 +1,7 @@
 <?xml version="1.0" ?>
 <sdf xmlns:xacro="http://www.ros.org/wiki/xacro" version="1.6">
   <model name="electrical_mezzanine">
-    <static>true</static>
+    <static>false</static>
     <link name="dianqiground">
       <pose>0 0 0 0 0 0</pose>
       <inertial>
@@ -28,9 +28,31 @@
           <diffuse>1 1 1 1</diffuse>
         </material>
       </visual>
+      <!-- 地面碰撞：SW2URDF 导出的 dianqiground 仅有 visual、无 collision，导致
+           整个场景为物理幻影（机器人可穿墙、AMCL 无法自定位）。之前将同一
+           37.6K 三角 STL 整体挂为碰撞——但本世界物理引擎是 ODE（非 Bullet），
+           巨质量地面（~9e6 kg）锚定世界后再以 trimesh 承接机器人车轮接触，
+           会向地面刚体注入 NaN 速度（/get_entity_state xczs_scene_floor 的
+           twist 全 NaN），进而使五扇滑门子关节 GetVelocity 全为 .nan：
+           可操作预检（structured state 需有限 velocity/effort）持续
+           NOT_READY "No fresh state"。改为发电机 fadianground 同款
+           box 代理（A3 既定方案）：一块地板 slab 托住机器人（车轮 z≈0 压
+           slab 顶面）。墙/设备碰撞暂以视觉为主——夹层 2D 雷达在 2.18m 平面
+           天然全 .inf、AMCL 导航本不可用，墙体碰撞不影响任何当前决策；
+           如需导航可按地图轮廓补墙盒（见 B3_REPORT）。五扇滑门
+           （s1/s2/b1/s3/m1）为子 link 且模型未开 self_collide，与父 slab
+           不互撞，门滑轨不受影响。 -->
+      <collision name="collision">
+        <pose>-5.3 0.2 -0.05 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>53.8 31.4 0.1</size>
+          </box>
+        </geometry>
+      </collision>
     </link>
     <link name="s1">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 4.436 1.93 0 0 0</pose>
       <inertial>
         <pose>-0.259058262 0.144999598 0.129850452 0 0 0</pose>
         <mass>29.8437528</mass>
@@ -65,7 +87,7 @@
       </collision>
     </link>
     <link name="s1r">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.02 0.145 0.16828 0 0 0</pose>
       <inertial>
         <pose>-0.00783981349 0.000113937168 4.52788186e-05 0 0 0</pose>
         <mass>0.117444422</mass>
@@ -100,7 +122,7 @@
       </collision>
     </link>
     <link name="s1p">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.069 0.222 0.121 0 0 0</pose>
       <inertial>
         <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
         <mass>0.001</mass>
@@ -135,7 +157,7 @@
       </collision>
     </link>
     <link name="s2">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 4.074 1.39 0 0 0</pose>
       <inertial>
         <pose>-0.259058262 0.144999598 0.129850452 0 0 0</pose>
         <mass>29.8437528</mass>
@@ -170,7 +192,7 @@
       </collision>
     </link>
     <link name="s2r">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.02 0.145 0.16828 0 0 0</pose>
       <inertial>
         <pose>-0.00783981349 0.000113937168 4.52788186e-05 0 0 0</pose>
         <mass>0.117444422</mass>
@@ -205,7 +227,7 @@
       </collision>
     </link>
     <link name="s2p">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.069 0.222 0.121 0 0 0</pose>
       <inertial>
         <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
         <mass>0.001</mass>
@@ -240,7 +262,7 @@
       </collision>
     </link>
     <link name="b1">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 4.047 0.831870606 0 0 0</pose>
       <inertial>
         <pose>-0.262953262 0.353026977 0.119993047 0 0 0</pose>
         <mass>80.6316496</mass>
@@ -275,7 +297,7 @@
       </collision>
     </link>
     <link name="b1r">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 0.16661 0.12017 0 0 0</pose>
       <inertial>
         <pose>-0.0129826274 -6.14039005e-05 -1.71263444e-05 0 0 0</pose>
         <mass>0.167713476</mass>
@@ -310,7 +332,7 @@
       </collision>
     </link>
     <link name="b1p">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.069 0.638 0.168 0 0 0</pose>
       <inertial>
         <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
         <mass>0.001</mass>
@@ -345,7 +367,7 @@
       </collision>
     </link>
     <link name="s3">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 5.236 1.385 0 0 0</pose>
       <inertial>
         <pose>-0.259058262 0.145066061 0.129850452 0 0 0</pose>
         <mass>29.8437528</mass>
@@ -380,7 +402,7 @@
       </collision>
     </link>
     <link name="s3r">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.02 0.145 0.16828 0 0 0</pose>
       <inertial>
         <pose>-0.00783981349 0.000113937168 4.52788185e-05 0 0 0</pose>
         <mass>0.117444422</mass>
@@ -415,7 +437,7 @@
       </collision>
     </link>
     <link name="s3p">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.069 0.274 0.121 0 0 0</pose>
       <inertial>
         <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
         <mass>0.001</mass>
@@ -450,7 +472,7 @@
       </collision>
     </link>
     <link name="m1">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 4.847 0.895 0 0 0</pose>
       <inertial>
         <pose>-0.261012016 0.35306266 0.060010626 0 0 0</pose>
         <mass>36.9309689</mass>
@@ -485,7 +507,7 @@
       </collision>
     </link>
     <link name="m1r">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.03 0.16661 0.060175 0 0 0</pose>
       <inertial>
         <pose>-0.0129826274 -6.14039005e-05 -1.71263444e-05 0 0 0</pose>
         <mass>0.167713476</mass>
@@ -520,7 +542,7 @@
       </collision>
     </link>
     <link name="m1p">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>0.069 0.638 0.108 0 0 0</pose>
       <inertial>
         <pose>-0.00838140889 0.008 0.00217884985 0 0 0</pose>
         <mass>0.001</mass>
@@ -555,274 +577,295 @@
       </collision>
     </link>
     <joint name="ds1" type="prismatic">
-      <pose>0.03 4.436 1.93 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
       <child>s1</child>
       <axis>
         <xyz>1 0 0</xyz>
         <limit>
           <lower>0</lower>
-          <upper>0.3</upper>
+          <upper>0.38</upper>
           <effort>100</effort>
           <velocity>1</velocity>
         </limit>
+        <!-- slider（与 db1 同 push-push 合同）：upper 0.38 为关门按压
+             （release 0.34 + close_offset 0.02 = 0.36）留行程；friction 0.2
+             远小于 detent 弹簧刚度，保证释放后弹簧能拉回关闭 detent。 -->
         <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
+          <damping>30</damping>
+          <friction>0.2</friction>
         </dynamics>
       </axis>
     </joint>
-    <joint name="s1r_joint" type="revolute">
-      <pose>0.02 0.145 0.16828 0 0 0</pose>
+    <joint name="s1r_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>s1</parent>
       <child>s1r</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-1.5708</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
-    <joint name="s1p_joint" type="prismatic">
-      <pose>0.069 0.222 0.121 0 0 0</pose>
+</joint>
+    <joint name="s1p_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>s1</parent>
       <child>s1p</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-0.03</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
+</joint>
     <joint name="ds2" type="prismatic">
-      <pose>0.03 4.074 1.39 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
       <child>s2</child>
       <axis>
         <xyz>1 0 0</xyz>
         <limit>
           <lower>0</lower>
-          <upper>0.3</upper>
+          <upper>0.38</upper>
           <effort>100</effort>
           <velocity>1</velocity>
         </limit>
+        <!-- slider（与 db1 同 push-push 合同）：upper 0.38 为关门按压
+             （release 0.34 + close_offset 0.02 = 0.36）留行程；friction 0.2
+             远小于 detent 弹簧刚度，保证释放后弹簧能拉回关闭 detent。 -->
         <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
+          <damping>30</damping>
+          <friction>0.2</friction>
         </dynamics>
       </axis>
     </joint>
-    <joint name="s2r_joint" type="revolute">
-      <pose>0.02 0.145 0.16828 0 0 0</pose>
+    <joint name="s2r_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>s2</parent>
       <child>s2r</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-1.5708</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
-    <joint name="s2p_joint" type="prismatic">
-      <pose>0.069 0.222 0.121 0 0 0</pose>
+</joint>
+    <joint name="s2p_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>s2</parent>
       <child>s2p</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-0.03</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
+</joint>
     <joint name="db1" type="prismatic">
-      <pose>0.03 4.047 0.831870606 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
       <child>b1</child>
       <axis>
         <xyz>1 0 0</xyz>
         <limit>
           <lower>0</lower>
-          <upper>0.3</upper>
+          <upper>0.38</upper>
           <effort>100</effort>
           <velocity>1</velocity>
         </limit>
+        <!-- db1 为 slider：关节摩擦必须远小于 detent 弹簧刚度（12 N/m），
+             否则关门时弹簧力(<1N)顶不过静摩擦，门会停在中途(~0.04m)，
+             触发插件 pre-grasp 扰动检测（motion_tolerance 0.025）。
+             0.2N 摩擦 → 死区 ±0.017m，落在容差内。 -->
         <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
+          <damping>30</damping>
+          <friction>0.2</friction>
         </dynamics>
       </axis>
     </joint>
-    <joint name="b1r_joint" type="revolute">
-      <pose>0.03 0.16661 0.12017 0 0 0</pose>
+    <joint name="b1r_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>b1</parent>
       <child>b1r</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-1.5708</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
-    <joint name="b1p_joint" type="prismatic">
-      <pose>0.069 0.638 0.168 0 0 0</pose>
+</joint>
+    <joint name="b1p_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>b1</parent>
       <child>b1p</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-0.03</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
+</joint>
     <joint name="ds3" type="prismatic">
-      <pose>0.03 5.236 1.385 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
       <child>s3</child>
       <axis>
         <xyz>1 0 0</xyz>
         <limit>
           <lower>0</lower>
-          <upper>0.3</upper>
+          <upper>0.38</upper>
           <effort>100</effort>
           <velocity>1</velocity>
         </limit>
+        <!-- slider（与 db1 同 push-push 合同）：upper 0.38 为关门按压
+             （release 0.34 + close_offset 0.02 = 0.36）留行程；friction 0.2
+             远小于 detent 弹簧刚度，保证释放后弹簧能拉回关闭 detent。 -->
         <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
+          <damping>30</damping>
+          <friction>0.2</friction>
         </dynamics>
       </axis>
     </joint>
-    <joint name="s3r_joint" type="revolute">
-      <pose>0.02 0.145 0.16828 0 0 0</pose>
+    <joint name="s3r_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>s3</parent>
       <child>s3r</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-1.5708</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
-    <joint name="s3p_joint" type="prismatic">
-      <pose>0.069 0.274 0.121 0 0 0</pose>
+</joint>
+    <joint name="s3p_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>s3</parent>
       <child>s3p</child>
-      <axis>
-        <xyz>-1 0 0</xyz>
-        <limit>
-          <lower>-0.03</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
+</joint>
     <joint name="dm1" type="prismatic">
-      <pose>0.03 4.847 0.895 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>dianqiground</parent>
       <child>m1</child>
       <axis>
         <xyz>1 0 0</xyz>
         <limit>
           <lower>0</lower>
-          <upper>0.3</upper>
+          <upper>0.38</upper>
           <effort>100</effort>
           <velocity>1</velocity>
         </limit>
+        <!-- slider（与 db1 同 push-push 合同）：upper 0.38 为关门按压
+             （release 0.34 + close_offset 0.02 = 0.36）留行程；friction 0.2
+             远小于 detent 弹簧刚度，保证释放后弹簧能拉回关闭 detent。 -->
         <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
+          <damping>30</damping>
+          <friction>0.2</friction>
         </dynamics>
       </axis>
     </joint>
-    <joint name="m1r_joint" type="revolute">
-      <pose>0.03 0.16661 0.060175 0 0 0</pose>
+    <joint name="m1r_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>m1</parent>
       <child>m1r</child>
-      <axis>
-        <xyz>1 0 0</xyz>
-        <limit>
-          <lower>-1.5708</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
-    </joint>
-    <joint name="m1p_joint" type="prismatic">
-      <pose>0.069 0.638 0.108 0 0 0</pose>
+</joint>
+    <joint name="m1p_joint" type="fixed">
+      <pose>0 0 0 0 0 0</pose>
       <parent>m1</parent>
       <child>m1p</child>
-      <axis>
-        <xyz>-1 0 0</xyz>
-        <limit>
-          <lower>-0.03</lower>
-          <upper>0</upper>
-          <effort>100</effort>
-          <velocity>1</velocity>
-        </limit>
-        <dynamics>
-          <damping>0.1</damping>
-          <friction>1</friction>
-        </dynamics>
-      </axis>
+</joint>
+    <!-- 电气夹层 3.0 动态化：整模型取消 static，地面经固定关节锚定世界，
+         五扇滑门（ds1/ds2/db1/ds3/dm1，prismatic (1,0,0)）保留可动。门为
+         push-push 闩锁 slider（B3b live 验证）：开 = 推至 detent 0.3 闩住；
+         关 = 推过 release 0.34 触发插件释放 → detent 弹簧把面板拉回关闭
+         detent 0。关节 upper 0.38 为关门按压（release + close_offset = 0.36）
+         留行程；friction 0.2 远小于 detent 弹簧刚度（12 N/m），保证弹簧能把
+         80kg 面板拉回关闭 detent（db1 的 B3b 实测校准，其余四扇同参数）。
+         重要：所有夹具关节的 <pose> 必须为 0（位置一律放到子 link 的
+         <pose>，与 generator_plant 同构）。live 验证：本 Gazebo Classic 11
+         下若把平移偏移放在 prismatic/fixed 关节的 <pose>（子 link 保持
+         identity），子 link 会在父原点处生成、关节约束失效——门直接脱离
+         坠落（b1 实测掉到世界原点附近翻滚）。offset 放子 link 后五扇门
+         均在位、滑轨约束正常。 -->
+    <joint name="anchor_dianqiground" type="fixed">
+      <parent>world</parent>
+      <child>dianqiground</child>
     </joint>
+    <plugin name="xczs_electrical_mezzanine_state" filename="libxczs_cabinet_state.so">
+      <ros>
+        <namespace>/xczs/cabinet/electrical_mezzanine</namespace>
+      </ros>
+      <state_publish_rate>20.0</state_publish_rate>
+      <reset_service>/xczs/cabinet/electrical_mezzanine/reset_physics</reset_service>
+      <grasp_service>/xczs/cabinet/electrical_mezzanine/grasp</grasp_service>
+      <grasp_active_topic>/xczs/cabinet/electrical_mezzanine/grasp_active</grasp_active_topic>
+      <active_control_topic>/xczs/cabinet/electrical_mezzanine/active_control</active_control_topic>
+      <operation_heartbeat_topic>/xczs/cabinet/electrical_mezzanine/operation_heartbeat</operation_heartbeat_topic>
+      <operation_fault_topic>/xczs/cabinet/electrical_mezzanine/operation_fault</operation_fault_topic>
+      <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
+      <!-- ds1/ds2/ds3/dm1 与 db1 同为 push-push 闩锁 slider：release 0.34
+           严格高于开门按压物理峰值（B3b 实测 ~0.307~0.332），关门按压越过
+           release 触发释放、弹簧拉回关闭 detent。 -->
+      <control>
+        <control_id>ds1</control_id>
+        <control_type>slider</control_type>
+        <joint_name>ds1</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/ds1/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/ds1/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/ds1/state</state_topic>
+        <state_ids>closed open</state_ids>
+        <detents>0.0 0.3</detents>
+        <detent_stiffness>12</detent_stiffness>
+        <spring_damping>1</spring_damping>
+        <detent_hysteresis>0.01</detent_hysteresis>
+        <slider_release_position>0.34</slider_release_position>
+        <slider_release_reengage_position>0.13</slider_release_reengage_position>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>ds2</control_id>
+        <control_type>slider</control_type>
+        <joint_name>ds2</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/ds2/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/ds2/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/ds2/state</state_topic>
+        <state_ids>closed open</state_ids>
+        <detents>0.0 0.3</detents>
+        <detent_stiffness>12</detent_stiffness>
+        <spring_damping>1</spring_damping>
+        <detent_hysteresis>0.01</detent_hysteresis>
+        <slider_release_position>0.34</slider_release_position>
+        <slider_release_reengage_position>0.13</slider_release_reengage_position>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>db1</control_id>
+        <control_type>slider</control_type>
+        <joint_name>db1</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/db1/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/db1/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/db1/state</state_topic>
+        <state_ids>closed open</state_ids>
+        <detents>0.0 0.3</detents>
+        <detent_stiffness>12</detent_stiffness>
+        <spring_damping>1</spring_damping>
+        <detent_hysteresis>0.01</detent_hysteresis>
+        <!-- release 必须严格高于开门按压的物理峰值。B3b 实测开门推至目标时
+             面板实际可到 ~0.307~0.332（工具有效接触面比标定业务点深
+             ~0.025~0.031，且随按压冲量波动），故 release 选 0.34 并在
+             operator 侧用 slider_open_press_offset 把开门目标压到 0.28
+             （开门峰值 ≤~0.312，留 ~0.028 裕量）。关门按压目标 =
+             slider_release_position + slider_close_press_offset = 0.36
+             （严格越过 0.34 触发；不得等于 release 本身，boot18 停在阈值下
+             0.3399x 不触发）。关节 upper 0.38 为关门按压留行程。 -->
+        <slider_release_position>0.34</slider_release_position>
+        <slider_release_reengage_position>0.13</slider_release_reengage_position>
+        <!-- 面板静置 ~0.008 且低摩擦易被轻推 ±0.02：motion_tolerance 放宽
+             到 0.05，避免 pre-grasp 扰动误报（ratchet 边界仍由 detent_hysteresis
+             决定，不受此影响）。 -->
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>ds3</control_id>
+        <control_type>slider</control_type>
+        <joint_name>ds3</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/ds3/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/ds3/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/ds3/state</state_topic>
+        <state_ids>closed open</state_ids>
+        <detents>0.0 0.3</detents>
+        <detent_stiffness>12</detent_stiffness>
+        <spring_damping>1</spring_damping>
+        <detent_hysteresis>0.01</detent_hysteresis>
+        <slider_release_position>0.34</slider_release_position>
+        <slider_release_reengage_position>0.13</slider_release_reengage_position>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>dm1</control_id>
+        <control_type>slider</control_type>
+        <joint_name>dm1</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/dm1/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/dm1/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/dm1/state</state_topic>
+        <state_ids>closed open</state_ids>
+        <detents>0.0 0.3</detents>
+        <detent_stiffness>12</detent_stiffness>
+        <spring_damping>1</spring_damping>
+        <detent_hysteresis>0.01</detent_hysteresis>
+        <slider_release_position>0.34</slider_release_position>
+        <slider_release_reengage_position>0.13</slider_release_reengage_position>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
+    </plugin>
   </model>
 </sdf>

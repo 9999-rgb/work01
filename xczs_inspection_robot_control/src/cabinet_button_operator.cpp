@@ -285,6 +285,30 @@ struct ButtonSpec
   // Over-center controls may be released after safely crossing the next
   // detent midpoint so their physical spring finishes the motion.
   double detent_release_fraction{1.0};
+  // Slider close position: pushing the open panel PAST its detent to this
+  // position trips the plugin's push-push release, and the detent spring then
+  // returns the panel to the closed detent.  The robot can only push a slider
+  // face (no fixed grasp / no pull), so closing is a second push, not a drag.
+  double slider_release_position{std::numeric_limits<double>::quiet_NaN()};
+  // Open press compensation: the tool's effective flat-panel contact extends
+  // ~0.025-0.031 m past the calibrated business point (varying with press
+  // impulse), so a press aimed at the open detent physically carries the panel
+  // further.  On the OPEN push only, subtract this offset from the press
+  // target so the panel lands AT the open detent (peak <= ~0.312) instead of
+  // riding up against the push-push release (0.34).
+  double slider_open_press_offset{0.0};
+  // Close press compensation (additive): the plugin's release trips only when
+  // raw_position >= slider_release_position, so commanding the close press at
+  // EXACTLY the release position is a coin-flip -- the 80 kg panel settles
+  // right on the threshold and reads ~0.3399x (float just below 0.34), the
+  // release never trips, the weak open-detent spring (0.48 N at 0.34) cannot
+  // drag the panel past the tool, and the close hangs until the 90 s settle
+  // times out (boot18).  Add this offset so the close press target is strictly
+  // ABOVE the release (release + offset), guaranteeing the panel crosses the
+  // threshold mid-press; once the release trips the detent target flips to
+  // closed and the ~4 N closed spring drags the panel (and the tool) back to
+  // the closed detent (boots 14/17).
+  double slider_close_press_offset{0.0};
   // Optional named MoveIt joint seed for the ready-pose IK.  A redundant arm
   // can otherwise reach the same pose through a branch that cannot continue
   // through the subsequent Cartesian manipulation.
@@ -419,6 +443,8 @@ public:
     load_tool_profiles();
     tool_tip_calibration_joint_tolerance_ = positive_parameter(
       "tool_tip_calibration_joint_tolerance", 0.001);
+    tool_calibration_settle_timeout_ = positive_parameter(
+      "tool_calibration_settle_timeout", 6.0);
     planning_time_ = positive_parameter("planning_time", 10.0);
     planning_attempts_ = declare_parameter<int>("planning_attempts", 10);
     if (planning_attempts_ < 1 || planning_attempts_ > 100) {
@@ -586,6 +612,11 @@ public:
               "in [0.90, 0.99].");
     }
     target_tolerance_ = positive_parameter("target_tolerance", 0.035);
+    // A slider's panel settles against friction, so its detent verification
+    // tolerates a small rest offset as long as the state has already flipped
+    // (the state check is the primary signal; this is a secondary bound).
+    slider_position_tolerance_ = positive_parameter(
+      "slider_position_tolerance", 0.03);
     stable_velocity_tolerance_ = positive_parameter(
       "stable_velocity_tolerance", 0.03);
     stable_state_duration_ = positive_parameter(
@@ -970,6 +1001,12 @@ private:
     tool_profiles_[Control::TYPE_KNOB] = read_tool_profile("knob");
     tool_profiles_[Control::TYPE_SWITCH] = read_tool_profile("switch");
     tool_profiles_[Control::TYPE_DOOR] = read_tool_profile("door");
+    // A slider is driven with the same three-cylinder press tool as a button:
+    // the tool tip pushes the panel face along the prismatic axis.  Copy the
+    // already-declared button profile (read_tool_profile declares parameters,
+    // so calling it again for the same type would throw
+    // ParameterAlreadyDeclaredException).
+    tool_profiles_[Control::TYPE_SLIDER] = tool_profiles_[Control::TYPE_BUTTON];
 
     // A legacy single-arm adapter declares one scalar move_group / tip link /
     // contact tool link / transport target; apply it to every control type so
@@ -1054,6 +1091,181 @@ private:
                 "; arm motion was blocked. Reset the tool first.");
       }
     }
+  }
+
+  // 在 arm 运动前把工具标定关节（如三缸手指）主动合拢到标定业务位姿。
+  // transport/导航/停靠只规划臂组，未受令的末端关节会自然回落到静息位
+  // （约 3mm，恰在校验容差边界），导致 verify_tool_tip_calibration_state
+  // 悬空失败。此函数在标定关节所在的 MoveIt 组上规划一段关节空间轨迹，
+  // 把它们可靠带回标定位姿；已处于容差内时直接跳过，避免多余运动。
+  // execute_motion_bounded 带宽限提前返回，真实轨迹可能仍在飞行中，因此
+  // 返回前轮询标定关节直到实际回到业务位姿（或超时），并把合拢后的最新
+  // 状态返回给调用方立即校验，避免校验读到 execute 之前的陈旧快照。
+  template<typename GoalHandleT>
+  moveit::core::RobotStatePtr ensure_tool_calibration_position(
+    MoveGroupInterface & arm_move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle)
+  {
+    if (tool_tip_calibration_joint_names_.empty()) {
+      // 该工具 profile 无标定关节（knob/switch），无需合拢
+      return synchronized_current_robot_state(arm_move_group);
+    }
+    const auto current_state =
+      synchronized_current_robot_state(arm_move_group);
+    bool already_calibrated = true;
+    for (std::size_t index = 0U;
+      index < tool_tip_calibration_joint_names_.size(); ++index)
+    {
+      double measured;
+      try {
+        measured = current_state->getVariablePosition(
+          tool_tip_calibration_joint_names_[index]);
+      } catch (const std::exception & error) {
+        throw OperationError(
+                PressCabinetButton::Result::NOT_READY,
+                "Tool calibration references unknown joint '" +
+                tool_tip_calibration_joint_names_[index] + "': " +
+                error.what());
+      }
+      const double expected = tool_tip_calibration_joint_positions_[index];
+      if (!std::isfinite(measured) ||
+        std::abs(measured - expected) > tool_tip_calibration_joint_tolerance_)
+      {
+        already_calibrated = false;
+        break;
+      }
+    }
+    if (already_calibrated) {
+      return current_state;
+    }
+    const auto robot_model = arm_move_group.getRobotModel();
+    std::string calibration_group;
+    for (const auto * group : robot_model->getJointModelGroups()) {
+      bool contains_all = true;
+      for (const auto & joint_name : tool_tip_calibration_joint_names_) {
+        if (group->getJointModel(joint_name) == nullptr) {
+          contains_all = false;
+          break;
+        }
+      }
+      if (contains_all) {
+        calibration_group = group->getName();
+        break;
+      }
+    }
+    if (calibration_group.empty()) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Tool calibration joints are not contained in a single MoveIt "
+              "joint-model group; cannot close the tool before arm motion.");
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "Closing tool calibration joints via MoveIt group '%s' to their "
+      "calibrated business-point positions before arm motion.",
+      calibration_group.c_str());
+    check_cancel(goal_handle);
+    MoveGroupInterface tool_group(
+      shared_from_this(),
+      MoveGroupInterface::Options(
+        calibration_group, "robot_description", move_group_namespace_),
+      transform_buffer_,
+      rclcpp::Duration::from_seconds(system_wait_timeout_));
+    tool_group.setPoseReferenceFrame(planning_frame_);
+    tool_group.setPlanningTime(planning_time_);
+    tool_group.setNumPlanningAttempts(planning_attempts_);
+    tool_group.setMaxVelocityScalingFactor(planning_velocity_scale_);
+    tool_group.setMaxAccelerationScalingFactor(planning_acceleration_scale_);
+    tool_group.setGoalJointTolerance(goal_joint_tolerance_);
+    tool_group.allowReplanning(allow_replanning_);
+    tool_group.setJointValueTarget(
+      tool_tip_calibration_joint_names_,
+      tool_tip_calibration_joint_positions_);
+    MoveGroupInterface::Plan plan;
+    const auto planning_result = tool_group.plan(plan);
+    if (planning_result != moveit::core::MoveItErrorCode::SUCCESS) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "MoveIt could not plan to close tool calibration joints on "
+              "group '" + calibration_group + "' to their calibrated "
+              "business-point positions.");
+    }
+    check_cancel(goal_handle);
+    const auto close_code = execute_motion_bounded(
+      [&tool_group, &plan]() { return tool_group.execute(plan); },
+      [this, &goal_handle]() { return goal_should_stop(goal_handle); },
+      std::chrono::seconds(30), "tool calibration joints");
+    if (close_code != moveit::core::MoveItErrorCode::SUCCESS) {
+      check_cancel(goal_handle);
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "MoveIt failed to execute the tool calibration joint-close "
+              "trajectory on group '" + calibration_group + "'.");
+    }
+    // 合拢轨迹执行成功不等同于手指已实际到位：execute_motion_bounded 会
+    // 提前返回，真实轨迹可能仍在飞行中。轮询标定关节直到它们真实回到
+    // 业务位姿（或超时），期间关节状态话题持续刷新。到位后返回最新状态。
+    const auto settle_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(tool_calibration_settle_timeout_);
+    while (std::chrono::steady_clock::now() < settle_deadline) {
+      check_cancel(goal_handle);
+      const auto settled_state =
+        synchronized_current_robot_state(arm_move_group);
+      bool within_tolerance = true;
+      for (std::size_t index = 0U;
+        index < tool_tip_calibration_joint_names_.size(); ++index)
+      {
+        double measured;
+        try {
+          measured = settled_state->getVariablePosition(
+            tool_tip_calibration_joint_names_[index]);
+        } catch (const std::exception & error) {
+          throw OperationError(
+                  PressCabinetButton::Result::NOT_READY,
+                  "Tool calibration references unknown joint '" +
+                  tool_tip_calibration_joint_names_[index] + "': " +
+                  error.what());
+        }
+        const double expected = tool_tip_calibration_joint_positions_[index];
+        if (!std::isfinite(measured) ||
+          std::abs(measured - expected) > tool_tip_calibration_joint_tolerance_)
+        {
+          within_tolerance = false;
+          break;
+        }
+      }
+      if (within_tolerance) {
+        return settled_state;
+      }
+      std::this_thread::sleep_for(50ms);
+    }
+    check_cancel(goal_handle);
+    // 超时未到位：给出逐关节实测 vs 期望，便于排查控制器静差/质量等。
+    std::string detail;
+    const auto final_state = synchronized_current_robot_state(arm_move_group);
+    for (std::size_t index = 0U;
+      index < tool_tip_calibration_joint_names_.size(); ++index)
+    {
+      double measured = std::numeric_limits<double>::quiet_NaN();
+      try {
+        measured = final_state->getVariablePosition(
+          tool_tip_calibration_joint_names_[index]);
+      } catch (const std::exception &) {
+      }
+      const double expected = tool_tip_calibration_joint_positions_[index];
+      if (!detail.empty()) {
+        detail += "; ";
+      }
+      detail += tool_tip_calibration_joint_names_[index] + "=" +
+        (std::isfinite(measured) ? std::to_string(measured) : "nan") +
+        " (expected " + std::to_string(expected) + ")";
+    }
+    throw OperationError(
+            PressCabinetButton::Result::NOT_READY,
+            "Tool calibration joints did not settle to their calibrated "
+            "business-point positions within " +
+            std::to_string(tool_calibration_settle_timeout_) + " s after "
+            "the joint-close trajectory: " + detail);
   }
 
   void require_absolute_ros_name(
@@ -1356,7 +1568,8 @@ private:
              control_type == Control::TYPE_SWITCH;
     }
     return control_type == Control::TYPE_BUTTON ||
-           control_type == Control::TYPE_DOOR;
+           control_type == Control::TYPE_DOOR ||
+           control_type == Control::TYPE_SLIDER;
   }
 
   std::string required_toolset_for_control(std::uint8_t control_type) const
@@ -1368,6 +1581,19 @@ private:
       return "B";
     }
     return "A";
+  }
+
+  static bool is_slider_type(std::uint8_t control_type)
+  {
+    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
+    return control_type == Control::TYPE_SLIDER;
+  }
+
+  static bool is_grasp_free_type(std::uint8_t control_type)
+  {
+    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
+    return control_type == Control::TYPE_BUTTON ||
+           control_type == Control::TYPE_SLIDER;
   }
 
   void configure_controls()
@@ -1501,6 +1727,9 @@ private:
       } else if (type_name == "door") {
         button->control_type =
           xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
+      } else if (type_name == "slider") {
+        button->control_type =
+          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_SLIDER;
       } else {
         throw std::invalid_argument(
                 "Unsupported control type '" + type_name + "' for '" +
@@ -1512,6 +1741,7 @@ private:
         xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB;
       const bool is_switch = button->control_type ==
         xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_SWITCH;
+      const bool is_slider = is_slider_type(button->control_type);
       button->display_name = declare_parameter<std::string>(
         prefix + "display_name", control_id);
       button->joint_name = declare_parameter<std::string>(
@@ -1750,16 +1980,17 @@ private:
       button->parent_control_id = declare_parameter<std::string>(
         prefix + "parent_control_id", "");
       button->requires_grasp = declare_parameter<bool>(
-        prefix + "requires_grasp", !is_button);
+        prefix + "requires_grasp", !is_grasp_free_type(button->control_type));
       if (!grasp_requirement_matches_control_kind(
-          is_button, button->requires_grasp))
+          is_grasp_free_type(button->control_type), button->requires_grasp))
       {
         throw std::invalid_argument(
                 "Control '" + control_id + "' requires_grasp must be " +
-                (is_button ? "false for a button." :
+                (is_grasp_free_type(button->control_type) ?
+                "false for a button or slider." :
                 "true for a knob, switch or door."));
       }
-      if (!is_button) {
+      if (!is_grasp_free_type(button->control_type)) {
         const double default_grasp_offset = is_knob ?
           grasp_outward_offset_ : (is_switch ? 0.012 : 0.015);
         button->grasp_outward_offset = declare_parameter<double>(
@@ -1772,7 +2003,44 @@ private:
                   "' has an invalid grasp outward offset.");
         }
       }
-      button->unit = is_button ? "m" : "rad";
+      button->unit =
+        is_grasp_free_type(button->control_type) ? "m" : "rad";
+      if (is_slider) {
+        button->slider_release_position = declare_parameter<double>(
+          prefix + "slider_release_position",
+          std::numeric_limits<double>::quiet_NaN());
+        button->slider_open_press_offset = declare_parameter<double>(
+          prefix + "slider_open_press_offset", 0.0);
+        if (!std::isfinite(button->slider_open_press_offset) ||
+          button->slider_open_press_offset < 0.0)
+        {
+          throw std::invalid_argument(
+                  "Slider control '" + control_id +
+                  "' has an invalid slider_open_press_offset (must be "
+                  "finite and non-negative).");
+        }
+        button->slider_close_press_offset = declare_parameter<double>(
+          prefix + "slider_close_press_offset", 0.0);
+        if (!std::isfinite(button->slider_close_press_offset) ||
+          button->slider_close_press_offset < 0.0)
+        {
+          throw std::invalid_argument(
+                  "Slider control '" + control_id +
+                  "' has an invalid slider_close_press_offset (must be "
+                  "finite and non-negative).");
+        }
+        if (std::isfinite(button->slider_release_position) &&
+          std::isfinite(button->slider_close_press_offset) &&
+          button->slider_release_position + button->slider_close_press_offset >
+            button->max_position + 1e-6)
+        {
+          throw std::invalid_argument(
+                  "Slider control '" + control_id +
+                  "' requires slider_release_position + "
+                  "slider_close_press_offset <= max_position so the close "
+                  "press target stays within the joint travel.");
+        }
+      }
       // A knob is deliberately single-detent only: wrapping TOGGLE from the
       // right detent to the left detent would cross an intermediate detent
       // and is rejected by the physical transition guard.  Switches and
@@ -1827,6 +2095,18 @@ private:
         throw std::invalid_argument(
                 "Control '" + control_id +
                 "' has invalid limits or state presets.");
+      }
+      if (is_slider &&
+        (!std::isfinite(button->slider_release_position) ||
+        button->state_positions.empty() ||
+        button->slider_release_position <= button->state_positions.back() ||
+        button->slider_release_position > button->max_position))
+      {
+        throw std::invalid_argument(
+                "Slider control '" + control_id +
+                "' requires a slider_release_position strictly above the "
+                "open detent and no further than max_position, so the robot "
+                "can trip the push-push release.");
       }
       if (is_button &&
         (!std::isfinite(button->spring_stiffness) ||
@@ -2394,7 +2674,7 @@ private:
       configure_move_group(*move_group);
       move_group_ready_for_motion = true;
       const auto initial_robot_state =
-        synchronized_current_robot_state(*move_group);
+        ensure_tool_calibration_position(*move_group, goal_handle);
       verify_tool_tip_calibration_state(*initial_robot_state);
 
       if (should_navigate_to_staging_pose) {
@@ -2440,7 +2720,7 @@ private:
       verify_staging_pose_before_arm_motion(
         goal_handle, staging_poses.planning_pose);
       const auto predelivery_robot_state =
-        synchronized_current_robot_state(*move_group);
+        ensure_tool_calibration_position(*move_group, goal_handle);
       verify_tool_tip_calibration_state(*predelivery_robot_state);
 
       publish_feedback(
@@ -2677,6 +2957,7 @@ private:
     const auto control = find_button(goal_handle->get_goal()->control_id);
     std::shared_ptr<MoveGroupInterface> move_group;
     OperationPoses button_poses;
+    OperationPoses slider_poses;
     RotaryOperationPoses rotary_poses;
     std::optional<ControlStagingPoses> staging_poses;
     bool should_attempt_retreat = false;
@@ -2692,6 +2973,7 @@ private:
     double button_press_depth = 0.0;
     bool button_should_trigger = false;
     bool is_button = false;
+    bool is_slider = false;
     const bool validation_only = control &&
       requires_planning_only_validation(control->operable);
     const auto preparation_policy = operation_preparation_policy(
@@ -2757,6 +3039,7 @@ private:
       }
       is_button = control->control_type ==
         xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
+      is_slider = is_slider_type(control->control_type);
       // Command-level validation: check that the command is compatible with
       // the control type and that its parameters are valid.  This runs inside
       // the accepted goal so that the caller receives a structured failure
@@ -2952,6 +3235,22 @@ private:
       if (is_button) {
         button_poses = calculate_operation_poses(
           *control, button_press_depth);
+      } else if (is_slider) {
+        // The press face adapts to the current slide position.  Opening pushes
+        // the panel forward to the target detent (target > current).  Closing
+        // cannot pull the panel back (the tool only pushes a face), so the
+        // robot presses it PAST the open detent, STRICTLY BEYOND the release
+        // threshold (release + slider_close_press_offset) -- commanding the
+        // press at exactly the release is a float coin-flip that hangs the
+        // close (boot18).  Crossing the release mid-press trips the plugin's
+        // push-push release, and the detent spring then returns the panel to
+        // the closed detent.
+        const double slider_press_target =
+          target_position < initial_state.position ?
+          control->slider_release_position + control->slider_close_press_offset :
+          target_position - control->slider_open_press_offset;
+        slider_poses = calculate_slider_operation_poses(
+          *control, initial_state.position, slider_press_target);
       } else {
         rotary_poses = calculate_rotary_operation_poses(
           *control, initial_state.position, rotary_tool_roll_offset);
@@ -2995,7 +3294,7 @@ private:
       }
       configure_move_group(*move_group);
       const auto current_robot_state =
-        synchronized_current_robot_state(*move_group);
+        ensure_tool_calibration_position(*move_group, goal_handle);
       verify_tool_tip_calibration_state(*current_robot_state);
 
       if (validation_only) {
@@ -3003,8 +3302,8 @@ private:
         result->validation_performed = true;
         validate_inoperable_control_path(
           *move_group, goal_handle, *control, initial_state,
-          target_position, button_poses, rotary_poses,
-          rotary_tool_roll_offset, *current_robot_state, result);
+          target_position, is_slider ? slider_poses : button_poses,
+          rotary_poses, rotary_tool_roll_offset, *current_robot_state, result);
         result->diagnostic_stage = "complete";
         result->path_fraction = 1.0;
         result->required_fraction = 1.0;
@@ -3056,6 +3355,13 @@ private:
         if (is_button) {
           button_poses = calculate_operation_poses(
             *control, button_press_depth);
+        } else if (is_slider) {
+          const double slider_press_target =
+            target_position < initial_state.position ?
+            control->slider_release_position + control->slider_close_press_offset :
+            target_position - control->slider_open_press_offset;
+          slider_poses = calculate_slider_operation_poses(
+            *control, initial_state.position, slider_press_target);
         } else {
           rotary_poses = calculate_rotary_operation_poses(
             *control, initial_state.position, rotary_tool_roll_offset);
@@ -3084,7 +3390,7 @@ private:
           goal_handle, staging_poses->planning_pose);
       }
       const auto predelivery_robot_state =
-        synchronized_current_robot_state(*move_group);
+        ensure_tool_calibration_position(*move_group, goal_handle);
       verify_tool_tip_calibration_state(*predelivery_robot_state);
 
       if (is_button) {
@@ -3194,6 +3500,150 @@ private:
         // The press and spring return are both verified above.  Commit before
         // safety transport so a late client cancel cannot cause a duplicate
         // physical press on retry.
+        if (!commit_active_goal_physical_outcome(
+            ActiveGoalType::OPERATE, goal_handle->get_goal_id()))
+        {
+          check_cancel(goal_handle);
+        }
+        result->physical_outcome_confirmed = true;
+        result->final_state_verified = true;
+      } else if (is_slider) {
+        const bool closing = target_position < initial_state.position;
+        result->diagnostic_stage = "ready";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MOVING_TO_READY,
+          0.25F, target_position,
+          "Planning the probe to the slider ready pose.");
+        execute_slider_ready_approach_press(
+          *move_group, goal_handle, result, slider_poses, closing,
+          target_position, *control, &result->operation_executed);
+        should_attempt_retreat = true;
+        // The ready-branch retry inside the helper covers PLANNING failures
+        // (OMPL can land on an IK branch from which the 0->target push cannot
+        // be planned; the button type in B3a got a good branch by luck).
+        // Force tracking then covers shortfalls that survive a good branch
+        // (detent friction): it measures the PHYSICAL panel position and
+        // re-pushes from the current face until it converges.  Only the open
+        // push needs it -- a close is a push-past-detent release where the
+        // panel springs away from the tool as soon as the release trips, and
+        // re-pushing there would re-open the panel.
+        if (!closing) {
+          result->diagnostic_stage = "manipulation";
+          // The open force-tracking loop must converge on the SAME
+          // compensated target as the initial press: without the offset it
+          // re-pushes toward the raw 0.3 detent, whose re-push peak (commanded
+          // ~0.301 plus ~0.03 tool over-travel = ~0.332) can cross the
+          // push-push release and spring the panel shut (boot16 open).  Both
+          // the initial press and the force-tracking convergence share
+          // slider_open_press_offset so the open peak stays below the release
+          // with margin.
+          track_slider_force(
+            *move_group, goal_handle, *control,
+            target_position - control->slider_open_press_offset,
+            &result->operation_executed);
+        }
+        // Let the detent spring settle the panel before verifying; the tip is
+        // still pressed against the face, so the panel is at the target.
+        interruptible_hold(goal_handle, press_hold_seconds_);
+        if (!closing) {
+          result->diagnostic_stage = "verification";
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::VERIFYING,
+            0.77F, target_position,
+            "Verifying the slider panel reached its target detent.");
+          if (!wait_for_slider_detent(
+              goal_handle, *control, target_state, target_position,
+              press_detection_timeout_))
+          {
+            throw GenericOperationError(
+                    OperateCabinetControl::Result::CONTACT_DETECTION_TIMEOUT,
+                    "The slider panel did not reach the requested detent '" +
+                    target_state + "'.");
+          }
+          interruptible_hold(goal_handle, press_hold_seconds_);
+        }
+        result->diagnostic_stage = "retreat";
+        // For a close the tip must clear the closing panel, so the retreat
+        // waypoints anchor on the CLOSED face rather than the release face;
+        // the panel follows the retreating tip and settles at the closed
+        // detent once the tip is out of its travel.
+        const OperationPoses retreat_poses = closing ?
+          calculate_slider_operation_poses(
+          *control, target_position, target_position) :
+          slider_poses;
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::RETREATING,
+          0.85F, 0.0,
+          closing ?
+          "Retracting clear of the closing panel; the detent spring returns "
+          "it to the closed detent." :
+          "Retracting the probe from the slider panel.");
+        if (closing) {
+          // A close is a push-past-detent release: once the release trips, the
+          // 80 kg panel must spring back to the closed detent on its own, which
+          // requires the tip to clear the panel's entire travel.  The earlier
+          // Cartesian retreat over that ~0.36 m westward sweep failed planning
+          // at ~85% on every close -- the tool cannot hold its press orientation
+          // over the long sweep, and the failure aborts BEFORE executing, so the
+          // tip stayed pressed against the panel and held it at the release for
+          // the whole 90 s settle window (boot20 close).  A joint-space OMPL
+          // retreat to the closed-face prepress is far more robust: the planning
+          // scene keeps the panel as free space ("按净空规划", only db1's own
+          // face cylinder, exempted during operation, lives near the path), so
+          // only the single end pose must be reachable, not every intermediate
+          // orientation.  The retreat is a get-clear motion; its completion is
+          // only a means to the real check, the detent latch below, so a blocked
+          // retreat must not fail the operation: log it and verify the panel
+          // instead.  If the tool is genuinely still inside the panel's travel,
+          // that verification times out and the operation fails accurately.
+          try {
+            plan_and_execute_pose(
+              *move_group, goal_handle, retreat_poses.prepress_pose,
+              contact_tool_link_, &result->operation_executed, control.get());
+          } catch (const OperationError & retreat_error) {
+            RCLCPP_WARN(
+              get_logger(),
+              "Slider close retreat could not complete (%s); the panel must "
+              "still latch closed on its own -- proceeding to detent "
+              "verification.",
+              retreat_error.what());
+          }
+        } else {
+          execute_cartesian_path(
+            *move_group, goal_handle,
+            {retreat_poses.contact_pose, retreat_poses.prepress_pose},
+            cartesian_velocity_scale_, cartesian_acceleration_scale_,
+            0.99, &result->operation_executed);
+        }
+        should_attempt_retreat = false;
+        // The bistable detent must hold the panel after the tool leaves; a
+        // spring-back to the source detent means the latch never engaged.  A
+        // close's panel is pushed past the release (to ~0.36, riding up to the
+        // joint limit) before it springs back, and the 80 kg panel coasts back
+        // slowly (spring force ~4 N vs 0.2 N friction, terminal ~0.14 m/s) --
+        // it can take many seconds to cross the midpoint and flip state_id to
+        // closed.  The 3 s press/release detection timeouts are button-scale;
+        // use the door-scale settle timeout so the verification does not race
+        // the spring-back (boot17 close: panel reached 0.008 but the 3 s
+        // window expired mid-return).
+        result->diagnostic_stage = "verification";
+        if (!wait_for_slider_detent(
+            goal_handle, *control, target_state, target_position,
+            door_settle_timeout_))
+        {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::RELEASE_FAILED,
+                  closing ?
+                  "The slider panel did not return to the closed detent." :
+                  "The slider panel did not latch at the requested detent.");
+        }
+        const auto measured_state = button_snapshot(*control);
+        result->peak_position = measured_state.peak_position;
+        result->button_triggered =
+          target_state != initial_state.state_id;
         if (!commit_active_goal_physical_outcome(
             ActiveGoalType::OPERATE, goal_handle->get_goal_id()))
         {
@@ -3832,28 +4282,42 @@ private:
 
     tf2::Transform result;
     result.setIdentity();
-    const auto now = std::chrono::steady_clock::now();
+    const auto start = std::chrono::steady_clock::now();
+    const auto deadline = start +
+      std::chrono::duration<double>(system_wait_timeout_);
     for (const auto * ancestor : ancestors) {
-      const auto state = button_snapshot(*ancestor);
-      const bool fresh = structured_control_state_is_usable(
-        state.structured_received, state.valid, true,
-        std::chrono::duration<double>(
-          now - state.structured_received_at).count() <=
-        button_state_timeout_);
-      if (!fresh) {
+      auto state = button_snapshot(*ancestor);
+      // 父控制（如按钮的旋钮）在按压/重解析几何的瞬间可能正处于物理回落中
+      // （工具拖带或重力回中）。失败即抛会把一次瞬态判成 NOT_READY；这里改为
+      // 轮询等待其稳定（≤ system_wait_timeout_），稳定后按最终落位重建几何。
+      // 旋钮是自由转动的展示件，不要求停在特定档位，仅要求"不再运动"。
+      auto fresh = [&]() {
+        return structured_control_state_is_usable(
+          state.structured_received, state.valid, true,
+          std::chrono::duration<double>(
+            std::chrono::steady_clock::now() -
+            state.structured_received_at).count() <=
+          button_state_timeout_);
+      };
+      if (require_stable) {
+        while (!(fresh() && !state.in_motion &&
+          std::abs(state.velocity) <= stable_velocity_tolerance_))
+        {
+          if (std::chrono::steady_clock::now() >= deadline) {
+            throw GenericOperationError(
+                    OperateCabinetControl::Result::NOT_READY,
+                    "Parent control '" + ancestor->id +
+                    "' did not become stable before the operation "
+                    "geometry was needed.");
+          }
+          std::this_thread::sleep_for(50ms);
+          state = button_snapshot(*ancestor);
+        }
+      } else if (!fresh()) {
         throw GenericOperationError(
                 OperateCabinetControl::Result::NOT_READY,
                 "Parent control '" + ancestor->id +
                 "' does not have a fresh valid physical state.");
-      }
-      if (require_stable &&
-        (state.in_motion ||
-        std::abs(state.velocity) > stable_velocity_tolerance_))
-      {
-        throw GenericOperationError(
-                OperateCabinetControl::Result::NOT_READY,
-                "Parent control '" + ancestor->id +
-                "' is moving; wait for it to become stable.");
       }
 
       tf2::Quaternion rotation;
@@ -4730,13 +5194,17 @@ private:
         const auto state = button_snapshot(*control);
         const bool is_button = control->control_type ==
           xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
+        const bool is_slider = is_slider_type(control->control_type);
         const auto retreat_pose = is_button ?
           calculate_operation_poses(
           *control, press_depth_).prepress_pose :
-          calculate_rotary_tool_pose(
-          *control, state.position,
-          is_door ? door_release_clearance_ : prepress_distance_, false,
-          rotary_tool_roll_offset);
+          (is_slider ?
+           calculate_slider_operation_poses(
+           *control, state.position, state.position).prepress_pose :
+           calculate_rotary_tool_pose(
+           *control, state.position,
+           is_door ? door_release_clearance_ : prepress_distance_, false,
+           rotary_tool_roll_offset));
         best_effort_retreat(
           *move_group, retreat_pose, &result->operation_executed);
       } catch (const std::exception & error) {
@@ -4957,6 +5425,191 @@ private:
     return false;
   }
 
+  /**
+   * Wait until a slider panel has reached its target detent.
+   *
+   * The plugin reports the nearest-detent state, so the state-id comparison is
+   * the primary signal (robust to the panel settling short of the exact detent
+   * under friction).  A small position bound around the target detent backs it
+   * up so a half-latched panel that only crossed the midpoint cannot pass.
+   */
+  template<typename GoalHandleT>
+  bool wait_for_slider_detent(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & button,
+    const std::string & target_state,
+    double target_position,
+    double timeout_seconds)
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(timeout_seconds);
+    while (std::chrono::steady_clock::now() < deadline) {
+      check_cancel(goal_handle);
+      {
+        std::unique_lock<std::mutex> lock(button.runtime->mutex);
+        if (button.runtime->state.structured_received &&
+          (button.runtime->state.state_id == target_state ||
+           std::abs(button.runtime->state.position - target_position) <=
+           slider_position_tolerance_))
+        {
+          return true;
+        }
+        button.runtime->condition.wait_for(lock, 50ms);
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Drive the slider ready (prepress) -> contact -> press chain, retrying the
+   * ready planning on a fresh OMPL IK branch when the press cannot be planned.
+   *
+   * A 7-DOF arm has several IK families for the same prepress tool pose, and
+   * the randomized ready planner lands on one each run.  Whether the following
+   * 0->target Cartesian push is plannable at the configured fraction depends
+   * on that branch (boot9: a bad branch gave 14%; the B3a button probe: a good
+   * branch gave >=95% at the SAME dock, same poses).  PLANNING_FAILED is
+   * thrown before any physical motion, so re-planning the ready on a fresh
+   * branch can never double-push.  Each attempt re-plans the ready pose from
+   * the current state (the arm sits at contact after a failed press), which
+   * re-samples the prepress IK and therefore the contact config and the press
+   * path.
+   */
+  template<typename GoalHandleT>
+  void execute_slider_ready_approach_press(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const std::shared_ptr<OperateCabinetControl::Result> & result,
+    const OperationPoses & slider_poses,
+    bool closing,
+    double target_position,
+    const ButtonSpec & control,
+    bool * operation_executed)
+  {
+    constexpr int kSliderReadyRetryAttempts = 3;
+    for (int attempt = 0; attempt < kSliderReadyRetryAttempts; ++attempt) {
+      try {
+        result->diagnostic_stage = "ready";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MOVING_TO_READY,
+          0.25F, target_position,
+          attempt == 0 ?
+          "Planning the probe to the slider ready pose." :
+          "The slider press was not plannable on the previous IK branch; "
+          "re-planning the ready pose on a fresh branch.");
+        plan_and_execute_pose(
+          move_group, goal_handle, slider_poses.prepress_pose,
+          contact_tool_link_, operation_executed, &control);
+        result->diagnostic_stage = "approach";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::APPROACHING,
+          0.47F, target_position,
+          "Approaching the slider panel along its travel axis.");
+        execute_cartesian_path(
+          move_group, goal_handle, {slider_poses.contact_pose},
+          cartesian_velocity_scale_, cartesian_acceleration_scale_,
+          0.99, operation_executed);
+        result->diagnostic_stage = "manipulation";
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::MANIPULATING,
+          closing ? 0.58F : 0.65F, target_position,
+          closing ?
+          "Pushing the open panel past its detent to trip the push-push "
+          "release." :
+          "Pushing the slider panel to the target detent.");
+        execute_cartesian_path(
+          move_group, goal_handle, {slider_poses.pressed_pose},
+          cartesian_velocity_scale_ * 0.5,
+          cartesian_acceleration_scale_ * 0.5,
+          button_press_minimum_cartesian_fraction_, operation_executed);
+        return;
+      } catch (const OperationError & error) {
+        if (error.error_code != PressCabinetButton::Result::PLANNING_FAILED ||
+          attempt + 1 >= kSliderReadyRetryAttempts)
+        {
+          throw;
+        }
+        RCLCPP_WARN(
+          get_logger(),
+          "Slider ready/approach/press branch %d was not fully plannable "
+          "(%s); re-planning the ready pose on a fresh IK branch.",
+          attempt, error.what());
+      }
+    }
+  }
+
+  /**
+   * Converge a slider panel to its target detent by re-pushing from the
+   * PHYSICAL panel position, mirroring the button type's track_button_force.
+   *
+   * After a successful Cartesian press the panel may still sit short of the
+   * detent (95% of the push leaves the tool at face+0.285 for a 0.3 target).
+   * Each iteration measures the panel position, computes the remaining
+   * deficit, and re-pushes from the CURRENT face
+   * (calculate_slider_operation_poses) to the target.  The re-push is
+   * deliberately lenient (5% minimum) so a short convergence push that cannot
+   * be fully planned does not fail the operation -- the final detent
+   * verification decides.  The compensation is clamped by
+   * button_force_tracking_limit so it never reaches the push-push release
+   * position.
+   */
+  template<typename GoalHandleT>
+  void track_slider_force(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & button,
+    double target_position,
+    bool * operation_executed = nullptr)
+  {
+    double commanded_position = clamp_button_press_depth(
+      target_position, button.max_position);
+    const double maximum_position = button_force_tracking_limit(
+      target_position, force_tracking_max_compensation_, button.max_position);
+    for (int attempt = 0; attempt < force_tracking_attempts_; ++attempt) {
+      interruptible_hold(goal_handle, force_tracking_settle_seconds_);
+      const auto measured = button_snapshot(button);
+      const double deficit = target_position - measured.position;
+      if (deficit <= force_tracking_tolerance_) {
+        return;
+      }
+      const double next_position = clamp_button_press_depth(
+        std::min(
+          maximum_position,
+          commanded_position + deficit + force_tracking_tolerance_),
+        button.max_position);
+      if (next_position <= commanded_position + 1.0e-6) {
+        return;
+      }
+      commanded_position = next_position;
+      publish_operate_feedback(
+        goal_handle,
+        OperateCabinetControl::Feedback::MANIPULATING,
+        0.70F, target_position,
+        "Correcting the physical slider travel to reach the requested detent.");
+      const auto corrected_poses = calculate_slider_operation_poses(
+        button, measured.position, commanded_position);
+      try {
+        execute_cartesian_path(
+          move_group, goal_handle, {corrected_poses.pressed_pose},
+          cartesian_velocity_scale_ * 0.35,
+          cartesian_acceleration_scale_ * 0.35,
+          0.05, operation_executed);
+      } catch (const OperationError & error) {
+        if (error.error_code != PressCabinetButton::Result::PLANNING_FAILED) {
+          throw;
+        }
+        RCLCPP_WARN(
+          get_logger(),
+          "Slider convergence push (%s) could not be planned; relying on the "
+          "final detent verification.", error.what());
+      }
+    }
+    interruptible_hold(goal_handle, force_tracking_settle_seconds_);
+  }
+
   template<typename GoalHandleT>
   void track_button_force(
     MoveGroupInterface & move_group,
@@ -5002,17 +5655,14 @@ private:
     interruptible_hold(goal_handle, force_tracking_settle_seconds_);
   }
 
-  OperationPoses calculate_operation_poses(
+  OperationPoses make_face_press_poses(
     const ButtonSpec & button,
+    const tf2::Vector3 & button_face,
     double press_depth)
   {
-    const double bounded_press_depth = clamp_button_press_depth(
-      press_depth, button.max_position);
     const tf2::Transform cabinet_transform = resolve_cabinet_transform();
     const tf2::Quaternion cabinet_rotation = cabinet_transform.getRotation();
     const auto geometry = resolve_control_geometry(button);
-    const tf2::Vector3 button_face =
-      cabinet_transform * geometry.grasp_zero;
     tf2::Vector3 outward = tf2::quatRotate(
       cabinet_rotation, geometry.approach_normal);
     outward.normalize();
@@ -5061,9 +5711,41 @@ private:
     OperationPoses poses;
     poses.prepress_pose = make_tool_pose(-prepress_distance_);
     poses.contact_pose = make_tool_pose(-contact_clearance_);
-    poses.pressed_pose = make_tool_pose(bounded_press_depth);
+    poses.pressed_pose = make_tool_pose(press_depth);
 
     return poses;
+  }
+
+  OperationPoses calculate_operation_poses(
+    const ButtonSpec & button,
+    double press_depth)
+  {
+    const double bounded_press_depth = clamp_button_press_depth(
+      press_depth, button.max_position);
+    const tf2::Transform cabinet_transform = resolve_cabinet_transform();
+    const auto geometry = resolve_control_geometry(button);
+    const tf2::Vector3 button_face =
+      cabinet_transform * geometry.grasp_zero;
+    return make_face_press_poses(button, button_face, bounded_press_depth);
+  }
+
+  OperationPoses calculate_slider_operation_poses(
+    const ButtonSpec & button,
+    double current_position,
+    double target_position)
+  {
+    const tf2::Transform cabinet_transform = resolve_cabinet_transform();
+    const auto geometry = resolve_control_geometry(button);
+    // The panel's press face slides with the joint, so the contact adapts to
+    // the CURRENT slide position.  A signed press then lets the same front
+    // approach both open the panel (target > current: the tip pushes into the
+    // panel) and close it again (target < current: the tip keeps contact and
+    // drags the panel back to the closed detent).
+    const tf2::Vector3 face_current =
+      cabinet_transform * geometry.grasp_zero +
+      geometry.axis * current_position;
+    const double press_depth = target_position - current_position;
+    return make_face_press_poses(button, face_current, press_depth);
   }
 
   void configure_move_group(MoveGroupInterface & move_group)
@@ -5726,26 +6408,28 @@ private:
     // a grasp, wait for a physical transition, or write a cabinet joint.
     moveit::core::RobotState virtual_state(current_robot_state);
     const bool is_button = control.control_type ==
-      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON;
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_BUTTON ||
+      control.control_type ==
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_SLIDER;
     if (is_button) {
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::MOVING_TO_READY,
         0.25F, target_position,
-        "正在用实时 MoveIt 场景验证按钮预备位姿（不会执行轨迹）。");
+        "正在用实时 MoveIt 场景验证控件预备位姿（不会执行轨迹）。");
       virtual_state = validate_pose_plan_only(
         move_group, goal_handle, virtual_state,
         button_poses.prepress_pose, contact_tool_link_, "ready_pose", result);
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::APPROACHING,
         0.47F, target_position,
-        "正在验证按钮接近路径（不会移动机械臂）。");
+        "正在验证控件接近路径（不会移动机械臂）。");
       virtual_state = validate_cartesian_plan_only(
         move_group, goal_handle, virtual_state,
         {button_poses.contact_pose}, 0.99, "approach", result);
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::MANIPULATING,
         0.65F, target_position,
-        "正在验证请求力对应的按压路径（不会接触按钮）。");
+        "正在验证请求对应的按压路径（不会接触控件）。");
       virtual_state = validate_cartesian_plan_only(
         move_group, goal_handle, virtual_state,
         {button_poses.pressed_pose}, button_press_minimum_cartesian_fraction_,
@@ -5753,7 +6437,7 @@ private:
       publish_operate_feedback(
         goal_handle, OperateCabinetControl::Feedback::RETREATING,
         0.86F, 0.0,
-        "正在验证按钮撤回路径（不会执行轨迹）。");
+        "正在验证控件撤回路径（不会执行轨迹）。");
       virtual_state = validate_cartesian_plan_only(
         move_group, goal_handle, virtual_state,
         {button_poses.contact_pose, button_poses.prepress_pose},
@@ -7758,6 +8442,7 @@ private:
   std::vector<std::string> tool_tip_calibration_joint_names_;
   std::vector<double> tool_tip_calibration_joint_positions_;
   double tool_tip_calibration_joint_tolerance_{0.001};
+  double tool_calibration_settle_timeout_{6.0};
   std::unordered_map<std::uint8_t, ToolProfile> tool_profiles_;
   double planning_time_{10.0};
   int planning_attempts_{10};
@@ -7806,6 +8491,7 @@ private:
   int force_tracking_attempts_{3};
   double button_press_minimum_cartesian_fraction_{0.95};
   double target_tolerance_{0.035};
+  double slider_position_tolerance_{0.03};
   double stable_velocity_tolerance_{0.03};
   double stable_state_duration_{0.30};
   double grasp_attach_settle_duration_{0.15};

@@ -3449,9 +3449,10 @@ const cabinetControlTypeLabels = {
   0: '按钮',
   1: '旋钮',
   2: '总开关',
-  3: '柜门'
+  3: '柜门',
+  4: '滑门'
 };
-const cabinetControlTypeOrder = [0, 1, 2, 3];
+const cabinetControlTypeOrder = [0, 1, 2, 3, 4];
 const cabinetCommandSupport = {
   press: 1,
   set_state: 2,
@@ -4294,25 +4295,56 @@ function applyCabinetInstances(payload) {
     entry && typeof entry.name === 'string' && entry.name
   ));
   const previous = selectedCabinetName();
-  const options = cabinetInstances.map(entry => {
-    const option = document.createElement('option');
-    option.value = entry.name;
-    option.textContent = entry.name;
-    return option;
-  });
-  const navOptions = options.map(option => option.cloneNode(true));
+  // 夹具簇按激活场景分组：当前场景的柜体/夹具置顶为“当前场景”组，
+  // 其余归入“其他场景”组。跨场景仍可浏览状态，但操作/导航会被后端
+  // 409 拒绝（associated_scene 与 _active_scene 不一致）。未读到场景
+  // catalog（activeSceneName 为空）时全部放入主组，避免首屏空列表。
+  const activeScene = activeSceneName || '';
+  const sceneOf = entry => (entry && entry.associated_scene) || 'cabinet_operation';
+  const primary = activeScene
+    ? cabinetInstances.filter(entry => sceneOf(entry) === activeScene)
+    : cabinetInstances.slice();
+  const secondary = activeScene
+    ? cabinetInstances.filter(entry => sceneOf(entry) !== activeScene)
+    : [];
+  const options = [];
+  if (primary.length) {
+    const group = document.createElement('optgroup');
+    group.label = '当前场景';
+    for (const entry of primary) {
+      const option = document.createElement('option');
+      option.value = entry.name;
+      option.textContent = entry.name;
+      group.appendChild(option);
+    }
+    options.push(group);
+  }
+  if (secondary.length) {
+    const group = document.createElement('optgroup');
+    group.label = '其他场景';
+    for (const entry of secondary) {
+      const option = document.createElement('option');
+      option.value = entry.name;
+      option.textContent = entry.name;
+      group.appendChild(option);
+    }
+    options.push(group);
+  }
   if (!options.length) {
     const empty = document.createElement('option');
     empty.value = '';
     empty.textContent = '未配置柜体';
     options.push(empty);
-    navOptions.push(empty.cloneNode(true));
   }
   cabinetInstance.replaceChildren(...options);
-  navCabinetInstance.replaceChildren(...navOptions);
-  const preferred = cabinetInstances.some(entry => entry.name === previous)
+  // 导航下拉按同一分组重建：克隆整组节点（optgroup 连同其 option）。
+  navCabinetInstance.replaceChildren(...options.map(node => node.cloneNode(true)));
+  // 优先保留“当前场景”组内已有的选择；跨场景遗留选择或首次进入则落在
+  // 当前场景第一个实例上（场景切换后自动选中新场景的夹具簇）。
+  const inPrimary = primary.some(entry => entry.name === previous);
+  const preferred = inPrimary
     ? previous
-    : (cabinetInstances[0] || {}).name || '';
+    : (primary[0] || cabinetInstances[0] || {}).name || '';
   cabinetInstance.value = preferred;
   navCabinetInstance.value = preferred;
   cabinetStatus = cabinetStatusByName.get(preferred) || null;
@@ -4660,7 +4692,8 @@ function renderCabinetTarget() {
     0: '按下',
     1: '旋转',
     2: '切换',
-    3: '开合'
+    3: '开合',
+    4: '滑动'
   };
   $('btnCabinetPress').textContent = control.operable === false
     ? control.capability_metadata_present && !control.toolset_compatible

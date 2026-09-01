@@ -21,15 +21,22 @@
       - fr20422_button
       - fr25452_button
 
-    # Web inventory 的默认导航工位（fr135 按钮正南 0.914 m）。
+    # Web inventory 的默认导航工位（fr135 按钮正南 1.4 m；与 adapter 一致，
+    # 保证 prepress 目标落在右臂可达域内、OMPL 目标盒采样可行）。
     navigation_station:
       frame_id: map
       local_anchor: [-13.1867, 4.8113, 0.0]
       outward_axis: [0.0, -1.0, 0.0]
-      standoff: 0.914
-      base_yaw_offset: 0.0
+      standoff: 1.4
+      base_yaw_offset: 1.5707963267948966
 
-    # 地面/墙体/设备碰撞盒代理（与 xacro collision_0..7 逐一对应，单位位姿）。
+    # 地面/墙体/设备碰撞盒代理：collision_0..4 与 xacro 物理碰撞盒逐一对应
+    # （单位位姿）；collision_5/6/7 是按钮行前侧立柱（fadianground.STL 的
+    # 垂直支撑筋，0.04~0.24 m 宽）的规划代理，仅用于 MoveIt 避障——它们不在
+    # xacro 碰撞列表里（地面碰撞只有地板 + 大盒），故从视觉网格取真实位置。
+    # 注意碰撞盒必须按真实宽度 0.05 m 收窄：原先 0.5 m 宽的代理把 fr12452
+    # 按钮（x=-21.997）到立柱（x≈-22.4）的净空从 0.38 m 压到 0.14 m，直接
+    # 导致"Start state in collision"、prepress 规划失败。
     frame_part_ids:
       - collision_0
       - collision_1
@@ -44,26 +51,26 @@
         size: [40.012, 26.4, 0.2]
         position: [-19.506, 12.7, -0.1]
       collision_1:
-        size: [39.25, 1.5, 2.5]
-        position: [-19.512, 24.875, 1.45]
+        size: [39.5, 2.0, 2.5]
+        position: [-19.512, 24.75, 1.25]
       collision_2:
-        size: [16.25, 16.5, 2.5]
-        position: [-24.512, 15.375, 1.45]
+        size: [16.5, 17.0, 2.5]
+        position: [-24.512, 15.25, 1.25]
       collision_3:
-        size: [39.25, 1.5, 2.5]
-        position: [-19.512, 0.625, 1.45]
+        size: [39.5, 1.5, 2.5]
+        position: [-19.512, 0.5, 1.25]
       collision_4:
-        size: [8.25, 1.5, 2.061]
-        position: [-29.762, 4.125, 1.23]
+        size: [8.5, 2.0, 2.261]
+        position: [-30.012, 4.25, 1.13]
       collision_5:
-        size: [0.5, 1.0, 2.061]
-        position: [-18.387, 4.375, 1.23]
+        size: [0.05, 0.9, 2.06]
+        position: [-18.397, 4.4115, 1.23]
       collision_6:
-        size: [0.5, 1.0, 2.061]
-        position: [-22.387, 4.375, 1.23]
+        size: [0.05, 0.9, 2.06]
+        position: [-22.397, 4.4115, 1.23]
       collision_7:
-        size: [0.5, 1.0, 2.061]
-        position: [-14.387, 4.375, 1.23]
+        size: [0.05, 0.9, 2.06]
+        position: [-14.397, 4.4115, 1.23]
 
     control_collision:
       # 按钮板 34.6×34.6×8 mm（局部 y∈[0,0.008]，受压面在 y=0）；圆柱高 0.014

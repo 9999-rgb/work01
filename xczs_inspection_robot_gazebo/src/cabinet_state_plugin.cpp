@@ -9,7 +9,6 @@
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/World.hh>
 #include <gazebo/physics/ode/ODECollision.hh>
-#include <gazebo_ros/node.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -26,12 +25,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "rclcpp/rclcpp.hpp"
+#include "rclcpp/executors/multi_threaded_executor.hpp"
 #include "sensor_msgs/msg/joint_state.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "std_msgs/msg/string.hpp"
@@ -68,6 +69,7 @@ enum class ControlKind
   kKnob,
   kSwitch,
   kDoor,
+  kSlider,
 };
 
 std::string required_text(
@@ -170,6 +172,9 @@ ControlKind parse_kind(const std::string & value)
   if (value == "door") {
     return ControlKind::kDoor;
   }
+  if (value == "slider") {
+    return ControlKind::kSlider;
+  }
   throw std::invalid_argument(
           "Unsupported cabinet control type: " + value);
 }
@@ -185,6 +190,8 @@ std::uint8_t message_type(ControlKind kind)
       return CabinetControl::TYPE_SWITCH;
     case ControlKind::kDoor:
       return CabinetControl::TYPE_DOOR;
+    case ControlKind::kSlider:
+      return CabinetControl::TYPE_SLIDER;
   }
   return CabinetControl::TYPE_BUTTON;
 }
@@ -212,6 +219,9 @@ class CabinetStatePlugin final : public gazebo::ModelPlugin
 public:
   ~CabinetStatePlugin() override
   {
+    // Stop the node spin thread before tearing down its publishers/services so
+    // no executor callback can fire into a half-destroyed plugin.
+    stop_spin_thread();
     const auto callback_lifetime = callback_lifetime_;
     if (callback_lifetime) {
       std::lock_guard<std::mutex> lock(callback_lifetime->mutex);
@@ -262,11 +272,12 @@ public:
   {
     model_ = std::move(model);
     world_ = model_->GetWorld();
-    ros_node_ = gazebo_ros::Node::Get(sdf);
+    ros_node_ = create_ros_node(sdf);
     if (!ros_node_) {
       gzerr << "Cabinet state plugin could not create a ROS 2 node.\n";
       return;
     }
+    start_spin_thread();
 
     try {
       const double publish_rate = optional_double(
@@ -478,6 +489,16 @@ private:
     double release_threshold{0.003};
     double motion_tolerance{0.025};
     double reset_position{0.0};
+    // Push-push release for a slider: pushing the panel PAST the open detent
+    // while it is latched trips the latch, and the detent spring then returns
+    // the panel to the closed detent.  Disabled (infinity) unless configured.
+    double slider_release_position{
+      std::numeric_limits<double>::infinity()};
+    // The tripped latch stays tripped while the panel falls back, re-arming the
+    // bistable ratchet only once the panel is below this position.  Without
+    // this, the closing travel would cross the midpoint and re-latch open.
+    double slider_release_reengage_position{0.0};
+    bool slider_released{false};
     bool graspable{false};
     ignition::math::Vector3d grasp_point{0.0, 0.0, 0.0};
     std::size_t reset_state_index{0U};
@@ -793,6 +814,40 @@ private:
           throw std::invalid_argument(
                   "Cabinet reset position must match a detent: " + control.id);
         }
+        // Push-push release is slider-only: the parse must not run for knobs,
+        // switches or doors, and sliders without the element keep the struct
+        // default (infinity) so the feature stays disabled instead of throwing
+        // inside optional_double's finite check.
+        if (control.kind == ControlKind::kSlider) {
+          if (element->HasElement("slider_release_position")) {
+            control.slider_release_position = optional_double(
+              element, "slider_release_position",
+              std::numeric_limits<double>::infinity());
+          }
+          control.slider_release_reengage_position = optional_double(
+            element, "slider_release_reengage_position",
+            0.5 * (control.detents.front() + control.detents.back()) -
+            2.0 * control.detent_hysteresis);
+          if (std::isfinite(control.slider_release_position)) {
+            const double detent_midpoint =
+              0.5 * (control.detents.front() + control.detents.back());
+            if (control.slider_release_position <= control.detents.back() ||
+              control.slider_release_position > upper)
+            {
+              throw std::invalid_argument(
+                      "Slider release position must lie strictly above the open "
+                      "detent and inside the joint limits: " + control.id);
+            }
+            if (control.slider_release_reengage_position <=
+                control.detents.front() ||
+              control.slider_release_reengage_position >= detent_midpoint)
+            {
+              throw std::invalid_argument(
+                      "Slider release re-engage position must lie strictly below "
+                      "the detent midpoint: " + control.id);
+            }
+          }
+        }
       }
 
       control.joint_state_publisher =
@@ -845,7 +900,26 @@ private:
         // positions here would turn that disturbance into a persistent knob
         // or switch state change.  Latching every non-button target after
         // release also models the mechanical detent consistently.
-        if (control_is_being_grasped) {
+        //
+        // A slider is the exception: the robot only presses its face (there
+        // is no fixed grasp), so the bistable detent follows the physical
+        // position continuously.  Pressing the panel past the midpoint flips
+        // the latch to the other detent, and the spring then assists the
+        // remaining travel; releasing it leaves the panel parked at the
+        // nearest detent.
+        if (control.kind == ControlKind::kSlider &&
+          control.slider_released)
+        {
+          // The push-release latch stays tripped while the panel falls back to
+          // the closed detent; only once it is below the re-engage position
+          // does the bistable ratchet re-arm (so the closing travel cannot
+          // cross the midpoint and latch open again).
+          control.detent_target_index = control.reset_state_index;
+          if (raw_position <= control.slider_release_reengage_position) {
+            control.slider_released = false;
+          }
+        } else if (control.kind == ControlKind::kSlider ||
+          control_is_being_grasped) {
           while (control.detent_target_index + 1U < control.detents.size()) {
             const double boundary = 0.5 * (
               control.detents[control.detent_target_index] +
@@ -866,6 +940,24 @@ private:
             }
             --control.detent_target_index;
           }
+        }
+        if (control.kind == ControlKind::kSlider &&
+          !control.slider_released &&
+          std::isfinite(control.slider_release_position) &&
+          raw_position >= control.slider_release_position)
+        {
+          // A push-push latch: pushing the open panel PAST its detent trips
+          // the release, and the detent spring then returns the panel to the
+          // closed detent.  This is how the robot closes a slider it can only
+          // push (the tool cannot pull the panel back from the front).
+          control.slider_released = true;
+          control.detent_target_index = control.reset_state_index;
+          RCLCPP_INFO(
+            ros_node_->get_logger(),
+            "Push-push release tripped for slider '%s' at %.6f rad; the "
+            "detent spring is returning the panel to '%s'.",
+            control.id.c_str(), raw_position,
+            control.state_ids[control.reset_state_index].c_str());
         }
         if (control.detent_target_index != previous_detent_target_index) {
           RCLCPP_INFO(
@@ -1678,6 +1770,7 @@ private:
       // than trusting this backend-specific return value alone.
       control->joint->SetPosition(0, control->reset_position, false);
       control->detent_target_index = control->reset_state_index;
+      control->slider_released = false;
     }
     // Moving an articulated parent can transfer velocity back into nested
     // controls in ODE.  Clear every joint again after the complete hierarchy
@@ -2214,10 +2307,73 @@ private:
     }
   }
 
+  // Create the plugin's ROS 2 node directly instead of through
+  // gazebo_ros::Node::Get.  That API registers the node in a process-lifetime
+  // static map, so when a scene switch removes this model the node survives in
+  // gzserver's rcl context and the next re-spawn of the same scene is refused
+  // ("Found multiple nodes with same name"); the plugin then silently runs
+  // without ROS.  Owning the node here ties its lifetime to the plugin
+  // instance, so the rcl context frees the name when the model is removed and a
+  // later scene switch can re-create it.  The node is spun by a dedicated
+  // executor thread the plugin owns for the same reason (the gazebo_ros global
+  // executor would keep the node alive past model removal).
+  static rclcpp::Node::SharedPtr create_ros_node(sdf::ElementPtr sdf)
+  {
+    std::string node_name = sdf->Get<std::string>(
+      "name", "xczs_cabinet_state").first;
+    if (sdf->HasElement("node_name")) {
+      node_name = sdf->Get<std::string>("node_name");
+    }
+    std::string ns = "/";
+    if (sdf->HasElement("ros") &&
+        sdf->GetElement("ros")->HasElement("namespace")) {
+      ns = sdf->GetElement("ros")->Get<std::string>("namespace");
+    }
+    // 忽略进程级全局参数（gazebo_ros2_control 会给 gzserver 注入 __ns:=/xczs
+    // 重映射），严格按插件 <ros><namespace> 显式命名空间建节点，与 gazebo_ros::
+    // Node 历史行为一致（FQN = /xczs/cabinet/<scene>/xczs_<scene>_state）。
+    rclcpp::NodeOptions options;
+    options.use_global_arguments(false);
+    return std::make_shared<rclcpp::Node>(node_name, ns, options);
+  }
+
+  void start_spin_thread()
+  {
+    executor_ = std::make_shared<rclcpp::executors::MultiThreadedExecutor>();
+    executor_->add_node(ros_node_);
+    spinning_.store(true);
+    spin_thread_ = std::make_unique<std::thread>([this]() {
+      while (rclcpp::ok() && spinning_.load()) {
+        executor_->spin_once();
+      }
+    });
+  }
+
+  void stop_spin_thread()
+  {
+    if (!spinning_.exchange(false)) {
+      return;
+    }
+    if (executor_) {
+      executor_->cancel();
+    }
+    if (spin_thread_ && spin_thread_->joinable()) {
+      spin_thread_->join();
+    }
+    if (executor_) {
+      executor_->remove_node(ros_node_);
+      executor_.reset();
+    }
+    spin_thread_.reset();
+  }
+
   gazebo::physics::ModelPtr model_;
   gazebo::physics::WorldPtr world_;
   gazebo::event::ConnectionPtr update_connection_;
-  gazebo_ros::Node::SharedPtr ros_node_;
+  rclcpp::Node::SharedPtr ros_node_;
+  rclcpp::executors::MultiThreadedExecutor::SharedPtr executor_;
+  std::unique_ptr<std::thread> spin_thread_;
+  std::atomic<bool> spinning_{false};
   std::vector<Control> controls_;
   std::unordered_map<std::string, std::size_t> control_indices_;
   rclcpp::Service<std_srvs::srv::Trigger>::SharedPtr reset_service_;

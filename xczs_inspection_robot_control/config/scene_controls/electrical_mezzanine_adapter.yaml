@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     # 跨节点共享的机器人接口契约（与共享 cabinet_robot_adapter.yaml 相同；
-    # 本文件为发电机层夹具实例自包含的机器人适配层，避免污染共享柜体配置）。
+    # 本文件为电气夹层夹具实例自包含的机器人适配层）。
     planning_frame: odom
     pose_parent_frame: odom
     manual_linear_axis: y
@@ -15,7 +15,6 @@
     navigation_mode_service: /xczs/set_navigation_mode
     navigation_mode_topic: /xczs/navigation_mode
     map_topic: /map
-    # 发电机层地板无柜体走廊带；场景 spec 已逐场景置空，此处置 null 兜底。
     navigation_keepout: null
     localization_pose_topic: /amcl_pose
     manual_cmd_vel_topic: /xczs/manual_cmd_vel
@@ -23,13 +22,12 @@
     base_output_topic: /xczs/cmd_vel
     joint_trajectory_topic: /xczs/joint_trajectory
     joint_state_topic: /xczs/joint_states
-    # 夹具场景重置基座位姿 = 场景 robot_spawn（按钮排正南通道，机头朝 +Y）；
-    # 不能沿用柜体场景的 (0,0)（该点在发电机层东墙/地图边界内，导航会被拒）。
+    # 夹具场景重置基座位姿 = 场景 robot_spawn（(4,4) 机头朝 +X）。
     reset_base_pose:
       frame_id: map
-      x: -16.0
-      y: 2.0
-      yaw: 1.5707963267948966
+      x: 4.0
+      y: 4.0
+      yaw: 0.0
     reset_joint_tolerance: 0.12
     reset_joint_timeout_sec: 15.0
     reset_joint_duration_sec: 5.0
@@ -109,9 +107,9 @@
 
 /**/xczs_cabinet_button_operator:
   ros__parameters:
-    # 机器人适配层：tool_profiles 与全局标定沿用共享柜体目录，仅
-    # controls（夹具导航工位）与 operable_control_ids（B1 = fr135_button）
-    # 按发电机层夹具定制。
+    # 机器人适配层：tool_profiles 与全局标定沿用共享柜体目录，仅 controls
+    # （夹具导航工位）与 operable_control_ids（B3b = db1/dm1 两扇低门）按
+    # 电气夹层夹具定制。
     robot_model_name: xczs_inspection_robot
     move_group_namespace: /
     planning_time: 10.0
@@ -147,7 +145,7 @@
         transport_named_target: home
         tool_axis_orientation: toward_control
         tool_tip_position: [-0.0613, -0.006, 0.1885]
-      # 夹具场景暂无 switch/door，但 operator 要求 button 非空时四档
+      # 电气夹层暂无 switch/door，但 operator 要求 button 非空时四档
       # tool_profiles 全声明；沿用共享柜体的同工具集 profile。
       switch:
         move_group: left_arm
@@ -186,118 +184,50 @@
     force_tracking_settle_seconds: 0.15
     force_tracking_attempts: 3
     button_press_minimum_cartesian_fraction: 0.95
-    # 夹具按钮工位：夹具局部系 == 世界/map 系（场景模型单位位姿 spawn）。
-    # 停靠点 = 按钮面正南退让 standoff；outward (0,-1,0) 自按钮指向机器人。
-    # 机器人本体双臂为前后布局（右臂挂 body -X 即"后背"侧），机头朝 -Y
-    # （body_yaw=270°，base_yaw_offset=π/2）时右臂肩部恰在按钮正南 ~0.56m，
-    # prepress 目标距肩仅 ~0.08m，按压姿态在右臂可达域内（live IK 已验证；
-    # bwo=0 的 body_yaw=180° 下按钮位于右臂 0.98m 斜对角，超出关节限位）。
-    # standoff 0.914 沿用柜体；local_anchor z 取 0（贴地），Nav2/精停只消费 x/y/yaw。
+    # 夹具门工位：夹具局部系 == 世界/map 系（场景模型单位位姿 spawn）。
+    # 停靠点 = 门推面（x=-0.50）正西退让 standoff；outward (-1,0,0) 自
+    # 推面指向机器人。base_yaw_offset 取 π/2（B3a live 实测的推门几何：
+    # 机器人以 body yaw≈π / base yaw≈88° 停靠，右臂越过机身左侧把推面直推
+    # 0.3m 成功；boot10 试过 base_yaw_offset=0 令 base 正对推面，反而 ready
+    # 预压位 OMPL 无法采到有效 IK 目标，说明 base 88° 才是可达窗口内的姿态）。
+    # standoff 1.4（base x=-1.9）是 ready 唯一可靠档位：
+    #   * standoff ≤1.1（base ≥-1.6）时预压位 tool_link 距 base ≤0.60m，右臂
+    #     折叠太紧自碰机身，OMPL 预压目标 IK 采样全部失败（boot11/12 实测
+    #     "Unable to sample any valid states"）；1.4 时 tool_link 距 base
+    #     0.89m，手臂侧伸自然、ready 可靠通过（boot9 实测）。
+    #   * 推压段：单段 Cartesian 0→0.3 在 1.4 只能完成 ~14%（boot9，接近
+    #     奇异区退化解），但 operator 的 slider 力跟踪重推（track_slider_force，
+    #     与 button 型 track_button_force 同机制）从当前物理位置重推，逐次
+    #     收敛到目标 detent —— B3a 的 button 型探针在同一站位 1.4 就是靠
+    #     这个机制把门推满 0.3m 的。standoff 不能再小，否则 ready 不过。
+    # 已通过站位安全门限（最小安全 standoff≈0.46m）。local_anchor z 取 0。
     controls:
-      fr135_button:
+      db1:
         navigation_station:
-          local_anchor: [-13.1867, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          # standoff 1.4：prepress 目标位于右臂可达域内部（live /plan_kinematic_path 0.042s 成功）。
-          # 原 0.914 下右臂 r_arm_4=+3.001 距 3.14 限位仅 0.14rad，OMPL 目标盒采样
-          # （位置 ±5mm 且朝向 ±0.01rad 组合）越限 → "Unable to sample any valid states"。
+          local_anchor: [-0.5, 4.4, 0.0]
+          outward_axis: [-1.0, 0.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
-      fr2222_button:
+      dm1:
+        # 与 db1 同合同：停靠点 = dm1 推面（x=-0.50, y=5.20）正西 standoff 1.4。
         navigation_station:
-          local_anchor: [-13.787, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          # 沿用 fr135 验证过的停靠几何：body_yaw=270°（bwo=π/2）下右臂肩部
-          # 在按钮正南 ~0.56m，prepress 目标在右臂可达域内（bwo=0 时按钮在
-          # 0.98m 斜对角，OMPL 目标盒采样越限）。
+          local_anchor: [-0.5, 5.2, 0.0]
+          outward_axis: [-1.0, 0.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
-      fr4332_button:
-        navigation_station:
-          local_anchor: [-15.457, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 1.4
-          base_yaw_offset: 1.5707963267948966
-          frame_id: map
-      fr12452_button:
-        navigation_station:
-          local_anchor: [-21.997, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 1.4
-          base_yaw_offset: 1.5707963267948966
-          frame_id: map
-      fr20422_button:
-        navigation_station:
-          local_anchor: [-30.1, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 1.4
-          base_yaw_offset: 1.5707963267948966
-          frame_id: map
-      fr25452_button:
-        navigation_station:
-          local_anchor: [-35.01, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 1.4
-          base_yaw_offset: 1.5707963267948966
-          frame_id: map
-      # 旋钮本阶段仅状态展示，工位仅为 Web/规划验证提供几何参考。
-      fr135_knob:
-        navigation_station:
-          local_anchor: [-13.1867, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-      fr2222_knob:
-        navigation_station:
-          local_anchor: [-13.787, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-      fr4332_knob:
-        navigation_station:
-          local_anchor: [-15.457, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-      fr12452_knob:
-        navigation_station:
-          local_anchor: [-21.997, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-      fr20422_knob:
-        navigation_station:
-          local_anchor: [-30.1, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-      fr25452_knob:
-        navigation_station:
-          local_anchor: [-35.01, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
-          frame_id: map
-    # 物理执行能力正向清单（B2：六组按钮全部通过端到端按压验收）。
-    # 未列入的控制一律只做实时规划验证，绝不写入夹具状态。
+    # 物理执行能力正向清单（B3b：db1、dm1 两扇低门推门 + push-push 关门
+    # live 验证；其余三扇高门状态展示）。未列入的控制一律只做实时规划验证，
+    # 绝不写入夹具状态。
     operable_control_ids:
-      - fr135_button
-      - fr2222_button
-      - fr4332_button
-      - fr12452_button
-      - fr20422_button
-      - fr25452_button
+      - db1
+      - dm1
     inoperable_control_reason: >-
-      六组旋钮（fr135…fr25452）为状态展示控制（旋钮体仅 5×14×5 mm，按钮板
-      覆盖其 -Y 面，且用户要求旋钮仅可动不纳入物理操作），未列入可操作清单。
-      未列入控件仅保留状态显示和实时规划验证，不会执行抓取或写入夹具状态。
+      电气夹层 ds1/ds2/ds3 三扇高门本阶段为状态展示控制（推面 z≈1.5~2.06m，
+      位于右臂可达窗口 0.58~1.547m 上缘甚至之外；B3b 仅验证了低门 db1/dm1
+      的推门 + push-push 关门）。未列入控件仅保留状态显示和实时规划验证，
+      不会执行推门。
     toolset_mismatch_reason: >-
       当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；
       套装 B：旋转按钮/摇杆）。控件仍保留状态显示；错套装请求会在导航和

@@ -396,13 +396,17 @@
           frame_id: map
       box_3_button_1:
         # 第二排左列按钮。operator 实测链(prepress=-0.12/contact=-0.001/pressed=+0.008,
-        # 免 roll)于 anchor=local_x-0.3506、standoff=0.780 全程无碰撞，种子为该链 prepress 解。
+        # 免 roll)于 anchor=local_x-0.3506 全程无碰撞，种子为该链 prepress 解。
         # Cartesian 级重校准：原种子 approach 仅 0.541，换用 IK 分支搜索找到的 prepress 解，
         # approach/press/retract 三条 Cartesian 路径均 1.000（faithful_check 实测）。
+        # 可达窗口顶缘重校准(2026-09-01)：按钮 z=1.547 位于工具可达窗口极值，standoff=0.780
+        # 时 contact 目标超出右臂末段 IK 极限 ~0.014m（approach fraction 0.885，B4 回归实测）。
+        # standoff 降至 0.730（dock x 1.22→1.27，贴近按钮 0.05m）后 approach/press/retract
+        # 全链路 1.000，物理按压实测 PASS（button_triggered=True，peak≈0.0065）。
         navigation_station:
           local_anchor: [-0.2306, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.780
+          standoff: 0.730
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:
@@ -428,10 +432,12 @@
         # 0.05m 横向偏移），原 seed(r_arm_0=-3.02 分支)落在肩部奇异区，press
         # Cartesian 路径在 body X≈-0.07 处 IK 爆炸（fraction 0~0.27）；改用
         # box_3_button_1 已验证的 +2.67 分支使 press/approach/retract 全链路 1.000。
+        # 可达窗口顶缘重校准(2026-09-01)：与 box_3_button_1 相同的 standoff 0.730
+        # 修正，dock (1.27, 0.5106) 下物理按压实测 PASS。
         navigation_station:
           local_anchor: [-0.1806, 1.115, 0.000]
           outward_axis: [0.0, 0.0, 1.0]
-          standoff: 0.780
+          standoff: 0.730
           base_yaw_offset: 0.0
           frame_id: map
         ready_joint_seed:

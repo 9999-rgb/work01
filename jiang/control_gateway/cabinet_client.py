@@ -74,6 +74,7 @@ class CabinetClient(Node):
             CabinetControl.TYPE_KNOB,
             CabinetControl.TYPE_SWITCH,
             CabinetControl.TYPE_DOOR,
+            CabinetControl.TYPE_SLIDER,
         }
     )
     BUTTON_CONTROL_TYPE = CabinetControl.TYPE_BUTTON
@@ -82,6 +83,7 @@ class CabinetClient(Node):
             CabinetControl.TYPE_KNOB,
             CabinetControl.TYPE_SWITCH,
             CabinetControl.TYPE_DOOR,
+            CabinetControl.TYPE_SLIDER,
         }
     )
     ACTIVE_STATES = frozenset({"sending", "operating", "canceling"})

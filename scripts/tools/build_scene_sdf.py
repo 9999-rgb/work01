@@ -62,6 +62,17 @@ import numpy as np
 _MIN_MASS = 1e-3
 _MIN_INERTIA = 1e-9
 
+# Dynamic-build floors for movable fixture links (Phase B ``--dynamic``).
+# SW2URDF exports tiny knob/cap links (mass 1e-3 kg, inertia ~1e-9) with large
+# off-diagonal terms.  Under the cabinet_state plugin + implicitSpringDamper
+# the ODE LCP solver blows up: the fixture model twist turns NaN and the world
+# broadphase is irrecoverably poisoned (a NaN body's AABB poisons near-phase
+# bodies even after the entity is deleted).  Cabinet-proven stable values from
+# clean-world probes: mass >= 0.05, diagonal inertia >= 1e-5, off-diagonals
+# zeroed (floor_probe F1/F2, both stable with finite joint velocities).
+_DYNAMIC_MASS_FLOOR = 0.05
+_DYNAMIC_INERTIA_FLOOR = 1e-5
+
 
 @dataclass
 class LinkSpec:
@@ -622,6 +633,29 @@ def _box_collision(pose: list[float], size: list[float], name: str) -> ET.Elemen
     return collision
 
 
+def _apply_dynamic_mass_floor(link: LinkSpec) -> None:
+    """Floor a movable fixture link's mass/inertia to values ODE can solve.
+
+    Mutates ``link`` in place.  The ground link is exempt -- it keeps its real
+    export mass (10.9 t slab) because a lightened ground is itself unstable
+    under the plugin (faithful probe G1 vs G2); it is anchored to the world so
+    its values are safe.  Every other fixture link (buttons, knobs, caps,
+    shafts, doors) is floored and its off-diagonal inertia zeroed.
+    """
+    if link.is_ground:
+        return
+    link.mass = max(link.mass, _DYNAMIC_MASS_FLOOR)
+    ixx, _ixy, _ixz, iyy, _iyz, izz = link.inertia
+    link.inertia = [
+        max(ixx, _DYNAMIC_INERTIA_FLOOR),
+        0.0,
+        0.0,
+        max(iyy, _DYNAMIC_INERTIA_FLOOR),
+        0.0,
+        max(izz, _DYNAMIC_INERTIA_FLOOR),
+    ]
+
+
 def _link_to_sdf(link: LinkSpec, *, ground_collisions: list[dict[str, object]]) -> ET.Element:
     elem = ET.Element("link", {"name": link.name})
     ET.SubElement(elem, "pose").text = "0 0 0 0 0 0"
@@ -703,6 +737,8 @@ def build_sdf(
         # produces for the shared cabinet's root fixed joint.
         pass
     for link in spec.links:
+        if dynamic:
+            _apply_dynamic_mass_floor(link)
         model.append(_link_to_sdf(link, ground_collisions=ground_collisions))
     if dynamic:
         anchor = ET.Element(

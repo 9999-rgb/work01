@@ -171,6 +171,11 @@ class CabinetInstance:
     station_override: Optional[Mapping[str, Any]] = None
     kind: str = "cabinet"
     associated_scene: str = "cabinet_operation"
+    # 实例专属机器人适配层路径（cabinet_instances.yaml adapter_config）。
+    # 夹具场景（generator_plant / electrical_mezzanine）用它携带逐控件导航
+    # 工位与工具集 profile，runner 需要据此解析该实例的 control station；
+    # 共享 cabinet_robot_adapter.yaml 不含这些控件。
+    adapter_config: Optional[str] = None
 
     @property
     def namespace(self) -> str:
@@ -621,6 +626,7 @@ def _parse_instances(document: Mapping[str, Any]) -> list[CabinetInstance]:
                 station_override=(
                     dict(station_override) if station_override is not None else None
                 ),
+                adapter_config=value.get("adapter_config"),
                 **numeric,
             )
         )

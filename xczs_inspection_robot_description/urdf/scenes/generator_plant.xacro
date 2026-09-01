@@ -70,17 +70,17 @@
       </collision>
     </link>
     <link name="r1352">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-13.1867 4.8113 0.691314593 0 0 0</pose>
       <inertial>
         <pose>0 -2.13873363e-12 0 0 0 0</pose>
-        <mass>0.001</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>4.91937412e-09</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1e-09</ixz>
-          <iyy>1e-09</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>4.91937412e-09</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -105,17 +105,17 @@
       </collision>
     </link>
     <link name="r1351">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-13.1867 4.8183 0.691314593 0 0 0</pose>
       <inertial>
         <pose>1.42108547e-14 -0.00298032725 -2.84217094e-14 0 0 0</pose>
-        <mass>0.0273523458</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1.91413422e-06</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1.40460666e-06</ixz>
-          <iyy>3.53437888e-06</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1.91413422e-06</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -130,27 +130,31 @@
           <diffuse>0.752941 0.752941 0.752941 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+            <collision name="collision">
+        <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
+             mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
+             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
+        <pose>0 -0.003 0 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1351.STL</uri>
-          </mesh>
+          <box>
+            <size>0.0346 0.008 0.0346</size>
+          </box>
         </geometry>
       </collision>
     </link>
     <link name="r2222">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-13.787 4.8113 0.83131 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
-        <mass>0.001</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>4.91937412e-09</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1e-09</ixz>
-          <iyy>1e-09</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>4.91937412e-09</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -175,17 +179,17 @@
       </collision>
     </link>
     <link name="r2221">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-13.787 4.8183 0.83131 0 0 0</pose>
       <inertial>
         <pose>1.42108547e-14 -0.00298032725 0 0 0 0</pose>
-        <mass>0.0273523458</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1.91413422e-06</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1.40460666e-06</ixz>
-          <iyy>3.53437888e-06</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1.91413422e-06</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -200,27 +204,31 @@
           <diffuse>0.752941 0.752941 0.752941 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+            <collision name="collision">
+        <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
+             mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
+             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
+        <pose>0 -0.003 0 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2221.STL</uri>
-          </mesh>
+          <box>
+            <size>0.0346 0.008 0.0346</size>
+          </box>
         </geometry>
       </collision>
     </link>
     <link name="r4332">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-15.457 4.8113 0.69131 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
-        <mass>0.001</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>4.91937412e-09</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1e-09</ixz>
-          <iyy>1e-09</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>4.91937412e-09</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -245,17 +253,17 @@
       </collision>
     </link>
     <link name="r4331">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-15.457 4.8183 0.69131 0 0 0</pose>
       <inertial>
         <pose>7.10542736e-15 -0.00298032725 -2.84217094e-14 0 0 0</pose>
-        <mass>0.0273523458</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1.91413422e-06</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1.40460666e-06</ixz>
-          <iyy>3.53437888e-06</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1.91413422e-06</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -270,27 +278,31 @@
           <diffuse>0.752941 0.752941 0.752941 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+            <collision name="collision">
+        <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
+             mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
+             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
+        <pose>0 -0.003 0 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4331.STL</uri>
-          </mesh>
+          <box>
+            <size>0.0346 0.008 0.0346</size>
+          </box>
         </geometry>
       </collision>
     </link>
     <link name="r12452">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-21.997 4.8113 0.55131 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
-        <mass>0.001</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>4.91937412e-09</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1e-09</ixz>
-          <iyy>1e-09</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>4.91937412e-09</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -315,17 +327,17 @@
       </collision>
     </link>
     <link name="r12451">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-21.997 4.8183 0.55131 0 0 0</pose>
       <inertial>
         <pose>7.10542736e-15 -0.00298032725 2.84217094e-14 0 0 0</pose>
-        <mass>0.0273523458</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1.91413422e-06</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1.40460666e-06</ixz>
-          <iyy>3.53437888e-06</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1.91413422e-06</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -340,27 +352,31 @@
           <diffuse>0.752941 0.752941 0.752941 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+            <collision name="collision">
+        <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
+             mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
+             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
+        <pose>0 -0.003 0 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12451.STL</uri>
-          </mesh>
+          <box>
+            <size>0.0346 0.008 0.0346</size>
+          </box>
         </geometry>
       </collision>
     </link>
     <link name="r20422">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-30.1 4.8113 0.55131 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
-        <mass>0.001</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>4.91937412e-09</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1e-09</ixz>
-          <iyy>1e-09</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>4.91937412e-09</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -385,17 +401,17 @@
       </collision>
     </link>
     <link name="r20421">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-30.1 4.8183 0.55131 0 0 0</pose>
       <inertial>
         <pose>0 -0.00298032725 2.84217094e-14 0 0 0</pose>
-        <mass>0.0273523458</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1.91413422e-06</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1.40460666e-06</ixz>
-          <iyy>3.53437888e-06</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1.91413422e-06</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -410,27 +426,31 @@
           <diffuse>0.752941 0.752941 0.752941 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+            <collision name="collision">
+        <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
+             mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
+             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
+        <pose>0 -0.003 0 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20421.STL</uri>
-          </mesh>
+          <box>
+            <size>0.0346 0.008 0.0346</size>
+          </box>
         </geometry>
       </collision>
     </link>
     <link name="r25452">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-35.01 4.8113 0.551314593 0 0 0</pose>
       <inertial>
         <pose>0 0 0 0 0 0</pose>
-        <mass>0.001</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1e-09</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1e-09</ixz>
-          <iyy>1e-09</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1e-09</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -455,17 +475,17 @@
       </collision>
     </link>
     <link name="r25451">
-      <pose>0 0 0 0 0 0</pose>
+      <pose>-35.01 4.8183 0.551314593 0 0 0</pose>
       <inertial>
         <pose>-3.55271368e-15 -0.00298032725 0 0 0 0</pose>
-        <mass>0.0273523458</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>1.91413422e-06</ixx>
+          <ixx>1e-05</ixx>
           <ixy>1e-09</ixy>
           <ixz>1.40460666e-06</ixz>
-          <iyy>3.53437888e-06</iyy>
+          <iyy>1e-05</iyy>
           <iyz>1e-09</iyz>
-          <izz>1.91413422e-06</izz>
+          <izz>1e-05</izz>
         </inertia>
       </inertial>
       <visual name="visual">
@@ -480,12 +500,16 @@
           <diffuse>0.752941 0.752941 0.752941 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+            <collision name="collision">
+        <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
+             mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
+             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
+        <pose>0 -0.003 0 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25451.STL</uri>
-          </mesh>
+          <box>
+            <size>0.0346 0.008 0.0346</size>
+          </box>
         </geometry>
       </collision>
     </link>
@@ -494,7 +518,7 @@
       <child>fadianground</child>
     </joint>
     <joint name="fr135" type="revolute">
-      <pose>-13.1867 4.8113 0.691314593 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>fadianground</parent>
       <child>r1352</child>
       <axis>
@@ -512,7 +536,7 @@
       </axis>
     </joint>
     <joint name="r1352_1" type="prismatic">
-      <pose>0 0.007 0 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>r1352</parent>
       <child>r1351</child>
       <axis>
@@ -530,7 +554,7 @@
       </axis>
     </joint>
     <joint name="fr2222" type="revolute">
-      <pose>-13.787 4.8113 0.83131 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>fadianground</parent>
       <child>r2222</child>
       <axis>
@@ -548,7 +572,7 @@
       </axis>
     </joint>
     <joint name="r2222_1" type="prismatic">
-      <pose>0 0.007 0 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>r2222</parent>
       <child>r2221</child>
       <axis>
@@ -566,7 +590,7 @@
       </axis>
     </joint>
     <joint name="fr4332" type="revolute">
-      <pose>-15.457 4.8113 0.69131 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>fadianground</parent>
       <child>r4332</child>
       <axis>
@@ -584,7 +608,7 @@
       </axis>
     </joint>
     <joint name="r4332_1" type="prismatic">
-      <pose>0 0.007 0 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>r4332</parent>
       <child>r4331</child>
       <axis>
@@ -602,7 +626,7 @@
       </axis>
     </joint>
     <joint name="fr12452" type="revolute">
-      <pose>-21.997 4.8113 0.55131 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>fadianground</parent>
       <child>r12452</child>
       <axis>
@@ -620,7 +644,7 @@
       </axis>
     </joint>
     <joint name="r12452_1" type="prismatic">
-      <pose>0 0.007 0 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>r12452</parent>
       <child>r12451</child>
       <axis>
@@ -638,7 +662,7 @@
       </axis>
     </joint>
     <joint name="fr20422" type="revolute">
-      <pose>-30.1 4.8113 0.55131 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>fadianground</parent>
       <child>r20422</child>
       <axis>
@@ -656,7 +680,7 @@
       </axis>
     </joint>
     <joint name="r20422_1" type="prismatic">
-      <pose>0 0.007 0 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>r20422</parent>
       <child>r20421</child>
       <axis>
@@ -674,7 +698,7 @@
       </axis>
     </joint>
     <joint name="fr25452" type="revolute">
-      <pose>-35.01 4.8113 0.551314593 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>fadianground</parent>
       <child>r25452</child>
       <axis>
@@ -692,7 +716,7 @@
       </axis>
     </joint>
     <joint name="r25452_1" type="prismatic">
-      <pose>0 0.007 0 0 0 0</pose>
+      <pose>0 0 0 0 0 0</pose>
       <parent>r25452</parent>
       <child>r25451</child>
       <axis>
@@ -828,7 +852,11 @@
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
-        <motion_tolerance>0.025</motion_tolerance>
+        <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
+             偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
+             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             按钮仍用 press/release_threshold，与此无关。 -->
+        <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>
@@ -849,7 +877,11 @@
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
-        <motion_tolerance>0.025</motion_tolerance>
+        <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
+             偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
+             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             按钮仍用 press/release_threshold，与此无关。 -->
+        <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>
@@ -870,7 +902,11 @@
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
-        <motion_tolerance>0.025</motion_tolerance>
+        <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
+             偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
+             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             按钮仍用 press/release_threshold，与此无关。 -->
+        <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>
@@ -891,7 +927,11 @@
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
-        <motion_tolerance>0.025</motion_tolerance>
+        <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
+             偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
+             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             按钮仍用 press/release_threshold，与此无关。 -->
+        <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>
@@ -912,7 +952,11 @@
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
-        <motion_tolerance>0.025</motion_tolerance>
+        <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
+             偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
+             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             按钮仍用 press/release_threshold，与此无关。 -->
+        <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>
@@ -933,7 +977,11 @@
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
-        <motion_tolerance>0.025</motion_tolerance>
+        <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
+             偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
+             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             按钮仍用 press/release_threshold，与此无关。 -->
+        <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
         <grasp_point>0 0 0</grasp_point>

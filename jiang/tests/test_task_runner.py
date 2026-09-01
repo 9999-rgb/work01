@@ -1801,6 +1801,76 @@ class TaskRunnerTest(unittest.TestCase):
             [leg["target"] for leg in task["result"]["route"]["legs"]],
         )
 
+    def test_navigation_prefers_instance_specific_adapter_station(self) -> None:
+        # 夹具场景在 cabinet_instances.yaml 声明 adapter_config（含逐控件导航
+        # 工位），operator 与 runner 必须使用同一份；共享 cabinet_robot_adapter
+        # 不含夹具控件。回归：runner 导航时须优先解析实例专属适配层的工位，
+        # 不能退化为共享适配层（否则会导航到实例默认工位，远离目标控件）。
+        server, node = _server()
+        node.state["current_pose"] = {
+            "x": 0.0,
+            "y": 0.0,
+            "yaw": math.pi / 2.0,
+            "frame_id": "map",
+        }
+        instance_station = NavigationStationSpec(
+            local_anchor=(0.0, 2.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            base_yaw_offset=0.0,
+            frame_id="map",
+        )
+        shared_station = NavigationStationSpec(
+            local_anchor=(7.0, 8.0, 0.0),
+            outward_axis=(1.0, 0.0, 0.0),
+            standoff=0.5,
+            frame_id="map",
+        )
+        # 共享适配层故意给出错误工位；实例专属适配层给出正确工位。
+        server._robot_adapter.control_navigation_station = (
+            lambda control_id: shared_station if control_id == "button_1" else None
+        )
+        instance_adapter = SimpleNamespace(
+            control_navigation_station=lambda _control_id: instance_station,
+        )
+        server._instance_robot_adapters = {"cabinet_a": instance_adapter}
+
+        accepted = server.submit_navigation_task("cabinet_a", "button_1")
+        first_goal = node.wait_for_navigation_goal(1)
+        self.assertIsNotNone(first_goal)
+        assert first_goal is not None
+        # 第一腿目标 = 实例工位 x（local_anchor.x + standoff），而非共享工位 7.5。
+        self.assertAlmostEqual(0.5, first_goal["x"])
+        self.assertAlmostEqual(0.0, first_goal["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": 0.0, "yaw": math.pi / 2.0},
+        )
+        second_goal = node.wait_for_navigation_goal(2)
+        self.assertIsNotNone(second_goal)
+        assert second_goal is not None
+        self.assertAlmostEqual(0.5, second_goal["x"])
+        self.assertAlmostEqual(2.0, second_goal["y"])
+        node.finish_navigation(
+            "succeeded",
+            pose={"x": 0.5, "y": 2.0, "yaw": math.pi},
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("success", task["status"])
+
+    def test_robot_adapter_for_falls_back_when_no_instance_adapter(self) -> None:
+        server = object.__new__(ControlServer)
+        shared = SimpleNamespace(name="shared")
+        instance = SimpleNamespace(name="generator_plant")
+        server._robot_adapter = shared
+        server._instance_robot_adapters = {"generator_plant": instance}
+        self.assertIs(instance, server._robot_adapter_for("generator_plant"))
+        self.assertIs(shared, server._robot_adapter_for("cabinet_a"))
+        # 测试桩未初始化 _instance_robot_adapters 时退回共享适配层。
+        stub = object.__new__(ControlServer)
+        stub._robot_adapter = shared
+        self.assertIs(shared, stub._robot_adapter_for("generator_plant"))
+
     def test_navigation_progress_stays_monotonic_after_slow_homing_with_keepout_detour(
         self,
     ) -> None:

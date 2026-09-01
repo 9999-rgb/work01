@@ -60,3 +60,34 @@ instances:
       standoff: 0.914
       base_yaw_offset: 0.0
       frame_id: map
+
+  - name: "electrical_mezzanine"
+    # 电气夹层 3.0 场景夹具实例（B3）：五扇滑门（ds1/ds2/db1/ds3/dm1，
+    # prismatic (1,0,0) 0→0.3 m）随场景模型以单位位姿加载，恒等位姿即
+    # 世界/map 原点。operator/planning-scene/pose-authority 常驻于
+    # /xczs/cabinet/electrical_mezzanine，由 runner 按 associated_scene 门控。
+    # B3a 探针阶段：db1 为唯一可操作门（推门全行程拖曳验证），其余四扇
+    # 仅状态展示；探针以 button 类型模拟直线推门（spring 12 / 默认力 3.6N
+    # → 按压深度 0.3 m），正式 slider 类型按 live 结果决策。
+    kind: fixture
+    associated_scene: electrical_mezzanine
+    x: 0.0
+    y: 0.0
+    z: 0.0
+    roll: 0.0
+    pitch: 0.0
+    yaw: 0.0
+    controls_config: package://xczs_inspection_robot_control/config/scene_controls/electrical_mezzanine_controls.yaml
+    scene_config: package://xczs_inspection_robot_control/config/scene_controls/electrical_mezzanine_scene.yaml
+    adapter_config: package://xczs_inspection_robot_control/config/scene_controls/electrical_mezzanine_adapter.yaml
+    # 夹具恒等位姿，站几何即世界/map 系；默认工位取 db1（最低门，推面
+    # z≈0.95 在右臂可达窗口内）。停靠点 = 门推面正西退让 standoff，
+    # outward (-1,0,0) 自门推面指向机器人（西侧），base_yaw_offset=π/2
+    # 令右臂肩部位于推面正西 ~0.56m（与发电机按钮经 live IK 验证的
+    # 停靠几何同构，旋转 -90°）。
+    navigation_station:
+      local_anchor: [-0.5, 4.4, 0.0]
+      outward_axis: [-1.0, 0.0, 0.0]
+      standoff: 1.4
+      base_yaw_offset: 1.5707963267948966
+      frame_id: map

@@ -52,6 +52,8 @@ from .recording_manager import RecordingManager
 from .ros_node import ControlRequestError
 from .ros_node import RosControlNode
 from .ros_node import _wrap_angle
+from .robot_adapter import ResetBasePoseConfig
+from .robot_adapter import RobotAdapterConfig
 from .robot_adapter import RobotAdapterError
 from .robot_adapter import keepout_crossing_waypoint
 from .robot_adapter import load as load_robot_adapter
@@ -464,6 +466,24 @@ class ControlServer:
             )
         except RobotAdapterError as error:
             raise RuntimeError(f"Invalid robot adapter: {error}") from error
+        # 实例专属机器人适配层（cabinet_instances.yaml 的 adapter_config）：
+        # 夹具场景用它携带共享适配层没有的逐控件导航工位（generator_plant 等），
+        # runner 导航时必须按实例解析工位，否则会退化为实例默认工位（fr135）。
+        # 与 operator 启动时读取的同一份 yaml，保证 runner/operator 工位一致。
+        self._instance_robot_adapters: Dict[str, RobotAdapterConfig] = {}
+        for instance in self._inventory:
+            adapter_config = getattr(instance, "adapter_config", None)
+            if not adapter_config:
+                continue
+            try:
+                self._instance_robot_adapters[instance.name] = load_robot_adapter(
+                    str(resolve_package_uri(adapter_config)),
+                    toolset=normalized_toolset,
+                )
+            except RobotAdapterError as error:
+                raise RuntimeError(
+                    f"Invalid robot adapter for instance {instance.name}: {error}"
+                ) from error
         resolved_cmd_vel_topic = (
             cmd_vel_topic
             if cmd_vel_topic is not None
@@ -1736,6 +1756,8 @@ class ControlServer:
 
     def _delete_cabinet_entities(self) -> None:
         for cabinet in self._inventory:
+            if cabinet.kind != "cabinet":
+                continue
             self._gazebo_client.delete_entity(
                 cabinet.name, ignore_missing=True
             )
@@ -1745,6 +1767,12 @@ class ControlServer:
             self._cabinet_controls_path
         )
         for cabinet in self._inventory:
+            # ``kind: fixture`` instances are carried by the scene model's own
+            # plugin (per-scene control schema); spawning a shared cabinet URDF
+            # for them would plant a phantom cabinet at the fixture's pose and
+            # double-register the namespace.
+            if cabinet.kind != "cabinet":
+                continue
             urdf = build_cabinet_urdf(
                 self._cabinet_xacro_path,
                 cabinet.name,
@@ -2042,6 +2070,21 @@ class ControlServer:
             # Old lifecycle/API compatibility; new servers always use clients.
             return self._node.cabinet_controls_snapshot()
 
+    def _robot_adapter_for(self, cabinet: str) -> RobotAdapterConfig:
+        """Return the instance-specific robot adapter, falling back to shared.
+
+        夹具场景在 cabinet_instances.yaml 声明了 adapter_config（含逐控件导航
+        工位），operator 与 runner 必须使用同一份；共享 cabinet_robot_adapter
+        不含夹具控件，若直接用它解析工位会退化为实例默认工位（fr135）。
+        生命周期测试桩不经过完整构造函数，允许缺省，此时退回共享适配层。
+        """
+        instance_adapters = getattr(self, "_instance_robot_adapters", None)
+        if instance_adapters:
+            instance_adapter = instance_adapters.get(cabinet)
+            if instance_adapter is not None:
+                return instance_adapter
+        return self._robot_adapter
+
     def submit_navigation_task(
         self,
         cabinet: str,
@@ -2123,7 +2166,7 @@ class ControlServer:
                             code="toolset_mismatch",
                         )
                     control_station = (
-                        self._robot_adapter.control_navigation_station(
+                        self._robot_adapter_for(cabinet).control_navigation_station(
                             control_id
                         )
                     )
@@ -2900,7 +2943,27 @@ class ControlServer:
             context.task_id,
             lambda _task_id: self._node.cancel_navigation(allow_idle=True),
         )
+        # 复位基座优先取当前激活场景的 robot_spawn：夹具场景（带 scene model）
+        # 的出生点与柜体场景不同（发电机层 = 按钮排正南通道 -16,2），若沿用
+        # 柜体场景的 reset_base_pose (0,0)，会落在发电机层东墙/地图边界内被
+        # 导航拒绝。柜体场景 robot_spawn == 适配器 reset_base_pose，取场景
+        # spawn 对三柜体语义完全等价。
         reset_pose = self._robot_adapter.reset_base_pose
+        active_scene = getattr(self, "_active_scene", None)
+        scene_lookup = getattr(self, "_scene_lookup", None)
+        if active_scene is not None and callable(scene_lookup):
+            try:
+                active_spec = scene_lookup(active_scene)
+            except (SceneNotFoundError, AttributeError):
+                active_spec = None
+            if active_spec is not None and active_spec.robot_spawn is not None:
+                spawn = active_spec.robot_spawn
+                reset_pose = ResetBasePoseConfig(
+                    frame_id="map",
+                    x=spawn.x,
+                    y=spawn.y,
+                    yaw=spawn.yaw,
+                )
         reset_station = {
             "cabinet": cabinet,
             "frame_id": reset_pose.frame_id,
@@ -5739,6 +5802,21 @@ class ControlServer:
                 self._cabinet_robot_adapter_path,
                 toolset=toolset,
             )
+            # 实例专属适配层随工具集切换一起重载：夹具场景 operator 也按当前
+            # 工具集解析 tool_profiles，runner 侧工位/工具 profile 必须同步，
+            # 否则 A→B 切换后 _robot_adapter_for 仍返回旧工具集的实例适配层。
+            instance_adapters = getattr(self, "_instance_robot_adapters", None)
+            if instance_adapters is not None:
+                for instance in self._inventory:
+                    adapter_config = getattr(instance, "adapter_config", None)
+                    if not adapter_config:
+                        continue
+                    instance_adapters[instance.name] = (
+                        load_robot_adapter(
+                            str(resolve_package_uri(adapter_config)),
+                            toolset=toolset,
+                        )
+                    )
         except (ProfileContractError, RobotAdapterError) as error:
             raise ControlRequestError(
                 f"Toolset {toolset} profile is invalid: {error}",

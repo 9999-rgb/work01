@@ -9,12 +9,15 @@
 namespace xczs_inspection_robot_control
 {
 
-/** Every articulated rotary control requires grasping; a button never does. */
+/**
+ * Every articulated rotary control requires grasping; a button or slider
+ * never does (a slider is driven by a face press, not a fixed grasp).
+ */
 constexpr bool grasp_requirement_matches_control_kind(
-  bool is_button,
+  bool is_grasp_free,
   bool requires_grasp) noexcept
 {
-  return requires_grasp == !is_button;
+  return requires_grasp == !is_grasp_free;
 }
 
 /** Validate a robot-link-local grasp probe before it reaches Gazebo maths. */

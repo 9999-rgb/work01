@@ -117,25 +117,33 @@
       stopped_velocity_tolerance: 0.05
       r_three_cyl_finger1_joint: {trajectory: 0.10, goal: 0.05}
       r_three_cyl_finger2_joint: {trajectory: 0.10, goal: 0.05}
-      r_three_cyl_finger3_joint: {trajectory: 0.02, goal: 0.01}
+      # finger3 是 finger2 的子关节，耦合运动使 0.01 的 goal 容差易触发
+      # "Exceeded goal_time_tolerance" 中止；放宽到 0.02（operator 自己的
+      # 标定校验仍是更严的 ±0.003，此处只影响控制器对轨迹完成的判定）。
+      r_three_cyl_finger3_joint: {trajectory: 0.03, goal: 0.02}
     gains:
+      # 三缸手指是 0.09–0.11 kg 的棱柱质量块：P=200 且无积分时，重力沿指轴
+      # 的分量造成 ~3.5mm 静差，恰在 operator 标定校验容差（±0.003）边界，
+      # 停靠/按压姿态下会悬空失败。提高比例增益并加积分项，让控制器在任意
+      # 工具姿态下都能把手指可靠钉在业务位姿（0）。数值按各指质量校核过
+      # 稳定性（ωn 远低于 100Hz 控制率 Nyquist，ζ≈0.8–0.9）。
       r_three_cyl_finger1_joint:
-        p: 200.0
-        d: 4.0
-        i: 0.0
-        i_clamp: 0.0
+        p: 800.0
+        d: 15.0
+        i: 60.0
+        i_clamp: 10.0
         ff_velocity_scale: 0.0
       r_three_cyl_finger2_joint:
-        p: 200.0
-        d: 4.0
-        i: 0.0
-        i_clamp: 0.0
+        p: 800.0
+        d: 15.0
+        i: 60.0
+        i_clamp: 10.0
         ff_velocity_scale: 0.0
       r_three_cyl_finger3_joint:
-        p: 200.0
-        d: 4.0
-        i: 0.0
-        i_clamp: 0.0
+        p: 120.0
+        d: 5.0
+        i: 40.0
+        i_clamp: 5.0
         ff_velocity_scale: 0.0
 
 /xczs/two_cylinder_controller:

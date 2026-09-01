@@ -2,6 +2,9 @@ uint8 TYPE_BUTTON=0
 uint8 TYPE_KNOB=1
 uint8 TYPE_SWITCH=2
 uint8 TYPE_DOOR=3
+# A prismatic slider (linear push along its axis) with detent latching.  The
+# robot presses the face, the plugin latches the door to the nearest detent.
+uint8 TYPE_SLIDER=4
 
 uint8 SUPPORT_PRESS=1
 uint8 SUPPORT_SET_STATE=2
