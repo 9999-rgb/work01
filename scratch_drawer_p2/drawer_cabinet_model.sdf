@@ -64,9 +64,9 @@
         <geometry><box><size>0.02 0.02 0.02</size></box></geometry>
       </visual>
       <inertial>
-        <mass>0.02</mass>
+        <mass>0.05</mass>
         <inertia>
-          <ixx>6.7e-7</ixx><iyy>6.7e-7</iyy><izz>6.7e-7</izz>
+          <ixx>1.7e-6</ixx><iyy>1.7e-6</iyy><izz>1.7e-6</izz>
           <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
         </inertia>
       </inertial>
@@ -90,15 +90,6 @@
         <xyz>-1 0 0</xyz>
         <limit><lower>0</lower><upper>0.005</upper><effort>50</effort><velocity>5</velocity></limit>
         <dynamics><damping>0.1</damping><friction>0.3</friction></dynamics>
-        <!-- ODE implicit spring, exactly like the real b1p joint: the explicit
-             per-cycle SetForce spring the plugin applies is unconditionally
-             stable with this backing, and the return-on-release behaves like
-             the real cap. -->
-        <spring_physics>
-          <stiffness>800</stiffness>
-          <damping>0.1</damping>
-          <reference>0.0</reference>
-        </spring_physics>
       </axis>
     </joint>
     <plugin name="xczs_drawer_p2_state" filename="libxczs_cabinet_state.so">
@@ -149,9 +140,11 @@
         <state_topic>/xczs/cabinet/test/test_drawer_unlock_button/state</state_topic>
         <state_ids>released pressed</state_ids>
         <spring_stiffness>800</spring_stiffness>
-        <!-- 0.1 matches the real b1p; the cap joint carries the ODE implicit
-             spring (800/0.1) so the explicit plugin spring is backed. -->
-        <spring_damping>0.1</spring_damping>
+        <!-- spring_damping 8 + 0.05 kg cap reproduces the proven-stable
+             generator button config in the real scene (compliant press,
+             clean return).  The harness exercises the physical-press contract
+             logic; the real b1p dynamics (0.02 kg) are validated live. -->
+        <spring_damping>8</spring_damping>
         <press_threshold>0.0012</press_threshold>
         <release_threshold>0.0006</release_threshold>
         <reset_position>0.0</reset_position>

@@ -4013,9 +4013,13 @@ private:
           auto right_chain =
             std::vector<std::vector<geometry_msgs::msg::Pose>>{};
           if (!closing) {
+            // 2026-09-02: 链含解锁四拍（接近→按压→升离→抬高位撤出），使分支
+            // 选择器干跑整条解锁路径，选出能覆盖解锁+回退两拍的 IK 分支。
             right_chain.push_back(
               {drawer_bimanual_poses.unlock_pose,
-               drawer_bimanual_poses.unlock_press_pose});
+               drawer_bimanual_poses.unlock_press_pose,
+               drawer_bimanual_poses.unlock_release_pose,
+               drawer_bimanual_poses.unlock_clear_pose});
           }
           right_chain.push_back(
             {drawer_bimanual_poses.right_support_pose});
@@ -4071,7 +4075,8 @@ private:
           //   2. 按压位（向里 press_depth 把 b1p 帽沿棱镜关节顶入 ~3mm，
           //      Gazebo 接触把帽推到限位，物理位移即插件按压证据）；
           //   3. 插件校验 尖端距离≤threshold 且 帽位移≥press_threshold 后解锁；
-          //   4. 回退到接近位松手，让弹簧把帽弹回，锁止保持。
+          //   4. 两拍回退（先 +outward/+z 升离按钮帽、再抬高位向东撤出），弹簧
+          //      把帽弹回，锁止保持，右臂随后在抬高位进入支撑对角段。
           if (!best_effort_cartesian_move(
               *move_group, {drawer_bimanual_poses.unlock_pose},
               cartesian_velocity_scale_ * 0.5,
@@ -4095,17 +4100,48 @@ private:
           // 让 ODE 接触把 b1p 帽推到限位（return-spring 复位抗力很小）。
           interruptible_hold(goal_handle, grasp_attach_settle_duration_);
           set_drawer_unlock(goal_handle, *control, true, true);
-          // 回退松手：弹簧把帽弹回，闭锁保持，右臂随后转支撑位。
+          // 回退分两拍，避免在按钮帽高度沿抽屉轴水平拖拽，把已解锁的自由
+          // 抽屉向东顶开（run 实测回退/支撑把抽屉 21→35mm）：
+          //   1. disengage：从按压位沿 +outward/+z 短对角升离 b1p 帽——行程
+          //      无沿抽屉轴的分量，弹簧把帽弹回，闭锁保持；
+          //   2. clear：抬高位向东回到解锁 hover 外侧。右臂随后自抬高位起降
+          //      入支撑对角段，沿途高于 riser/把手，不再刮顶拖动抽屉。
           if (!best_effort_cartesian_move(
-              *move_group, {drawer_bimanual_poses.unlock_pose},
-              cartesian_velocity_scale_ * 0.4,
-              cartesian_acceleration_scale_ * 0.4,
-              "drawer unlock retreat", &result->operation_executed))
+              *move_group, {drawer_bimanual_poses.unlock_release_pose},
+              cartesian_velocity_scale_ * 0.3,
+              cartesian_acceleration_scale_ * 0.3,
+              "drawer unlock disengage", &result->operation_executed))
           {
             throw OperationError(
               PressCabinetButton::Result::EXECUTION_FAILED,
-              "Drawer unlock retreat Cartesian move failed.");
+              "Drawer unlock disengage Cartesian move failed.");
           }
+          if (!best_effort_cartesian_move(
+              *move_group, {drawer_bimanual_poses.unlock_clear_pose},
+              cartesian_velocity_scale_ * 0.4,
+              cartesian_acceleration_scale_ * 0.4,
+              "drawer unlock clear", &result->operation_executed))
+          {
+            throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "Drawer unlock clear Cartesian move failed.");
+          }
+        }
+        // 2026-09-02: 解锁后抽屉已从闩锁变为自由滑块（仅弱回中弹簧），解锁
+        // 回退/抬升行程仍可能把它轻微带开（run 实测 0→35mm）。支撑/预抓/抓取
+        // 位姿若仍按操作起始位置算，会与抽屉实测位置失配，双爪够不到把手。
+        // 支撑前按抽屉实测位置重算整组位姿（支撑 hover 不触脸，先把支撑放到
+        // 实测位置正下方），抓取按压深度也按可让量饱和。
+        {
+          const double live_drawer_position = button_snapshot(*control).position;
+          drawer_bimanual_poses = calculate_drawer_bimanual_operation_poses(
+            *control, live_drawer_position);
+          RCLCPP_INFO(
+            get_logger(),
+            "Recomputed drawer '%s' bimanual poses at live rail position "
+            "%.4f m (op-start %.4f m) before the support phase.",
+            control->id.c_str(), live_drawer_position,
+            initial_state.position);
         }
         result->diagnostic_stage = "support";
         publish_operate_feedback(
@@ -4127,6 +4163,20 @@ private:
             1U, cartesian_velocity_scale_ * 0.5,
             cartesian_acceleration_scale_ * 0.5,
             support_waypoints, &result->operation_executed);
+        }
+        // 2026-09-02: 支撑段（双臂分段 Cartesian，实测约 10s+）期间自由抽屉在
+        // 回中弹簧下缓慢漂移。抓取位姿必须在即将接近时按实测位置再刷一次，
+        // 否则预抓/抓取仍按支撑前的读数，双爪够不到/推偏把手。刷新对关闭同样
+        // 生效（抽屉在开位静止时读数不变，属无害重算）。
+        {
+          const double live_drawer_position = button_snapshot(*control).position;
+          drawer_bimanual_poses = calculate_drawer_bimanual_operation_poses(
+            *control, live_drawer_position);
+          RCLCPP_INFO(
+            get_logger(),
+            "Recomputed drawer '%s' bimanual poses at live rail position "
+            "%.4f m before the approach/grasp phase.",
+            control->id.c_str(), live_drawer_position);
         }
         result->diagnostic_stage = "approach";
         publish_operate_feedback(
@@ -5708,15 +5758,30 @@ private:
     geometry_msgs::msg::Pose right_support_pose;
     geometry_msgs::msg::Pose unlock_pose;
     geometry_msgs::msg::Pose unlock_press_pose;
+    // 2026-09-02: unlock-retreat two-beat disengage.  release = press pose
+    // lifted +outward/+z (short diagonal off the b1p cap, no rail-axial drag);
+    // clear = unlock hover raised in +z so the support diagonal starts above
+    // the riser/handles instead of scraping their tops against the free drawer.
+    geometry_msgs::msg::Pose unlock_release_pose;
+    geometry_msgs::msg::Pose unlock_clear_pose;
   };
 
   // The grasp pose and the pull hold each tool tip pressed INTO its handle
   // plate by drawer_grasp_press_depth (west of the riser face), so the plugin's
   // tight attach gate and coupling keepalive see genuine contact, not a hover.
+  // 2026-09-02: the press is saturated to the drawer's available westward
+  // give.  Pressing west only "bites" if the free drawer can yield west to
+  // meet the pose.  At / near the closed rail hard stop (position ~0) a full
+  // press pose is physically unreachable and the arm controller aborts on
+  // state tolerance (run evidence 2026-09-02) -- keep at least
+  // drawer_grasp_closed_floor_ of closed-side travel as slack and let the tips
+  // stop AT the plate face instead.
   double drawer_grasp_contact_offset(
-    const ButtonSpec & control) const
+    const ButtonSpec & control, double position) const
   {
-    return -control.drawer_grasp_press_depth;
+    const double available_give =
+      std::max(0.0, position - drawer_grasp_closed_floor_);
+    return -std::min(control.drawer_grasp_press_depth, available_give);
   }
 
   DrawerBimanualPoses calculate_drawer_bimanual_operation_poses(
@@ -5726,13 +5791,33 @@ private:
     DrawerBimanualPoses poses;
     poses.unlock_pose = calculate_drawer_unlock_pose(control);
     poses.unlock_press_pose = calculate_drawer_unlock_press_pose(control);
+    // 2026-09-02: unlock-retreat two-beat disengage poses.  release = the
+    // press pose lifted +outward/+z on a short diagonal that comes off the b1p
+    // cap without any drawer-rail-axial (east/west) drag; clear = the unlock
+    // hover raised in +z, so the support diagonal that follows starts above the
+    // riser/handles and never scrapes their tops against the free drawer.
+    poses.unlock_release_pose = poses.unlock_press_pose;
+    poses.unlock_clear_pose = poses.unlock_pose;
+    {
+      const tf2::Transform cabinet = resolve_cabinet_transform();
+      const tf2::Vector3 outward = tf2::quatRotate(
+        cabinet.getRotation(), control.approach_normal).normalized();
+      poses.unlock_release_pose.position.x +=
+        outward.x() * drawer_unlock_retreat_outward_;
+      poses.unlock_release_pose.position.y +=
+        outward.y() * drawer_unlock_retreat_outward_;
+      poses.unlock_release_pose.position.z += drawer_unlock_retreat_lift_;
+      poses.unlock_clear_pose.position.z += drawer_unlock_retreat_lift_;
+    }
     poses.left_support_pose = calculate_drawer_support_pose(
       control, DrawerSide::LEFT, initial_position);
     poses.right_support_pose = calculate_drawer_support_pose(
       control, DrawerSide::RIGHT, initial_position);
     // ready: both arms hover at a safe distance on the outward side of the
     // handles; pregrasp: short final Cartesian approach; grasp: measured tips
-    // pressed INTO the handle plates (fingers bite the riser face).
+    // pressed INTO the handle plates (fingers bite the riser face), with the
+    // press depth saturated by the drawer's available westward give (see
+    // drawer_grasp_contact_offset).
     poses.left_ready_pose = calculate_drawer_side_tool_pose(
       control, DrawerSide::LEFT, initial_position, prepress_distance_);
     poses.right_ready_pose = calculate_drawer_side_tool_pose(
@@ -5745,10 +5830,10 @@ private:
       control.drawer_grasp_outward_offset + rotary_pregrasp_clearance_);
     poses.left_grasp_pose = calculate_drawer_side_tool_pose(
       control, DrawerSide::LEFT, initial_position,
-      drawer_grasp_contact_offset(control));
+      drawer_grasp_contact_offset(control, initial_position));
     poses.right_grasp_pose = calculate_drawer_side_tool_pose(
       control, DrawerSide::RIGHT, initial_position,
-      drawer_grasp_contact_offset(control));
+      drawer_grasp_contact_offset(control, initial_position));
     return poses;
   }
 
@@ -5773,7 +5858,8 @@ private:
     // The pull waypoints hold the tips pressed INTO the handle plates (same
     // contact offset as the grasp pose), matching what the base-translation
     // drive actually holds — the coupling keepalive requires this contact.
-    const double contact_offset = drawer_grasp_contact_offset(control);
+    const double contact_offset = drawer_grasp_contact_offset(
+      control, initial_position);
     for (std::size_t index = 1U; index <= count; ++index) {
       const double ratio = static_cast<double>(index) /
         static_cast<double>(count);
@@ -11288,6 +11374,18 @@ private:
   double rotation_waypoint_step_{0.03490658504};
   // Linear spacing (m) of the drawer grasp-drag waypoints along the slide axis.
   double drawer_waypoint_step_{0.03};
+  // 2026-09-02: unlock-retreat shaping.  After the physical b1p press the right
+  // tool disengages on a short +outward/+z diagonal (release), then moves east
+  // at the raised height (clear) so no part of it drags the now-free drawer
+  // along its rail.
+  double drawer_unlock_retreat_outward_{0.020};
+  double drawer_unlock_retreat_lift_{0.050};
+  // A westward grasp press can only bite if the free drawer can still yield
+  // west.  At / near the closed rail hard stop (position ~0) a full press pose
+  // is unreachable and the arm controller aborts on state tolerance
+  // (2026-09-02 run).  Keep at least this much closed-side travel as slack when
+  // saturating the press depth (see drawer_grasp_contact_offset).
+  double drawer_grasp_closed_floor_{0.004};
   double cartesian_velocity_scale_{0.08};
   double cartesian_acceleration_scale_{0.08};
   double cartesian_jump_threshold_{2.0};

@@ -81,6 +81,17 @@ constexpr double kDefaultDrawerLatchStiffness = 500.0;
 // Re-latch only when the drawer has settled below this linear speed so a
 // closing push that is still in flight cannot trip the lock early.
 constexpr double kDrawerReLatchVelocityThreshold = 0.05;
+// Upper bound on the restoring (parking) effort applied to a control that is
+// not being grasped.  The restoring spring is stiffness*position_error, which
+// grows without bound once a joint overshoots its stop; when that force
+// exceeds the joint limit's effort (100 N) the ODE stop can no longer hold
+// and the joint runs away (b1p cap was blown to ~1e9 m, cascading NaN to
+// every body).  Clamping the restoring effort below the limit effort lets the
+// stop always win.  The value covers every legit parking load: button spring
+// 800 N/m * 3 mm = 2.4 N, door/slider detent 12 N/m * 0.3 m = 3.6 N, locked
+// drawer latch 500 N/m * 0.1 m = 50 N.  Grasp-coupling drive is separate and
+// already bounded by grasp_coupling_max_effort.
+constexpr double kMaxParkingEffort = 50.0;
 
 enum class ControlKind
 {
@@ -1302,9 +1313,34 @@ private:
         // cannot drift out of the gate between operations.
         effective_stiffness = control.drawer_latch_stiffness;
       }
+      // A button's return spring is one-sided: it only restores from the
+      // pressed side (position above target).  Real buttons sit flush with
+      // their bezel and have no spring pulling them below flush.  A two-sided
+      // spring here fights the ODE soft joint stop (limit effort 100 N) every
+      // time the cap sinks a fraction below the lower limit: the spring
+      // launches it back up at up to the effort clamp, sustaining a ~1 m/s
+      // limit bounce (b1p measured 2026-09-02) instead of settling.  Below
+      // the limit only the damping term acts, which bleeds the bounce energy
+      // and lets the cap come to rest at the stop.  Doors, sliders, knobs and
+      // drawers keep the two-sided detent/latch spring (they hold at
+      // non-zero detents).
+      const double spring_error =
+        (control.kind == ControlKind::kButton) ?
+        std::max(0.0, raw_position - target) :
+        (raw_position - target);
       control.effort =
-        -effective_stiffness * (raw_position - target) -
+        -effective_stiffness * spring_error -
         effective_damping * velocity;
+      if (!control_is_being_grasped) {
+        // Bounded restoring force (see kMaxParkingEffort): an ungrasped joint
+        // that overshoots its stop must never receive a restoring effort big
+        // enough to defeat the ODE limit, or the divergence cascades to the
+        // whole scene.  A grasped control is exempt: its drive is the already-
+        // bounded grasp-coupling effort on top of a normally-small centering
+        // term, and clamping it would break the validated knob/drawer grasp.
+        control.effort = std::clamp(
+          control.effort, -kMaxParkingEffort, kMaxParkingEffort);
+      }
       if (control_is_being_grasped &&
         control.grasp_coupling_stiffness > 0.0)
       {
@@ -1876,6 +1912,13 @@ private:
     if (control.kind == ControlKind::kButton || control_is_being_grasped ||
       control.detent_target_index >= control.detents.size())
     {
+      return;
+    }
+    // 2026-09-02: 显式解锁后抽屉为自由滑块，operator 的解锁按压/回退/支撑
+    // 行程会主动推动它——这些运动是操作内容而非"预抓取扰动"。扰动闩存只对
+    // 锁定控件生效（解锁成功即 operator 物理接管，见 handle_unlock_request
+    // 成功分支的清零）。
+    if (control.kind == ControlKind::kDrawer && control.drawer_unlocked) {
       return;
     }
     const double detent_position =
@@ -2685,6 +2728,16 @@ private:
     control.drawer_unlocked = true;
     control.drawer_has_opened = false;
     control.detent_target_index = control.reset_state_index;
+    {
+      // 2026-09-02: 解锁成功 = operator 已物理接管该抽屉。此前锁定阶段闩存
+      // 的"预抓取扰动"（如解锁按压行程把抽屉轻推离闩位）不再构成拦截——否则
+      // 随后的支撑/抓取必被误拒（run 实测 latched vel 0.050265 > tol 0.05）。
+      std::lock_guard<std::mutex> lock(active_control_mutex_);
+      pregrasp_disturbance_detected_ = false;
+      pregrasp_disturbance_control_.clear();
+      pregrasp_max_position_error_ = 0.0;
+      pregrasp_max_velocity_ = 0.0;
+    }
     RCLCPP_INFO(
       ros_node_->get_logger(),
       "Drawer '%s' rail latch released by the right tool physically pressing "
@@ -2805,35 +2858,41 @@ private:
         std::numeric_limits<double>::quiet_NaN()};
     }
 
-    const double raw_position = control.joint->Position(0);
-    const double raw_velocity = control.joint->GetVelocity(0);
-    const double latched_detent =
-      control.detents.at(control.detent_target_index);
-    bool approach_disturbed = pregrasp_detent_is_disturbed(
-      raw_position, raw_velocity, latched_detent,
-      control.motion_tolerance, control.motion_tolerance);
-    double maximum_position_error = std::abs(raw_position - latched_detent);
-    double maximum_velocity = std::abs(raw_velocity);
-    {
-      std::lock_guard<std::mutex> lock(active_control_mutex_);
-      if (pregrasp_disturbance_detected_ &&
-        pregrasp_disturbance_control_ == control.id)
+    // 2026-09-02: 预抓取扰动守卫只护"锁定"控件。此处能到达必已通过上方
+    // drawer_unlocked 前置检查，即抽屉已解锁、归 operator 接管——自由抽屉
+    // 在解锁按压/回退/支撑后的位置与运动均为操作内容（且位姿已按实测刷新），
+    // 不得再因"扰动"拒抓。守卫保留为防御（若将来放松 2800 的解锁前置）。
+    if (!control.drawer_unlocked) {
+      const double raw_position = control.joint->Position(0);
+      const double raw_velocity = control.joint->GetVelocity(0);
+      const double latched_detent =
+        control.detents.at(control.detent_target_index);
+      bool approach_disturbed = pregrasp_detent_is_disturbed(
+        raw_position, raw_velocity, latched_detent,
+        control.motion_tolerance, control.motion_tolerance);
+      double maximum_position_error = std::abs(raw_position - latched_detent);
+      double maximum_velocity = std::abs(raw_velocity);
       {
-        approach_disturbed = true;
-        maximum_position_error = std::max(
-          maximum_position_error, pregrasp_max_position_error_);
-        maximum_velocity = std::max(
-          maximum_velocity, pregrasp_max_velocity_);
+        std::lock_guard<std::mutex> lock(active_control_mutex_);
+        if (pregrasp_disturbance_detected_ &&
+          pregrasp_disturbance_control_ == control.id)
+        {
+          approach_disturbed = true;
+          maximum_position_error = std::max(
+            maximum_position_error, pregrasp_max_position_error_);
+          maximum_velocity = std::max(
+            maximum_velocity, pregrasp_max_velocity_);
+        }
       }
-    }
-    if (approach_disturbed) {
-      return {false,
-        "Unsafe pre-grasp movement was detected for cabinet drawer '" +
-        control.id + "' (maximum detent error " +
-        std::to_string(maximum_position_error) +
-        " m, maximum velocity " + std::to_string(maximum_velocity) +
-        " m/s). The ready/approach path may have contacted the drawer.",
-        std::numeric_limits<double>::quiet_NaN()};
+      if (approach_disturbed) {
+        return {false,
+          "Unsafe pre-grasp movement was detected for cabinet drawer '" +
+          control.id + "' (maximum detent error " +
+          std::to_string(maximum_position_error) +
+          " m, maximum velocity " + std::to_string(maximum_velocity) +
+          " m/s). The ready/approach path may have contacted the drawer.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
     }
 
     const auto robot_model = world_->ModelByName(request.robot_model);
@@ -3097,36 +3156,41 @@ private:
         std::numeric_limits<double>::quiet_NaN()};
     }
 
-    const double raw_position = control.joint->Position(0);
-    const double raw_velocity = control.joint->GetVelocity(0);
-    const double latched_detent =
-      control.detents.at(control.detent_target_index);
-    bool approach_disturbed = pregrasp_detent_is_disturbed(
-      raw_position, raw_velocity, latched_detent,
-      control.motion_tolerance, control.motion_tolerance);
-    double maximum_position_error = std::abs(
-      raw_position - latched_detent);
-    double maximum_velocity = std::abs(raw_velocity);
-    {
-      std::lock_guard<std::mutex> lock(active_control_mutex_);
-      if (pregrasp_disturbance_detected_ &&
-        pregrasp_disturbance_control_ == control.id)
+    // 2026-09-02: 预抓取扰动守卫只护"锁定"控件；对显式解锁的抽屉豁免（同
+    // handle_bimanual_grasp_request）。非 drawer 控件的 drawer_unlocked 恒为
+    // false，守卫照常生效，行为不变。
+    if (!control.drawer_unlocked) {
+      const double raw_position = control.joint->Position(0);
+      const double raw_velocity = control.joint->GetVelocity(0);
+      const double latched_detent =
+        control.detents.at(control.detent_target_index);
+      bool approach_disturbed = pregrasp_detent_is_disturbed(
+        raw_position, raw_velocity, latched_detent,
+        control.motion_tolerance, control.motion_tolerance);
+      double maximum_position_error = std::abs(
+        raw_position - latched_detent);
+      double maximum_velocity = std::abs(raw_velocity);
       {
-        approach_disturbed = true;
-        maximum_position_error = std::max(
-          maximum_position_error, pregrasp_max_position_error_);
-        maximum_velocity = std::max(
-          maximum_velocity, pregrasp_max_velocity_);
+        std::lock_guard<std::mutex> lock(active_control_mutex_);
+        if (pregrasp_disturbance_detected_ &&
+          pregrasp_disturbance_control_ == control.id)
+        {
+          approach_disturbed = true;
+          maximum_position_error = std::max(
+            maximum_position_error, pregrasp_max_position_error_);
+          maximum_velocity = std::max(
+            maximum_velocity, pregrasp_max_velocity_);
+        }
       }
-    }
-    if (approach_disturbed) {
-      return {false,
-        "Unsafe pre-grasp movement was detected for cabinet control '" +
-        control.id + "' (maximum detent error " +
-        std::to_string(maximum_position_error) +
-        " rad, maximum velocity " + std::to_string(maximum_velocity) +
-        " rad/s). The ready/approach path may have contacted the control.",
-        std::numeric_limits<double>::quiet_NaN()};
+      if (approach_disturbed) {
+        return {false,
+          "Unsafe pre-grasp movement was detected for cabinet control '" +
+          control.id + "' (maximum detent error " +
+          std::to_string(maximum_position_error) +
+          " rad, maximum velocity " + std::to_string(maximum_velocity) +
+          " rad/s). The ready/approach path may have contacted the control.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
     }
     const auto robot_model = world_->ModelByName(request.robot_model);
     if (!robot_model || robot_model == model_) {
