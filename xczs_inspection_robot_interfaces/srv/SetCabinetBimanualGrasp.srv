@@ -2,9 +2,12 @@
 #
 # attach 要求：
 #   - 抽屉处于解锁状态（先完成 SetCabinetUnlock，见 §6.3 锁止语义）；
-#   - 左右工具抓取点同时处于对应把手的距离容差内（两侧都成立才允许）；
+#   - 左右工具抓取点同时处于对应把手<grasp_contact_threshold>（默认 0.02m，
+#     收紧到实际接触）内——两侧都成立才允许，悬空假附着被拒绝；
 #   - 租约心跳与活动控制会话有效；任一侧超差则整体拒绝，绝不单侧附着。
 # detach：两侧同时解除，抽屉回到关位稳定后插件自动恢复锁止。
+# 附着后线性耦合拖拽期间，plugin 实时校验左右尖端仍贴住把手；任一侧脱离
+# 超过 coupling_contact_grace_seconds 即中止耦合并发 operation_fault。
 #
 # 左右把手点位于抽屉链路（prismatic 子链路）局部系，随抽屉一起移动；
 # 左右工具抓取点位于对应机器人链路局部系。插件在世界系求距离并与
@@ -21,6 +24,11 @@ geometry_msgs/Point left_handle_point
 geometry_msgs/Point right_handle_point
 string robot_base_link
 bool attach
+# grab-and-drive（P3-8）：true 表示本次 attach 的拽拉由机器人底盘沿抽屉轴
+# 平移完成（双臂锁在抓取位不折叠）。插件因此跳过把底盘固接到世界的
+# base-brake 关节，否则底盘无法在拽拉期间移动。false 保持原行为（双臂
+# 拽拉 + 底盘制动）。
+bool base_free
 ---
 bool success
 string message
@@ -28,3 +36,6 @@ bool left_grasped
 bool right_grasped
 float64 left_distance
 float64 right_distance
+# 左右工具尖端是否处于对应把手的<grasp_contact_threshold>容差内（实际接触）。
+bool left_tool_contact
+bool right_tool_contact

@@ -21,13 +21,4 @@ using our migration guides (https://gazebosim.org/docs/latest/gazebo_classic_mig
 [0m[1;32m[0m[1;32m[0m[1;32m[Msg] [0m[1;32mConnected to gazebo master @ [0m[1;32mhttp://127.0.0.1:11345[0m[1;32m
 [0m[1;32m[0m[1;32m[0m[1;32m[Msg] [0m[1;32mPublicized address: [0m[1;32m192.168.3.100[0m[1;32m
 [0m[1;32m[0m[1;32m[0m[1;32m[Msg] [0m[1;32mLoading world file [[0m[1;32m/home/live/work01/scratch_drawer_p2/world_drawer_test.sdf[0m[1;32m][0m[1;32m
-[0m[1;32m[0m[1;32m[0m[WARN] [1788237395.378436873] [xczs.cabinet.test.xczs_drawer_p2_state]: New publisher discovered on topic '/xczs/cabinet/test/active_control', offering incompatible QoS. No messages will be sent to it. Last incompatible policy: DURABILITY_QOS_POLICY
-[INFO] [1788237395.384567331] [xczs.cabinet.test.xczs_drawer_p2_state]: Cabinet state plugin loaded 1 controls; reset=/xczs/cabinet/test/reset_physics grasp=/xczs/cabinet/test/grasp bimanual=/xczs/cabinet/test/bimanual_grasp unlock=/xczs/cabinet/test/unlock.
-[INFO] [1788237408.017014331] [xczs.cabinet.test.xczs_drawer_p2_state]: Drawer 'test_drawer' rail latch released by the right tool at the unlock zone (distance 0.000000 m).
-[INFO] [1788237408.118030521] [xczs.cabinet.test.xczs_drawer_p2_state]: Releasing bimanual drawer grasp 'test_drawer' (maximum fixed-constraint linear errors left 0.000000 m, right 0.000000 m).
-[INFO] [1788237409.160133917] [xczs.cabinet.test.xczs_drawer_p2_state]: Drawer 'test_drawer' rail latch re-engaged by explicit unlock=false.
-[INFO] [1788237409.758025898] [xczs.cabinet.test.xczs_drawer_p2_state]: Drawer 'test_drawer' rail latch released by the right tool at the unlock zone (distance 0.000000 m).
-[INFO] [1788237409.797997039] [xczs.cabinet.test.xczs_drawer_p2_state]: Releasing bimanual drawer grasp 'test_drawer' (maximum fixed-constraint linear errors left 0.000000 m, right 0.000000 m).
-[ERROR] [1788237411.578134878] [xczs.cabinet.test.xczs_drawer_p2_state]: Cabinet operation lease heartbeat for 'test_drawer' timed out after 2.001 s; starting fail-safe physical recovery.
-[INFO] [1788237411.578384630] [xczs.cabinet.test.xczs_drawer_p2_state]: Cabinet watchdog recovery for 'test_drawer' completed; grasp, base brake and collision policy are safe for a later lease.
-[INFO] [1788239492.513392752] [rclcpp]: signal_handler(SIGINT/SIGTERM)
+[0m[1;32m[0m[1;32m[0m

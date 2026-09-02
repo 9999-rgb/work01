@@ -50,15 +50,18 @@
     allow_nonzero_velocity_at_trajectory_end: false
     open_loop_control: false
     constraints:
+      # 2026-09-01 收紧：trajectory 0.25/goal 0.10 → 0.05/0.02。原松容差下
+      # 微小关节位移可在手臂未物理运动时被判为完成（run4 取证），双臂抽屉
+      # 操作会静默失步。位置控制下手臂跟踪误差远小于此值，收紧不影响到位。
       goal_time: 1.0
       stopped_velocity_tolerance: 0.05
-      l_arm_0_joint: {trajectory: 0.25, goal: 0.10}
-      l_arm_1_joint: {trajectory: 0.25, goal: 0.10}
-      l_arm_2_joint: {trajectory: 0.25, goal: 0.10}
-      l_arm_3_joint: {trajectory: 0.25, goal: 0.10}
-      l_arm_4_joint: {trajectory: 0.25, goal: 0.10}
-      l_arm_5_joint: {trajectory: 0.25, goal: 0.10}
-      l_arm_6_joint: {trajectory: 0.25, goal: 0.10}
+      l_arm_0_joint: {trajectory: 0.05, goal: 0.02}
+      l_arm_1_joint: {trajectory: 0.05, goal: 0.02}
+      l_arm_2_joint: {trajectory: 0.05, goal: 0.02}
+      l_arm_3_joint: {trajectory: 0.05, goal: 0.02}
+      l_arm_4_joint: {trajectory: 0.05, goal: 0.02}
+      l_arm_5_joint: {trajectory: 0.05, goal: 0.02}
+      l_arm_6_joint: {trajectory: 0.05, goal: 0.02}
 
 /xczs/right_arm_controller:
   ros__parameters:
@@ -84,13 +87,13 @@
     constraints:
       goal_time: 1.0
       stopped_velocity_tolerance: 0.05
-      r_arm_0_joint: {trajectory: 0.25, goal: 0.10}
-      r_arm_1_joint: {trajectory: 0.25, goal: 0.10}
-      r_arm_2_joint: {trajectory: 0.25, goal: 0.10}
-      r_arm_3_joint: {trajectory: 0.25, goal: 0.10}
-      r_arm_4_joint: {trajectory: 0.25, goal: 0.10}
-      r_arm_5_joint: {trajectory: 0.25, goal: 0.10}
-      r_arm_6_joint: {trajectory: 0.25, goal: 0.10}
+      r_arm_0_joint: {trajectory: 0.05, goal: 0.02}
+      r_arm_1_joint: {trajectory: 0.05, goal: 0.02}
+      r_arm_2_joint: {trajectory: 0.05, goal: 0.02}
+      r_arm_3_joint: {trajectory: 0.05, goal: 0.02}
+      r_arm_4_joint: {trajectory: 0.05, goal: 0.02}
+      r_arm_5_joint: {trajectory: 0.05, goal: 0.02}
+      r_arm_6_joint: {trajectory: 0.05, goal: 0.02}
 
 /xczs/three_cylinder_controller:
   ros__parameters:

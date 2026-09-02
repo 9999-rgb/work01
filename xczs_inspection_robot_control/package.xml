@@ -16,6 +16,7 @@
   <build_depend>qtbase5-dev</build_depend>
 
   <depend>action_msgs</depend>
+  <depend>control_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>moveit_msgs</depend>
   <depend>moveit_core</depend>
@@ -35,7 +36,6 @@
   <depend>xczs_inspection_robot_interfaces</depend>
 
   <exec_depend>ament_index_python</exec_depend>
-  <exec_depend>control_msgs</exec_depend>
   <exec_depend>controller_manager</exec_depend>
   <exec_depend>gazebo_msgs</exec_depend>
   <exec_depend>gazebo_ros</exec_depend>

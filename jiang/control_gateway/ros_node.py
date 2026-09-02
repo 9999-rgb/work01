@@ -877,11 +877,19 @@ class RosControlNode(Node):
         yaw: float,
         *,
         frame_id: str = "map",
+        stamp_zero: bool = False,
     ) -> None:
         """Publish an AMCL initial-pose hypothesis on ``/initialpose``.
 
         The covariance encodes a modest uncertainty so AMCL relocalises
         around the teleported pose rather than trusting it exactly.
+
+        ``stamp_zero`` publishes a zero-stamped hypothesis.  tf2 treats a zero
+        stamp as "use the latest transform", which survives the boot-time
+        extrapolation that trips AMCL's exact-time lookup (``now`` stamp →
+        "Failed to transform initial pose in time" while the tf tree is still
+        settling).  Scene-switch teleports keep the default so they keep the
+        established pre/teleport-odom ordering.
         """
         x_value = self._validated_station_number(x, "x", status=400)
         y_value = self._validated_station_number(y, "y", status=400)
@@ -893,7 +901,8 @@ class RosControlNode(Node):
             )
         message = PoseWithCovarianceStamped()
         message.header.frame_id = frame_id.strip()
-        message.header.stamp = self.get_clock().now().to_msg()
+        if not stamp_zero:
+            message.header.stamp = self.get_clock().now().to_msg()
         message.pose.pose.position.x = x_value
         message.pose.pose.position.y = y_value
         message.pose.pose.position.z = 0.0

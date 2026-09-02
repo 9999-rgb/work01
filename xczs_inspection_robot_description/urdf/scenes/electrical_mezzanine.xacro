@@ -236,7 +236,8 @@
           </mesh>
         </geometry>
       </collision>
-      <!-- 圆形机构 b1r（固定装饰）与指示灯 b1p（仅显示）并入抽屉本体 b1。 -->
+      <!-- 圆形机构 b1r（固定装饰）并入抽屉本体 b1。指示灯 b1p 已拆为独立的
+           可下压解锁按钮（b1p link + b1p_joint，见下），不再并入本 link。 -->
       <visual name="visual_r">
         <pose>0.03 0.16661 0.12017 0 0 0</pose>
         <geometry>
@@ -256,7 +257,24 @@
           </mesh>
         </geometry>
       </collision>
-      <visual name="visual_p">
+    </link>
+
+    <!-- b1p：右把手上的红色指示帽改为可下压解锁按钮（用户确认，2026-09-02）。
+         STL 外观不变；沿抽屉局部 -X（朝柜体内部）滑入 0..3mm，弹簧复位。
+         右电缸探针从东侧真实压入其正面触发解锁；plugin 以
+         db1_unlock_button button 控制的关节位移作为解锁的物证。 -->
+    <link name="b1p">
+      <pose>0 0 0 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.02</mass>
+        <inertia>
+          <ixx>1e-6</ixx>
+          <iyy>1e-6</iyy>
+          <izz>1e-6</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
         <pose>0.069 0.638 0.168 0 0 0</pose>
         <geometry>
           <mesh>
@@ -267,7 +285,7 @@
           <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision_p">
+      <collision name="collision">
         <pose>0.069 0.638 0.168 0 0 0</pose>
         <geometry>
           <mesh>
@@ -276,6 +294,31 @@
         </geometry>
       </collision>
     </link>
+    <joint name="b1p_joint" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>b1</parent>
+      <child>b1p</child>
+      <axis>
+        <!-- -X = 压入柜体方向；position 0 = 未按压（与右 riser 前缘平齐），
+             position 3mm = 被右电缸探针完全压入。 -->
+        <xyz>-1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.003</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <!-- 摩擦（ODE fMax，单位 N）必须低于按压阈值处的弹簧回弹力
+               （800 N/m × 1.2mm = 0.96N），否则松手后帽卡在 ~1.25mm——
+               高于 press_threshold，pressed 永久为真，后续解锁只靠接近就
+               通过（假解锁复现）。0.3N → 复位平衡点 0.375mm，低于
+               release_threshold 0.6mm，帽真实回弹到未按压位。 -->
+          <damping>0.1</damping>
+          <friction>0.3</friction>
+        </dynamics>
+      </axis>
+    </joint>
     
     
     <link name="s3">
@@ -643,19 +686,58 @@
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 双手抽拉（bimanual drawer 合同）：左两电缸探针附着左把手立板、
-             右三电缸探针附着右把手立板，解锁推进区 = 右把手前方不可见逻辑区
-             （不是 *p 指示灯）。P0 几何冻结（世界 == 夹具局部系，b1 根
+             右三电缸探针附着右把手立板。解锁 = 右电缸真实压入右把手顶部的
+             红色指示帽 b1p（已拆为可下压按钮 b1p_joint，用户确认）——plugin
+             以 db1_unlock_button button 控制的关节位移作为解锁物证，仅距离
+             授权不再放行。P0 几何冻结（世界 == 夹具局部系，b1 根
              (0.030,4.047,0.832)）：左立板局部 (0.069,0.060,0.120) =
              世界 (0.099,4.107,0.952)；右立板局部 (0.069,0.646,0.120) =
-             (0.099,4.693,0.952)；解锁区局部 (0.085,0.646,0.120) =
-             世界 (0.115,4.693,0.952)。grasp/unlock 点均位于抽屉子 link b1
+             (0.099,4.693,0.952)；b1p 按钮正面局部 (0.069,0.646,0.171) =
+             世界 (0.099,4.693,1.003)。grasp/unlock 点均位于抽屉子 link b1
              局部系（plugin 以 control.link WorldPose 叠加，随抽屉同步滑动）。 -->
         <graspable>true</graspable>
         <grasp_point>0.069 0.060 0.120</grasp_point>
         <right_grasp_point>0.069 0.646 0.120</right_grasp_point>
-        <unlock_zone_point>0.085 0.646 0.120</unlock_zone_point>
-        <unlock_distance_threshold>0.1</unlock_distance_threshold>
+        <unlock_press_point>0.069 0.646 0.1709</unlock_press_point>
+        <unlock_distance_threshold>0.03</unlock_distance_threshold>
+        <!-- 解锁的物理按钮：b1p_joint 的 button 控制（下方 db1_unlock_button）。
+             unlock 请求必须同时满足右工具尖端在解锁点容差内 + 按钮被实际压入
+             （关节位移 ≥ press_threshold），二者缺一不可。 -->
+        <unlock_button_id>db1_unlock_button</unlock_button_id>
+        <!-- 双臂附着接触门：左右工具尖端距各自把手 ≤ grasp_contact_threshold
+             才允许附着（收紧 0.12 → 0.02，拒绝探针悬空假附着）；耦合拖拽期间
+             任一侧尖端脱离把手超过 coupling_contact_grace_seconds 即中止
+             耦合并发 operation_fault（拒虚空拉）。 -->
+        <grasp_contact_threshold>0.02</grasp_contact_threshold>
+        <coupling_contact_grace_seconds>0.5</coupling_contact_grace_seconds>
         <drawer_latch_stiffness>500</drawer_latch_stiffness>
+        <!-- 线性耦合拖拽（bimanual 抓取契约）：不创建硬焊缝，改为在轨道
+             关节上施加有界弹簧-阻尼力，让抽屉跟踪两把工具的指令位移。反
+             作用力落在柜体轨道上而不是轻工具上，运动学遥移的臂完全按轨迹
+             执行，joint_trajectory_controller 不再出现跟踪误差（run8 根
+             因修复）。k=20000 N/m / d=500 下跟踪滞后 <1mm，卡滞时滞差有
+             界 7.5mm < 指缝半间距 34mm，指爪始终咬住把手立板。 -->
+        <grasp_coupling_stiffness>20000</grasp_coupling_stiffness>
+        <grasp_coupling_damping>500</grasp_coupling_damping>
+        <grasp_coupling_max_effort>150</grasp_coupling_max_effort>
+      </control>
+      <!-- db1 解锁按钮：b1p_joint 是右把手顶部红色指示帽的可压行程（0..3mm，
+           弹簧复位 800N/m）。它是 db1 抽屉 <unlock_button_id> 指向的按钮控制，
+           只作为解锁的物证，本身不可抓取、不参与任何操作控制列表。 -->
+      <control>
+        <control_id>db1_unlock_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>b1p_joint</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/db1_unlock_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/db1_unlock_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/db1_unlock_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.0012</press_threshold>
+        <release_threshold>0.0006</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
       </control>
       <control>
         <control_id>ds3</control_id>
@@ -700,4 +782,8 @@
       </control>
     </plugin>
   </model>
+  <gazebo reference="b1p_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
 </sdf>

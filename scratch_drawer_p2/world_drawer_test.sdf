@@ -1,8 +1,16 @@
 <?xml version="1.0" ?>
 <!-- P2 drawer physics acceptance harness.  The drawer cabinet carries one
-     bimanual drawer control (test_drawer); the four robot models are fixed
-     multi-link probes positioned at the world coordinates each test phase
-     needs (link origin == tool tip, local grasp point (0,0,0)). -->
+     bimanual drawer control (test_drawer) plus its unlock button; the four
+     robot models are multi-link probes positioned at the world coordinates
+     each test phase needs (link origin == tool tip, local grasp point
+     (0,0,0)).  Drawer frame origin is at world (0,0,0.5), so the control
+     points map to world z = 0.62:
+       left_handle  world (0.069, 0.10, 0.62)
+       right_handle world (0.069, 0.50, 0.62)
+       unlock press world (0.12,  0.50, 0.62)
+     robot_unlock is STATIC and its right_tool carries a collision that
+     overlaps the button cap, physically pressing it to its 5 mm limit
+     (beyond press_threshold 1.2 mm) — the physical-press unlock contract. -->
 <sdf version="1.6">
   <world name="drawer_p2_world">
     <physics type="ode">
@@ -43,26 +51,26 @@
       <joint name="right_fixed" type="fixed"><parent>base_link</parent><child>right_tool</child></joint>
     </model>
 
-    <!-- robot_unlock: right_tool tip at the unlock zone, left tool far. -->
+    <!-- robot_unlock: STATIC press probe.  right_tool tip at world
+         (0.115, 0.50, 0.62) — 5 mm in front of the button cap at
+         (0.12, 0.50, 0.62) — and its 20 mm collision overlaps the cap so ODE
+         contact presses it to its 5 mm joint limit (>= press_threshold). -->
     <model name="robot_unlock">
-      <gravity>false</gravity>
-      <pose>0.12 0.50 0.60 0 0 0</pose>
+      <static>true</static>
+      <pose>0.115 0.30 0.40 0 0 0</pose>
       <link name="base_link">
-        <gravity>false</gravity>
         <inertial><mass>5.0</mass>
           <inertia><ixx>0.1</ixx><iyy>0.1</iyy><izz>0.1</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
         </inertial>
       </link>
       <link name="left_tool">
-        <gravity>false</gravity>
         <pose>-5.0 0.0 0.22 0 0 0</pose>
         <inertial><mass>0.5</mass>
           <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
         </inertial>
       </link>
       <link name="right_tool">
-        <gravity>false</gravity>
-        <pose>0.0 0.0 0.22 0 0 0</pose>
+        <pose>0.0 0.20 0.22 0 0 0</pose>
         <inertial><mass>0.5</mass>
           <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
         </inertial>
@@ -71,10 +79,11 @@
       <joint name="right_fixed" type="fixed"><parent>base_link</parent><child>right_tool</child></joint>
     </model>
 
-    <!-- robot_left_only: only the left tool at the left handle. -->
+    <!-- robot_left_only: only the left tool at the left handle
+         (0.069, 0.10, 0.62); right tool far. -->
     <model name="robot_left_only">
       <gravity>false</gravity>
-      <pose>0.069 0.10 0.60 0 0 0</pose>
+      <pose>0.069 0.30 0.40 0 0 0</pose>
       <link name="base_link">
         <gravity>false</gravity>
         <inertial><mass>5.0</mass>
@@ -83,7 +92,7 @@
       </link>
       <link name="left_tool">
         <gravity>false</gravity>
-        <pose>0.0 0.0 0.22 0 0 0</pose>
+        <pose>0.0 -0.20 0.22 0 0 0</pose>
         <inertial><mass>0.5</mass>
           <inertia><ixx>0.01</ixx><iyy>0.01</iyy><izz>0.01</izz><ixy>0</ixy><ixz>0</ixz><iyz>0</iyz></inertia>
         </inertial>
@@ -99,11 +108,11 @@
       <joint name="right_fixed" type="fixed"><parent>base_link</parent><child>right_tool</child></joint>
     </model>
 
-    <!-- robot_both: both tool tips at the closed handle points.
-         World: left (0.069,0.10,0.62), right (0.069,0.50,0.62). -->
+    <!-- robot_both: both tool tips exactly at the closed handle world points
+         (0.069, 0.10, 0.62) and (0.069, 0.50, 0.62). -->
     <model name="robot_both">
       <gravity>false</gravity>
-      <pose>0.069 0.30 0.60 0 0 0</pose>
+      <pose>0.069 0.30 0.40 0 0 0</pose>
       <link name="base_link">
         <gravity>false</gravity>
         <inertial><mass>5.0</mass>

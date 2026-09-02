@@ -55,21 +55,31 @@
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
         state_positions: [0.0, 0.3]
-        # P0 冻结的双手抽拉几何合同（世界 == 夹具局部系，b1 根
-        # (0.030,4.047,0.832)）：抓取点 = 左右把手立板中心（面板前缘 x=0.099）；
+        # 双手抽拉几何合同（世界 == 夹具局部系，b1 根 (0.030,4.047,0.832)）：
+        # 抓取点 = 左右把手立板中心（面板前缘 x=0.099）；
         # 支撑点 = 各自立板下方 0.05m（抑制抽拉初始冲击与末端晃动）；
-        # 解锁推进区 = 右把手前方不可见逻辑区（非 *p 指示灯）。
+        # 解锁按压点 = b1p 按钮正面中心（右把手立板顶部，
+        # b1 局部 (0.069,0.646,0.1709) + 根偏移 = 世界 (0.099,4.693,1.0028)）。
+        # 2026-09-02 起解锁不再用"接近逻辑区"假解锁——右手电缸必须真把
+        # b1p 按钮压进去（按钮关节位移 ≥ press_threshold）才算解锁。
         drawer_axis: [1.0, 0.0, 0.0]
         left_handle_point: [0.099, 4.107, 0.952]
         right_handle_point: [0.099, 4.693, 0.952]
         left_support_point: [0.099, 4.107, 0.902]
         right_support_point: [0.099, 4.693, 0.902]
-        unlock_zone_point: [0.115, 4.693, 0.952]
-        # P3-8：抓取/支撑位姿在面板前缘正东 0.05m 悬停，避免探针贴面板
-        # （自由滑动面板会被推向闭合方向，触发 plugin 预抓取扰动拒附）。
-        # 附着距离 0.05 < grasp_distance_threshold 0.12 仍满足。
-        drawer_grasp_outward_offset: 0.05
-        drawer_unlock_distance_threshold: 0.1
+        unlock_press_point: [0.099, 4.693, 1.0028]
+        # 抓取/支撑位姿在面板前缘正东 0.005m；抓取时左右探针再向里压入
+        # drawer_grasp_press_depth 2mm 顶住立板（真实接触，非 5cm 悬停）。
+        # plugin 附着门收紧到 grasp_contact_threshold 0.02，悬空假附着被拒；
+        # 耦合拖拽期间 plugin 实时校验尖端仍贴住把手，脱离超 0.5s 即中止。
+        drawer_grasp_outward_offset: 0.005
+        drawer_grasp_press_depth: 0.002
+        # 解锁：右手探针先悬停在按钮正面东侧 0.04m，再向里压 3mm（b1p 帽
+        # 沿棱镜关节 -x 滑入限位，3mm 行程碰撞已验证无抽屉本体阻挡），
+        # 之后回退松手。解锁门 = 尖端距按压点 ≤0.03 且 帽位移 ≥ press_threshold。
+        drawer_unlock_approach_offset: 0.04
+        drawer_unlock_press_depth: 0.003
+        drawer_unlock_distance_threshold: 0.03
         drawer_sync_tolerance: 0.05
       ds3:
         type: slider

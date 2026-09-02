@@ -124,7 +124,7 @@ class DrawerP2Driver(Node):
         req.robot_model = robot_model
         req.right_robot_link = "right_tool"
         req.right_robot_grasp_point = point()
-        req.unlock_zone_point = point()
+        req.unlock_press_point = point()
         req.unlock = unlock
         return DrawerP2Driver._call(self.unlock_cli, req)
 

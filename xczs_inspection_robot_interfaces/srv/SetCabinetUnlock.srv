@@ -1,23 +1,31 @@
-# 抽屉解锁服务：右手三电缸进入右把手附近的解锁推进区并推进。
+# 抽屉解锁服务：右手三电缸把右把手顶部的解锁按钮（b1p 可压指示帽）真实
+# 压入，解锁才成立。
 #
-# 解锁推进区是不可见逻辑接触区（右把手前方，见实施执行方案 §6.3/§11.1，
-# 并非 *p 指示灯）。unlock=true 时，插件先校验右工具抓取点世界位置处于
-# 解锁区内（距离 ≤ unlock_distance_threshold），随后才解除该抽屉的锁止，
-# 解除后才允许 SetCabinetBimanualGrasp attach。unlock=false 用于复位/取消
-# 时显式恢复锁止；抽屉回到关位并稳定后也会自动恢复锁止。
+# 解锁要求（两者缺一不可，plugin 在 handle_unlock_request 内判定）：
+#   - 右工具抓取点世界位置距解锁按压点（unlock_press_point）≤
+#     unlock_distance_threshold（收紧到 ~0.03m，不再是空置逻辑区）；
+#   - <unlock_button_id> 指向的按钮（b1p_joint）关节位移 ≥ press_threshold，
+#     即按钮被右电缸物理压入（解锁的物证）。
+# 不再接受"探针进入空置逻辑区就解锁"的假解锁。
+# unlock=false 用于复位/取消时显式恢复锁止；抽屉回到关位并稳定后也会自动
+# 恢复锁止。
 #
-# unlock_zone_point 位于抽屉链路局部系；right_robot_grasp_point 位于
-# 右工具链路局部系。
+# unlock_press_point 位于抽屉链路局部系（= b1p 按钮正面中心）；
+# right_robot_grasp_point 位于右工具链路局部系。
 
 string control_id
 string operation_lease_id
 string robot_model
 string right_robot_link
 geometry_msgs/Point right_robot_grasp_point
-geometry_msgs/Point unlock_zone_point
+geometry_msgs/Point unlock_press_point
 bool unlock
 ---
 bool success
 string message
 float64 distance
 bool drawer_unlocked
+# 右电缸是否真的把解锁按钮压入了（按钮关节位移 ≥ press_threshold）。
+bool pressed
+# 右工具尖端是否处于解锁按压点的容差内（距离检查通过）。
+bool right_tool_contact

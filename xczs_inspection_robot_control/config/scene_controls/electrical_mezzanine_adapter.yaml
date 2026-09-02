@@ -175,7 +175,8 @@
     # contact_tool_link 局部系的位置：
     #   - 右三指：沿用 button/door 实测标定 [0.0265, -0.061735, -0.3885]；
     #   - 左两指：finger2(endlink2) 最深，几何指端 (-0.034, -0.061735, -0.3885)
-    #     （P3-8 实测复核；bimanual 附着容差 0.12m 可吸收微差）。
+    #     （P3-8 实测复核；2026-09-02 起 bimanual 附着门收紧到
+    #     grasp_contact_threshold 0.02m，探针须真正贴住把手，不再悬空附着）。
     # calibration_joint_* 闭合手指至零位，使工具处于已标定外形。
     drawer_tools:
       left:

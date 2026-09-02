@@ -168,8 +168,9 @@ class _FakeNode:
 
 
 class _Cabinet:
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, *, kind: str = "cabinet") -> None:
         self.name = name
+        self.kind = kind
         self.x = 2.0
         self.y = 0.0
         self.z = 0.0

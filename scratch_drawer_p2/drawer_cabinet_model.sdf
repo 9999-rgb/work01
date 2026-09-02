@@ -1,7 +1,20 @@
 <?xml version="1.0" ?>
 <!-- P2 drawer cabinet model, spawned via gz factory after world load (the
      real stack spawns cabinets dynamically; inline-world plugins Load before
-     ODE joints exist and would read uninitialized joints). -->
+     ODE joints exist and would read uninitialized joints).
+
+     Drawer frame origin sits at world (0, 0, 0.5), so the control points are
+     expressed in the drawer link frame and map to world z = 0.62:
+       left_handle  (0.069, 0.10, 0.12) -> world (0.069, 0.10, 0.62)
+       right_handle (0.069, 0.50, 0.12) -> world (0.069, 0.50, 0.62)
+       unlock press (0.12,  0.50, 0.12) -> world (0.12,  0.50, 0.62)
+
+     The unlock button cap is a real prismatic link: the physical-press
+     contract requires the right tool tip to displace unlock_button_slide
+     >= press_threshold, not merely to hover near the press point.  The P2
+     world's static robot_unlock probe overlaps the cap and pushes it to its
+     limit (0.005 m); the plugin's own spring (spring_stiffness 800 N/m,
+     target 0) returns it on release. -->
 <sdf version="1.6">
   <model name="drawer_test_cabinet">
     <static>false</static>
@@ -36,6 +49,28 @@
         </inertia>
       </inertial>
     </link>
+    <!-- Momentary unlock button cap, mounted on the FIXED base at the press
+         point (world 0.12 0.50 0.62 == unlock_press_world while the drawer is
+         closed).  Axis -x: the tool pushes it inward to its 5 mm limit.  It is
+         deliberately NOT on the drawer: pressing a cap mounted on a spring-
+         loaded rail would shove the drawer out of contact and release the
+         press, exactly like the real b1p on the fixed handle riser. -->
+    <link name="unlock_button_cap">
+      <pose>0.12 0.50 0.62 0 0 0</pose>
+      <collision name="cap_col">
+        <geometry><box><size>0.02 0.02 0.02</size></box></geometry>
+      </collision>
+      <visual name="cap_vis">
+        <geometry><box><size>0.02 0.02 0.02</size></box></geometry>
+      </visual>
+      <inertial>
+        <mass>0.02</mass>
+        <inertia>
+          <ixx>6.7e-7</ixx><iyy>6.7e-7</iyy><izz>6.7e-7</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+    </link>
     <joint name="anchor_base" type="fixed">
       <parent>world</parent>
       <child>base</child>
@@ -46,6 +81,24 @@
       <axis>
         <xyz>1 0 0</xyz>
         <limit><lower>0</lower><upper>0.3</upper><effort>1000</effort><velocity>10</velocity></limit>
+      </axis>
+    </joint>
+    <joint name="unlock_button_slide" type="prismatic">
+      <parent>base</parent>
+      <child>unlock_button_cap</child>
+      <axis>
+        <xyz>-1 0 0</xyz>
+        <limit><lower>0</lower><upper>0.005</upper><effort>50</effort><velocity>5</velocity></limit>
+        <dynamics><damping>0.1</damping><friction>0.3</friction></dynamics>
+        <!-- ODE implicit spring, exactly like the real b1p joint: the explicit
+             per-cycle SetForce spring the plugin applies is unconditionally
+             stable with this backing, and the return-on-release behaves like
+             the real cap. -->
+        <spring_physics>
+          <stiffness>800</stiffness>
+          <damping>0.1</damping>
+          <reference>0.0</reference>
+        </spring_physics>
       </axis>
     </joint>
     <plugin name="xczs_drawer_p2_state" filename="libxczs_cabinet_state.so">
@@ -80,9 +133,28 @@
         <graspable>true</graspable>
         <grasp_point>0.069 0.10 0.12</grasp_point>
         <right_grasp_point>0.069 0.50 0.12</right_grasp_point>
-        <unlock_zone_point>0.12 0.50 0.12</unlock_zone_point>
+        <unlock_press_point>0.12 0.50 0.12</unlock_press_point>
         <unlock_distance_threshold>0.1</unlock_distance_threshold>
+        <unlock_button_id>test_drawer_unlock_button</unlock_button_id>
+        <grasp_contact_threshold>0.02</grasp_contact_threshold>
+        <coupling_contact_grace_seconds>0.5</coupling_contact_grace_seconds>
         <drawer_latch_stiffness>500</drawer_latch_stiffness>
+      </control>
+      <control>
+        <control_id>test_drawer_unlock_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>unlock_button_slide</joint_name>
+        <joint_state_topic>/xczs/cabinet/test/test_drawer_unlock_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/test/test_drawer_unlock_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/test/test_drawer_unlock_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <!-- 0.1 matches the real b1p; the cap joint carries the ODE implicit
+             spring (800/0.1) so the explicit plugin spring is backed. -->
+        <spring_damping>0.1</spring_damping>
+        <press_threshold>0.0012</press_threshold>
+        <release_threshold>0.0006</release_threshold>
+        <reset_position>0.0</reset_position>
       </control>
     </plugin>
   </model>

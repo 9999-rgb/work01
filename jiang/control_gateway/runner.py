@@ -663,7 +663,88 @@ class ControlServer:
         self._executor_thread.start()
         if start_http:
             self._http_thread.start()
+        # The launch spawns the robot at the active scene's ``robot_spawn`` but
+        # only *scene switches* publish ``/initialpose``, so a first boot with
+        # nav2 enabled has no map frame until a switch happens -- AMCL never
+        # receives a hypothesis and the robot cannot navigate (Nav2 status 6).
+        # Seed the boot pose in the background once the graph is up.  Best
+        # effort: no nav2 / no robot bringup simply times out and skips.
+        self._seed_boot_localization()
         return self
+
+    def _seed_boot_localization(self) -> None:
+        """Publish the active scene's spawn pose to AMCL on first boot.
+
+        Runs on a daemon thread so startup never blocks on a missing graph.
+        The robot is already where the launch placed it, so this only waits for
+        the planar odom to publish the spawn pose, then hypothesizes it with a
+        zero-stamped message (latest-transform semantics -- see
+        ``RosNode.publish_initial_pose``), and re-seeds bounded until AMCL
+        converges or the graph proves absent.
+        """
+
+        def run() -> None:
+            try:
+                active_name = getattr(self, "_active_scene", None)
+                if not active_name:
+                    return
+                target = self._scene_lookup(active_name)
+                spawn = target.robot_spawn
+                if spawn is None:
+                    return
+                navigation_frame = self._robot_adapter.navigation_frame
+                # ``base_link`` is the -pi/2-about-Z child of ``body``; the
+                # planar mover reports the body pose (same convention as
+                # ``_teleport_robot``).  In these scenes odom == world, so the
+                # odom frame reports the absolute spawn pose.
+                body_yaw = spawn.yaw + math.pi / 2.0
+                # nav2/AMCL comes up *after* the robot spawn in the supervisor
+                # chain, which can lag this seed by a minute or more (and the
+                # robot itself by ~200 s on a cold OGRE-cache start).  Keep
+                # re-hypothesizing the spawn pose until AMCL converges or the
+                # budget runs out, instead of firing once and losing the
+                # message to an un-subscribed AMCL.
+                deadline = time.monotonic() + 300.0
+                while time.monotonic() < deadline:
+                    if not self._node.wait_for_planar_odom(
+                        spawn.x,
+                        spawn.y,
+                        body_yaw,
+                        tolerance_xy=0.06,
+                        tolerance_yaw=0.15,
+                        timeout_sec=10.0,
+                    ):
+                        # Robot not spawned / odom not publishing yet.
+                        time.sleep(2.0)
+                        continue
+                    self._node.publish_initial_pose(
+                        spawn.x,
+                        spawn.y,
+                        spawn.yaw,
+                        frame_id=navigation_frame,
+                        stamp_zero=True,
+                    )
+                    if self._confirm_localization(
+                        spawn.x,
+                        spawn.y,
+                        spawn.yaw,
+                        attempts=1,
+                        settle_sec=3.0,
+                        stamp_zero=True,
+                    ):
+                        return
+                    time.sleep(1.0)
+            except Exception as error:  # noqa: BLE001 - best-effort boot seed
+                logger.info(
+                    "boot localization seed skipped: %s", error
+                )
+
+        thread = threading.Thread(
+            target=run,
+            name="xczs-boot-localization",
+            daemon=True,
+        )
+        thread.start()
 
     def _spin_executor(self) -> None:
         """Spin until the server requests a clean executor-thread exit."""
@@ -1872,6 +1953,7 @@ class ControlServer:
         *,
         attempts: int,
         settle_sec: float,
+        stamp_zero: bool = False,
     ) -> bool:
         """Wait for AMCL's map pose to converge to the teleported pose.
 
@@ -1879,6 +1961,8 @@ class ControlServer:
         coarse tolerance of ``(x, y, yaw)`` -- a check that cleanly separates a
         correct localization from the pre-teleport-odom mis-localization this
         teleport sequence exists to prevent.  A miss is not fatal to the switch.
+        ``stamp_zero`` is forwarded to :meth:`publish_initial_pose` so the boot
+        seed can re-hypothesize with the tf2 "latest transform" semantics.
         """
         navigation_frame = self._robot_adapter.navigation_frame
         for _ in range(max(1, int(attempts))):
@@ -1901,6 +1985,7 @@ class ControlServer:
                 y,
                 yaw,
                 frame_id=navigation_frame,
+                stamp_zero=stamp_zero,
             )
         return False
 

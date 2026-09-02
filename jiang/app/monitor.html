@@ -3450,9 +3450,10 @@ const cabinetControlTypeLabels = {
   1: '旋钮',
   2: '总开关',
   3: '柜门',
-  4: '滑门'
+  4: '滑门',
+  5: '抽拉柜'
 };
-const cabinetControlTypeOrder = [0, 1, 2, 3, 4];
+const cabinetControlTypeOrder = [0, 1, 2, 3, 4, 5];
 const cabinetCommandSupport = {
   press: 1,
   set_state: 2,
@@ -3562,6 +3563,32 @@ function applySceneCabinetVisibility(visible) {
   if (cabinetCard) cabinetCard.style.display = visible ? '' : 'none';
 }
 
+function sceneOf(entry) {
+  return (entry && entry.associated_scene) || 'cabinet_operation';
+}
+
+function sceneHasAssociatedCabinet(sceneName) {
+  return cabinetInstances.some(entry => sceneOf(entry) === sceneName);
+}
+
+// 场景是否带可操作柜体/夹具：由“该场景是否有柜体/夹具实例”决定，而不是
+// scenes.yaml 的 spawn_cabinet 字段 —— 夹具场景（generator_plant /
+// electrical_mezzanine）不单独 spawn 柜体故 spawn_cabinet=false，但仍带
+// 可操作夹具，必须判定为有柜体。实例目录尚未加载（cabinetInstances 为空）
+// 时回退到 spawn_cabinet，避免首屏误判定。
+function sceneCabinetCapable(sceneName) {
+  if (!sceneName) return true;
+  const entry = sceneCatalog.find(item => item.name === sceneName) || null;
+  const spawnCabinet = !entry || entry.spawn_cabinet !== false;
+  return cabinetInstances.length
+    ? sceneHasAssociatedCabinet(sceneName) || spawnCabinet
+    : spawnCabinet;
+}
+
+function updateCabinetCardVisibility() {
+  applySceneCabinetVisibility(sceneCabinetCapable(activeSceneName));
+}
+
 function applyScenes(payload) {
   const values = Array.isArray(payload && payload.scenes)
     ? payload.scenes
@@ -3603,8 +3630,7 @@ function applyScenes(payload) {
   sceneSelect.disabled = !sceneCatalog.length || sceneSwitchInFlight;
 
   const activeEntry = sceneCatalog.find(entry => entry.name === activeSceneName) || null;
-  const spawnCabinet = !activeEntry || activeEntry.spawn_cabinet !== false;
-  applySceneCabinetVisibility(spawnCabinet);
+  updateCabinetCardVisibility();
 
   btnSceneSwitch.disabled = !sceneCatalog.length || sceneSwitchInFlight ||
     !activeSceneName || sceneSelect.value === activeSceneName;
@@ -3614,13 +3640,13 @@ function applyScenes(payload) {
     activeSceneName ? 'ok' : ''
   );
   sceneDetail.textContent = activeEntry
-    ? (spawnCabinet
+    ? (sceneCabinetCapable(activeSceneName)
       ? (activeEntry.source === 'asset'
-        ? '资产场景含控制柜：柜体控件与地图将即时更新；若其自带实例与本次启动库存不一致，实例/控件/xacro 需重启栈后生效。'
-        : '当前场景包含控制柜；切换后柜体控件与地图将随之更新。')
+        ? '资产场景含控制柜/夹具：柜体控件与地图将即时更新；若其自带实例与本次启动库存不一致，实例/控件/xacro 需重启栈后生效。'
+        : '当前场景包含控制柜/夹具；切换后柜体控件与地图将随之更新。')
       : (activeEntry.source === 'asset'
-        ? '资产场景仅含机器人与场地（无柜体），Nav2 地图已对应更新。'
-        : '当前场景仅含机器人与场地（无柜体），Nav2 地图已对应更新。'))
+        ? '资产场景仅含机器人与场地（无柜体/夹具），Nav2 地图已对应更新。'
+        : '当前场景仅含机器人与场地（无柜体/夹具），Nav2 地图已对应更新。'))
     : '连接控制服务器后可切换仿真场景。';
 }
 
@@ -4300,7 +4326,6 @@ function applyCabinetInstances(payload) {
   // 409 拒绝（associated_scene 与 _active_scene 不一致）。未读到场景
   // catalog（activeSceneName 为空）时全部放入主组，避免首屏空列表。
   const activeScene = activeSceneName || '';
-  const sceneOf = entry => (entry && entry.associated_scene) || 'cabinet_operation';
   const primary = activeScene
     ? cabinetInstances.filter(entry => sceneOf(entry) === activeScene)
     : cabinetInstances.slice();
@@ -4351,6 +4376,9 @@ function applyCabinetInstances(payload) {
   cabinetStatusCurrent = Boolean(cabinetStatus);
   cabinetInstance.disabled = !cabinetInstances.length;
   navCabinetInstance.disabled = !cabinetInstances.length;
+  // 实例目录加载完成后重算卡片可见性：夹具场景的实例现在才可见，
+  // 首屏 applyScenes 阶段（实例尚未加载）只能按 spawn_cabinet 兜底。
+  updateCabinetCardVisibility();
 }
 
 async function loadSelectedCabinetControls() {
@@ -4693,7 +4721,8 @@ function renderCabinetTarget() {
     1: '旋转',
     2: '切换',
     3: '开合',
-    4: '滑动'
+    4: '滑动',
+    5: '抽拉'
   };
   $('btnCabinetPress').textContent = control.operable === false
     ? control.capability_metadata_present && !control.toolset_compatible
@@ -6759,11 +6788,9 @@ sceneSelect.addEventListener('change', () => {
     activeSceneName && target && target !== activeSceneName;
   btnSceneSwitch.disabled = !canSwitch;
   if (canSwitch) {
-    const entry = sceneCatalog.find(item => item.name === target);
-    const hasCabinet = !entry || entry.spawn_cabinet !== false;
-    sceneDetail.textContent = hasCabinet
-      ? `将切换到「${target}」：含控制柜，柜体控件与 Nav2 地图将随之更新。`
-      : `将切换到「${target}」：仅机器人与场地（无柜体），Nav2 地图已对应更新。`;
+    sceneDetail.textContent = sceneCabinetCapable(target)
+      ? `将切换到「${target}」：含控制柜/夹具，柜体控件与 Nav2 地图将随之更新。`
+      : `将切换到「${target}」：仅机器人与场地（无柜体/夹具），Nav2 地图已对应更新。`;
   }
 });
 $('btnAssetImport').addEventListener('click', importAssetFile);

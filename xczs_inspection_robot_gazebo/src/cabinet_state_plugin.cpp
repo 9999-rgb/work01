@@ -457,6 +457,8 @@ public:
             std::numeric_limits<double>::quiet_NaN();
           response->right_distance =
             std::numeric_limits<double>::quiet_NaN();
+          response->left_tool_contact = false;
+          response->right_tool_contact = false;
           return;
         }
         ServiceCallbackLease lease(callback_lifetime);
@@ -475,13 +477,16 @@ public:
             request->right_robot_grasp_point.y,
             request->right_robot_grasp_point.z),
           request->robot_base_link,
-          request->attach);
+          request->attach,
+          request->base_free);
         response->success = outcome.success;
         response->message = outcome.message;
         response->left_grasped = !std::isnan(outcome.left_distance);
         response->right_grasped = !std::isnan(outcome.right_distance);
         response->left_distance = outcome.left_distance;
         response->right_distance = outcome.right_distance;
+        response->left_tool_contact = outcome.left_tool_contact;
+        response->right_tool_contact = outcome.right_tool_contact;
       });
     unlock_service_ = ros_node_->create_service<SetCabinetUnlock>(
       unlock_service_name_,
@@ -494,6 +499,8 @@ public:
           response->success = false;
           response->message = "Cabinet state plugin is shutting down.";
           response->distance = std::numeric_limits<double>::quiet_NaN();
+          response->pressed = false;
+          response->right_tool_contact = false;
           return;
         }
         ServiceCallbackLease lease(callback_lifetime);
@@ -512,6 +519,8 @@ public:
         response->distance = outcome.distance;
         response->drawer_unlocked = outcome.success &&
           request->unlock;
+        response->pressed = outcome.pressed;
+        response->right_tool_contact = outcome.right_tool_contact;
       });
 
     const double simulation_time = world_->SimTime().Double();
@@ -609,10 +618,28 @@ private:
     ignition::math::Vector3d grasp_point{0.0, 0.0, 0.0};
     // Bimanual drawer geometry, all in the local frame of the prismatic drawer
     // link.  The left handle reuses grasp_point; the right handle and the
-    // unlock zone are drawer-only fields.
+    // unlock press point are drawer-only fields.
     ignition::math::Vector3d right_grasp_point{0.0, 0.0, 0.0};
-    ignition::math::Vector3d unlock_zone_point{0.0, 0.0, 0.0};
+    // 2026-09-02: the unlock point is the face of the b1p push-button (on top
+    // of the right handle riser), not a logical zone floating in air.  Unlock
+    // now requires BOTH the right tool tip within unlock_distance_threshold of
+    // this point AND the <unlock_button_id> button joint displaced >= its
+    // press_threshold (see handle_unlock_request).
+    ignition::math::Vector3d unlock_press_point{0.0, 0.0, 0.0};
     double unlock_distance_threshold{0.10};
+    // Mandatory button control id whose joint must be physically pressed for
+    // unlock to succeed.  Empty = no button wired (legacy configs refuse).
+    std::string unlock_button_id;
+    // Bimanual attach / coupling contact contract (2026-09-02).  Attach is only
+    // granted while both tool tips are within grasp_contact_threshold of their
+    // handles (tight, ~0.02m, i.e. actual contact — hovering is rejected).
+    // During the linear coupling drag the plugin keeps re-checking the same
+    // per-side distances; if a tip loses contact for longer than
+    // coupling_contact_grace_seconds the coupling is aborted and an
+    // operation_fault is emitted (no more pulling in empty air).
+    double grasp_contact_threshold{0.02};
+    double coupling_contact_grace_seconds{0.5};
+    double coupling_contact_lost_since{-1.0};
     double drawer_latch_stiffness{kDefaultDrawerLatchStiffness};
     // Rail latch: locked means the drawer is parked at the closed detent and a
     // bimanual attach is refused.  Unlock (right tool in the logical unlock
@@ -644,6 +671,13 @@ private:
     // Bimanual drawer outcomes carry per-side distances.
     double left_distance{std::numeric_limits<double>::quiet_NaN()};
     double right_distance{std::numeric_limits<double>::quiet_NaN()};
+    // Physical-contact evidence (2026-09-02).  Unlock: pressed = the unlock
+    // button joint was actually displaced; right_tool_contact = the right tip
+    // was within the press-point threshold.  Bimanual attach: per-side tool
+    // contact flags within the drawer's tight grasp_contact_threshold.
+    bool pressed{false};
+    bool left_tool_contact{false};
+    bool right_tool_contact{false};
   };
 
   struct PhysicsRequest
@@ -659,6 +693,10 @@ private:
     ignition::math::Vector3d robot_grasp_point{0.0, 0.0, 0.0};
     std::string robot_base_link;
     bool attach{false};
+    // P3-8 grab-and-drive: true skips the base-brake joint so the robot base
+    // can translate along the drawer axis during the pull (arms hold their
+    // grasp config; the linear-drag coupling opens/closes the drawer 1:1).
+    bool base_free{false};
     // Bimanual drawer fields.
     std::string left_robot_link;
     std::string right_robot_link;
@@ -666,7 +704,7 @@ private:
     ignition::math::Vector3d right_robot_grasp_point{0.0, 0.0, 0.0};
     ignition::math::Vector3d left_handle_point{0.0, 0.0, 0.0};
     ignition::math::Vector3d right_handle_point{0.0, 0.0, 0.0};
-    ignition::math::Vector3d unlock_zone_point{0.0, 0.0, 0.0};
+    ignition::math::Vector3d unlock_press_point{0.0, 0.0, 0.0};
     bool drawer_unlock{false};
     std::promise<PhysicsOutcome> promise;
     std::atomic<State> state{State::kPending};
@@ -990,40 +1028,53 @@ private:
                     "Cabinet drawer controls must be graspable: " + control.id);
           }
           if (!element->HasElement("right_grasp_point") ||
-            !element->HasElement("unlock_zone_point"))
+            !element->HasElement("unlock_press_point") ||
+            !element->HasElement("unlock_button_id"))
           {
             throw std::invalid_argument(
-                    "Cabinet drawer control requires <right_grasp_point> and "
-                    "<unlock_zone_point>: " + control.id);
+                    "Cabinet drawer control requires <right_grasp_point>, "
+                    "<unlock_press_point> and <unlock_button_id>: " +
+                    control.id);
           }
           control.right_grasp_point = parse_vector3(
             element->Get<std::string>("right_grasp_point"));
-          control.unlock_zone_point = parse_vector3(
-            element->Get<std::string>("unlock_zone_point"));
+          control.unlock_press_point = parse_vector3(
+            element->Get<std::string>("unlock_press_point"));
           control.unlock_distance_threshold = optional_double(
             element, "unlock_distance_threshold", 0.10);
           control.drawer_latch_stiffness = optional_double(
             element, "drawer_latch_stiffness", kDefaultDrawerLatchStiffness);
+          // 2026-09-02 physical-press unlock: the drawer names the button
+          // control whose joint must be displaced.  It must exist in this
+          // plugin (configured before or after this drawer — resolution is
+          // deferred to configure phase end).
+          control.unlock_button_id = element->Get<std::string>(
+            "unlock_button_id");
+          control.grasp_contact_threshold = optional_double(
+            element, "grasp_contact_threshold", 0.02);
+          control.coupling_contact_grace_seconds = optional_double(
+            element, "coupling_contact_grace_seconds", 0.5);
           if (control.detents.size() != 2U) {
             throw std::invalid_argument(
                     "Cabinet drawer controls require exactly two detents "
                     "(closed open): " + control.id);
           }
           if (control.unlock_distance_threshold <= 0.0 ||
-            control.drawer_latch_stiffness <= 0.0)
+            control.drawer_latch_stiffness <= 0.0 ||
+            control.grasp_contact_threshold <= 0.0 ||
+            control.coupling_contact_grace_seconds <= 0.0)
           {
             throw std::invalid_argument(
-                    "Cabinet drawer unlock_distance_threshold and "
-                    "drawer_latch_stiffness must be positive: " + control.id);
+                    "Cabinet drawer unlock_distance_threshold, "
+                    "drawer_latch_stiffness, grasp_contact_threshold and "
+                    "coupling_contact_grace_seconds must be positive: " +
+                    control.id);
           }
-          if (control.grasp_coupling_stiffness > 0.0 ||
-            control.grasp_coupling_damping > 0.0 ||
-            control.grasp_coupling_max_effort > 0.0)
-          {
-            throw std::invalid_argument(
-                    "Cabinet drawer controls do not support compliant grasp "
-                    "coupling: " + control.id);
-          }
+          // A drawer may declare compliant grasp coupling (grasp_coupling_*).
+          // For the bimanual drawer this REPLACES the hard tool-drawer weld: a
+          // bounded spring-damper on the rail drives the drawer to track the
+          // tools' commanded motion, so a kinematic arm teleport never fights
+          // the drawer's inertia through a cross-model fixed joint (run8).
         }
       }
 
@@ -1040,6 +1091,33 @@ private:
       control_indices_.emplace(control.id, controls_.size());
       controls_.push_back(std::move(control));
       element = element->GetNextElement("control");
+    }
+
+    // Resolve every drawer's unlock_button_id now that all controls are
+    // registered.  The referenced control must exist, be a real button with a
+    // joint, and be press-threshold configured — otherwise unlock can never
+    // produce the physical-press evidence the contract requires.
+    for (const Control & control : controls_) {
+      if (control.kind != ControlKind::kDrawer) {
+        continue;
+      }
+      const auto button_it = control_indices_.find(control.unlock_button_id);
+      if (button_it == control_indices_.end()) {
+        throw std::invalid_argument(
+                "Drawer <unlock_button_id> names unknown control '" +
+                control.unlock_button_id + "': " + control.id);
+      }
+      const Control & button = controls_[button_it->second];
+      if (button.kind != ControlKind::kButton || !button.joint) {
+        throw std::invalid_argument(
+                "Drawer <unlock_button_id> '" + control.unlock_button_id +
+                "' is not a button control with a joint: " + control.id);
+      }
+      if (button.press_threshold <= 0.0) {
+        throw std::invalid_argument(
+                "Drawer unlock button '" + control.unlock_button_id +
+                "' must declare a positive <press_threshold>: " + control.id);
+      }
     }
   }
 
@@ -1230,31 +1308,89 @@ private:
       if (control_is_being_grasped &&
         control.grasp_coupling_stiffness > 0.0)
       {
-        // gazebo_ros2_control's plain position backend moves the arm
-        // kinematically every controller update.  That motion is authoritative
-        // for the simulated tool but can repeatedly inject error into a
-        // cross-model ODE fixed joint.  Recover the commanded one-DOF motion
-        // analytically from the tool orientation and apply it as a compliant
-        // physical torque.  The cabinet joint is never teleported: inertia,
-        // limits, damping, collisions and the fixed grasp remain active.
-        auto delta_rotation = active_robot_link_ptr_->WorldPose().Rot() *
-          grasp_tool_rotation_.Inverse();
-        delta_rotation.Normalize();
-        const ignition::math::Vector3d imaginary{
-          delta_rotation.X(), delta_rotation.Y(), delta_rotation.Z()};
-        const double projected_sine = grasp_axis_world_.Dot(imaginary);
-        const double projected_norm = std::hypot(
-          delta_rotation.W(), projected_sine);
-        if (std::isfinite(projected_norm) && projected_norm > 1.0e-8) {
-          const double wrapped_twist = std::remainder(
-            2.0 * std::atan2(projected_sine, delta_rotation.W()),
-            2.0 * M_PI);
-          const double twist_step = std::remainder(
-            wrapped_twist - grasp_previous_twist_, 2.0 * M_PI);
-          grasp_unwrapped_twist_ += twist_step;
-          grasp_previous_twist_ = wrapped_twist;
+        if (control.kind == ControlKind::kDrawer && bimanual_coupling_active_ &&
+          active_left_robot_link_ptr_ && active_right_robot_link_ptr_)
+        {
+          // Contact keepalive (2026-09-02): re-check each cycle that BOTH tool
+          // tips are still pressed against their handles.  Pulling a drawer
+          // whose handles have slipped out of the tips is "pulling in empty
+          // air" — the previous bug.  While a tip is separated the drawer is
+          // held (no drive effort); if the separation outlasts
+          // coupling_contact_grace_seconds the coupling is aborted, an
+          // operation_fault is emitted, and the operator can re-grasp and
+          // retry instead of silently dragging nothing.
+          const auto drawer_pose = control.link->WorldPose();
+          const auto left_handle_world = drawer_pose.Pos() +
+            drawer_pose.Rot().RotateVector(control.grasp_point);
+          const auto right_handle_world = drawer_pose.Pos() +
+            drawer_pose.Rot().RotateVector(control.right_grasp_point);
+          const auto left_pose = active_left_robot_link_ptr_->WorldPose();
+          const auto left_tip_world = left_pose.Pos() +
+            left_pose.Rot().RotateVector(active_left_robot_grasp_point_);
+          const auto right_pose = active_right_robot_link_ptr_->WorldPose();
+          const auto right_tip_world = right_pose.Pos() +
+            right_pose.Rot().RotateVector(active_right_robot_grasp_point_);
+          const double keepalive_left = left_tip_world.Distance(left_handle_world);
+          const double keepalive_right = right_tip_world.Distance(right_handle_world);
+          const bool contact_ok = std::isfinite(keepalive_left) &&
+            std::isfinite(keepalive_right) &&
+            keepalive_left <= control.grasp_contact_threshold &&
+            keepalive_right <= control.grasp_contact_threshold;
+          if (contact_ok) {
+            control.coupling_contact_lost_since = -1.0;
+          } else if (control.coupling_contact_lost_since < 0.0) {
+            control.coupling_contact_lost_since = simulation_time;
+          }
+          if (!contact_ok &&
+            simulation_time - control.coupling_contact_lost_since >
+            control.coupling_contact_grace_seconds)
+          {
+            // Contact lost beyond the grace period: abort the drag.  Fully
+            // release the grasp bookkeeping (coupling hold, active session
+            // state and the grasp-active topic) so the plugin, the grasp
+            // aggregator and the Web agree the pull has ended the moment it
+            // dies; the operator's later attach=false is then a harmless
+            // "already released" no-op and a re-grasp must re-prove contact.
+            const std::string lost_lease_id = active_grasp_lease_id_;
+            control.coupling_contact_lost_since = -1.0;
+            RCLCPP_WARN(
+              ros_node_->get_logger(),
+              "Bimanual drawer '%s' coupling aborted: tool contact lost "
+              "(left %.6f m, right %.6f m beyond grasp_contact_threshold "
+              "%.6f m for %.3f s).",
+              control.id.c_str(), keepalive_left, keepalive_right,
+              control.grasp_contact_threshold,
+              control.coupling_contact_grace_seconds);
+            release_bimanual_grasp_constraint();
+            publish_operation_fault(lost_lease_id);
+            // Skip the coupling drive this cycle: the drawer rests where it
+            // is, and the operator must re-grasp before any further pull.
+            continue;
+          }
+          if (!contact_ok) {
+            // Within the grace window: hold the drawer (no drive effort) so a
+            // transient bounce does not tear it, and so the drawer does not
+            // snap toward a moving tool.
+            continue;
+          }
+          // Linear-drag coupling for the bimanual drawer (see the attach): the
+          // rail is driven toward the tools' commanded motion since attach.
+          // The reaction force lands on the cabinet rail, not on the light
+          // tools, so the kinematic arm teleport tracks its trajectory
+          // perfectly and the joint_trajectory controller never sees a
+          // tracking error.  The tools only hold the handles; the drawer
+          // follows them through the bounded rail spring-damper.
+          ignition::math::Vector3d axis = control.joint->GlobalAxis(0);
+          axis.Normalize();
+          const ignition::math::Vector3d left_position =
+            active_left_robot_link_ptr_->WorldPose().Pos();
+          const ignition::math::Vector3d right_position =
+            active_right_robot_link_ptr_->WorldPose().Pos();
+          const double tool_projection = axis.Dot(
+            0.5 * (left_position + right_position));
           const double desired_position = std::clamp(
-            grasp_initial_position_ + grasp_unwrapped_twist_,
+            bimanual_grasp_drawer_position_ +
+              (tool_projection - bimanual_grasp_tool_projection_),
             control.joint->LowerLimit(0), control.joint->UpperLimit(0));
           const double position_error = desired_position - raw_position;
           const double coupling_effort = std::clamp(
@@ -1263,10 +1399,48 @@ private:
             -control.grasp_coupling_max_effort,
             control.grasp_coupling_max_effort);
           control.effort += coupling_effort;
-          max_grasp_angle_error_ = std::max(
-            max_grasp_angle_error_, std::abs(position_error));
           max_grasp_coupling_effort_ = std::max(
             max_grasp_coupling_effort_, std::abs(coupling_effort));
+        } else {
+          // gazebo_ros2_control's plain position backend moves the arm
+          // kinematically every controller update.  That motion is
+          // authoritative for the simulated tool but can repeatedly inject
+          // error into a cross-model ODE fixed joint.  Recover the commanded
+          // one-DOF motion analytically from the tool orientation and apply it
+          // as a compliant physical torque.  The cabinet joint is never
+          // teleported: inertia, limits, damping, collisions and the fixed
+          // grasp remain active.
+          auto delta_rotation = active_robot_link_ptr_->WorldPose().Rot() *
+            grasp_tool_rotation_.Inverse();
+          delta_rotation.Normalize();
+          const ignition::math::Vector3d imaginary{
+            delta_rotation.X(), delta_rotation.Y(), delta_rotation.Z()};
+          const double projected_sine = grasp_axis_world_.Dot(imaginary);
+          const double projected_norm = std::hypot(
+            delta_rotation.W(), projected_sine);
+          if (std::isfinite(projected_norm) && projected_norm > 1.0e-8) {
+            const double wrapped_twist = std::remainder(
+              2.0 * std::atan2(projected_sine, delta_rotation.W()),
+              2.0 * M_PI);
+            const double twist_step = std::remainder(
+              wrapped_twist - grasp_previous_twist_, 2.0 * M_PI);
+            grasp_unwrapped_twist_ += twist_step;
+            grasp_previous_twist_ = wrapped_twist;
+            const double desired_position = std::clamp(
+              grasp_initial_position_ + grasp_unwrapped_twist_,
+              control.joint->LowerLimit(0), control.joint->UpperLimit(0));
+            const double position_error = desired_position - raw_position;
+            const double coupling_effort = std::clamp(
+              control.grasp_coupling_stiffness * position_error -
+              control.grasp_coupling_damping * velocity,
+              -control.grasp_coupling_max_effort,
+              control.grasp_coupling_max_effort);
+            control.effort += coupling_effort;
+            max_grasp_angle_error_ = std::max(
+              max_grasp_angle_error_, std::abs(position_error));
+            max_grasp_coupling_effort_ = std::max(
+              max_grasp_coupling_effort_, std::abs(coupling_effort));
+          }
         }
       }
       control.joint->SetForce(0, control.effort);
@@ -1297,7 +1471,7 @@ private:
 
   bool bimanual_grasp_is_active() const
   {
-    return static_cast<bool>(left_grasp_joint_) ||
+    return bimanual_coupling_active_ || static_cast<bool>(left_grasp_joint_) ||
       static_cast<bool>(right_grasp_joint_);
   }
 
@@ -2156,7 +2330,8 @@ private:
     ignition::math::Vector3d left_robot_grasp_point,
     ignition::math::Vector3d right_robot_grasp_point,
     std::string robot_base_link,
-    bool attach)
+    bool attach,
+    bool base_free)
   {
     auto request = std::make_shared<PhysicsRequest>();
     request->kind = PhysicsRequest::Kind::kBimanualGrasp;
@@ -2169,6 +2344,7 @@ private:
     request->right_robot_grasp_point = right_robot_grasp_point;
     request->robot_base_link = std::move(robot_base_link);
     request->attach = attach;
+    request->base_free = base_free;
     if (attach) {
       std::lock_guard<std::mutex> lock(active_control_mutex_);
       request->active_control_generation = active_control_generation_;
@@ -2353,11 +2529,19 @@ private:
       publish_operation_fault(request.operation_lease_id);
     }
 
-    return {false,
+    PhysicsOutcome outcome;
+    outcome.success = false;
+    outcome.message =
       "Failed to create bimanual drawer grasp constraint: " + failure +
       (cleanup_failure.empty() ? "" :
-      "; fail-safe cleanup is pending: " + cleanup_failure),
-      std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+      "; fail-safe cleanup is pending: " + cleanup_failure);
+    outcome.left_distance = left_distance;
+    outcome.right_distance = right_distance;
+    outcome.left_tool_contact = std::isfinite(left_distance) &&
+      left_distance <= control.grasp_contact_threshold;
+    outcome.right_tool_contact = std::isfinite(right_distance) &&
+      right_distance <= control.grasp_contact_threshold;
+    return outcome;
   }
 
   PhysicsOutcome handle_unlock_request(const PhysicsRequest & request)
@@ -2436,37 +2620,83 @@ private:
         request.right_robot_link, std::numeric_limits<double>::quiet_NaN()};
     }
 
-    // The unlock zone is a configured logical contact region near the right
-    // handle (not the *p indicator).  It lives in the drawer link frame, so the
-    // distance check tracks the drawer whether it is open or closed.
+    // 2026-09-02: the unlock press point is the face of the b1p push-button
+    // (on top of the right handle riser), in the drawer link frame, so the
+    // distance check tracks the drawer whether it is open or closed.  Unlock
+    // requires BOTH: the right tool tip within the (tight) press threshold of
+    // that point AND the named unlock button joint physically displaced.  The
+    // button joint lives in this plugin (same world), read under the physics
+    // callback lock — the actuator presses it through contact, so the
+    // displacement is real physical evidence, not a free-position claim.
     const auto target_pose = control.link->WorldPose();
-    const auto unlock_zone_world = target_pose.Pos() +
-      target_pose.Rot().RotateVector(control.unlock_zone_point);
+    const auto unlock_press_world = target_pose.Pos() +
+      target_pose.Rot().RotateVector(control.unlock_press_point);
     const auto right_pose = right_link->WorldPose();
     const auto right_tool_world = right_pose.Pos() +
       right_pose.Rot().RotateVector(request.right_robot_grasp_point);
-    const double distance = right_tool_world.Distance(unlock_zone_world);
-    if (!std::isfinite(distance) ||
-      distance > control.unlock_distance_threshold)
-    {
-      return {false,
-        "Right tool is not inside the drawer unlock zone (distance " +
-        std::to_string(distance) + " m exceeds threshold " +
-        std::to_string(control.unlock_distance_threshold) + " m).",
-        distance};
+    const double distance = right_tool_world.Distance(unlock_press_world);
+    const bool right_tool_contact =
+      std::isfinite(distance) &&
+      distance <= control.unlock_distance_threshold;
+
+    const auto button_it = control_indices_.find(control.unlock_button_id);
+    // Resolution validated in configure_controls; the reference must exist.
+    const Control & button = controls_[button_it->second];
+    const double button_position =
+      button.joint ? button.joint->Position(0) : 0.0;
+    const bool pressed = button.joint != nullptr &&
+      button_position >= button.press_threshold;
+
+    if (!right_tool_contact) {
+      PhysicsOutcome outcome;
+      outcome.success = false;
+      outcome.message =
+        "Right tool is not pressing the unlock button (distance to "
+        "unlock_press_point " + std::to_string(distance) + " m exceeds "
+        "threshold " + std::to_string(control.unlock_distance_threshold) +
+        " m).";
+      outcome.distance = distance;
+      outcome.right_tool_contact = false;
+      outcome.pressed = pressed;
+      return outcome;
+    }
+    if (!pressed) {
+      PhysicsOutcome outcome;
+      outcome.success = false;
+      outcome.message =
+        "Right tool reaches the unlock button but the button is not "
+        "physically pressed (joint position " +
+        std::to_string(button_position) + " m < press_threshold " +
+        std::to_string(button.press_threshold) + " m).";
+      outcome.distance = distance;
+      outcome.right_tool_contact = true;
+      outcome.pressed = false;
+      return outcome;
     }
     if (control.drawer_unlocked) {
-      return {true, "Drawer is already unlocked.", distance};
+      PhysicsOutcome outcome;
+      outcome.success = true;
+      outcome.message = "Drawer is already unlocked.";
+      outcome.distance = distance;
+      outcome.right_tool_contact = true;
+      outcome.pressed = true;
+      return outcome;
     }
     control.drawer_unlocked = true;
     control.drawer_has_opened = false;
     control.detent_target_index = control.reset_state_index;
     RCLCPP_INFO(
       ros_node_->get_logger(),
-      "Drawer '%s' rail latch released by the right tool at the unlock zone "
-      "(distance %.6f m).",
-      control.id.c_str(), distance);
-    return {true, "Drawer unlocked.", distance};
+      "Drawer '%s' rail latch released by the right tool physically pressing "
+      "the unlock button (joint %.6f m, tip distance %.6f m).",
+      control.id.c_str(), button_position, distance);
+    PhysicsOutcome outcome;
+    outcome.success = true;
+    outcome.message = "Drawer unlocked.";
+    outcome.distance = distance;
+    outcome.right_tool_contact = true;
+    outcome.pressed = true;
+    return outcome;
   }
 
   PhysicsOutcome handle_bimanual_grasp_request(const PhysicsRequest & request)
@@ -2551,7 +2781,14 @@ private:
           active_left_robot_link_ == request.left_robot_link &&
           active_right_robot_link_ == request.right_robot_link)
         {
-          return {true, "Bimanual drawer grasp is already attached.", 0.0};
+          PhysicsOutcome outcome;
+          outcome.success = true;
+          outcome.message = "Bimanual drawer grasp is already attached.";
+          outcome.left_distance = 0.0;
+          outcome.right_distance = 0.0;
+          outcome.left_tool_contact = true;
+          outcome.right_tool_contact = true;
+          return outcome;
         }
         return {false,
           "Another cabinet grasp or operation lease is active: " +
@@ -2620,9 +2857,12 @@ private:
         request.robot_base_link, std::numeric_limits<double>::quiet_NaN()};
     }
 
-    // Both tools must be simultaneously inside the grasp distance threshold of
-    // their handle.  A single-side clamp would rack the drawer under the pull
-    // torque, so the attach is rejected unless BOTH distances pass.
+    // Both tools must be simultaneously within the drawer's tight grasp
+    // contact threshold of their handle (2026-09-02: no more hovering — the
+    // tips must actually contact the handles, 2mm pressed into the plates via
+    // the operator's press depth).  A single-side clamp would rack the drawer
+    // under the pull torque, so the attach is rejected unless BOTH distances
+    // pass, and the per-side contact flags are reported to the caller.
     const auto target_pose = control.link->WorldPose();
     const auto left_handle_world = target_pose.Pos() +
       target_pose.Rot().RotateVector(control.grasp_point);
@@ -2636,15 +2876,25 @@ private:
       right_pose.Rot().RotateVector(request.right_robot_grasp_point);
     const double left_distance = left_tool_world.Distance(left_handle_world);
     const double right_distance = right_tool_world.Distance(right_handle_world);
-    if (!std::isfinite(left_distance) ||
-      left_distance > grasp_distance_threshold_ ||
-      !std::isfinite(right_distance) ||
-      right_distance > grasp_distance_threshold_)
+    const bool left_tool_contact = std::isfinite(left_distance) &&
+      left_distance <= control.grasp_contact_threshold;
+    const bool right_tool_contact = std::isfinite(right_distance) &&
+      right_distance <= control.grasp_contact_threshold;
+    if (!left_tool_contact || !right_tool_contact)
     {
-      return {false,
-        "Bimanual drawer grasp requires BOTH tools inside the grasp distance "
-        "threshold; single-side attach is rejected.",
-        std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+      PhysicsOutcome outcome;
+      outcome.success = false;
+      outcome.message =
+        "Bimanual drawer grasp requires BOTH tools actually contacting their "
+        "handles (left " + std::to_string(left_distance) + " m, right " +
+        std::to_string(right_distance) + " m; grasp_contact_threshold " +
+        std::to_string(control.grasp_contact_threshold) + " m); single-side "
+        "or hovering attach is rejected.";
+      outcome.left_distance = left_distance;
+      outcome.right_distance = right_distance;
+      outcome.left_tool_contact = left_tool_contact;
+      outcome.right_tool_contact = right_tool_contact;
+      return outcome;
     }
 
     // Revalidate immediately before the irreversible Gazebo operations and
@@ -2659,30 +2909,53 @@ private:
     try {
       // Anchor the chassis for the lifetime of the physical grasp so the pull
       // reaction cannot drag the whole robot away from the world-frame path.
-      base_brake_joint_ = model_->CreateJoint(
-        kRuntimeBaseBrakeJointName, "fixed", gazebo::physics::LinkPtr(),
-        robot_base_link);
-      if (!base_brake_joint_) {
-        return {false, "Gazebo could not create the robot base brake joint.",
-          std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+      // P3-8 grab-and-drive: the caller declared base_free=true because the
+      // pull translates the BASE along the drawer axis (arms hold their grasp
+      // config), so the chassis brake is skipped or the base could not move.
+      if (!request.base_free) {
+        base_brake_joint_ = model_->CreateJoint(
+          kRuntimeBaseBrakeJointName, "fixed", gazebo::physics::LinkPtr(),
+          robot_base_link);
+        if (!base_brake_joint_) {
+          return {false, "Gazebo could not create the robot base brake joint.",
+            std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+        }
+        base_brake_joint_->Init();
       }
-      base_brake_joint_->Init();
-      left_grasp_joint_ = model_->CreateJoint(
-        kRuntimeBimanualLeftJointName, "fixed", control.link, left_link);
-      if (!left_grasp_joint_) {
-        return recover_failed_bimanual_attach(
-          control, request, left_distance, right_distance,
-          "Gazebo could not create the left bimanual drawer grasp joint.");
+      if (control.grasp_coupling_stiffness > 0.0) {
+        // Linear-drag coupling mode: do NOT weld the tools to the drawer.  The
+        // coupling drives the rail toward the tools' commanded motion.  run8
+        // root cause: a hard cross-model fixed joint + kinematic arm teleport
+        // + 80 kg drawer inertia is a closed chain that flings the ~1.9 kg tool
+        // west every controller cycle until the arm controllers abort with
+        // PATH_TOLERANCE_VIOLATED.  Here the reaction lands on the cabinet rail
+        // instead of the tools, so the teleported tools track perfectly.
+        ignition::math::Vector3d axis = control.joint->GlobalAxis(0);
+        axis.Normalize();
+        const auto left_pose = left_link->WorldPose().Pos();
+        const auto right_pose = right_link->WorldPose().Pos();
+        bimanual_coupling_active_ = true;
+        bimanual_grasp_drawer_position_ = control.joint->Position(0);
+        bimanual_grasp_tool_projection_ = axis.Dot(
+          0.5 * (left_pose + right_pose));
+      } else {
+        left_grasp_joint_ = model_->CreateJoint(
+          kRuntimeBimanualLeftJointName, "fixed", control.link, left_link);
+        if (!left_grasp_joint_) {
+          return recover_failed_bimanual_attach(
+            control, request, left_distance, right_distance,
+            "Gazebo could not create the left bimanual drawer grasp joint.");
+        }
+        left_grasp_joint_->Init();
+        right_grasp_joint_ = model_->CreateJoint(
+          kRuntimeBimanualRightJointName, "fixed", control.link, right_link);
+        if (!right_grasp_joint_) {
+          return recover_failed_bimanual_attach(
+            control, request, left_distance, right_distance,
+            "Gazebo could not create the right bimanual drawer grasp joint.");
+        }
+        right_grasp_joint_->Init();
       }
-      left_grasp_joint_->Init();
-      right_grasp_joint_ = model_->CreateJoint(
-        kRuntimeBimanualRightJointName, "fixed", control.link, right_link);
-      if (!right_grasp_joint_) {
-        return recover_failed_bimanual_attach(
-          control, request, left_distance, right_distance,
-          "Gazebo could not create the right bimanual drawer grasp joint.");
-      }
-      right_grasp_joint_->Init();
       active_control_link_ = control.link;
       active_left_robot_link_ptr_ = left_link;
       active_right_robot_link_ptr_ = right_link;
@@ -2714,8 +2987,14 @@ private:
         control, request, left_distance, right_distance,
         "unknown Gazebo bimanual attach exception");
     }
-    return {true, "Bimanual drawer grasp attached.",
-      std::numeric_limits<double>::quiet_NaN(), left_distance, right_distance};
+    PhysicsOutcome outcome;
+    outcome.success = true;
+    outcome.message = "Bimanual drawer grasp attached.";
+    outcome.left_distance = left_distance;
+    outcome.right_distance = right_distance;
+    outcome.left_tool_contact = true;
+    outcome.right_tool_contact = true;
+    return outcome;
   }
 
   PhysicsOutcome handle_grasp_request(const PhysicsRequest & request)
@@ -3040,14 +3319,15 @@ private:
     const auto released_left_link = active_left_robot_link_ptr_;
     const auto released_left_grasp_point = active_left_robot_grasp_point_;
     if (!released_control.empty() &&
-      (left_grasp_joint_ || right_grasp_joint_))
+      (left_grasp_joint_ || right_grasp_joint_ || bimanual_coupling_active_))
     {
       RCLCPP_INFO(
         ros_node_->get_logger(),
         "Releasing bimanual drawer grasp '%s' (maximum fixed-constraint "
-        "linear errors left %.6f m, right %.6f m).",
+        "linear errors left %.6f m, right %.6f m%s).",
         released_control.c_str(), max_left_grasp_linear_error_,
-        max_right_grasp_linear_error_);
+        max_right_grasp_linear_error_,
+        bimanual_coupling_active_ ? ", linear coupling" : "");
     }
     for (const auto & entry : {
       std::make_pair(kRuntimeBimanualLeftJointName, &left_grasp_joint_),
@@ -3081,6 +3361,9 @@ private:
       }
       base_brake_joint_.reset();
     }
+    bimanual_coupling_active_ = false;
+    bimanual_grasp_drawer_position_ = 0.0;
+    bimanual_grasp_tool_projection_ = 0.0;
     active_grasp_control_.clear();
     active_grasp_lease_id_.clear();
     active_grasp_control_generation_ = 0U;
@@ -3283,6 +3566,14 @@ private:
   gazebo::physics::JointPtr left_grasp_joint_;
   gazebo::physics::JointPtr right_grasp_joint_;
   gazebo::physics::JointPtr base_brake_joint_;
+  // Linear-drag coupling session: instead of welding both tools to the drawer,
+  // the rail is driven by a bounded spring-damper toward the tools' commanded
+  // motion since the grasp attach.  The reaction lands on the cabinet rail (not
+  // the light tools), so a kinematic arm teleport never fights an 80 kg
+  // drawer's inertia through a hard cross-model fixed joint (run8 root cause).
+  bool bimanual_coupling_active_{false};
+  double bimanual_grasp_drawer_position_{0.0};
+  double bimanual_grasp_tool_projection_{0.0};
   gazebo::physics::LinkPtr active_control_link_;
   gazebo::physics::LinkPtr active_robot_link_ptr_;
   gazebo::physics::LinkPtr active_left_robot_link_ptr_;
