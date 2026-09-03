@@ -171,15 +171,21 @@
       l_two_cyl_finger1_joint: {trajectory: 0.10, goal: 0.05}
       l_two_cyl_finger2_joint: {trajectory: 0.10, goal: 0.05}
     gains:
+      # 与 three_cylinder 同源问题（2026-09-03 补齐）：两电缸探针在合拢
+      # 标定位姿（0）存在重力/静摩擦静差 —— 无积分时 P 项驱动力随误差
+      # 趋零，finger2（最深探针）实测静息 0.0055–0.008 m，反复踩在 operator
+      # 标定容差（0.006）边界造成校准失败。沿用三缸已验证参数（p=800、
+      # i=60/i_clamp=10，ωn 远低于 100Hz 控制率，ζ≈0.8–0.9），把两指可靠
+      # 钉在业务位姿（0）；finger1 原有静差即很小，同参不引入新问题。
       l_two_cyl_finger1_joint:
-        p: 200.0
-        d: 4.0
-        i: 0.0
-        i_clamp: 0.0
+        p: 800.0
+        d: 15.0
+        i: 60.0
+        i_clamp: 10.0
         ff_velocity_scale: 0.0
       l_two_cyl_finger2_joint:
-        p: 200.0
-        d: 4.0
-        i: 0.0
-        i_clamp: 0.0
+        p: 800.0
+        d: 15.0
+        i: 60.0
+        i_clamp: 10.0
         ff_velocity_scale: 0.0

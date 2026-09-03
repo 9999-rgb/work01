@@ -179,6 +179,19 @@
     #     grasp_contact_threshold 0.02m，探针须真正贴住把手，不再悬空附着）。
     # calibration_joint_* 闭合手指至零位，使工具处于已标定外形。
     drawer_tools:
+      # 2026-09-03 AGENT §4.2: per-side rod ROLE contract (P1 末端电机职责).
+      # 职责命名与「只有 calibration_joint_positions」彻底分离：
+      #   support_joint/contact_link  = 支撑伸缩电缸的移动关节/移动连杆；
+      #   gripper_joint/contact_link  = 夹爪电缸的移动关节/移动连杆；
+      #   support/gripper_contact_point_local = 杆端在「移动连杆局部系」的接触
+      #     偏移（由工具 STL z-extent 实测：finger1/2 族 ~-0.075/-0.09/-0.095、
+      #     finger3 短杆 -0.013）；量得的是连杆原点→杆端沿 -Z 的距离。
+      #   *_retracted/open_position = 电缸回位（缩回/张开），恒 0。
+      #   support_contact_position / gripper_grasp_position = §7.2 阶段 4/5
+      #     现场封定的伸出工作值：<=0 表示该电缸阶段尚未封定、流程退回
+      #     「仅机械臂位姿」旧行为，直到封定写入此处。右解锁角色按现有约定
+      #     留在每抽屉 controls.yaml 的 unlock_* 字段（与插件解锁服务同源），
+      #     不在 drawer_tools 重复声明。
       left:
         move_group: left_arm
         contact_tool_link: l_two_cyl_base
@@ -188,6 +201,21 @@
           - l_two_cyl_finger1_joint
           - l_two_cyl_finger2_joint
         calibration_joint_positions: [0.0, 0.0]
+        support_joint: l_two_cyl_finger1_joint
+        support_contact_link: l_two_cyl_finger1
+        support_contact_point_local: [0.0, 0.0, -0.075]
+        support_retracted_position: 0.0
+        # 2026-09-03 §7.2 阶段 4 首轮实测探值（provisional）：支撑杆静息杆端比
+        # tip 列浅 20mm，支撑 hover 再退 20mm → 接触 ~0.036-0.045+漂移；0.050
+        # 预期把漂移 ≤16mm 的自由抽屉压回关位。以 stage-4 日志实测收敛后封定。
+        support_contact_position: 0.050
+        gripper_joint: l_two_cyl_finger2_joint
+        gripper_contact_link: l_two_cyl_finger2
+        gripper_contact_point_local: [0.0, 0.0, -0.095]
+        gripper_open_position: 0.0
+        # 2026-09-03 §7.2 阶段 5 首轮实测探值（provisional）：夹爪杆端即 tip 列，
+        # grasp 位姿已贴板 → 只须小行程咬合。以 stage-5 日志实测收敛后封定。
+        gripper_grasp_position: 0.010
       right:
         move_group: right_arm
         contact_tool_link: r_three_cyl_base
@@ -198,6 +226,19 @@
           - r_three_cyl_finger2_joint
           - r_three_cyl_finger3_joint
         calibration_joint_positions: [0.0, 0.0, 0.0]
+        support_joint: r_three_cyl_finger2_joint
+        support_contact_link: r_three_cyl_finger2
+        support_contact_point_local: [0.0, 0.0, -0.075]
+        support_retracted_position: 0.0
+        # 2026-09-03 §7.2 阶段 4 首轮实测探值（provisional）：与左同理，0.050
+        # 覆盖接触 ~0.036-0.045 + 压回余量。以 stage-4 日志实测收敛后封定。
+        support_contact_position: 0.050
+        gripper_joint: r_three_cyl_finger1_joint
+        gripper_contact_link: r_three_cyl_finger1
+        gripper_contact_point_local: [0.0, 0.0, -0.090]
+        gripper_open_position: 0.0
+        # 2026-09-03 §7.2 阶段 5 首轮实测探值（provisional）。以日志收敛后封定。
+        gripper_grasp_position: 0.010
     navigation_takeover_distance: 1.0
     navigation_takeover_yaw_tolerance: 0.35
     navigation_takeover_stall_timeout: 4.0

@@ -631,16 +631,23 @@ private:
     // link.  The left handle reuses grasp_point; the right handle and the
     // unlock press point are drawer-only fields.
     ignition::math::Vector3d right_grasp_point{0.0, 0.0, 0.0};
-    // 2026-09-02: the unlock point is the face of the b1p push-button (on top
-    // of the right handle riser), not a logical zone floating in air.  Unlock
-    // now requires BOTH the right tool tip within unlock_distance_threshold of
-    // this point AND the <unlock_button_id> button joint displaced >= its
-    // press_threshold (see handle_unlock_request).
+    // 2026-09-03 AGENT §3: unlock_press_point is the CENTRE of the right-handle
+    // LOGICAL unlock zone (drawer link frame), not a visible button.  Unlock
+    // requires BOTH the unlock-motor contact link (the robot link the request
+    // names) within unlock_distance_threshold of this centre AND the
+    // robot-model unlock_motor_joint actually extended (see
+    // handle_unlock_request).  No button-joint evidence, no b1p displacement.
     ignition::math::Vector3d unlock_press_point{0.0, 0.0, 0.0};
     double unlock_distance_threshold{0.10};
-    // Mandatory button control id whose joint must be physically pressed for
-    // unlock to succeed.  Empty = no button wired (legacy configs refuse).
-    std::string unlock_button_id;
+    // Robot-model joint that is the right-hand unlock motor (e.g.
+    // r_three_cyl_finger3_joint).  The plugin reads its REAL gazebo position to
+    // prove the motor actually extended.  Required for drawer unlock.
+    std::string unlock_motor_joint;
+    double unlock_retracted_position{0.0};
+    // Motor position must reach retracted + this floor to count as extended.
+    double unlock_extension_floor{0.001};
+    // Position above which the motor is bottoming out - unlock is refused.
+    double unlock_extension_ceiling{0.0254};
     // Bimanual attach / coupling contact contract (2026-09-02).  Attach is only
     // granted while both tool tips are within grasp_contact_threshold of their
     // handles (tight, ~0.02m, i.e. actual contact — hovering is rejected).
@@ -682,10 +689,11 @@ private:
     // Bimanual drawer outcomes carry per-side distances.
     double left_distance{std::numeric_limits<double>::quiet_NaN()};
     double right_distance{std::numeric_limits<double>::quiet_NaN()};
-    // Physical-contact evidence (2026-09-02).  Unlock: pressed = the unlock
-    // button joint was actually displaced; right_tool_contact = the right tip
-    // was within the press-point threshold.  Bimanual attach: per-side tool
-    // contact flags within the drawer's tight grasp_contact_threshold.
+    // Physical-contact evidence.  Unlock (2026-09-03): pressed = the unlock
+    // motor joint was actually extended within [retracted+floor, ceiling) and
+    // right_tool_contact = the motor's contact link tip was within the unlock
+    // zone threshold.  Bimanual attach: per-side tool contact flags within the
+    // drawer's tight grasp_contact_threshold.
     bool pressed{false};
     bool left_tool_contact{false};
     bool right_tool_contact{false};
@@ -1040,11 +1048,11 @@ private:
           }
           if (!element->HasElement("right_grasp_point") ||
             !element->HasElement("unlock_press_point") ||
-            !element->HasElement("unlock_button_id"))
+            !element->HasElement("unlock_motor_joint"))
           {
             throw std::invalid_argument(
                     "Cabinet drawer control requires <right_grasp_point>, "
-                    "<unlock_press_point> and <unlock_button_id>: " +
+                    "<unlock_press_point> and <unlock_motor_joint>: " +
                     control.id);
           }
           control.right_grasp_point = parse_vector3(
@@ -1055,12 +1063,17 @@ private:
             element, "unlock_distance_threshold", 0.10);
           control.drawer_latch_stiffness = optional_double(
             element, "drawer_latch_stiffness", kDefaultDrawerLatchStiffness);
-          // 2026-09-02 physical-press unlock: the drawer names the button
-          // control whose joint must be displaced.  It must exist in this
-          // plugin (configured before or after this drawer — resolution is
-          // deferred to configure phase end).
-          control.unlock_button_id = element->Get<std::string>(
-            "unlock_button_id");
+          // 2026-09-03 AGENT §3: the drawer names the ROBOT-model joint that is
+          // the unlock motor.  The plugin reads its real gazebo position for
+          // the extension evidence; no in-plugin button control is involved.
+          control.unlock_motor_joint = element->Get<std::string>(
+            "unlock_motor_joint");
+          control.unlock_retracted_position = optional_double(
+            element, "unlock_retracted_position", 0.0);
+          control.unlock_extension_floor = optional_double(
+            element, "unlock_extension_floor", 0.001);
+          control.unlock_extension_ceiling = optional_double(
+            element, "unlock_extension_ceiling", 0.0254);
           control.grasp_contact_threshold = optional_double(
             element, "grasp_contact_threshold", 0.02);
           control.coupling_contact_grace_seconds = optional_double(
@@ -1079,6 +1092,17 @@ private:
                     "Cabinet drawer unlock_distance_threshold, "
                     "drawer_latch_stiffness, grasp_contact_threshold and "
                     "coupling_contact_grace_seconds must be positive: " +
+                    control.id);
+          }
+          if (control.unlock_extension_floor < 0.0 ||
+            control.unlock_retracted_position < 0.0 ||
+            control.unlock_extension_ceiling <=
+              control.unlock_retracted_position +
+              control.unlock_extension_floor)
+          {
+            throw std::invalid_argument(
+                    "Cabinet drawer unlock motor range must satisfy 0 <= "
+                    "retracted, floor >= 0 and ceiling > retracted + floor: " +
                     control.id);
           }
           // A drawer may declare compliant grasp coupling (grasp_coupling_*).
@@ -1104,32 +1128,6 @@ private:
       element = element->GetNextElement("control");
     }
 
-    // Resolve every drawer's unlock_button_id now that all controls are
-    // registered.  The referenced control must exist, be a real button with a
-    // joint, and be press-threshold configured — otherwise unlock can never
-    // produce the physical-press evidence the contract requires.
-    for (const Control & control : controls_) {
-      if (control.kind != ControlKind::kDrawer) {
-        continue;
-      }
-      const auto button_it = control_indices_.find(control.unlock_button_id);
-      if (button_it == control_indices_.end()) {
-        throw std::invalid_argument(
-                "Drawer <unlock_button_id> names unknown control '" +
-                control.unlock_button_id + "': " + control.id);
-      }
-      const Control & button = controls_[button_it->second];
-      if (button.kind != ControlKind::kButton || !button.joint) {
-        throw std::invalid_argument(
-                "Drawer <unlock_button_id> '" + control.unlock_button_id +
-                "' is not a button control with a joint: " + control.id);
-      }
-      if (button.press_threshold <= 0.0) {
-        throw std::invalid_argument(
-                "Drawer unlock button '" + control.unlock_button_id +
-                "' must declare a positive <press_threshold>: " + control.id);
-      }
-    }
   }
 
   void on_update()
@@ -2663,14 +2661,14 @@ private:
         request.right_robot_link, std::numeric_limits<double>::quiet_NaN()};
     }
 
-    // 2026-09-02: the unlock press point is the face of the b1p push-button
-    // (on top of the right handle riser), in the drawer link frame, so the
-    // distance check tracks the drawer whether it is open or closed.  Unlock
-    // requires BOTH: the right tool tip within the (tight) press threshold of
-    // that point AND the named unlock button joint physically displaced.  The
-    // button joint lives in this plugin (same world), read under the physics
-    // callback lock — the actuator presses it through contact, so the
-    // displacement is real physical evidence, not a free-position claim.
+    // 2026-09-03 AGENT §3: unlock_press_point is the centre of the right-handle
+    // LOGICAL unlock zone (drawer link frame), so the distance check tracks the
+    // drawer whether it is open or closed.  Unlock requires BOTH: the unlock
+    // motor's contact link tip (the robot link the request names) within
+    // unlock_distance_threshold of that centre AND the robot-model unlock motor
+    // joint actually extended (position in [retracted+floor, ceiling)) — real
+    // physical evidence read under the physics lock, not a free-position claim,
+    // and no b1p indicator displacement is involved.
     const auto target_pose = control.link->WorldPose();
     const auto unlock_press_world = target_pose.Pos() +
       target_pose.Rot().RotateVector(control.unlock_press_point);
@@ -2682,20 +2680,25 @@ private:
       std::isfinite(distance) &&
       distance <= control.unlock_distance_threshold;
 
-    const auto button_it = control_indices_.find(control.unlock_button_id);
-    // Resolution validated in configure_controls; the reference must exist.
-    const Control & button = controls_[button_it->second];
-    const double button_position =
-      button.joint ? button.joint->Position(0) : 0.0;
-    const bool pressed = button.joint != nullptr &&
-      button_position >= button.press_threshold;
+    gazebo::physics::JointPtr motor_joint;
+    if (!control.unlock_motor_joint.empty()) {
+      motor_joint = robot_model->GetJoint(control.unlock_motor_joint);
+    }
+    const double motor_position =
+      motor_joint ? motor_joint->Position(0) : 0.0;
+    const bool motor_over_ceiling = motor_joint != nullptr &&
+      motor_position >= control.unlock_extension_ceiling;
+    const bool pressed = motor_joint != nullptr &&
+      motor_position >= control.unlock_retracted_position +
+        control.unlock_extension_floor &&
+      !motor_over_ceiling;
 
     if (!right_tool_contact) {
       PhysicsOutcome outcome;
       outcome.success = false;
       outcome.message =
-        "Right tool is not pressing the unlock button (distance to "
-        "unlock_press_point " + std::to_string(distance) + " m exceeds "
+        "Unlock contact link is not inside the unlock zone (distance to "
+        "unlock zone centre " + std::to_string(distance) + " m exceeds "
         "threshold " + std::to_string(control.unlock_distance_threshold) +
         " m).";
       outcome.distance = distance;
@@ -2706,11 +2709,28 @@ private:
     if (!pressed) {
       PhysicsOutcome outcome;
       outcome.success = false;
-      outcome.message =
-        "Right tool reaches the unlock button but the button is not "
-        "physically pressed (joint position " +
-        std::to_string(button_position) + " m < press_threshold " +
-        std::to_string(button.press_threshold) + " m).";
+      if (control.unlock_motor_joint.empty()) {
+        outcome.message =
+          "Drawer unlock has no configured <unlock_motor_joint>: " +
+          control.id;
+      } else if (!motor_joint) {
+        outcome.message =
+          "Unlock motor joint was not found on the robot model: " +
+          control.unlock_motor_joint;
+      } else if (motor_over_ceiling) {
+        outcome.message =
+          "Unlock motor is over its extension ceiling (position " +
+          std::to_string(motor_position) + " m >= ceiling " +
+          std::to_string(control.unlock_extension_ceiling) + " m); "
+          "unlock refused - the motor must not bottom out.";
+      } else {
+        outcome.message =
+          "Unlock contact link is in the zone but the unlock motor is not "
+          "extended (joint position " + std::to_string(motor_position) +
+          " m < retracted " +
+          std::to_string(control.unlock_retracted_position) + " + floor " +
+          std::to_string(control.unlock_extension_floor) + " m).";
+      }
       outcome.distance = distance;
       outcome.right_tool_contact = true;
       outcome.pressed = false;
@@ -2740,9 +2760,10 @@ private:
     }
     RCLCPP_INFO(
       ros_node_->get_logger(),
-      "Drawer '%s' rail latch released by the right tool physically pressing "
-      "the unlock button (joint %.6f m, tip distance %.6f m).",
-      control.id.c_str(), button_position, distance);
+      "Drawer '%s' rail latch released: unlock motor '%s' extended to %.6f m "
+      "with its contact link %.6f m from the unlock zone centre.",
+      control.id.c_str(), control.unlock_motor_joint.c_str(),
+      motor_position, distance);
     PhysicsOutcome outcome;
     outcome.success = true;
     outcome.message = "Drawer unlocked.";
