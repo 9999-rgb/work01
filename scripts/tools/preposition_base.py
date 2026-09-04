@@ -85,6 +85,14 @@ def teleport_to_station(
     ``standoff_override`` replaces the adapter's standoff so reachability can
     be swept without touching the adapter or restarting the operator.
 
+    The station pose is resolved in ``map`` (not ``odom``): /set_entity_state
+    teleports in the Gazebo world frame, and the world origin coincides with
+    the map origin for every scene (fixture geometry is declared at the map
+    origin).  Resolving in odom would bake the map->odom offset into the
+    teleport pose - invisible while a scene's map->odom ~= identity, but a
+    hard bug once fixture pose frames moved under map (odom z offset ~0.55 m
+    teleported the robot mid-air and shifted x/y by the AMCL offset).
+
     Returns ``(world_x, world_y, world_z, body_yaw, base_yaw)``.  Callers may
     spin ``node`` while waiting for the cabinet frame TF.
     """
@@ -106,7 +114,7 @@ def teleport_to_station(
     while node.get_clock().now() < deadline:
         rclpy.spin_once(node, timeout_sec=0.25)
         try:
-            tf = tf_buffer.lookup_transform("odom", cabinet_frame, rclpy.time.Time())
+            tf = tf_buffer.lookup_transform("map", cabinet_frame, rclpy.time.Time())
             q = tf.transform.rotation
             t = tf.transform.translation
             cx, cy, cz = t.x, t.y, t.z
@@ -118,7 +126,7 @@ def teleport_to_station(
             )
     if cx is None:
         raise PrepositionError(
-            f"Cabinet frame '{cabinet_frame}' unavailable in odom: {last_error}"
+            f"Cabinet frame '{cabinet_frame}' unavailable in map: {last_error}"
         )
 
     # Full 3-D cabinet-frame rotation: the local offset and outward axis are
@@ -163,17 +171,27 @@ def teleport_to_station(
             f"{getattr(response, 'status_message', 'no response')}"
         )
 
-    # AMCL initial pose (navigation frame yaw = base yaw).
+    # AMCL initial pose (navigation frame yaw = base yaw).  The stamp is left
+    # at zero on purpose: under use_sim_time, "now" here is sim time and AMCL's
+    # exact-time tf lookup of that stamp routinely misses (extrapolation past
+    # the newest transform) - the same failure recover_amcl.py documents.
+    # tf2 treats a zero stamp as "use the latest transform".
+    #
+    # The covariance is PINNED tight (1 cm): recover_amcl.py proved that a
+    # loose hypothesis (0.25) lets scan matching drag the seed away while the
+    # operator's precision docking is under way, and the operator then chases
+    # a phantom map-frame goal - observed to drive the robot ~8 m off the db1
+    # dock (error 4, "odometry staging pose" timeout).  The teleport pose is
+    # ground truth by construction, so the seed must not be free to wander.
     pose = PoseWithCovarianceStamped()
     pose.header.frame_id = "map"
-    pose.header.stamp = node.get_clock().now().to_msg()
     pose.pose.pose.position.x = world_x
     pose.pose.pose.position.y = world_y
     pose.pose.pose.orientation.z = math.sin(base_yaw / 2.0)
     pose.pose.pose.orientation.w = math.cos(base_yaw / 2.0)
-    pose.pose.covariance[0] = 0.25
-    pose.pose.covariance[7] = 0.25
-    pose.pose.covariance[35] = 0.1
+    pose.pose.covariance[0] = 0.0001
+    pose.pose.covariance[7] = 0.0001
+    pose.pose.covariance[35] = 0.0001
     initial_pose_pub = node.create_publisher(
         PoseWithCovarianceStamped, "/initialpose", 10
     )

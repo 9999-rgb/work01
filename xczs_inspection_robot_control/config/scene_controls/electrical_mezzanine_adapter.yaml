@@ -2,8 +2,21 @@
   ros__parameters:
     # 跨节点共享的机器人接口契约（与共享 cabinet_robot_adapter.yaml 相同；
     # 本文件为电气夹层夹具实例自包含的机器人适配层）。
+    # pose_parent_frame 必须为 map：夹具几何按恒等位姿声明于世界/map 系（夹具
+    # 模型随场景加载于 map 原点，controls/instances 坐标均为 map 坐标），而本
+    # 场景中机器人底盘行走层在 map 原点下方（map->odom z≈-0.546，odom 原点在
+    # 启动位姿处）。若把夹具 frame 以恒等位姿挂到 odom（旧版），odom→cabinet
+    # = 恒等，operator 按 odom 规划的所有 map 系目标点会被整体压低 0.55 m
+    # （cap-2 verify5 双臂杆端在 p≈0 顶死柜体下部面板的根因）。挂 map 后
+    # odom→cabinet = odom→map（AMCL 实时），由 operator 在任务起始 latch。
     planning_frame: odom
-    pose_parent_frame: odom
+    pose_parent_frame: map
+    # operator 柜体位姿 watchdog 校验系 = map（与 pose_parent_frame 合同一致）：
+    # map→cabinet 为 pose authority 静态/测量真值，AMCL 的 map→odom 修正不改变
+    # 它；若按 odom 校验会把定位修正误判为柜体位移（docking 期底盘机动时单步
+    # 修正可达 20mm+ → 误中止 cap-2 docking）。共享柜体（odom 锚定）不设此项，
+    # 回退 planning_frame 保持旧语义。
+    cabinet_verify_frame: map
     manual_linear_axis: y
     manual_linear_sign: -1.0
     navigation_velocity_yaw_offset: -1.57079632679
@@ -109,8 +122,9 @@
 /**/xczs_cabinet_button_operator:
   ros__parameters:
     # 机器人适配层：tool_profiles 与全局标定沿用共享柜体目录，仅 controls
-    # （夹具导航工位）与 operable_control_ids（B3b = db1/dm1 两扇低门 + 顶缘
-    # ds2/ds3）按电气夹层夹具定制。
+    # （夹具导航工位）与 operable_control_ids 按电气夹层夹具定制 —— AGENT
+    # P3 起 db1 为唯一 drawer 流程操作对象；dm1/ds2/ds3 维持既有 slider 语义
+    # 待 §9 推广；ds1（高抽屉不可达）仅保留停靠工位 + 状态展示。
     robot_model_name: xczs_inspection_robot
     move_group_namespace: /
     planning_time: 10.0
@@ -196,6 +210,11 @@
         move_group: left_arm
         contact_tool_link: l_two_cyl_base
         transport_named_target: home
+        # 左工具绕作业轴翻转 180°，使 finger1 支撑杆列位于 finger2 夹爪列的
+        # 外侧（西侧缝方向）；右工具无需翻转，支撑列自然位于东侧缝方向。两侧
+        # 形成“夹爪贴把手立板、支撑杆对同侧侧缝口”的同构镜像（2026-09-03
+        # AGENT §4.3 侧缝语义，废止旧“下方抵柜面”布局）。
+        tool_roll_offset: 3.14159265359
         tool_tip_position: [-0.034, -0.061735, -0.3885]
         calibration_joint_names:
           - l_two_cyl_finger1_joint
@@ -204,22 +223,35 @@
         support_joint: l_two_cyl_finger1_joint
         support_contact_link: l_two_cyl_finger1
         support_contact_point_local: [0.0, 0.0, -0.075]
+        # finger1 joint origin [0.034,-0.061735,-0.2935] + 杆端局部偏移。
+        support_contact_point_base_at_zero: [0.034, -0.061735, -0.3685]
         support_retracted_position: 0.0
-        # 2026-09-03 §7.2 阶段 4 首轮实测探值（provisional）：支撑杆静息杆端比
-        # tip 列浅 20mm，支撑 hover 再退 20mm → 接触 ~0.036-0.045+漂移；0.050
-        # 预期把漂移 ≤16mm 的自由抽屉压回关位。以 stage-4 日志实测收敛后封定。
-        support_contact_position: 0.050
+        # 支撑 0.030 与夹爪 0.010 后两根杆端的工具轴坐标同为 -0.3985，
+        # 轴向齐平 → 同一工作位姿下钩爪贴把手立板（z 0.952 带）、支撑杆端同时
+        # 到达同侧缝口平面（x 0.099）；进入深度由 live 封定（AGENT §4.3）。
+        support_contact_position: 0.030
         gripper_joint: l_two_cyl_finger2_joint
         gripper_contact_link: l_two_cyl_finger2
         gripper_contact_point_local: [0.0, 0.0, -0.095]
+        gripper_contact_point_base_at_zero: [-0.034, -0.061735, -0.3885]
         gripper_open_position: 0.0
-        # 2026-09-03 §7.2 阶段 5 首轮实测探值（provisional）：夹爪杆端即 tip 列，
-        # grasp 位姿已贴板 → 只须小行程咬合。以 stage-5 日志实测收敛后封定。
         gripper_grasp_position: 0.010
+        # 2026-09-04 AGENT §8.4 fix#3 (cap2 verify3 取证): 钩爪封定 = 深压 +
+        # 座封探针，替代旧「到达 grasp + 稳定性窗口」—— 浅 perch(0.010,
+        # ≤0.87mm/3N)永不啮合且必然失稳。啮合需 ≥1mm/≥10N：press 证据 =
+        # grasp+0.0015(杆位 0.0115, ~1.5mm 面深, ref 0.015 让 I 爬到 ~10N)；
+        # 座封 ref = grasp−0.004(杆位 0.006, 双侧同时回缩拖抽屉至 latch 止点
+        # ~0.0038 后爪停低张力区)；catch_floor 0.0005 为啮合判别量(未啮合爪
+        # 自由落回 0.006)。最终偏移写入 YAML，不能靠扩大抓取容差。
+        gripper_hook_press_overshoot: 0.005
+        gripper_hook_press_penetration_evidence: 0.0015
+        gripper_hook_seat_depth: 0.004
+        gripper_hook_seat_catch_floor: 0.0005
       right:
         move_group: right_arm
         contact_tool_link: r_three_cyl_base
         transport_named_target: home
+        tool_roll_offset: 0.0
         tool_tip_position: [0.0265, -0.061735, -0.3885]
         calibration_joint_names:
           - r_three_cyl_finger1_joint
@@ -229,16 +261,27 @@
         support_joint: r_three_cyl_finger2_joint
         support_contact_link: r_three_cyl_finger2
         support_contact_point_local: [0.0, 0.0, -0.075]
+        support_contact_point_base_at_zero: [-0.034, -0.061735, -0.3685]
         support_retracted_position: 0.0
-        # 2026-09-03 §7.2 阶段 4 首轮实测探值（provisional）：与左同理，0.050
-        # 覆盖接触 ~0.036-0.045 + 压回余量。以 stage-4 日志实测收敛后封定。
-        support_contact_position: 0.050
+        support_contact_position: 0.030
         gripper_joint: r_three_cyl_finger1_joint
         gripper_contact_link: r_three_cyl_finger1
         gripper_contact_point_local: [0.0, 0.0, -0.090]
+        gripper_contact_point_base_at_zero: [0.034, -0.061735, -0.3885]
         gripper_open_position: 0.0
-        # 2026-09-03 §7.2 阶段 5 首轮实测探值（provisional）。以日志收敛后封定。
         gripper_grasp_position: 0.010
+        # 2026-09-04 AGENT §8.4 fix#3: 同左侧(见 drawer_tools.left 的注释)。
+        gripper_hook_press_overshoot: 0.005
+        gripper_hook_press_penetration_evidence: 0.0015
+        gripper_hook_seat_depth: 0.004
+        gripper_hook_seat_catch_floor: 0.0005
+        # finger3 是 finger2 的串联子级：base 零位杆端 =
+        # [-0.034,-0.061735,-0.2935] + [-0.012,0.082,-0.05245]
+        # + [0,0,-0.013002]。解锁位姿按这根真实短杆计算并由插件核验。
+        unlock_joint: r_three_cyl_finger3_joint
+        unlock_contact_link: r_three_cyl_finger3
+        unlock_contact_point_local: [0.0, 0.0, -0.013002]
+        unlock_contact_point_base_at_zero: [-0.046, 0.020265, -0.358952]
     navigation_takeover_distance: 1.0
     navigation_takeover_yaw_tolerance: 0.35
     navigation_takeover_stall_timeout: 4.0
@@ -258,6 +301,13 @@
     force_tracking_settle_seconds: 0.15
     force_tracking_attempts: 3
     button_press_minimum_cartesian_fraction: 0.95
+    # 真实移动杆端到目标点的硬门槛；任一侧超差立即收杆并终止，不再带着
+    # 错位接触进入附着或抽拉。
+    drawer_support_contact_tolerance: 0.008
+    drawer_gripper_contact_tolerance: 0.008
+    drawer_arm_pose_tolerance: 0.008
+    drawer_arm_orientation_tolerance: 0.02
+    drawer_arm_stability_tolerance: 0.003
     # 抽屉正面工位：夹具局部系 == 世界/map 系（场景模型单位位姿 spawn）。
     # 停靠点 = 抽屉前脸（x=0.099）正东退让 standoff；outward (1,0,0) 自前脸
     # 指向机器人（东侧）。base_yaw_offset 取 0：导航目标 yaw = atan2(-1,0,0
@@ -282,6 +332,18 @@
           standoff: 1.1
           base_yaw_offset: 0.0
           frame_id: map
+      ds1:
+        # 高抽屉不可达：工位仅供 Web 状态展示与实时规划验证（validation-only
+        # 目标同样要导航），operator 不会执行任何抽拉（不在 operable 清单）。
+        navigation_station:
+          local_anchor: [0.099, 4.581, 0.0]
+          outward_axis: [1.0, 0.0, 0.0]
+          standoff: 1.1
+          base_yaw_offset: 0.0
+          frame_id: map
+        unavailable_reason: >-
+          高抽屉（把手世界 z≈2.00 m）超出右臂可达窗口上缘 1.547 m，模型物理
+          不可达；保留停靠工位仅供状态展示与实时规划验证，不执行抽拉操作。
       ds2:
         navigation_station:
           local_anchor: [0.099, 4.219, 0.0]
@@ -296,9 +358,9 @@
           standoff: 1.1
           base_yaw_offset: 0.0
           frame_id: map
-    # 物理执行能力正向清单（B3b：db1/dm1 低门；2026-09-01 增补 ds2/ds3 顶缘
-    # 门）。本阶段全部抽屉改为正面抽拉操作（grasp 拉出/推回），经 Gazebo 实测
-    # 验收。ds1 前脸 z=2.06 超出可达窗口上缘，保持状态展示。
+    # 物理执行能力正向清单（AGENT P3 起：db1 抽屉为本阶段唯一 drawer 流程
+    # 操作对象；dm1/ds2/ds3 维持既有 slider 语义待 AGENT §9 推广）。ds1 高
+    # 抽屉不可达 → 仅状态展示，工位与原因见 controls.ds1。
     # 未列入的控制一律只做实时规划验证，绝不写入夹具状态。
     operable_control_ids:
       - db1

@@ -130,17 +130,25 @@
       # 停靠/按压姿态下会悬空失败。提高比例增益并加积分项，让控制器在任意
       # 工具姿态下都能把手指可靠钉在业务位姿（0）。数值按各指质量校核过
       # 稳定性（ωn 远低于 100Hz 控制率 Nyquist，ζ≈0.8–0.9）。
+      # 2026-09-04 AGENT §8.4 fix（实测根因）：主杆按压行程存在 ~30–45 N
+      # 的装配接触静摩擦壁垒 —— 0.05 大指令需 ~40–50 N 才 stick-slip 突破
+      # （burst 爬行），0.015 按压级指令被原 i_clamp=10 封在 ~22 N 天花板
+      # 下，右钩 r_f1/r_f2 永不到达 evidence ≥ 0.0115（clean2 deep-press
+      # 失败物理根因；同源也解释了左钩 l_f2 的 40 s 缓慢爬升）。提高 I 项
+      # 权威（i=200、i_clamp=60）：0.015 误差下 ~3 N/s 爬升，约 8–10 sim s
+      # 越过壁垒并钉住目标。P/D 不变 → ωn/ζ 不变；误差归零后 I 不累积，
+      # 业务位姿（0）的静息校核不受影响。
       r_three_cyl_finger1_joint:
         p: 800.0
         d: 15.0
-        i: 60.0
-        i_clamp: 10.0
+        i: 200.0
+        i_clamp: 60.0
         ff_velocity_scale: 0.0
       r_three_cyl_finger2_joint:
         p: 800.0
         d: 15.0
-        i: 60.0
-        i_clamp: 10.0
+        i: 200.0
+        i_clamp: 60.0
         ff_velocity_scale: 0.0
       r_three_cyl_finger3_joint:
         p: 120.0
@@ -177,15 +185,19 @@
       # 标定容差（0.006）边界造成校准失败。沿用三缸已验证参数（p=800、
       # i=60/i_clamp=10，ωn 远低于 100Hz 控制率，ζ≈0.8–0.9），把两指可靠
       # 钉在业务位姿（0）；finger1 原有静差即很小，同参不引入新问题。
+      # 2026-09-04 AGENT §8.4 fix：与三缸同源的按压行程静摩擦壁垒，沿用
+      # 三缸提升后的 I 项权威（i=200、i_clamp=60），使左钩按压不再依赖
+      # 40 s 级缓慢爬升（clean2 实测 l_f2 在 22 N 天花板下爬 40 s 才勉强
+      # 到达 0.0124，恰好压线 evidence）。
       l_two_cyl_finger1_joint:
         p: 800.0
         d: 15.0
-        i: 60.0
-        i_clamp: 10.0
+        i: 200.0
+        i_clamp: 60.0
         ff_velocity_scale: 0.0
       l_two_cyl_finger2_joint:
         p: 800.0
         d: 15.0
-        i: 60.0
-        i_clamp: 10.0
+        i: 200.0
+        i_clamp: 60.0
         ff_velocity_scale: 0.0

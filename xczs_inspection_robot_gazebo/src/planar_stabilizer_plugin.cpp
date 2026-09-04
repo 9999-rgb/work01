@@ -1,6 +1,7 @@
 #include <gazebo/common/Events.hh>
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/physics/Joint.hh>
+#include <gazebo/physics/Link.hh>
 #include <gazebo/physics/Model.hh>
 #include <gazebo/physics/World.hh>
 #include <gazebo_ros/node.hpp>
@@ -118,6 +119,7 @@ public:
     settling_duration_ =
       sdf->Get<double>("settling_duration", 0.5).first;
     load_held_joints(sdf);
+    keep_slider_links_awake();
     held_joint_positions_.resize(held_joints_.size(), 0.0);
     schedule_height_lock();
 
@@ -156,6 +158,9 @@ public:
     planar_motion_observed_at_begin_ = false;
     base_command_moving_->store(false);
     schedule_height_lock();
+    // A world reset reinstates ODE's per-body auto-disable defaults, so the
+    // slider links must be re-exempted after every reset, not only at spawn.
+    keep_slider_links_awake();
   }
 
 private:
@@ -235,6 +240,36 @@ private:
               << joint_name << "].\n";
       }
       joint_element = joint_element->GetNextElement("hold_joint");
+    }
+  }
+
+  // ODE's auto-disable freezes a rigid body that has been at rest for a
+  // short time.  A frozen body ignores forces applied through its joints --
+  // only direct contact or an explicit enable wakes it -- so an end-effector
+  // slider that falls asleep between operations pins at its last coordinate
+  // and silently refuses every commanded effort (diagnosed as the right tool
+  // rods staying put while a sibling stage on the same controller tracked
+  // perfectly).  The tool sliders are driven exclusively by the
+  // gazebo_ros2_control effort path, so the small prismatic carriage bodies
+  // must never be allowed to auto-disable.  Exempting them from the sleep
+  // heuristic costs nothing: they carry negligible mass and are no heavier
+  // for the solver than an always-awake body.
+  void keep_slider_links_awake()
+  {
+    for (const gazebo::physics::JointPtr & joint : model_->GetJoints()) {
+      if ((joint->GetType() & gazebo::physics::Base::SLIDER_JOINT) == 0U) {
+        continue;
+      }
+      for (const int index : {0, 1}) {
+        gazebo::physics::LinkPtr link = joint->GetJointLink(index);
+        if (link) {
+          link->SetAutoDisable(false);
+          // SetAutoDisable only clears the flag; a body that is already
+          // frozen (e.g. after a world reset mid-idle) needs an explicit
+          // enable before it will accept forces again.
+          link->SetEnabled(true);
+        }
+      }
     }
   }
 

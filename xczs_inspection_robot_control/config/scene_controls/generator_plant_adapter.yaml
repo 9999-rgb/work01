@@ -2,8 +2,11 @@
   ros__parameters:
     # 跨节点共享的机器人接口契约（与共享 cabinet_robot_adapter.yaml 相同；
     # 本文件为发电机层夹具实例自包含的机器人适配层，避免污染共享柜体配置）。
+    # pose_parent_frame 必须为 map：夹具几何随场景以恒等位姿加载于世界/map
+    # 系（与电气夹层同型），机器人行走层相对 map 原点存在 z 偏移；挂 odom 会
+    # 使 operator 的 map 系目标整体偏低。详见 electrical_mezzanine_adapter.yaml。
     planning_frame: odom
-    pose_parent_frame: odom
+    pose_parent_frame: map
     manual_linear_axis: y
     manual_linear_sign: -1.0
     navigation_velocity_yaw_offset: -1.57079632679

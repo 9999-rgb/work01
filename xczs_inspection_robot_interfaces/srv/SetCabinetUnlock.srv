@@ -1,17 +1,16 @@
-# 抽屉解锁服务：右手三电缸把右把手顶部的解锁按钮（b1p 可压指示帽）真实
-# 压入，解锁才成立。
+# 抽屉解锁服务：右手解锁电缸的真实杆端进入右把手解锁逻辑区后，轨道
+# 才能解锁。右把手上的 b1p 是固定指示灯，不是按钮，也没有按压行程。
 #
 # 解锁要求（两者缺一不可，plugin 在 handle_unlock_request 内判定）：
-#   - 右工具抓取点世界位置距解锁按压点（unlock_press_point）≤
-#     unlock_distance_threshold（收紧到 ~0.03m，不再是空置逻辑区）；
-#   - <unlock_button_id> 指向的按钮（b1p_joint）关节位移 ≥ press_threshold，
-#     即按钮被右电缸物理压入（解锁的物证）。
-# 不再接受"探针进入空置逻辑区就解锁"的假解锁。
+#   - 请求必须指定真实解锁电缸的移动连杆及其杆端局部坐标，杆端世界位置
+#     距 unlock_press_point ≤ unlock_distance_threshold；
+#   - 模型中的 unlock_motor_joint 实测伸出量位于
+#     [retracted+extension_floor, extension_ceiling) 内。
 # unlock=false 用于复位/取消时显式恢复锁止；抽屉回到关位并稳定后也会自动
 # 恢复锁止。
 #
-# unlock_press_point 位于抽屉链路局部系（= b1p 按钮正面中心）；
-# right_robot_grasp_point 位于右工具链路局部系。
+# unlock_press_point 位于抽屉链路局部系；right_robot_grasp_point 位于真实
+# 解锁电缸移动连杆局部系。
 
 string control_id
 string operation_lease_id
@@ -25,7 +24,7 @@ bool success
 string message
 float64 distance
 bool drawer_unlocked
-# 右电缸是否真的把解锁按钮压入了（按钮关节位移 ≥ press_threshold）。
+# 解锁电缸是否确实伸入规定工作区间。
 bool pressed
-# 右工具尖端是否处于解锁按压点的容差内（距离检查通过）。
+# 解锁电缸真实杆端是否处于解锁逻辑区容差内。
 bool right_tool_contact

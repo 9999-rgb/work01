@@ -657,29 +657,34 @@
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 双手抽拉（bimanual drawer 合同）：左两电缸探针附着左把手立板、
-             右三电缸探针附着右把手立板。解锁（2026-09-03 AGENT §3 语义）= 右臂
-             转至解锁角后，右侧解锁电机（r_three_cyl_finger3_joint）独立伸出，
-             使其接触链接进入右把手解锁逻辑区；plugin 以"解锁接触链接距解锁区
-             中心 ≤ unlock_distance_threshold 且解锁电机实际伸出 ≥
-             retracted+floor"双物证放行，不再依赖任何按钮位移。P0 几何冻结
-             （世界 == 夹具局部系，b1 根 (0.030,4.047,0.832)）：左立板局部
-             (0.069,0.060,0.120) = 世界 (0.099,4.107,0.952)；右立板局部
-             (0.069,0.646,0.120) = (0.099,4.693,0.952)；右把手解锁逻辑区中心
-             世界 (0.115,4.693,0.952) = b1 局部 (0.085,0.646,0.120)（把手前缘
-             外 0.016，非 b1p 指示灯）。grasp/unlock 点均位于抽屉子 link b1
-             局部系（plugin 以 control.link WorldPose 叠加，随抽屉同步滑动）。 -->
+             右三电缸探针附着右把手立板。解锁（2026-09-03 AGENT §4.4 修订语义，
+             废止 §3 版浮动区）= 解锁按钮位于右把手本体上：右侧解锁电机
+             （r_three_cyl_finger3_joint）自「右钩住+右支撑入缝」的同一工作位姿
+             独立伸出（不移动整臂），使其真实触点贴到右把手本体按钮接触区；plugin
+             以"finger3 真实触点距按钮区中心 ≤ unlock_distance_threshold 且解锁
+             电机实际伸出 ≥ retracted+floor"双物证放行，不再依赖任何按钮位移。
+             P0 几何冻结（世界 == 夹具局部系，b1 根 (0.030,4.047,0.832)，b1.STL
+             bbox x[-0.530,0.069] y[0,0.706] z[0,0.240] → 本体 y 4.047..4.753）：
+             左立板局部 (0.069,0.060,0.120) = 世界 (0.099,4.107,0.952)；右立板局部
+             (0.069,0.646,0.120) = (0.099,4.693,0.952)。按钮区中心候选 = 右把手
+             本体前缘面中心 b1 局部 (0.069,0.646,0.120)（= 世界 (0.099,4.693,0.952)，
+             与 right_grasp_point 同点；旧 0.085/世界 0.115 前缘外浮动中心已废止
+             ——悬停不构成接触物证）。最终按钮点由终构型反推 + 调试步骤 6/7 live
+             封定后收紧。grasp/unlock 点均位于抽屉子 link b1 局部系（plugin 以
+             control.link WorldPose 叠加，随抽屉同步滑动）。 -->
         <graspable>true</graspable>
         <grasp_point>0.069 0.060 0.120</grasp_point>
         <right_grasp_point>0.069 0.646 0.120</right_grasp_point>
-        <unlock_press_point>0.085 0.646 0.120</unlock_press_point>
-        <unlock_distance_threshold>0.03</unlock_distance_threshold>
-        <!-- 解锁电机物证（AGENT §3）：unlock_press_point 现为解锁逻辑区中心
-             （b1 局部，世界 (0.115,4.693,0.952)）。plugin 解锁门 = 请求方右工具
-             接触链接（机器人模型 link）世界位姿距该区中心 ≤
-             unlock_distance_threshold，且机器人模型上 unlock_motor_joint（右侧
-             解锁短级电缸）实际位置 ≥ unlock_retracted_position +
-             unlock_extension_floor（证明真的伸出），且 <
-             unlock_extension_ceiling（防过冲顶死）。数值由 §7.2 现场封定后收紧。 -->
+        <unlock_press_point>0.069 0.646 0.120</unlock_press_point>
+        <unlock_distance_threshold>0.008</unlock_distance_threshold>
+        <!-- 解锁电机物证（AGENT §4.4 修订版）：unlock_press_point 现为右把手本体
+             按钮接触区中心候选（b1 局部，世界 (0.099,4.693,0.952)，旧 0.085 浮动
+             废止）。plugin 解锁门 = 请求方右工具解锁接触链接（机器人模型 link）
+             世界位姿距该区中心 ≤ unlock_distance_threshold，且机器人模型上
+             unlock_motor_joint（右侧解锁短级电缸）实际位置 ≥
+             unlock_retracted_position + unlock_extension_floor（证明真的伸出），
+             且 < unlock_extension_ceiling（防过冲顶死）。数值由调试步骤 6/7 + §7.2
+             现场封定后收紧。 -->
         <unlock_motor_joint>r_three_cyl_finger3_joint</unlock_motor_joint>
         <unlock_retracted_position>0.0</unlock_retracted_position>
         <unlock_extension_floor>0.001</unlock_extension_floor>

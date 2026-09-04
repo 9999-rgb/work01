@@ -7,13 +7,14 @@
 退让收起/轨道闩重锁），并打印完整物证。
 
 用法：
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 1   # 仅 ready 就位
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 3   # 解锁电机全链
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 4   # + 支撑段
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 5   # + 夹爪闭合段
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 6   # + 真实附着/脱离取证
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 7   # + 拉距封顶 0.03 并推回
-  python3 scripts/tools/db1_stage_cap_driver.py --cap 8   # + 拉距封顶 0.10 并推回
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 1   # 单工作位姿就位（§8.3）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 2   # 双钩闭合（§8.4）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 3   # 双支撑入缝（§8.5）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 4   # 解锁按压达标未放行（§8.6）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 5   # 解锁服务放行（§8.7）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 6   # attach 耦合保持 3 s（§8.8）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 7   # 拉距封顶 0.03（§8.9）
+  python3 scripts/tools/db1_stage_cap_driver.py --cap 8   # 拉距封顶 0.10（§8.10）
 
 先决条件：活栈（run_all.sh）已就绪、无人任务占用、db1 处于 closed+闩定
 （本驱动每次跑完 cap>=3 后都会把抽屉重新闩定，可连续递增跑）。跑完后参数
@@ -206,8 +207,8 @@ class Db1StageCapDriver(Node):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cap", type=int, required=True,
-                        choices=[1, 3, 4, 5, 6, 7, 8],
-                        help="AGENT §7.2 stage cap (1/3/4/5/6/7/8)")
+                        choices=[1, 2, 3, 4, 5, 6, 7, 8],
+                        help="AGENT §7.2 stage cap (1-8, §8.3-§8.10 顺序)")
     parser.add_argument("--keep-cap", action="store_true",
                         help="leave debug_stage_cap set after the run")
     args = parser.parse_args()
