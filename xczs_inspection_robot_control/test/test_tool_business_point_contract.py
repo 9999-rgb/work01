@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import struct
 from pathlib import Path
 from xml.etree import ElementTree
@@ -150,10 +151,28 @@ def test_toolset_srdf_collision_pairs_are_unique(srdf_path: Path) -> None:
         seen.add(pair)
 
 
+def _shared_profile_without_controls(path: Path) -> dict[str, object]:
+    """Every operator parameter except the instance control catalog.
+
+    The two adapter profiles are one shared tuning/measurement contract.  The
+    control catalog under ``controls`` is instance-specific (the bundled sample
+    is a demo subset) and is validated separately by check_adapter_contract, so
+    the equality contract here is the remainder: a behaviour change must never
+    ship in only one profile.
+    """
+    return {
+        key: value
+        for key, value in _operator_parameters(path).items()
+        if key != "controls"
+    }
+
+
 def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
     builtin = _operator_parameters(ADAPTERS[0])
     sample = _operator_parameters(ADAPTERS[1])
-    assert builtin == sample
+    assert _shared_profile_without_controls(ADAPTERS[0]) == (
+        _shared_profile_without_controls(ADAPTERS[1])
+    )
     # 0.001 rad 低于 Gazebo 位置控制可稳定达到的三电缸手指稳态误差
     # （约 0.0015 rad，对应指尖约 0.6 mm 偏移），归位/标定永远无法通过。
     # 0.003 为稳态误差留 2 倍裕量，同时仍比通用归位容差 0.02 严格约 7 倍。
@@ -190,14 +209,16 @@ def test_adapter_uses_full_business_point_and_zero_joint_guard() -> None:
 def test_toolset_mismatch_guides_the_web_hot_switch_without_world_restart() -> None:
     builtin = _operator_parameters(ADAPTERS[0])
     sample = _operator_parameters(ADAPTERS[1])
-    assert builtin == sample
+    assert _shared_profile_without_controls(ADAPTERS[0]) == (
+        _shared_profile_without_controls(ADAPTERS[1])
+    )
 
-    reason = builtin["toolset_mismatch_reason"]
-    assert "Web 一键切换" in reason
-    assert "无需重启 Gazebo 世界" in reason
-    assert "无法进行有效 MoveIt 规划" in reason
-    assert "实时规划验证" not in reason
-    assert "并重启后" not in reason
+    for reason in (builtin["toolset_mismatch_reason"], sample["toolset_mismatch_reason"]):
+        assert "Web 一键切换" in reason
+        assert "无需重启 Gazebo 世界" in reason
+        assert "无法进行有效 MoveIt 规划" in reason
+        assert "实时规划验证" not in reason
+        assert "并重启后" not in reason
 
 
 def test_grasp_service_carries_one_link_local_probe_through_attach_and_restore() -> None:
@@ -218,14 +239,45 @@ def test_grasp_service_carries_one_link_local_probe_through_attach_and_restore()
 def test_operator_places_and_revalidates_the_physical_business_point() -> None:
     source = OPERATOR.read_text(encoding="utf-8")
 
-    assert source.count(
-        "desired_tip_position -\n"
-        "      tf2::quatRotate(tool_rotation, tool_tip_position_)"
-    ) == 1
-    assert source.count(
-        "desired_tip_position -\n"
-        "          tf2::quatRotate(tool_rotation, tool_tip_position_)"
-    ) == 1
-    # Definition plus initial/final checks in both the legacy press and the
-    # generic cabinet-control actions.
-    assert source.count("verify_tool_tip_calibration_state(") == 5
+    # Every physical tool pose offsets the measured business point (never the
+    # empty contact-link origin) through the same unified transform, regardless
+    # of line-wrapping or whether the operand is the calibrated three-cylinder
+    # tip or a drawer gripper work point.  Every "desired_tip_position -" in the
+    # file must therefore be the subtract-the-rotated-offset idiom: one drawer
+    # site rotates the business_point and every other site rotates the shared
+    # tool_tip_position_.
+    tip_operand = "tf2::quatRotate(tool_rotation, tool_tip_position_)"
+    business_operand = "tf2::quatRotate(tool_rotation, business_point)"
+    tool_tip_offsets = re.findall(
+        r"desired_tip_position\s*-\s*tf2::quatRotate\(\s*tool_rotation,"
+        r"\s*tool_tip_position_\)",
+        source,
+    )
+    assert source.count("desired_tip_position -") == len(tool_tip_offsets) + 1
+    assert source.count(tip_operand) == len(tool_tip_offsets)
+    assert business_operand in source
+    assert source.count(business_operand) == 1
+    assert source.count("quatRotate(tool_rotation,") == (
+        source.count(tip_operand) + source.count(business_operand)
+    )
+
+    # Tool calibration is re-verified at the exact points the tool was just
+    # driven back into calibration position: once at action start and again,
+    # after docking settles, immediately before the actual control motion --
+    # in both the legacy press action and the generic cabinet-control action.
+    # (The drawer branch deliberately re-verifies the bimanual pair instead.)
+    assert "  void verify_tool_tip_calibration_state(" in source
+    assert (
+        "ensure_tool_calibration_position(*move_group, goal_handle);\n"
+        "      verify_tool_tip_calibration_state(*initial_robot_state);"
+    ) in source
+    assert (
+        "const auto predelivery_robot_state =\n"
+        "        ensure_tool_calibration_position(*move_group, goal_handle);\n"
+        "      verify_tool_tip_calibration_state(*predelivery_robot_state);"
+    ) in source
+    assert (
+        "calibrated_robot_state =\n"
+        "          ensure_tool_calibration_position(*move_group, goal_handle);\n"
+        "        verify_tool_tip_calibration_state(*calibrated_robot_state);"
+    ) in source

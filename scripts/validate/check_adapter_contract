@@ -13,6 +13,7 @@ JIANG = WORKSPACE / "jiang"
 sys.path.insert(0, str(JIANG))
 
 from control_gateway.profile_contract import ProfileContractError  # noqa: E402
+from control_gateway.profile_contract import resolve_instance_profile_paths  # noqa: E402
 from control_gateway.profile_contract import validate_profile  # noqa: E402
 from control_gateway.moveit_kinematics import (  # noqa: E402
     KinematicsConfigError,
@@ -24,11 +25,34 @@ CONTROL_CONFIG = WORKSPACE / "xczs_inspection_robot_control" / "config"
 MOVEIT_CONFIG = WORKSPACE / "xczs_inspection_robot_moveit_config" / "config"
 
 
+def _resolve_path(uri: str) -> str:
+    """Resolve a package:// (or plain) reference to a filesystem path."""
+    value = uri.strip()
+    if not value.startswith("package://"):
+        return value
+    package, _separator, relative = value[len("package://") :].partition("/")
+    candidate = WORKSPACE / package / relative
+    if candidate.exists():
+        return str(candidate)
+    # The package may live outside this checkout (e.g. a sourced workspace).
+    try:
+        from ament_index_python.packages import get_package_share_directory
+    except ImportError:
+        return str(candidate)
+    try:
+        return str(Path(get_package_share_directory(package)) / relative)
+    except Exception:
+        return str(candidate)
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Check the cross-file robot, navigation, cabinet catalog, scene, "
-            "pose, and instance contract without starting ROS."
+            "pose, and instance contract without starting ROS.  With "
+            "--instance-id, validate the named instance's own controls/scene/"
+            "adapter three-set (resolved from cabinet_instances.yaml exactly "
+            "like the launch) instead of the shared profile."
         )
     )
     parser.add_argument(
@@ -52,6 +76,16 @@ def _parser() -> argparse.ArgumentParser:
         default=str(CONTROL_CONFIG / "cabinet_pose.yaml"),
     )
     parser.add_argument(
+        "--instance-id",
+        default=None,
+        help=(
+            "Validate one cabinet instance (kind: cabinet or fixture) resolved "
+            "from --instances.  Fixture instances use their per-scene "
+            "controls/scene/adapter and the launch pose-parent override; "
+            "ordinary cabinets keep the strict pose-parent match."
+        ),
+    )
+    parser.add_argument(
         "--kinematics",
         default=str(MOVEIT_CONFIG / "kinematics.yaml"),
         help=(
@@ -71,13 +105,35 @@ def _parser() -> argparse.ArgumentParser:
 def main() -> int:
     arguments = _parser().parse_args()
     try:
+        instance_id = arguments.instance_id
+        robot_adapter_path = str(Path(arguments.robot_adapter).expanduser())
+        controls_path = str(Path(arguments.controls).expanduser())
+        scene_path = str(Path(arguments.scene).expanduser())
+        pose_path = str(Path(arguments.pose).expanduser())
+        kind = None
+        override = False
+        if instance_id is not None:
+            resolution = resolve_instance_profile_paths(
+                instances_path=arguments.instances,
+                instance_id=instance_id,
+                default_controls=arguments.controls,
+                default_scene=arguments.scene,
+                default_adapter=arguments.robot_adapter,
+            )
+            robot_adapter_path = _resolve_path(resolution.adapter_path)
+            controls_path = _resolve_path(resolution.controls_path)
+            scene_path = _resolve_path(resolution.scene_path)
+            kind = resolution.kind
+            override = resolution.pose_parent_frame_launch_override
         report = validate_profile(
-            robot_adapter_path=arguments.robot_adapter,
+            robot_adapter_path=robot_adapter_path,
             instances_path=arguments.instances,
-            controls_path=arguments.controls,
-            scene_path=arguments.scene,
-            pose_path=arguments.pose,
+            controls_path=controls_path,
+            scene_path=scene_path,
+            pose_path=pose_path,
             toolset=arguments.toolset,
+            instance_id=instance_id,
+            pose_parent_frame_launch_override=override,
         )
         kinematics_report = validate_kinematics_plugins(arguments.kinematics)
     except (ProfileContractError, KinematicsConfigError) as error:
@@ -87,9 +143,14 @@ def main() -> int:
         f"{name}={count}"
         for name, count in report.joint_group_counts
     )
+    scope = (
+        f" instance={instance_id} (kind={kind})"
+        if instance_id is not None
+        else ""
+    )
     print(
-        "PASS: adapter contract; "
-        f"cabinets={report.cabinet_count}, controls={report.control_count} "
+        "PASS: adapter contract;"
+        f"{scope} cabinets={report.cabinet_count}, controls={report.control_count} "
         f"(buttons={report.button_count}, knobs={report.knob_count}, "
         f"switches={report.switch_count}, doors={report.door_count}), "
         "operable_control_ids=["

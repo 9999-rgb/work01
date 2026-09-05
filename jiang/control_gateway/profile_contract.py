@@ -587,6 +587,104 @@ def _validate_robot_control_overrides(
     return tuple(operable)
 
 
+@dataclass(frozen=True)
+class InstanceProfileResolution:
+    """Concrete profile files for one cabinet instance, resolved like launch.
+
+    ``inspection_robot.launch.py`` reads each instance's optional
+    ``controls_config`` / ``scene_config`` / ``adapter_config`` and falls back
+    to the shared launch defaults when the instance omits them.  The
+    ``pose_parent_frame_launch_override`` flag records whether the pose file's
+    own ``parent_frame`` is superseded at runtime: the pose authority's
+    ``parent_frame`` parameter comes from the *instance* robot adapter
+    (``pose_parent_frame``, fallback ``planning_frame``), and that override
+    only ever diverges from the pose file for ``kind: fixture`` instances
+    (the shared pose file is odom-anchored while fixtures are map-anchored).
+    Ordinary cabinets keep the strict pose-file match.
+    """
+
+    name: str
+    kind: str
+    controls_path: str
+    scene_path: str
+    adapter_path: str
+    pose_parent_frame_launch_override: bool
+
+
+def resolve_instance_profile_paths(
+    *,
+    instances_path: str | Path,
+    instance_id: str,
+    default_controls: str | Path,
+    default_scene: str | Path,
+    default_adapter: str | Path,
+) -> InstanceProfileResolution:
+    """Resolve one cabinet instance to concrete profile files (launch rule).
+
+    Replicates the launch precedence exactly: an instance's ``*_config``
+    fields override the shared defaults; a missing instance name or a malformed
+    instance record is a contract error.  Only ``kind: fixture`` instances are
+    marked ``pose_parent_frame_launch_override`` (see
+    :class:`InstanceProfileResolution`).
+    """
+    document = _load_yaml(instances_path, "cabinet instances")
+    if not isinstance(document, Mapping) or not isinstance(
+        document.get("instances"), Sequence
+    ):
+        raise ProfileContractError(
+            "cabinet_instances.yaml must contain an 'instances' list."
+        )
+    record: Mapping[str, Any] | None = None
+    for raw in document["instances"]:
+        if not isinstance(raw, Mapping):
+            raise ProfileContractError(
+                "cabinet_instances.yaml entries must be mappings."
+            )
+        if raw.get("name") == instance_id:
+            record = raw
+            break
+    if record is None:
+        raise ProfileContractError(
+            f"cabinet instance '{instance_id}' is not in "
+            f"'{instances_path}'."
+        )
+    kind = str(record.get("kind", "cabinet"))
+    if kind not in {"cabinet", "fixture"}:
+        raise ProfileContractError(
+            f"cabinet instance '{instance_id}' has unknown kind '{kind}'."
+        )
+    controls_value = record.get("controls_config")
+    scene_value = record.get("scene_config")
+    adapter_value = record.get("adapter_config")
+    if controls_value is not None and not isinstance(controls_value, str):
+        raise ProfileContractError(
+            f"cabinet instance '{instance_id}' controls_config must be a "
+            "package:// or path string."
+        )
+    if scene_value is not None and not isinstance(scene_value, str):
+        raise ProfileContractError(
+            f"cabinet instance '{instance_id}' scene_config must be a "
+            "package:// or path string."
+        )
+    if adapter_value is not None and not isinstance(adapter_value, str):
+        raise ProfileContractError(
+            f"cabinet instance '{instance_id}' adapter_config must be a "
+            "package:// or path string."
+        )
+    return InstanceProfileResolution(
+        name=instance_id,
+        kind=kind,
+        controls_path=(
+            str(controls_value)
+            if controls_value
+            else str(default_controls)
+        ),
+        scene_path=str(scene_value) if scene_value else str(default_scene),
+        adapter_path=str(adapter_value) if adapter_value else str(default_adapter),
+        pose_parent_frame_launch_override=kind == "fixture",
+    )
+
+
 def validate_profile(
     *,
     robot_adapter_path: str | Path,
@@ -595,13 +693,51 @@ def validate_profile(
     scene_path: str | Path,
     pose_path: str | Path,
     toolset: str = "A",
+    instance_id: str | None = None,
+    pose_parent_frame_launch_override: bool = False,
 ) -> ProfileContractReport:
-    """Validate one complete robot + cabinet profile without starting ROS."""
+    """Validate one complete robot + cabinet profile without starting ROS.
+
+    Without ``instance_id`` the shared-profile contract is validated over every
+    ``kind: cabinet`` instance (fixture instances use per-scene three-sets and
+    are validated by ``check_adapter_contract --instance-id``).  With
+    ``instance_id`` exactly that instance is validated as a self-contained
+    profile against its own controls/scene/adapter (resolved by
+    :func:`resolve_instance_profile_paths`); its scene file is then only used
+    as the station-geometry fallback for that instance, and the report counts
+    only it.
+
+    ``pose_parent_frame_launch_override`` is true only when the selected
+    instance is ``kind: fixture``.  At launch the pose authority's
+    ``parent_frame`` parameter is set from the *instance* robot adapter and
+    replaces the pose file's literal ``parent_frame`` (fixture geometry is
+    map-anchored while the shared pose file is odom-anchored), so the strict
+    pose-file-vs-adapter match does not apply to fixtures.  The default
+    (False) keeps that strict match for ordinary cabinets and for any explicit
+    validation that opts out of the launch override.
+    """
     try:
         adapter = load_robot_adapter(robot_adapter_path, toolset=toolset)
         inventory = CabinetInventory.load(instances_path, scene_path)
     except (RobotAdapterError, InventoryError) as error:
         raise ProfileContractError(str(error)) from error
+    # Determine the instances this profile must fully validate.  The shared
+    # profile covers cabinet-kind instances; --instance-id focuses on exactly
+    # one instance (its scene file is only that instance's station-geometry
+    # fallback, so the shared-cabinet station geometry can never leak in).
+    if instance_id is None:
+        focused = tuple(inventory)
+    else:
+        try:
+            focused = (inventory.get(instance_id),)
+        except InventoryError as error:
+            raise ProfileContractError(str(error)) from error
+    if pose_parent_frame_launch_override:
+        if instance_id is None or focused[0].kind != "fixture":
+            raise ProfileContractError(
+                "pose_parent_frame_launch_override applies only to a single "
+                "kind: fixture instance validated through --instance-id."
+            )
 
     adapter_document = _load_yaml(robot_adapter_path, "robot adapter")
     adapter_global = _parameters(adapter_document, "/**", "robot adapter")
@@ -709,12 +845,21 @@ def validate_profile(
         "/**/xczs_cabinet_pose_authority",
         "cabinet pose",
     )
+    # The pose file's literal parent_frame must still parse as a relative frame
+    # (structural).  For fixture instances the launch overrides the pose
+    # authority's parent_frame parameter from the *instance* robot adapter
+    # (pose_parent_frame, fallback planning_frame), so the pose file's own
+    # value is not runtime-authoritative and the strict match is bypassed;
+    # ordinary cabinets keep the exact match.  The override frame itself is
+    # enforced by robot_adapter (relative TF name, fallback to planning_frame)
+    # exactly as the launch computes it.
     pose_parent = _string(pose.get("parent_frame"), "parent_frame")
-    if pose_parent != adapter.pose_parent_frame:
-        raise ProfileContractError(
-            f"cabinet pose parent_frame '{pose_parent}' does not match robot "
-            f"pose_parent_frame '{adapter.pose_parent_frame}'."
-        )
+    if not pose_parent_frame_launch_override:
+        if pose_parent != adapter.pose_parent_frame:
+            raise ProfileContractError(
+                f"cabinet pose parent_frame '{pose_parent}' does not match robot "
+                f"pose_parent_frame '{adapter.pose_parent_frame}'."
+            )
 
     operator = _parameters(
         adapter_document,
@@ -755,11 +900,11 @@ def validate_profile(
     # 混合库存（共享 profile 的 cabinet 实例 + 夹具注册）中，夹具实例使用
     # 逐场景 scene_controls/ 三件套，本站校验（共享 adapter/controls/scene）
     # 只覆盖 kind == cabinet 的实例。若库存全为夹具（逐场景 profile），
-    # 夹具实例照常校验其导航/控制站。
+    # 夹具实例照常校验其导航/控制站。--instance-id 时 focused 恰好是该实例。
     has_cabinet_instances = any(
-        instance.kind != "fixture" for instance in inventory
+        instance.kind != "fixture" for instance in focused
     )
-    for cabinet in inventory:
+    for cabinet in focused:
         if cabinet.kind == "fixture" and has_cabinet_instances:
             continue
         station = inventory.station_for(cabinet.name)
@@ -793,9 +938,9 @@ def validate_profile(
     }
     # 共享 profile 只覆盖 kind == cabinet 的实例（夹具实例用逐场景
     # scene_controls/ 三件套，由 check_scene_config/check_adapter_contract
-    # 校验），计数与之保持一致。
+    # 校验），计数与之保持一致；--instance-id 只计被选中的那个实例。
     cabinet_count = sum(
-        1 for instance in inventory if instance.kind != "fixture"
+        1 for instance in focused if instance.kind != "fixture"
     )
     return ProfileContractReport(
         cabinet_count=cabinet_count,

@@ -214,7 +214,14 @@
         # 外侧（西侧缝方向）；右工具无需翻转，支撑列自然位于东侧缝方向。两侧
         # 形成“夹爪贴把手立板、支撑杆对同侧侧缝口”的同构镜像（2026-09-03
         # AGENT §4.3 侧缝语义，废止旧“下方抵柜面”布局）。
-        tool_roll_offset: 3.14159265359
+        # [2026-09-05 cap-3 取证 fix#8] 位姿旋转约定把工具 x 轴（0.068m 列距）
+        # 映射到世界 z 而非 y：cap-1 实体探针实测两指列竖排（Δy≈0、Δz=-0.0675，
+        # 支撑列悬在夹爪列正下方），支撑杆端距同侧缝口 ~96mm（=√2×68 对角），
+        # 支撑段“伸出到位+稳定”是在自由空域空走，几何门正确地把它拦下。π 对
+        # 垂直列无镜像作用，故旧 180° 从未生效。修复 = 绕杆轴转 -90°：列方向
+        # -ẑ → -ŷ（西侧缝 4.039）。修正后列落世界 y，两列 z 同位、x-hover 同
+        # 位 → 支撑杆端与钩爪同级瞄准（y/z 由自对中闭环吸收）。
+        tool_roll_offset: 1.57079632679
         tool_tip_position: [-0.034, -0.061735, -0.3885]
         calibration_joint_names:
           - l_two_cyl_finger1_joint
@@ -229,29 +236,63 @@
         # 支撑 0.030 与夹爪 0.010 后两根杆端的工具轴坐标同为 -0.3985，
         # 轴向齐平 → 同一工作位姿下钩爪贴把手立板（z 0.952 带）、支撑杆端同时
         # 到达同侧缝口平面（x 0.099）；进入深度由 live 封定（AGENT §4.3）。
-        support_contact_position: 0.030
+        # [2026-09-05 cap-3 fix#9 现场封定] fix#8 滚转修正后 cap-1 实体探针
+        # 复核（tip_cap1_postroll.log）：支撑杆 q0 悬停 x=0.1376（列方向现为
+        # -ŷ，z 与钩爪同位，y 4.0400 vs 缝 4.039）。0.030 旧值下杆端仍停在
+        # x≈0.1076 — 距缝口平面 0.099 差 8.6mm > 8mm 几何门冻结容差。按
+        # q = x0_q0 − 0.097 重新封定（杆端名义落口内 2-3mm，x 0.097±4mm 飘移
+        # 窗内门余量 ≥5mm）；深压若撞到口沿硬阻会以杆位停滞形式暴露，届时回退。
+        support_contact_position: 0.041
         gripper_joint: l_two_cyl_finger2_joint
         gripper_contact_link: l_two_cyl_finger2
         gripper_contact_point_local: [0.0, 0.0, -0.095]
         gripper_contact_point_base_at_zero: [-0.034, -0.061735, -0.3885]
         gripper_open_position: 0.0
         gripper_grasp_position: 0.010
-        # 2026-09-04 AGENT §8.4 fix#3 (cap2 verify3 取证): 钩爪封定 = 深压 +
-        # 座封探针，替代旧「到达 grasp + 稳定性窗口」—— 浅 perch(0.010,
-        # ≤0.87mm/3N)永不啮合且必然失稳。啮合需 ≥1mm/≥10N：press 证据 =
-        # grasp+0.0015(杆位 0.0115, ~1.5mm 面深, ref 0.015 让 I 爬到 ~10N)；
-        # 座封 ref = grasp−0.004(杆位 0.006, 双侧同时回缩拖抽屉至 latch 止点
-        # ~0.0038 后爪停低张力区)；catch_floor 0.0005 为啮合判别量(未啮合爪
-        # 自由落回 0.006)。最终偏移写入 YAML，不能靠扩大抓取容差。
-        gripper_hook_press_overshoot: 0.005
-        gripper_hook_press_penetration_evidence: 0.0015
-        gripper_hook_seat_depth: 0.004
-        gripper_hook_seat_catch_floor: 0.0005
+        # 2026-09-04 AGENT §8.4 fix#3 v2 (cap2 run1/run2 取证): 钩爪封定 = 压贴
+        # + 3s 保持, 证据改用「压贴力」。把手是贴前脸的 rigid 空心立板(无 x 向
+        # 杆可达的钩挂腔), 杆端自东沿压东立板面后物理上无法前穿 —— 旧 v1 判据
+        # 「杆位 ≥ grasp+0.0015(0.0115)」不可达: 实测两侧杆 ~0.005-0.006 处
+        # ~68N 顶死(贴住物理早已成立), 右杆偶发 0.023 是滑过立板缘进自由区的
+        # 假阳性; rigid 面上固定杆位阈值对 ±5mm 位姿误差天生脆弱。v2 证据 =
+        # 压贴时 gripper 关节实测 effort 高(I 钳位 ~60-68N), 悬空/滑脱时 ~0N:
+        # 力是唯一能区分「压贴在立板上」与「悬空/滑到板旁」的信号。phase1 压到
+        # ref = grasp + overshoot、effort ≥ force_floor 持续 1s 且 drawer ≤
+        # 0.0025; phase2 保持 3s(doc §8.4)。座封拖抽屉判据已删(关位抽屉被 latch
+        # 锁住、flush 立板无钩挂腔, 双侧同时回缩只会失去接触; 啮合的 1:1 拖动由
+        # 其后 cap8 attach/cap9-11 抽拉实测抽屉位移证明)。啮合终验仍由调用方
+        # measure_drawer_rod_contact 钩距门把关。偏移写入 YAML, 不靠扩大容差。
+        # [2026-09-04 fix#3 v3] 几何根因封定: overshoot 回 0.020 (ref 0.030)——
+        # 接触深度已探明为工作位姿/杆零位悬停 ~10mm 后压贴即止 (~0.008-0.013),
+        # 无需 0.040 深压。v3 修复 = 下方 drawer_pose_aim_offset 补偿执行横向偏差。
+        gripper_hook_press_overshoot: 0.020
+        gripper_hook_press_force_floor: 8.0
+        # [2026-09-04 fix#3 v3] 工作位姿 aim 补偿(operator BimanualToolProfile 注释):
+        # rod≈0 实测左钩触点 (4.1130,0.9590) vs handle (4.107,0.952) → 反向平移
+        # [0,-0.006,-0.007], 令真实杆端落在把手中心。cabinet 局部系。
+        # [2026-09-04 fix#3 v4 现场复核] z 修复后 entity probe 实测杆端悬停
+        # y=4.0985, 越过立板南缘(板窗 [4.099,4.115])0.5 mm —— 执行横向残差
+        # 相对 v3 校准年代反号。cap-2 seal 中 L 咬板缘稳固但 R 压缘倒角研磨
+        # 蠕进(见右侧注释), 两杆目标 y 一并移回各自板面中心防后续抽拉滑脱:
+        # y: -0.006 + (4.107 - 4.0985) = +0.0025。z 不动(仍在板窗内)。
+        # [2026-09-04 AGENT §8.4 cap-2 run3 取证 fix#5] v4 年代 dock 南移 12 mm
+        # 后 z 执行残差未复核(当时只查了 y)。cap-2 seal 全链首次 PASS(压贴+
+        # 3s 保持+seat pin), 唯几何门 FAIL: 实体探针证明杆尖真实压板(非幻影),
+        # 力/位静止俱真, 但压点 z ≈ 0.962 高出把手中心 0.952 约 10 mm; 算子
+        # FK 同刻读 8.8 mm(方向一致)。execution z 误差 v4 后 ≈ +13.4 mm, 而
+        # v3 年代仅 +7 mm —— 停靠点/aim y 变更会换 IK 分支, z aim 必须按 dock
+        # 后姿态重标, 勿照搬 v3 值。z aim 再下调 12 mm(-0.007 → -0.019), 令
+        # 杆盘贴板中心(contact z ≈ 0.950, 板窗 [0.904,1.000] 内)。
+        drawer_pose_aim_offset: [0.0, 0.0025, -0.019]
       right:
         move_group: right_arm
         contact_tool_link: r_three_cyl_base
         transport_named_target: home
-        tool_roll_offset: 0.0
+        # [2026-09-05 cap-3 取证 fix#8] 同左侧：实测列方向 -ẑ（竖排），须绕杆轴
+        # 转 +90° 使支撑列 -ẑ → +ŷ（东侧缝 4.761）。左 +π/2 / 右 +π/2 的同值
+        # 外观源于 xacro 镜像安装（左支撑 +x 侧 / 右支撑 -x 侧）；两侧修正角
+        # 实测为 -89.7°/+90.1°（cap-1 实体探针 y-z 平面方位角差）。
+        tool_roll_offset: 1.57079632679
         tool_tip_position: [0.0265, -0.061735, -0.3885]
         calibration_joint_names:
           - r_three_cyl_finger1_joint
@@ -263,18 +304,35 @@
         support_contact_point_local: [0.0, 0.0, -0.075]
         support_contact_point_base_at_zero: [-0.034, -0.061735, -0.3685]
         support_retracted_position: 0.0
-        support_contact_position: 0.030
+        # [2026-09-05 cap-3 fix#9] 同左侧（见 drawer_tools.left.support_contact_position
+        # 的封定注释）：右支撑杆 cap-1 实体探针 q0 悬停 x=0.1391，按
+        # q = x0_q0 − 0.097 = 0.0421 封定 → 杆端名义 x≈0.097，落缝口平面以内 2mm。
+        support_contact_position: 0.042
         gripper_joint: r_three_cyl_finger1_joint
         gripper_contact_link: r_three_cyl_finger1
         gripper_contact_point_local: [0.0, 0.0, -0.090]
         gripper_contact_point_base_at_zero: [0.034, -0.061735, -0.3885]
         gripper_open_position: 0.0
         gripper_grasp_position: 0.010
-        # 2026-09-04 AGENT §8.4 fix#3: 同左侧(见 drawer_tools.left 的注释)。
-        gripper_hook_press_overshoot: 0.005
-        gripper_hook_press_penetration_evidence: 0.0015
-        gripper_hook_seat_depth: 0.004
-        gripper_hook_seat_catch_floor: 0.0005
+        # 2026-09-04 AGENT §8.4 fix#3 v2: 同左侧(见 drawer_tools.left 的注释)。
+        # [2026-09-04 fix#3 v3] overshoot 回 0.020 (ref 0.030), 同左侧。
+        gripper_hook_press_overshoot: 0.020
+        gripper_hook_press_force_floor: 8.0
+        # [2026-09-04 fix#3 v3] 工作位姿 aim 补偿(见 operator BimanualToolProfile 注释):
+        # rod≈0 实测右钩触点 (4.7060,0.9490) vs handle (4.693,0.952) → 反向平移
+        # [0,-0.013,+0.003]。右杆原 y=4.7065 越过立板面北缘 4.701 → 滑穿假压贴
+        # (rod 0.003→0.046 自由爬出), v3 后真实杆端落回右立板面。
+        # [2026-09-04 fix#3 v4 现场复核] z 修复后 probe 实测杆端悬停 y=4.6857,
+        # 仅入右板南缘(板窗 [4.685,4.701])0.7 mm, 圆盘大半悬板外 → cap-2
+        # seat-pin 中右杆在立板南缘倒角上研磨蠕进 (0.0093→0.0132 m,
+        # 8.7→8.3 N 贴地板), 12 s 静止判据不过。目标 y 移回板面中心:
+        # y: -0.013 + (4.693 - 4.6857) = -0.0057 → 取 -0.006。z 不动。
+        # [2026-09-04 AGENT §8.4 cap-2 run3 取证 fix#5] 同左侧: 压点 z ≈ 0.968
+        # 高出中心 16 mm(entity), 算子 FK 同刻只读 7.7 mm —— entity 与算子 FK
+        # 的 z 差 ~9 mm 未解(左仅差 ~1.5 mm)。取中下调 12 mm(+0.003 → -0.009):
+        # 无论算子帧还是实体帧为真, 几何门预期 4-6 mm < 8 mm 冻结容差; 实体
+        # contact z ≈ 0.951, 杆盘落在板窗 [0.904,1.000] 中央。
+        drawer_pose_aim_offset: [0.0, -0.006, -0.009]
         # finger3 是 finger2 的串联子级：base 零位杆端 =
         # [-0.034,-0.061735,-0.2935] + [-0.012,0.082,-0.05245]
         # + [0,0,-0.013002]。解锁位姿按这根真实短杆计算并由插件核验。
@@ -320,7 +378,14 @@
     controls:
       db1:
         navigation_station:
-          local_anchor: [0.099, 4.4, 0.0]
+          # 2026-09-04 fix#3 v4 (cap2 左臂向南可达性): 停靠点 local_anchor y 由
+          # 4.4 南移 12mm → 4.388 (抽屉固定于世界, 双缸/三缸杆端阵列必须够到两
+          # 侧把手)。cap2 verify 取证: 左工具 base 向南关节极限 ~y 4.180, 工作
+          # 位姿 + aim[0,-0.006] 需 base ~4.173 (越极限 ~7mm, 0.0091 verify 失败);
+          # base 的 x/z 均正常执行, 纯 y 向南不可达。南移后同极限位姿 base→
+          # ~4.168, aim 命令可执行。y 方向 reach 随基座平移, 位姿命令仍锚定世界
+          # 把手点 (不会过纠)。其余站 (dm1/ds1/ds2/ds3) 不受影响。
+          local_anchor: [0.099, 4.388, 0.0]
           outward_axis: [1.0, 0.0, 0.0]
           standoff: 1.1
           base_yaw_offset: 0.0

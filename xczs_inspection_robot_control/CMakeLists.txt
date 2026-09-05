@@ -10,6 +10,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
+find_package(controller_manager_msgs REQUIRED)
+find_package(gazebo_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
@@ -112,6 +114,8 @@ target_compile_features(cabinet_button_operator PUBLIC cxx_std_17)
 ament_target_dependencies(
   cabinet_button_operator
   control_msgs
+  controller_manager_msgs
+  gazebo_msgs
   geometry_msgs
   moveit_core
   moveit_msgs
@@ -218,6 +222,18 @@ if(BUILD_TESTING)
     planning_scene_profile_test
     test/planning_scene_profile_test.cpp
   )
+  # 2026-09-05 AGENT doc §4.5 (P1): 座封参考有符号投影 + 上下限裁剪纯逻辑单测。
+  ament_add_gtest(
+    drawer_hook_seat_projection_test
+    test/drawer_hook_seat_projection_test.cpp
+  )
+  target_compile_features(drawer_hook_seat_projection_test PUBLIC cxx_std_17)
+  target_include_directories(
+    drawer_hook_seat_projection_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
   target_compile_features(planning_scene_profile_test PUBLIC cxx_std_17)
   target_include_directories(
     planning_scene_profile_test
@@ -281,6 +297,8 @@ if(BUILD_TESTING)
   ament_target_dependencies(
     cabinet_button_operator_kinematics_test
     control_msgs
+    controller_manager_msgs
+    gazebo_msgs
     geometry_msgs
     moveit_core
     moveit_msgs
@@ -322,6 +340,13 @@ if(BUILD_TESTING)
   ament_add_pytest_test(
     toolset_supervisor_test
     test/test_toolset_supervisor.py
+  )
+  # 2026-09-05 AGENT doc §4.5 (P1): 原位座封接管的源码契约 —— 正常路径无控制
+  # 器复位、任一侧无效整阶段失败、support/unlock 保留 hook ref、保持态仅存活于
+  # 单次任务栈（区域定界到函数体，语义断言，非全局 count 脆弱匹配）。
+  ament_add_pytest_test(
+    drawer_hook_inplace_takeover_contract_test
+    test/test_drawer_hook_inplace_takeover.py
   )
 endif()
 

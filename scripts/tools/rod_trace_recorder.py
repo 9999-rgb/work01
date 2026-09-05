@@ -1,15 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Record rod joints + drawer state during a capped drawer run, for post-hoc
-diagnosis of hook/support rod travel (contact stalls etc.).
+"""Record rod/arm joints + drawer state during a capped drawer run, for
+post-hoc diagnosis of hook/support rod travel (contact stalls etc.).
 
 Logs one line per 100 ms to the given file:
-  <t> r1..r5 | L2ref L2act L2err | R1ref R1act R1err | drawer drawer_state
-where r1..r5 are the ACTUAL rod positions (joint_states, the same source the
-operator's real-JS cache consumes), L2 = l_two_cyl_finger2 (left gripper),
-R1 = r_three_cyl_finger1 (right gripper) commanded-vs-actual from each
-cylinder controller's JointTrajectoryControllerState (reference=desired,
-feedback=actual, error=ref-act), and drawer is db1's slide.
+  <t> L0..L6 R0..R6 | r1..r5 | e1..e5 | L2ref L2act L2err | R1ref R1act R1err
+      | drawer drawer_state
+where L0..L6/R0..R6 are the ACTUAL left/right arm positions (joint_states,
+the same source the operator's real-JS cache consumes), r1..r5 the ACTUAL
+rod positions, e1..r5 their ACTUAL efforts, L2 = l_two_cyl_finger2 (left
+gripper), R1 = r_three_cyl_finger1 (right gripper) commanded-vs-actual from
+each cylinder controller's JointTrajectoryControllerState
+(reference=desired, feedback=actual, error=ref-act), and drawer is db1's
+slide.  Column order below the header comment:
+  L0..L6 = l_arm_0_joint..l_arm_6_joint
+  R0..R6 = r_arm_0_joint..r_arm_6_joint
+  r1..r5 = l_two_cyl_finger1/2, r_three_cyl_finger1/2/3
+  e1..e5 = efforts of r1..r5
 """
 import argparse
 import time
@@ -23,9 +30,12 @@ from control_msgs.msg import JointTrajectoryControllerState
 from xczs_inspection_robot_interfaces.msg import CabinetControlState
 
 NS = "/xczs/cabinet/electrical_mezzanine"
+ARMS = [f"l_arm_{i}_joint" for i in range(7)] + \
+       [f"r_arm_{i}_joint" for i in range(7)]
 RODS = ["l_two_cyl_finger1_joint", "l_two_cyl_finger2_joint",
         "r_three_cyl_finger1_joint", "r_three_cyl_finger2_joint",
         "r_three_cyl_finger3_joint"]
+ALL = ARMS + RODS
 CTRL = {  # controller_state topic -> (label, grip, support)
     "/xczs/two_cylinder_controller/controller_state":
         ("L", "l_two_cyl_finger2_joint", "l_two_cyl_finger1_joint"),
@@ -40,6 +50,7 @@ class RodTraceRecorder(Node):
         self._out = open(out_path, "w", buffering=1)  # line-buffered
         self._lock = threading.Lock()
         self._pos = {}
+        self._eff = {}
         self._ctrl = {t: None for t in CTRL}
         self._drawer = (float("nan"), "")
         self._subs = []
@@ -63,8 +74,10 @@ class RodTraceRecorder(Node):
     def _on_joint_state(self, msg):
         with self._lock:
             for i, name in enumerate(msg.name):
-                if name in RODS:
+                if name in ALL:
                     self._pos[name] = msg.position[i]
+                    if len(msg.effort) > i:
+                        self._eff[name] = msg.effort[i]
 
     def _on_ctrl_state(self, topic):
         def cb(msg):
@@ -86,7 +99,9 @@ class RodTraceRecorder(Node):
         end = time.monotonic() + duration_s
         while rclpy.ok() and time.monotonic() < end:
             with self._lock:
-                vals = [self._pos.get(r, float("nan")) for r in RODS]
+                ap = [self._pos.get(r, float("nan")) for r in ALL]
+                rp = [self._pos.get(r, float("nan")) for r in RODS]
+                re = [self._eff.get(r, float("nan")) for r in RODS]
                 refs = {}
                 for t, (label, grip_j, sup_j) in CTRL.items():
                     entry = self._ctrl.get(t)
@@ -100,11 +115,13 @@ class RodTraceRecorder(Node):
                                                   fb.positions[i],
                                                   ref.positions[i] - fb.positions[i])
                 dp, ds = self._drawer
-            bits = " ".join(f"{v:.5f}" for v in vals)
             l2 = refs.get("Lg", (float("nan"),) * 3)
             r1 = refs.get("Rg", (float("nan"),) * 3)
             self._out.write(
-                f"{time.monotonic() - self._t0:8.2f} {bits} | "
+                f"{time.monotonic() - self._t0:8.2f} "
+                f"{' '.join(f'{v:.5f}' for v in ap)} | "
+                f"{' '.join(f'{v:.5f}' for v in rp)} | "
+                f"{' '.join(f'{v:+.1f}' for v in re)} | "
                 f"L {l2[0]:8.5f}/{l2[1]:8.5f}({l2[2]:+8.5f}) | "
                 f"R {r1[0]:8.5f}/{r1[1]:8.5f}({r1[2]:+8.5f}) | "
                 f"{dp:.5f} {ds}\n")

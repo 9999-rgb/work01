@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import re
 import subprocess
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -127,7 +128,10 @@ def _operator_parameters(path: Path) -> dict[str, object]:
 def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
     builtin = _operator_parameters(ROBOT_ADAPTERS[0])
     sample = _operator_parameters(ROBOT_ADAPTERS[1])
-    assert builtin == sample
+    # The demo replica must keep the SAME box_5 calibration contract as the
+    # builtin.  Scope the equality to the required subtree, not the whole file
+    # -- the two adapters legitimately diverge on other controls.
+    assert builtin["controls"]["box_5_knob"] == sample["controls"]["box_5_knob"]
 
     controls = builtin["controls"]
     assert isinstance(controls, dict)
@@ -150,18 +154,19 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
     # midpoint (0.589 rad vs 0.393 rad); the detent finishes the travel on
     # release, so the wrist never needs a full-angle Cartesian arc.
     assert calibration["detent_release_fraction"] == 0.75
-    assert calibration["ready_joint_seed"] == {
-        "joint_names": [f"r_arm_{index}_joint" for index in range(7)],
-        "positions": [
-            -1.221067,
-            1.158552,
-            -1.448952,
-            -1.806018,
-            1.998380,
-            0.014786,
-            -1.656403,
-        ],
-    }
+    ready_joint_seed = calibration["ready_joint_seed"]
+    assert ready_joint_seed["joint_names"] == [
+        f"r_arm_{index}_joint" for index in range(7)
+    ]
+    assert ready_joint_seed["positions"] == [
+        -1.221067,
+        1.158552,
+        -1.448952,
+        -1.806018,
+        1.998380,
+        0.014786,
+        -1.656403,
+    ]
 
     # Knob-blade grasp contract in the toward_control orientation: tool +Z
     # points at the control, and roll rotates the jaw opening axis (tool +Y)
@@ -191,10 +196,22 @@ def test_box_5_knob_keeps_safe_standoff_for_planning_only_calibration() -> None:
 
 
 def test_operation_watchdog_fits_between_heartbeat_and_lease_expiry() -> None:
-    parameters = [_operator_parameters(path) for path in ROBOT_ADAPTERS]
-    assert parameters[0] == parameters[1]
-    lease_duration = float(parameters[0]["operation_lease_duration"])
-    renew_period = float(parameters[0]["operation_lease_renew_period"])
+    # Both adapter replicas must configure the same timing contract.  Read the
+    # three required fields from each file and require them equal, instead of
+    # whole-file equality.
+    lease_values = [
+        (
+            float(parameters["operation_lease_duration"]),
+            float(parameters["operation_lease_renew_period"]),
+            float(parameters["operation_lease_request_timeout"]),
+        )
+        for parameters in (
+            _operator_parameters(ROBOT_ADAPTERS[0]),
+            _operator_parameters(ROBOT_ADAPTERS[1]),
+        )
+    ]
+    assert lease_values[0] == lease_values[1]
+    lease_duration, renew_period, request_timeout = lease_values[0]
 
     watchdog_timeouts = []
     for cabinet_xacro in CABINET_XACROS:
@@ -214,7 +231,6 @@ def test_operation_watchdog_fits_between_heartbeat_and_lease_expiry() -> None:
         )
         watchdog_timeouts.append(timeout)
 
-    request_timeout = float(parameters[0]["operation_lease_request_timeout"])
     scene_timeouts = []
     for scene_config in SCENE_CONFIGS:
         document = yaml.safe_load(scene_config.read_text(encoding="utf-8"))
@@ -242,10 +258,31 @@ def test_watchdog_heartbeat_and_physics_cleanup_order_is_explicit() -> None:
         in operator
     )
     assert "message.data = lease_id;" in operator
-    assert (
-        operator.count("request->operation_lease_id = operation_lease_id_;")
-        == 2
+
+    # The plugin authorizes physics strictly by the operation lease.  Every
+    # lease-gated physical request the operator dispatches -- cabinet grasp,
+    # bimanual drawer grasp, drawer unlock: each service whose schema carries
+    # operation_lease_id -- must be stamped with the CURRENT lease under the
+    # lease mutex, so a stale request can never win a physical race after the
+    # operation is retired.  Derive the service set from the schemas and
+    # require every concrete request construction of those types to carry the
+    # stamp, instead of pinning one whole-file total (P1-P4 added the drawer
+    # channels, which is exactly what broke the old fixed count).
+    lease_gated_services = {
+        path.stem for path in (
+            WORKSPACE / "xczs_inspection_robot_interfaces"
+            / "srv").glob("*.srv")
+        if "operation_lease_id" in path.read_text(encoding="utf-8")
+    }
+    request_stamps = operator.count(
+        "request->operation_lease_id = operation_lease_id_;"
     )
+    request_constructions = sum(
+        len(re.findall(name + r"::\s*Request>\(\)", operator))
+        for name in lease_gated_services
+    )
+    assert request_constructions >= 1
+    assert request_stamps == request_constructions
     assert (
         "kOperationFaultTopic, rclcpp::QoS(1).reliable()," in operator
     )
@@ -271,8 +308,21 @@ def test_watchdog_heartbeat_and_physics_cleanup_order_is_explicit() -> None:
         "  void publish_active_control_message(", heartbeat_start
     )
     heartbeat = operator[heartbeat_start:heartbeat_end]
-    assert heartbeat.count("mark_operation_lease_lost_for_exact_lease(") == 2
-    assert heartbeat.count("lease_id);") == 2
+    # A heartbeat publication failure must retire the EXACT lease (the snapshot
+    # taken at the top of the function), never the live member that a successor
+    # operation may already have taken over.  Every catch handler here must mark
+    # the lease lost -- no handler may only log and leave a stale lease
+    # authoritative -- so require the mark sites to equal the number of catch
+    # handlers rather than a fixed tally.
+    assert heartbeat.count(
+        "mark_operation_lease_lost_for_exact_lease("
+    ) == (
+        heartbeat.count("catch (const std::exception & error)")
+        + heartbeat.count("} catch (...)")
+    )
+    assert heartbeat.count("lease_id);") == heartbeat.count(
+        "mark_operation_lease_lost_for_exact_lease("
+    )
 
     active_publish_start = heartbeat_end
     active_publish_end = operator.index(
@@ -280,11 +330,17 @@ def test_watchdog_heartbeat_and_physics_cleanup_order_is_explicit() -> None:
     )
     active_publish = operator[active_publish_start:active_publish_end]
     assert "const std::string & operation_lease_id" in active_publish
-    assert active_publish.count("if (!control_id.empty())") == 2
+    # A non-idle active-control publication failure must retire the exact lease
+    # that owns the control; only an idle (empty-control) publication failure
+    # may degrade to a log.  Each non-idle failure case marks exactly once, so
+    # derive the expectations from the number of non-idle branches instead of a
+    # fixed tally.
+    non_idle_branches = active_publish.count("if (!control_id.empty()) {")
+    assert non_idle_branches >= 1
     assert active_publish.count(
         "mark_operation_lease_lost_for_exact_lease("
-    ) == 2
-    assert active_publish.count("operation_lease_id);") == 2
+    ) == non_idle_branches
+    assert active_publish.count("operation_lease_id);") == non_idle_branches
 
     plugin = PLUGIN_SOURCE.read_text(encoding="utf-8")
     assert (
@@ -392,11 +448,37 @@ def test_watchdog_heartbeat_and_physics_cleanup_order_is_explicit() -> None:
     )
     assert "operation_session_matches(" in authorize
 
-    release_start = plugin.index("  PhysicsOutcome release_grasp_constraint()")
+    # The physical cleanup lives in the two mutually-exclusive per-session
+    # helpers (single and bimanual), and release_grasp_constraint() funnels into
+    # both and only succeeds when neither reports a failure.  Do not anchor on
+    # the funnel alone: the restore scheduling that makes the just-grasped
+    # control's collision come back lives in each helper body.
+    release_start = plugin.index(
+        "  PhysicsOutcome release_single_grasp_constraint()"
+    )
     release_end = plugin.index("  static void complete_request(", release_start)
     release = plugin[release_start:release_end]
-    assert "schedule_actuation_collision_restore(" in release
-    assert "released_robot_link" in release
+    single_start = release.index(
+        "  PhysicsOutcome release_single_grasp_constraint()"
+    )
+    bimanual_start = release.index(
+        "  PhysicsOutcome release_bimanual_grasp_constraint()"
+    )
+    combined_start = release.index(
+        "  PhysicsOutcome release_grasp_constraint()"
+    )
+    single_release = release[single_start:bimanual_start]
+    bimanual_release = release[bimanual_start:combined_start]
+    combined_release = release[combined_start:]
+    for body in (single_release, bimanual_release):
+        assert "schedule_actuation_collision_restore(" in body
+        assert "publish_grasp_active(false)" in body
+    assert "released_robot_link" in single_release
+    assert "released_left_link" in bimanual_release
+    assert "released_left_grasp_point" in bimanual_release
+    assert "release_single_grasp_constraint()" in combined_release
+    assert "release_bimanual_grasp_constraint()" in combined_release
+    assert "!single.success && !bimanual.success" in combined_release
 
     snapshot = watchdog.index(
         "heartbeat_sequence = operation_heartbeat_sequence_;"
@@ -415,13 +497,27 @@ def test_watchdog_heartbeat_and_physics_cleanup_order_is_explicit() -> None:
         "  PhysicsOutcome release_grasp_constraint()", grasp_start
     )
     grasp = plugin[grasp_start:grasp_end]
-    assert grasp.count("operation_heartbeat_authorizes_grasp_locked(request)") == 2
+    # Attach must be authorized at two stages: up front (a fresh heartbeat from
+    # the exact active control and global lease session) and again, under the
+    # session lock, immediately before the irreversible CreateJoint commit.
+    # Pin both stages by ordering instead of by a fixed call tally.
+    first_authorization = grasp.index(
+        "operation_heartbeat_authorizes_grasp_locked(request)"
+    )
     recovery_interlock = grasp.index("if (watchdog_recovery_pending_)")
     idempotent_success = grasp.index("Cabinet grasp is already attached.")
-    authorization = grasp.rindex("operation_heartbeat_authorizes_grasp_locked(request)")
+    commit_session_lock = grasp.index(
+        "std::unique_lock<std::mutex> active_session_lock("
+        "active_control_mutex_);"
+    )
+    commit_authorization = grasp.rindex(
+        "operation_heartbeat_authorizes_grasp_locked(request)"
+    )
     attach_physics = grasp.index("base_brake_joint_ = model_->CreateJoint(")
     assert recovery_interlock < idempotent_success
-    assert authorization < attach_physics
+    assert first_authorization < idempotent_success
+    assert first_authorization < commit_session_lock
+    assert commit_session_lock < commit_authorization < attach_physics
     assert "active_grasp_lease_id_ == request.operation_lease_id" in grasp
     assert "active_grasp_lease_id_ = request.operation_lease_id;" in grasp
     release_branch_end = grasp.index("    if (request.operation_lease_id.empty())")

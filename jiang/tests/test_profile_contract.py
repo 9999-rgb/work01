@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import copy
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -16,6 +18,7 @@ WORKSPACE = JIANG_DIR.parent
 sys.path.insert(0, str(JIANG_DIR))
 
 from control_gateway.profile_contract import ProfileContractError  # noqa: E402
+from control_gateway.profile_contract import resolve_instance_profile_paths  # noqa: E402
 from control_gateway.profile_contract import validate_profile  # noqa: E402
 
 
@@ -610,6 +613,213 @@ class ProfileContractTest(unittest.TestCase):
         }
         with self.assertRaisesRegex(ProfileContractError, "does not match"):
             self._validate(documents)
+
+
+CONTROL_CONFIG_DIR = WORKSPACE / "xczs_inspection_robot_control" / "config"
+SCENE_CONTROLS_DIR = CONTROL_CONFIG_DIR / "scene_controls"
+CHECK_ADAPTER_CONTRACT = (
+    WORKSPACE / "scripts" / "validate" / "check_adapter_contract"
+)
+
+# AGENT doc §8.1: the fixture instances run on the shared cabinet_pose.yaml
+# (odom-anchored) but their per-scene robot adapter is map-anchored; the launch
+# overrides the pose authority's parent from the *instance* adapter.
+_FIXTURE_PROFILES = {
+    "electrical_mezzanine": (
+        "electrical_mezzanine_scene.yaml",
+        "electrical_mezzanine_adapter.yaml",
+        "electrical_mezzanine_controls.yaml",
+    ),
+    "generator_plant": (
+        "generator_plant_scene.yaml",
+        "generator_plant_adapter.yaml",
+        "generator_plant_controls.yaml",
+    ),
+}
+
+
+def _validate_fixture_instance(
+    name: str, *, launch_override: bool
+) -> object:
+    scene_name, adapter_name, controls_name = _FIXTURE_PROFILES[name]
+    return validate_profile(
+        robot_adapter_path=SCENE_CONTROLS_DIR / adapter_name,
+        instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+        controls_path=SCENE_CONTROLS_DIR / controls_name,
+        scene_path=SCENE_CONTROLS_DIR / scene_name,
+        pose_path=CONTROL_CONFIG_DIR / "cabinet_pose.yaml",
+        toolset="A",
+        instance_id=name,
+        pose_parent_frame_launch_override=launch_override,
+    )
+
+
+class FixtureInstanceProfileContractTest(unittest.TestCase):
+    """AGENT doc §8.1: fixture instance validation under the pose-parent
+    launch override.
+
+    The shared cabinet_pose.yaml declares ``parent_frame: odom`` while the
+    fixture scene_controls adapter declares ``pose_parent_frame: map``.  The
+    pose authority's runtime parent comes from the *instance* adapter (launch
+    override), so the fixture three-set must pass when the override is applied
+    and must still fail the genuine pose-file-vs-adapter mismatch when the
+    override is not applied.
+    """
+
+    def test_fixture_launch_override_passes_both_fixtures(self) -> None:
+        """§8.1 "fixture override 通过": each fixture three-set passes with the
+        launch pose-parent override applied to the shared (odom) pose file."""
+        for name in _FIXTURE_PROFILES:
+            with self.subTest(name=name):
+                report = _validate_fixture_instance(
+                    name, launch_override=True
+                )
+                self.assertGreater(report.control_count, 0)
+                self.assertEqual("odom", report.planning_frame)
+                self.assertEqual("map", report.navigation_frame)
+
+    def test_fixture_without_override_real_mismatch_fails(self) -> None:
+        """§8.1 "无 override 的真实不匹配失败": without the launch override the
+        strict ordinary-cabinet rule must still reject the genuine odom-vs-map
+        pose-parent mismatch — the safety assertion was not relaxed away."""
+        for name in _FIXTURE_PROFILES:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    ProfileContractError,
+                    "does not match robot pose_parent_frame",
+                ):
+                    _validate_fixture_instance(
+                        name, launch_override=False
+                    )
+
+    def test_override_only_valid_for_a_fixture_instance(self) -> None:
+        """§8.1: the launch override is a fixture property; claiming it for the
+        shared profile or a cabinet instance is a contract error."""
+        with self.assertRaisesRegex(
+            ProfileContractError, "kind: fixture"
+        ):
+            validate_profile(
+                robot_adapter_path=(
+                    CONTROL_CONFIG_DIR / "cabinet_robot_adapter.yaml"
+                ),
+                instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+                controls_path=CONTROL_CONFIG_DIR / "cabinet_controls.yaml",
+                scene_path=CONTROL_CONFIG_DIR / "cabinet_scene.yaml",
+                pose_path=CONTROL_CONFIG_DIR / "cabinet_pose.yaml",
+                pose_parent_frame_launch_override=True,
+            )
+        with self.assertRaisesRegex(
+            ProfileContractError, "kind: fixture"
+        ):
+            validate_profile(
+                robot_adapter_path=(
+                    CONTROL_CONFIG_DIR / "cabinet_robot_adapter.yaml"
+                ),
+                instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+                controls_path=CONTROL_CONFIG_DIR / "cabinet_controls.yaml",
+                scene_path=CONTROL_CONFIG_DIR / "cabinet_scene.yaml",
+                pose_path=CONTROL_CONFIG_DIR / "cabinet_pose.yaml",
+                instance_id="cabinet_a",
+                pose_parent_frame_launch_override=True,
+            )
+
+    def test_resolution_unknown_instance_fails(self) -> None:
+        """§8.1: an unknown --instance-id is a hard error, not a fallback."""
+        with self.assertRaisesRegex(ProfileContractError, "not in"):
+            resolve_instance_profile_paths(
+                instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+                instance_id="missing_cabinet",
+                default_controls="shared_controls.yaml",
+                default_scene="shared_scene.yaml",
+                default_adapter="shared_adapter.yaml",
+            )
+
+    def test_resolution_fixture_prefers_its_own_three_set(self) -> None:
+        """§8.1: a fixture's per-scene three-set overrides the shared defaults
+        and only fixtures carry the pose-parent launch override."""
+        resolution = resolve_instance_profile_paths(
+            instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+            instance_id="electrical_mezzanine",
+            default_controls="shared_controls.yaml",
+            default_scene="shared_scene.yaml",
+            default_adapter="shared_adapter.yaml",
+        )
+        self.assertEqual("fixture", resolution.kind)
+        self.assertTrue(resolution.pose_parent_frame_launch_override)
+        self.assertIn("scene_controls", resolution.controls_path)
+        self.assertIn("electrical_mezzanine_controls", resolution.controls_path)
+        self.assertNotEqual("shared_controls.yaml", resolution.controls_path)
+
+        cabinet = resolve_instance_profile_paths(
+            instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+            instance_id="cabinet_a",
+            default_controls="shared_controls.yaml",
+            default_scene="shared_scene.yaml",
+            default_adapter="shared_adapter.yaml",
+        )
+        self.assertEqual("cabinet", cabinet.kind)
+        self.assertFalse(cabinet.pose_parent_frame_launch_override)
+        self.assertEqual("shared_controls.yaml", cabinet.controls_path)
+
+
+@unittest.skipUnless(
+    os.environ.get("AMENT_PREFIX_PATH"),
+    "moveit kinematics plugin discovery needs a sourced ament environment",
+)
+class CheckAdapterContractInstanceIdCliTest(unittest.TestCase):
+    """AGENT doc §8.1 execution: the documented check_adapter_contract commands
+    return 0, and the strict mismatch path (no launch override) still fails."""
+
+    def _run(self, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [str(CHECK_ADAPTER_CONTRACT), *arguments],
+            cwd=str(WORKSPACE),
+            text=True,
+            capture_output=True,
+            timeout=120,
+            check=False,
+        )
+
+    def test_shared_and_electrical_mezzanine_commands_return_zero(
+        self,
+    ) -> None:
+        for arguments in ((), ("--instance-id", "electrical_mezzanine")):
+            with self.subTest(arguments=arguments):
+                result = self._run(*arguments)
+                self.assertEqual(
+                    0,
+                    result.returncode,
+                    msg=result.stdout + result.stderr,
+                )
+                self.assertIn("PASS: adapter contract", result.stdout)
+
+    def test_fixture_kind_is_reported(self) -> None:
+        result = self._run("--instance-id", "generator_plant")
+        self.assertEqual(0, result.returncode, msg=result.stdout + result.stderr)
+        self.assertIn(
+            "instance=generator_plant (kind=fixture)", result.stdout
+        )
+
+    def test_unknown_instance_is_a_hard_failure(self) -> None:
+        result = self._run("--instance-id", "no_such_cabinet")
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("is not in", result.stdout + result.stderr)
+
+    def test_strict_mismatch_still_fails_without_launch_override(self) -> None:
+        """§8.1: passing the fixture three-set WITHOUT --instance-id keeps the
+        strict pose-parent rule (odom pose file vs map fixture adapter) — the
+        very misreport --instance-id exists to make go away, and it must stay
+        strict for any explicit run that does not declare the override."""
+        result = self._run(
+            "--scene",
+            str(SCENE_CONTROLS_DIR / "electrical_mezzanine_scene.yaml"),
+            "--controls",
+            str(SCENE_CONTROLS_DIR / "electrical_mezzanine_controls.yaml"),
+            "--robot-adapter",
+            str(SCENE_CONTROLS_DIR / "electrical_mezzanine_adapter.yaml"),
+        )
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("does not match robot pose_parent_frame", result.stderr)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,794 @@
+#!/usr/bin/env python3
+"""db1 电气夹层抽拉柜的专用 Web 验收器。
+
+只使用 Python 标准库（urllib/json），通过 HTTP/Web 业务入口（jiang task
+层，默认 127.0.0.1:8090）驱动一次完整的 db1 抽拉柜 open/close 往返，绝不
+直接调用 Gazebo 或 ROS Action。现有 scripts/validate/validate_cabinet_web
+假定经典柜体的按钮/旋钮/开关/门控件计数，无法表达电气夹层的 4 个规划滑块
+加 1 个可操作抽屉，故本脚本按 AGENT §9 单独验收 db1。
+
+流程（与 AGENT §9.2 一致）：
+  1. 读取当前活动场景；若与 --scene 不一致，通过显式参数切换到目标场景；
+  2. GET 目标场景所在柜体（--cabinet）的控件列表；
+  3. 校验 db1 存在、类型为 drawer、可操作且要求 toolset A；
+  4. 记录其余控件的状态快照；
+  5. 发起 navigate 到 db1 工位；
+  6. 确保基线为 closed，随后逐 --cycles 执行 set_state=open → set_state=closed；
+  7. 每次动作轮询任务直到 success（非 success 即失败）；
+  8. 全程校验其他控件状态未变化（物理串扰检测）；
+  9. stdout 只输出机器可读 JSON 摘要，退出码表示成败。
+
+安全约定：
+  - 鉴权只从环境变量读取（XCZS_CONTROL_TOKEN / USERNAME / PASSWORD，
+    密码缺省回退 XCZS_ADMIN_PASSWORD）；日志从不打印令牌。
+  - 超时与容差是可配置参数，脚本自身绝不静默放宽。
+  - 场景切换始终显式（仅在活动场景 != --scene 时执行）并响亮记录。
+  - 不自动切换末端工具；toolset 不匹配时返回可操作的失败原因。
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Dict, List, Optional
+
+# msg/CabinetControl.msg 常量（与接口定义保持一致）。
+TYPE_BUTTON = 0
+TYPE_KNOB = 1
+TYPE_SWITCH = 2
+TYPE_DOOR = 3
+TYPE_SLIDER = 4
+TYPE_DRAWER = 5
+TYPE_LABELS = {
+    TYPE_BUTTON: "button",
+    TYPE_KNOB: "knob",
+    TYPE_SWITCH: "switch",
+    TYPE_DOOR: "door",
+    TYPE_SLIDER: "slider",
+    TYPE_DRAWER: "drawer",
+}
+
+DEFAULT_API = "http://127.0.0.1:8090"
+DEFAULT_SCENE = "electrical_mezzanine"
+DEFAULT_CABINET = "electrical_mezzanine"
+DEFAULT_DRAWER = "db1"
+# 导航 handoff 合同（与 validate_cabinet_web 一致）：闭环保留 1.0 m 交给
+# operator 的 docking 阶段进一步收紧。
+DEFAULT_NAV_POSITION_TOLERANCE_M = 1.0
+DEFAULT_NAV_YAW_TOLERANCE_RAD = 0.25
+# 控件终态校验：db1 目标 detent 位置（closed=0/open=0.3）的允许误差。
+DEFAULT_STATE_POSITION_TOLERANCE_M = 0.06
+# 其余控件“未变化”的判定误差。
+DEFAULT_UNTOUCHED_POSITION_EPS_M = 1e-4
+DEFAULT_CATALOG_READY_TIMEOUT_S = 60
+DEFAULT_POLL_INTERVAL_S = 2
+
+TERMINAL_STATUSES = frozenset({"success", "failed", "canceled"})
+
+
+class WebError(Exception):
+    """HTTP/Web 错误，携带响应负载以便 409 抢占恢复。"""
+
+    def __init__(self, status: int, payload: Dict[str, Any]) -> None:
+        super().__init__(
+            "HTTP %d: %s" % (status, payload.get("error", json.dumps(payload)))
+        )
+        self.status = status
+        self.payload = payload
+
+
+class ValidationError(Exception):
+    """验收失败（人类可读原因）。"""
+
+
+def _log(message: str) -> None:
+    """人类可读日志走 stderr，保持 stdout 仅机器摘要。"""
+    print(message, file=sys.stderr)
+
+
+def _api_client(api: str, token: str) -> "_ApiClient":
+    return _ApiClient(api, token)
+
+
+class _ApiClient:
+    def __init__(self, api: str, token: str) -> None:
+        self.base = api.rstrip("/")
+        self.token = token
+        self.network_timeout = 15.0
+
+    def _headers(self, with_body: bool) -> Dict[str, str]:
+        headers = {"Accept": "application/json"}
+        if with_body:
+            headers["Content-Type"] = "application/json"
+        if self.token:
+            # 令牌只进 Authorization 头，任何日志/摘要都不含令牌。
+            headers["Authorization"] = "Bearer " + self.token
+        return headers
+
+    def request(
+        self, method: str, path: str, body: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        payload: Optional[bytes] = None
+        if body is not None:
+            payload = json.dumps(body).encode("utf-8")
+        request = urllib.request.Request(
+            self.base + path,
+            data=payload,
+            method=method,
+            headers=self._headers(body is not None),
+        )
+        try:
+            with urllib.request.urlopen(
+                request, timeout=self.network_timeout
+            ) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")
+            try:
+                parsed = json.loads(detail)
+            except (ValueError, TypeError):
+                parsed = {"error": detail or error.reason}
+            raise WebError(error.code, parsed) from error
+        except urllib.error.URLError as error:
+            raise ValidationError(
+                "%s %s 请求失败（服务未启动？）：%s" % (method, path, error.reason)
+            ) from error
+        if not raw:
+            raise ValidationError("%s %s 返回空响应" % (method, path))
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except ValueError as error:
+            raise ValidationError(
+                "%s %s 返回的不是有效 JSON" % (method, path)
+            ) from error
+        return parsed
+
+    def get(self, path: str) -> Dict[str, Any]:
+        return self.request("GET", path)
+
+    def post(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        return self.request("POST", path, body)
+
+
+def _login(client: _ApiClient, username: str, password: str) -> str:
+    _log("[auth] 以用户 %s 登录。" % username)
+    payload = client.post(
+        "/auth/login", {"username": username, "password": password}
+    )
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise ValidationError("/auth/login 未返回 access_token")
+    return token
+
+
+def _configure_auth(
+    client: _ApiClient,
+    token: str,
+    username: str,
+    password: str,
+) -> "_ApiClient":
+    """Bearer 或登录授权；与 validate_cabinet_web 的约定一致。"""
+    if token:
+        if username or password:
+            raise ValidationError("--token 不能与用户名/密码同时使用")
+        _log("[auth] 使用 Bearer 令牌。")
+        return _ApiClient(client.base, token)
+    if password and not username:
+        username = "admin"
+    if username and not password:
+        raise ValidationError("提供用户名时必须同时提供密码")
+    if not username:
+        _log("[auth] 未配置鉴权（无令牌/用户名）。")
+        return client
+    logged_in = _login(client, username, password)
+    return _ApiClient(client.base, logged_in)
+
+
+def _submit_and_wait_terminal(
+    client: _ApiClient,
+    task_type: str,
+    body: Dict[str, Any],
+    task_timeout: float,
+    label: str,
+) -> Dict[str, Any]:
+    """提交任务并轮询到终态；409 资源占用时先等占用任务结束再重试一次。"""
+    accepted: Optional[Dict[str, Any]] = None
+    for attempt in (1, 2):
+        try:
+            accepted = client.post("/task/" + task_type, body)
+            break
+        except WebError as error:
+            busy_id = (
+                (error.payload.get("details") or {}).get("active_task_id")
+                if attempt == 1
+                else None
+            )
+            if error.status != 409 or not isinstance(busy_id, str) or not busy_id:
+                raise
+            _log(
+                "[%s] 全局任务被 %s 占用，等待其结束后重试。" % (label, busy_id)
+            )
+            _wait_for_id(client, busy_id, task_timeout, "preceding")
+    if accepted is None:
+        raise ValidationError("%s 两次提交均被全局占用" % label)
+    task_id = accepted.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise ValidationError("%s 未返回合规 task_id" % label)
+    return _wait_for_id(client, task_id, task_timeout, label)
+
+
+def _wait_for_id(
+    client: _ApiClient,
+    task_id: str,
+    task_timeout: float,
+    label: str,
+) -> Dict[str, Any]:
+    deadline = time.monotonic() + task_timeout
+    while True:
+        snapshot = client.get("/task/" + urllib.parse.quote(task_id) + "/status")
+        status = snapshot.get("status")
+        if status in TERMINAL_STATUSES:
+            _log(
+                "[%s] 任务 %s 终态 %s（%.1fs）。"
+                % (label, task_id, status, snapshot.get("duration_seconds") or 0)
+            )
+            return snapshot
+        if time.monotonic() > deadline:
+            raise ValidationError(
+                "%s 任务 %s 在 %d 秒内未结束（当前 status=%s）"
+                % (label, task_id, int(task_timeout), status)
+            )
+        time.sleep(DEFAULT_POLL_INTERVAL_S)
+
+
+def _require_success(snapshot: Dict[str, Any], label: str) -> None:
+    status = snapshot.get("status")
+    if status == "success":
+        return
+    reason = snapshot.get("failure_reason") or snapshot.get("message") or ""
+    stage = (snapshot.get("result") or {}).get("diagnostic_stage") or ""
+    detail = snapshot.get("failure_details") or ""
+    raise ValidationError(
+        "%s 任务以 %s 结束：%s（阶段=%s%s）"
+        % (
+            label,
+            status,
+            reason,
+            stage,
+            "；详情=%s" % detail if detail else "",
+        )
+    )
+
+
+def _catalog_ready(
+    client: _ApiClient,
+    cabinet: str,
+    drawer: str,
+    timeout: float,
+) -> Dict[str, Any]:
+    """等待夹具实例 catalog 可达且包含目标控件，返回 controls 响应。"""
+    deadline = time.monotonic() + timeout
+    last_reason = ""
+    while True:
+        response = client.get("/cabinets/" + cabinet + "/controls")
+        controls = response.get("controls")
+        if (
+            response.get("available") is True
+            and isinstance(controls, list)
+            and any(
+                isinstance(item, dict) and item.get("control_id") == drawer
+                for item in controls
+            )
+        ):
+            return response
+        coherent = response.get("catalog_coherent")
+        last_reason = (
+            response.get("catalog_coherence_reason")
+            or ("controls 未就绪" if not isinstance(controls, list) else "")
+            or (
+                "toolset=%s 使 db1 不可用"
+                % response.get("catalog_active_toolset")
+                if response.get("catalog_active_toolset") not in (None, "A")
+                else "available=false（coherent=%s）" % coherent
+            )
+        )
+        if time.monotonic() > deadline:
+            raise ValidationError(
+                "%s 的控件目录在 %d 秒内未就绪：%s"
+                % (cabinet, int(timeout), last_reason or "未知原因")
+            )
+        time.sleep(DEFAULT_POLL_INTERVAL_S)
+
+
+def _parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "通过 Web 业务入口验收 db1 电气夹层抽拉柜 open/close 往返。"
+            "运行前需启动：./run_all.sh"
+        )
+    )
+    parser.add_argument("--api", default=os.environ.get("XCZS_CONTROL_API_URL", DEFAULT_API))
+    parser.add_argument("--token", default=os.environ.get("XCZS_CONTROL_TOKEN", ""))
+    parser.add_argument("--username", default=os.environ.get("XCZS_CONTROL_USERNAME", ""))
+    parser.add_argument("--password", default=os.environ.get("XCZS_CONTROL_PASSWORD", ""))
+    parser.add_argument("--scene", default=DEFAULT_SCENE)
+    parser.add_argument("--cabinet", default=DEFAULT_CABINET)
+    parser.add_argument("--drawer", default=DEFAULT_DRAWER)
+    parser.add_argument("--cycles", type=int, default=1)
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=360,
+        help="单个任务超时秒数（默认 360）",
+    )
+    parser.add_argument(
+        "--nav-position-tolerance",
+        type=float,
+        default=DEFAULT_NAV_POSITION_TOLERANCE_M,
+    )
+    parser.add_argument(
+        "--nav-yaw-tolerance",
+        type=float,
+        default=DEFAULT_NAV_YAW_TOLERANCE_RAD,
+    )
+    parser.add_argument(
+        "--state-position-tolerance",
+        type=float,
+        default=DEFAULT_STATE_POSITION_TOLERANCE_M,
+    )
+    parser.add_argument(
+        "--no-navigate",
+        action="store_true",
+        help="跳过 db1 专用导航（已在工位时使用）",
+    )
+    parser.add_argument(
+        "--check-only",
+        action="store_true",
+        help="只校验场景与 db1 目录契约，不执行 open/close",
+    )
+    return parser.parse_args()
+
+
+def _require_identifier(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise argparse.ArgumentTypeError("%s 不能为空" % label)
+    lowered = value.lower()
+    if lowered != value or not all(
+        (char.isalnum() and char.isascii()) or char == "_" for char in value
+    ) or value[0].isdigit():
+        raise argparse.ArgumentTypeError(
+            "%s 必须是小写字母开头、仅含小写字母/数字/下划线" % label
+        )
+    return value
+
+
+def _control_by_id(
+    controls: List[Dict[str, Any]], drawer: str
+) -> Dict[str, Any]:
+    for item in controls:
+        if item.get("control_id") == drawer:
+            return item
+    raise ValidationError("控件目录中不存在 %s" % drawer)
+
+
+def _untouched_snapshot(
+    controls: List[Dict[str, Any]], drawer: str
+) -> List[Dict[str, Any]]:
+    snapshot: List[Dict[str, Any]] = []
+    for item in controls:
+        if item.get("control_id") == drawer:
+            continue
+        control_id = item.get("control_id")
+        snapshot.append(
+            {
+                "control_id": control_id,
+                "valid": item.get("valid"),
+                "in_motion": item.get("in_motion"),
+                "current_state": item.get("current_state"),
+                "current_position": item.get("current_position"),
+                "transition_sequence": item.get("transition_sequence"),
+            }
+        )
+    return sorted(snapshot, key=lambda entry: str(entry["control_id"]))
+
+
+def _require_others_stable(snapshot: List[Dict[str, Any]], cabinet: str) -> None:
+    unstable = [
+        entry
+        for entry in snapshot
+        if entry["valid"] is not True or entry["in_motion"] is not False
+    ]
+    if unstable:
+        raise ValidationError(
+            "%s 的非目标控件初始即非静止/无效：%s"
+            % (
+                cabinet,
+                ", ".join(
+                    "%s(valid=%s,in_motion=%s)"
+                    % (entry["control_id"], entry["valid"], entry["in_motion"])
+                    for entry in unstable
+                ),
+            )
+        )
+
+
+def _assert_untouched_unchanged(
+    before: List[Dict[str, Any]], after: List[Dict[str, Any]], drawer: str
+) -> None:
+    if len(before) != len(after):
+        raise ValidationError("控件目录在验收期间数量发生变化")
+    drifted: List[str] = []
+    for previous, current in zip(before, after):
+        delta = current["current_position"] - previous["current_position"]
+        if not (
+            previous["control_id"] == current["control_id"]
+            and current["valid"] is True
+            and current["in_motion"] is False
+            and current["current_state"] == previous["current_state"]
+            and current["transition_sequence"] == previous["transition_sequence"]
+            and delta >= -DEFAULT_UNTOUCHED_POSITION_EPS_M
+            and delta <= DEFAULT_UNTOUCHED_POSITION_EPS_M
+        ):
+            drifted.append(str(previous["control_id"]))
+    if drifted:
+        raise ValidationError(
+            "检测到物理串扰：非目标控件状态发生变化：%s（目标=%s）"
+            % (", ".join(drifted), drawer)
+        )
+
+
+def _drawer_expected_position(drawer_item: Dict[str, Any], state: str) -> float:
+    state_ids = drawer_item.get("state_ids") or []
+    state_positions = drawer_item.get("state_positions") or []
+    for index, state_id in enumerate(state_ids):
+        if state_id == state:
+            if index >= len(state_positions):
+                raise ValidationError("目录缺少 %s 的状态位置" % state)
+            return float(state_positions[index])
+    raise ValidationError("目录缺少 %s 状态（state_ids=%s）" % (state, state_ids))
+
+
+def _assert_drawer_settled(
+    client: _ApiClient,
+    cabinet: str,
+    drawer_item: Dict[str, Any],
+    drawer: str,
+    expected_state: str,
+    tolerance: float,
+    label: str,
+) -> None:
+    response = client.get("/cabinets/" + cabinet + "/controls")
+    item = _control_by_id(response.get("controls") or [], drawer)
+    if item.get("valid") is not True or item.get("in_motion") is not False:
+        raise ValidationError(
+            "%s 后 %s 未静止（valid=%s in_motion=%s）"
+            % (label, drawer, item.get("valid"), item.get("in_motion"))
+        )
+    state = item.get("current_state")
+    position = item.get("current_position")
+    expected_position = _drawer_expected_position(drawer_item, expected_state)
+    if state != expected_state or not isinstance(position, (int, float)):
+        raise ValidationError(
+            "%s 后 %s 状态为 %s，期望 %s" % (label, drawer, state, expected_state)
+        )
+    if abs(float(position) - expected_position) > tolerance:
+        raise ValidationError(
+            "%s 后 %s 位置 %.4f 超出 %s 容差 %.4f±%.3f"
+            % (label, drawer, float(position), expected_state, expected_position,
+               tolerance)
+        )
+
+
+def _verify_operation_snapshot(
+    snapshot: Dict[str, Any],
+    cabinet: str,
+    drawer: str,
+    target_state: str,
+    label: str,
+) -> None:
+    _require_success(snapshot, label)
+    result = snapshot.get("result") or {}
+    request = snapshot.get("request") or {}
+    # 终态证据标志：任务 success 的充分条件即五者皆真，这里再显式复核。
+    evidence = (
+        "physical_outcome_confirmed",
+        "final_state_verified",
+        "transport_succeeded",
+        "recovery_succeeded",
+        "grasp_released",
+    )
+    for flag in evidence:
+        if result.get(flag) is not True:
+            raise ValidationError(
+                "%s 成功结果缺少终态证据 %s" % (label, flag)
+            )
+    if request.get("cabinet") != cabinet or request.get("control_id") != drawer:
+        raise ValidationError("%s 结果请求标识与目标不一致" % label)
+    if result.get("operation_executed") is not True:
+        raise ValidationError("%s 结果 operation_executed 不为 true" % label)
+    if result.get("final_state") != target_state:
+        raise ValidationError(
+            "%s 结果 final_state=%s，期望 %s"
+            % (label, result.get("final_state"), target_state)
+        )
+    _log(
+        "[%s] 结果 final_state=%s peak=%.4f 阶段=%s 证据全真。"
+        % (
+            label,
+            result.get("final_state"),
+            float(result.get("peak_position") or 0.0),
+            result.get("diagnostic_stage") or "",
+        )
+    )
+
+
+def _verify_navigation_snapshot(
+    snapshot: Dict[str, Any],
+    cabinet: str,
+    drawer: str,
+    position_tolerance: float,
+    yaw_tolerance: float,
+) -> None:
+    _require_success(snapshot, "navigate")
+    result = snapshot.get("result") or {}
+    request = snapshot.get("request") or {}
+    if request.get("cabinet") != cabinet:
+        raise ValidationError("navigate 结果请求柜体不一致")
+    final_pose = result.get("final_pose") or {}
+    error = result.get("error") or {}
+    if not all(
+        isinstance(final_pose.get(axis), (int, float))
+        for axis in ("x", "y", "yaw")
+    ):
+        raise ValidationError("navigate 结果缺少终点 final_pose")
+    position_error = error.get("position_m")
+    yaw_error = error.get("yaw_rad")
+    if not isinstance(position_error, (int, float)) or not isinstance(
+        yaw_error, (int, float)
+    ):
+        raise ValidationError("navigate 结果缺少定位误差 error")
+    if float(position_error) > position_tolerance:
+        raise ValidationError(
+            "navigate 定位误差 %.3f m 超出 %s m" % (float(position_error),
+                                                   position_tolerance)
+        )
+    if float(yaw_error) > yaw_tolerance:
+        raise ValidationError(
+            "navigate 朝向误差 %.3f rad 超出 %s rad"
+            % (float(yaw_error), yaw_tolerance)
+        )
+    _log(
+        "[navigate] %s -> %s 完成，误差 %.3f m / %.3f rad。"
+        % (cabinet, drawer, float(position_error), float(yaw_error))
+    )
+
+
+def _type_counts(controls: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for item in controls:
+        label = TYPE_LABELS.get(item.get("control_type"), "unknown")
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def run(arguments: argparse.Namespace) -> Dict[str, Any]:
+    scene = _require_identifier(arguments.scene, "scene")
+    cabinet = _require_identifier(arguments.cabinet, "cabinet")
+    drawer = _require_identifier(arguments.drawer, "drawer")
+    if not (1 <= arguments.cycles <= 100):
+        raise ValidationError("--cycles 必须是 1..100 的整数")
+    if not (1 <= arguments.timeout <= 86400):
+        raise ValidationError("--timeout 必须是 1..86400 的整数")
+    task_timeout = float(arguments.timeout)
+    api = arguments.api.rstrip("/")
+    summary: Dict[str, Any] = {
+        "validator": "validate_db1_drawer",
+        "cabinet": cabinet,
+        "drawer": drawer,
+        "scene": scene,
+        "cycles_requested": arguments.cycles,
+        "cycles_completed": 0,
+        "opens": 0,
+        "closes": 0,
+        "precondition_closes": 0,
+        "navigations": 0,
+        "untouched_controls_unchanged": True,
+        "check_only": arguments.check_only,
+    }
+
+    client = _configure_auth(
+        _api_client(api, ""),
+        arguments.token,
+        arguments.username,
+        arguments.password or _fallback_password(),
+    )
+
+    _log("[scene] 读取当前活动场景。")
+    scenes = client.get("/scenes")
+    active_scene = scenes.get("active")
+    summary["scene_before"] = active_scene
+    if active_scene != scene:
+        _log("[scene] 活动场景为 %s，显式切换到 %s。" % (active_scene, scene))
+        switched = client.post("/scene/switch", {"name": scene})
+        status = switched.get("status")
+        if status not in ("switched", "unchanged", "reconciled"):
+            raise ValidationError(
+                "切换到 %s 失败：%s" % (scene, json.dumps(switched, ensure_ascii=False))
+            )
+        active_scene = scene
+        summary["scene_switched"] = True
+        _log("[scene] 切换返回 status=%s，当前活动场景 %s。" % (status, scene))
+    else:
+        summary["scene_switched"] = False
+        _log("[scene] 活动场景已是 %s，无需切换。" % scene)
+
+    _log("[catalog] 等待 %s 控件目录就绪。" % cabinet)
+    response = _catalog_ready(client, cabinet, drawer, DEFAULT_CATALOG_READY_TIMEOUT_S)
+    controls = response.get("controls") or []
+    summary["control_type_counts"] = _type_counts(controls)
+    summary["catalog_active_toolset"] = response.get("catalog_active_toolset")
+
+    drawer_item = _control_by_id(controls, drawer)
+    drawer_type = drawer_item.get("control_type")
+    required_toolset = drawer_item.get("required_toolset")
+    operable = drawer_item.get("operable") is True
+    toolset_compatible = drawer_item.get("toolset_compatible") is True
+    summary["drawer_control_type"] = TYPE_LABELS.get(drawer_type, drawer_type)
+    summary["drawer_required_toolset"] = required_toolset
+    summary["drawer_operable"] = operable
+
+    if drawer_type != TYPE_DRAWER:
+        raise ValidationError(
+            "%s 的类型是 %s，期望 drawer"
+            % (drawer, TYPE_LABELS.get(drawer_type, drawer_type))
+        )
+    if required_toolset != "A":
+        raise ValidationError(
+            "%s 要求末端工具 %s，期望 A" % (drawer, required_toolset)
+        )
+    if not operable:
+        raise ValidationError(
+            "%s 不可操作：required_toolset=%s toolset_compatible=%s "
+            "adapter_validated=%s（当前活动 toolset=%s；drawer 需 toolset A，"
+            "请先在 Web 切换到 toolset A 后重试）"
+            % (
+                drawer,
+                required_toolset,
+                drawer_item.get("toolset_compatible"),
+                drawer_item.get("adapter_validated"),
+                response.get("catalog_active_toolset"),
+            )
+        )
+    state_ids = drawer_item.get("state_ids") or []
+    if "closed" not in state_ids or "open" not in state_ids:
+        raise ValidationError("%s 目录缺少 closed/open 状态" % drawer)
+    _log(
+        "[catalog] %s type=drawer operable=%s toolset=%s，共 %d 项控件。"
+        % (drawer, operable, required_toolset, len(controls))
+    )
+
+    if arguments.check_only:
+        summary["ok"] = True
+        return summary
+
+    # 先记录其余控件基线；随后导航到 db1 工位。
+    baseline_untouched = _untouched_snapshot(controls, drawer)
+    _require_others_stable(baseline_untouched, cabinet)
+
+    if not arguments.no_navigate:
+        summary["navigations"] += 1
+        _log("[navigate] %s -> %s 工位。" % (cabinet, drawer))
+        nav = _submit_and_wait_terminal(
+            client,
+            "navigate",
+            {"cabinet": cabinet, "control_id": drawer},
+            task_timeout,
+            "navigate",
+        )
+        _verify_navigation_snapshot(
+            nav,
+            cabinet,
+            drawer,
+            arguments.nav_position_tolerance,
+            arguments.nav_yaw_tolerance,
+        )
+    else:
+        _log("[navigate] --no-navigate，假定已在 %s 工位。" % drawer)
+
+    def operate_drawer(target_state: str, label: str) -> None:
+        operation = _submit_and_wait_terminal(
+            client,
+            "operate",
+            {
+                "cabinet": cabinet,
+                "control_id": drawer,
+                "command": "set_state",
+                "target_state": target_state,
+            },
+            task_timeout,
+            label,
+        )
+        _verify_operation_snapshot(operation, cabinet, drawer, target_state, label)
+        _assert_drawer_settled(
+            client,
+            cabinet,
+            drawer_item,
+            drawer,
+            target_state,
+            arguments.state_position_tolerance,
+            label,
+        )
+
+    # 基线必须干净地停在 closed；否则先做一次前置 close（对已处于 mid/open
+    # 的抽屉仍会真实动作，对已 closed 的抽屉是 noop——noop 会按合同失败）。
+    start_item = _control_by_id(
+        (client.get("/cabinets/" + cabinet + "/controls")).get("controls") or [],
+        drawer,
+    )
+    start_state = start_item.get("current_state")
+    start_position = float(start_item.get("current_position") or 0.0)
+    closed_position = _drawer_expected_position(drawer_item, "closed")
+    if start_state == "open" or (
+        start_state != "closed"
+        and abs(start_position - closed_position) > arguments.state_position_tolerance
+    ):
+        summary["precondition_closes"] += 1
+        _log("[pre] %s 基线为 %s，先关闭到 closed。" % (drawer, start_state))
+        operate_drawer("closed", "precondition-close")
+    elif start_state != "closed":
+        raise ValidationError(
+            "%s 基线状态 %s（位置 %.4f）无法归位；请先 /task/reset 后再验收。"
+            % (drawer, start_state, start_position)
+        )
+
+    # 逐轮 open/close。
+    for cycle in range(1, arguments.cycles + 1):
+        _log("\n[cycle %d/%d] open -> close。" % (cycle, arguments.cycles))
+        operate_drawer("open", "cycle-%d-open" % cycle)
+        summary["opens"] += 1
+        operate_drawer("closed", "cycle-%d-close" % cycle)
+        summary["closes"] += 1
+        summary["cycles_completed"] = cycle
+        # 每轮结束复核其余控件未变化（物理串扰检测）。
+        after = _untouched_snapshot(
+            (client.get("/cabinets/" + cabinet + "/controls")).get("controls")
+            or [],
+            drawer,
+        )
+        _assert_untouched_unchanged(baseline_untouched, after, drawer)
+        _log("[cycle %d/%d] 其余控件未变化，通过。" % (cycle, arguments.cycles))
+
+    final_scene = (client.get("/scenes")).get("active")
+    summary["scene_after"] = final_scene
+    summary["ok"] = True
+    return summary
+
+
+def _fallback_password() -> str:
+    return os.environ.get("XCZS_ADMIN_PASSWORD", "")
+
+
+def main() -> int:
+    arguments = _parse_arguments()
+    try:
+        summary = run(arguments)
+    except ValidationError as error:
+        _log("ERROR: %s" % error)
+        print(
+            json.dumps(
+                {"ok": False, "error": str(error)}, ensure_ascii=False
+            )
+        )
+        return 1
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return 0 if summary.get("ok") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
