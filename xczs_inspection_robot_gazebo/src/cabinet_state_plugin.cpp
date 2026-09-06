@@ -99,6 +99,13 @@ constexpr double kMaxParkingEffort = 50.0;
 // from the drawer's current rail position before START is rejected as a jump.
 constexpr double kPlaybackStartWindow = 0.03;
 constexpr std::size_t kPlaybackMaxSamples = 4096;
+// 2026-09-06 AGENT T3: trajectory.header.stamp 是 (sim) 起播时刻的契约兑现。
+// 零/省略时间戳 = 立即可起播（与历史行为一致）；时间戳略早于当前 sim 时钟
+// （在宽限窗口内）也按"立即"处理，容忍发送端时钟偏移；时间戳明显过期则拒绝
+// （过期任务不允许在轨迹中途接入追赶）；时间戳在未来则等待对应 sim time 再
+// 起播，等待期内把轨条钉在原位（velocity 0），中途 RELEASE 即取消。
+constexpr double kPlaybackStampPastGraceSeconds = 1.0;
+constexpr double kPlaybackStampEpsilon = 1e-6;
 
 enum class ControlKind
 {
@@ -588,6 +595,12 @@ public:
           physics_request->control_id = request->control_id;
           physics_request->operation_lease_id = request->operation_lease_id;
           physics_request->playback_command = request->command;
+          const auto & schedule_stamp = request->trajectory.header.stamp;
+          physics_request->playback_start_stamp =
+            (schedule_stamp.sec != 0 || schedule_stamp.nanosec != 0)
+            ? (static_cast<double>(schedule_stamp.sec) +
+               static_cast<double>(schedule_stamp.nanosec) * 1e-9)
+            : -1.0;
           physics_request->playback_samples.reserve(
             request->trajectory.points.size());
           for (const auto & point : request->trajectory.points) {
@@ -780,6 +793,12 @@ private:
     double playback_start_sim{0.0};
     double playback_elapsed{0.0};
     double playback_last_sim{-1.0};
+    // AGENT T3: sim time at which this playback's schedule begins advancing
+    // (elapsed t=0 maps to header.stamp).  0.0 = start immediately on apply,
+    // matching the historical zero-stamp behaviour.  While > 0 the drawer is
+    // parked at the schedule's first sample (velocity 0) until the sim clock
+    // reaches playback_start_at.
+    double playback_start_at{0.0};
     std::size_t reset_state_index{0U};
     std::size_t detent_target_index{0U};
     std::size_t state_index{0U};
@@ -863,6 +882,9 @@ private:
     bool drawer_unlock{false};
     // Visual playback (2026-09-06): command + 1-D rail schedule (time, q).
     std::uint8_t playback_command{kPlaybackStart};
+    // AGENT T3: trajectory.header.stamp converted to sim-time seconds;
+    // -1.0 sentinel = zero/omitted stamp => start immediately (historical path).
+    double playback_start_stamp{-1.0};
     std::vector<std::pair<double, double>> playback_samples;
     std::promise<PhysicsOutcome> promise;
     std::atomic<State> state{State::kPending};
@@ -2640,6 +2662,32 @@ private:
   // teleport the drawer.
   void drive_drawer_playback(Control & control, double simulation_time)
   {
+    // AGENT T3 deferred start: a START whose trajectory.header.stamp lies in
+    // the future must not move the rail until its start time is reached.  The
+    // schedule is anchored to the SAME clock the plugin stamps onto the drawer
+    // /state topic (ros_node_->get_clock()->now()) -- clients schedule against
+    // that clock, and comparing here against world_->SimTime() would misjudge
+    // a past wall-time stamp as "future" whenever a sim stall makes the world
+    // clock lag the node clock.  Park the drawer at the schedule's first sample
+    // (validated to sit within kPlaybackStartWindow of the current position)
+    // and refresh playback_last_sim every tick so no wait-time delta accrues
+    // when motion finally begins -- there is deliberately no mid-schedule
+    // catch-up after a stall.
+    const double node_clock_now = ros_node_->get_clock()->now().seconds();
+    if (!control.playback_paused && !control.playback_finished &&
+      control.playback_start_at > 0.0 &&
+      node_clock_now < control.playback_start_at - kPlaybackStampEpsilon)
+    {
+      control.playback_last_sim = simulation_time;
+      const double parked = control.playback_samples.empty()
+        ? control.joint->Position(0)
+        : control.playback_samples.front().second;
+      control.joint->SetPosition(0, parked);
+      control.joint->SetVelocity(0, 0.0);
+      control.effort = 0.0;
+      update_control_state(control, true);
+      return;
+    }
     if (control.playback_last_sim >= 0.0) {
       const double dt = simulation_time - control.playback_last_sim;
       if (!control.playback_paused && !control.playback_finished &&
@@ -2726,6 +2774,7 @@ private:
       control.playback_lease_id.clear();
       control.playback_samples.clear();
       control.playback_last_sim = -1.0;
+      control.playback_start_at = 0.0;
       PhysicsOutcome outcome{
         true, "Drawer '" + request.control_id + "' playback released.",
         control.joint->Position(0)};
@@ -2792,6 +2841,34 @@ private:
         current};
     }
 
+    // AGENT T3: resolve the schedule's start anchor from header.stamp.  Zero /
+    // omitted (srv handler sentinel -1) or within-past-grace means start now;
+    // a clearly stale stamp is refused (a late caller must not splice into a
+    // motion that should already be running); a future stamp parks the drawer
+    // until its start time is reached.  The reference clock is the SAME one the
+    // drawer /state topic carries (ros_node_->get_clock()->now()); comparing a
+    // client's wall/sim header.stamp against world_->SimTime() here would
+    // misclassify it whenever a sim stall separates the two (state stamps are
+    // wall-based while world sim lags).  See drive_drawer_playback.
+    double start_at = 0.0;
+    if (request.playback_start_stamp >= 0.0) {
+      const double now_node = ros_node_->get_clock()->now().seconds();
+      if (request.playback_start_stamp <
+        now_node - kPlaybackStampPastGraceSeconds)
+      {
+        return {false, "Drawer '" + request.control_id +
+          "' playback START refused: header.stamp " +
+          std::to_string(request.playback_start_stamp) + " s is stale (" +
+          std::to_string(now_node - request.playback_start_stamp) +
+          " s in the past; allowed grace " +
+          std::to_string(kPlaybackStampPastGraceSeconds) + " s).",
+          current};
+      }
+      if (request.playback_start_stamp > now_node + kPlaybackStampEpsilon) {
+        start_at = request.playback_start_stamp;
+      }
+    }
+
     control.playback_samples = std::move(samples);
     control.playback_active = true;
     control.playback_paused = false;
@@ -2799,13 +2876,19 @@ private:
     control.playback_lease_id = request.operation_lease_id;
     control.playback_elapsed = 0.0;
     control.playback_last_sim = world_->SimTime().Double();
+    control.playback_start_at = start_at;
     // The rail is now kinematic; reflect that in the latch state so a later
     // RELEASE at the closed position re-engages normally and a mid-travel
     // RELEASE is not fought by the closed-detent latch.
     control.drawer_unlocked = true;
     control.drawer_has_opened = true;
+    std::string started_when =
+      (start_at > 0.0)
+      ? ("; will begin at sim time " + std::to_string(start_at))
+      : " immediately";
     PhysicsOutcome outcome{
-      true, "Drawer '" + request.control_id + "' playback started.",
+      true, "Drawer '" + request.control_id +
+        "' playback started" + started_when + ".",
       current};
     outcome.finished = control.playback_samples.empty();
     return outcome;
