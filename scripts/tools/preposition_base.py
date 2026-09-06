@@ -22,12 +22,20 @@ import sys
 from pathlib import Path
 
 import rclpy
-from gazebo_msgs.srv import SetEntityState
+from gazebo_msgs.srv import GetEntityState, SetEntityState
 from geometry_msgs.msg import PoseWithCovarianceStamped
 from rclpy.node import Node
 from std_srvs.srv import Empty
 from tf2_ros import Buffer, TransformListener, TransformException
 from yaml import safe_load
+
+# Teleport z fallback: the launch spawns the robot body origin at 0.515 m
+# (SPAWN_Z), and every control dock is a floor-level 2-D point, so a grounded
+# body sits at roughly this height above the world floor.  See the grounded-z
+# comment in ``teleport_to_station``.
+DEFAULT_GROUNDED_Z = 0.515
+_GROUNDED_Z_MIN = 0.30
+_GROUNDED_Z_MAX = 1.00
 
 WORKSPACE = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(WORKSPACE / "jiang"))
@@ -137,7 +145,36 @@ def teleport_to_station(
     lx, ly, lz = _quat_rotate(qv, (local_x, local_y, local_z))
     world_x = cx + lx
     world_y = cy + ly
-    world_z = cz + lz
+
+    # ``world_z = cz + lz`` is NOT used for the teleport.  Control docks are
+    # floor-level 2-D points (``local_anchor`` z = 0 for every station), so the
+    # station math resolves to the floor plane (world z ~= 0) - the height the
+    # WHEELS rest on.  But /set_entity_state moves the model ROOT (``body``)
+    # origin, which sits ~0.52 m above the floor when the chassis is grounded
+    # (the launch spawn_z).  Teleporting the body to z = 0 sinks the whole
+    # chassis ~0.5 m into the floor; the contact solver then has to expel the
+    # model upward over ~1 s, and that expulsion leaves gazebo_ros_planar_move's
+    # velocity/odometry state corrupted for the rest of the boot: afterwards any
+    # /xczs/cmd_vel (precision dock or the drawer visual base-follow) lurches the
+    # base ~6x overspeed in a fixed world direction regardless of sign - the db1
+    # OPEN 22 m runaway.  Instead reuse the entity's current grounded z (the
+    # gentlest possible vertical placement: no jump, no penetration), falling
+    # back to the launch spawn height if the current pose is implausible.
+    current_z = None
+    get_state_client = node.create_client(GetEntityState, "/get_entity_state")
+    if get_state_client.wait_for_service(timeout_sec=5.0):
+        get_request = GetEntityState.Request()
+        get_request.name = entity_name
+        get_request.reference_frame = "world"
+        get_future = get_state_client.call_async(get_request)
+        rclpy.spin_until_future_complete(node, get_future, timeout_sec=5.0)
+        if get_future.done() and get_future.result() is not None and \
+            bool(get_future.result().success):
+            current_z = float(get_future.result().state.pose.position.z)
+    if current_z is not None and _GROUNDED_Z_MIN <= current_z <= _GROUNDED_Z_MAX:
+        world_z = current_z
+    else:
+        world_z = DEFAULT_GROUNDED_Z
 
     # outward direction in world, for the base yaw (same formula as the
     # operator: atan2(-outward_y, -outward_x) + base_yaw_offset).

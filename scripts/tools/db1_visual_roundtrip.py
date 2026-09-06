@@ -42,6 +42,12 @@ NS = "/xczs/cabinet/electrical_mezzanine"
 CONTROL = "db1"
 ACTION = NS + "/operate_cabinet_control"
 STATE_TOPIC = NS + "/" + CONTROL + "/state"
+
+# 阶段名（open/close，供 CLI 与日志）→ 抽屉 state_id（控制 enum 校验用）。
+# 抽屉插件的 detent 命名是 'closed'（state_ids=['closed','open']），CLOSE 阶段
+# 若把 'close' 直接当 target_state 发给 operator，resolve_operation_target 的
+# std::find 找不到 → error_code 2（UNSUPPORTED_COMMAND）。
+STAGE_TO_STATE_ID = {"open": "open", "close": "closed"}
 WORKSPACE = Path(__file__).resolve().parents[2]
 ADAPTER = (
     WORKSPACE
@@ -113,7 +119,7 @@ class Db1VisualRoundtrip(Node):
         goal = OperateCabinetControl.Goal()
         goal.control_id = CONTROL
         goal.command = OperateCabinetControl.Goal.COMMAND_SET_STATE
-        goal.target_state = target_state
+        goal.target_state = STAGE_TO_STATE_ID[target_state]
         goal.use_target_position = False
         # 操作员嵌入式导航被任务层禁用；底盘由 preposition_base.py 预置。
         goal.navigate_to_staging_pose = False
@@ -135,12 +141,13 @@ class Db1VisualRoundtrip(Node):
         result_future = goal_handle.get_result_async()
         while rclpy.ok() and not result_future.done() and \
                 time.monotonic() - started < timeout_s:
-            now = time.monotonic() - started
-            if last_s is None or now - last_s >= 0.2:
-                last_s = now
+            mono = time.monotonic()
+            if last_s is None or mono - last_s >= 0.2:
+                last_s = mono
                 base, err = self._base_pose()
                 q = self._drawer_state.position if self._drawer_state else None
-                samples.append((now, q, base))
+                # 样本首列为绝对 monotonic 秒，供 --csv-out 跨阶段拼一条时间轴。
+                samples.append((mono, q, base))
             time.sleep(0.01)
         if not result_future.done():
             # 不中断任务：留给操作员收尾，采样已知的还差多少。
@@ -150,11 +157,16 @@ class Db1VisualRoundtrip(Node):
         return outcome, samples
 
     # ------------------------------------------------------------------- main
-    def run(self, once, preposition):
+    def run(self, once, preposition, csv_out=None):
         self._wait(lambda: self._drawer_state is not None, 10.0,
                    "drawer state topic")
         self._wait(lambda: self._base_pose()[1] is None, 15.0,
                    "odom→body transform")
+
+        self._csv = None
+        if csv_out:
+            self._csv = open(csv_out, "w", encoding="utf-8")
+            self._csv.write("stage,t_s,rail_m,base_x_m,base_y_m,base_z_m\n")
 
         if preposition:
             self.get_logger().info("teleporting base to db1 station ...")
@@ -179,6 +191,8 @@ class Db1VisualRoundtrip(Node):
             stages = ["close"]
         else:
             stages = (["open"] if once == "open" else ["open", "close"])
+        run_started = time.monotonic()
+        t0_run = None  # 全 run 首个样本的绝对 monotonic 秒（跨阶段连续时间轴锚点）
 
         for stage in stages:
             self._wait(lambda: self._drawer_state is not None, 10.0,
@@ -211,10 +225,25 @@ class Db1VisualRoundtrip(Node):
                        base_now[0] - base_before[0],
                        base_now[1] - base_before[1],
                        base_now[2] - base_before[2]))
+
+            # 5 Hz (rail, odom→body) 样本落盘：可视化切片用真实遥测回放，
+            # t 以本次 run 首次 sample 为 0（跨 open/close 拼一条连续时间轴）。
+            if self._csv is not None:
+                if t0_run is None:
+                    t0_run = samples[0][0] if samples else run_started
+                for mono, q, base in samples:
+                    if q is None or base is None:
+                        continue
+                    self._csv.write("%s,%.3f,%.4f,%.4f,%.4f,%.4f\n" % (
+                        stage, mono - t0_run, q, base[0], base[1], base[2]))
+                self._csv.flush()
+
             if not result.success:
                 raise SystemExit(
                     "visual %s did not finish SUCCESS" % stage)
             base_before = base_now
+        if self._csv is not None:
+            self._csv.close()
         print("====================================")
 
 
@@ -224,12 +253,15 @@ def main():
                         help="only run one direction (default: open then close)")
     parser.add_argument("--no-preposition", action="store_true",
                         help="skip the base teleport (base already at station)")
+    parser.add_argument("--csv-out", metavar="PATH", default=None,
+                        help="write 5 Hz (rail, odom->body) samples as CSV "
+                             "(stage,t_s,rail_m,base_x_m,base_y_m,base_z_m)")
     args = parser.parse_args()
 
     rclpy.init()
     driver = Db1VisualRoundtrip()
     try:
-        driver.run(args.once, not args.no_preposition)
+        driver.run(args.once, not args.no_preposition, args.csv_out)
     finally:
         driver.stop()
         driver.destroy_node()

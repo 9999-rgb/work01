@@ -742,6 +742,11 @@ public:
     // 保持既有 latch 行为（真机/无夹具实体场景零回归）。
     physics_anchor_entity_ = declare_parameter<std::string>(
       "physics_anchor_entity", "");
+    // 实体位移护栏阈值 (见 apply_physics_anchor_to_latch): 刚接夹具物理锚定的
+    // 原点修正只可能是落地/AMCL 噪声 (实测 0-10 mm); 超过即认为锚定实体滑离声
+    // 明位姿 (抽屉开位), 拒绝覆写。
+    physics_anchor_max_shift_ = positive_parameter(
+      "physics_anchor_max_shift", 0.05);
     {
       const auto flat_origin = declare_parameter<std::vector<double>>(
         "physics_anchor_local_origin", std::vector<double>{});
@@ -4388,11 +4393,37 @@ private:
         // failing every IK query (P3-8 db1 Cartesian 0%).
         configure_move_group(
           *drawer_left_move_group, drawer_left_tool_.contact_tool_link);
-        const auto bimanual_states = ensure_bimanual_calibration_position(
-          *drawer_left_move_group, *move_group, goal_handle);
-        verify_bimanual_tool_calibration_state(
-          *bimanual_states.first, *bimanual_states.second);
-        calibrated_robot_state = bimanual_states.second;
+        // 视觉开→合接续（2026-09-06 roundtrip CLOSE 失败根因之二）：视觉 open
+        // 成功后双臂留在工作位姿、钩杆即工作态（拉出期接触微偏 ~0.037 rad），
+        // 此时 close 是同一持把 tableau 的直接推回。ensure_bimanual_calibration_
+        // position 会强制把微偏钩杆合拢回标定 0，带载下 settle 超时失败；故当
+        // 抽屉开着、target 是合向、且双臂实测已在工作位姿（arms_match 接续门）
+        // 时，直接沿用现有双臂状态，跳过标定合拢。fresh close（双臂不在柜上 /
+        // 停靠后新取）不满足接续门，照常先标定再到达，零回归。
+        constexpr double kVisualContinuationOpenMargin = 0.05;  // m, 抽屉确实开着
+        const bool visual_drawer_continuation_close =
+          drawer_execution_backend_ == "visual" &&
+          visual_drawer_control_ids_.count(control->id) > 0U &&
+          !validation_only &&
+          target_position < initial_state.position &&
+          initial_state.position > kVisualContinuationOpenMargin &&
+          arms_match_drawer_work_poses(*control, initial_state.position);
+        if (visual_drawer_continuation_close) {
+          RCLCPP_INFO(
+            get_logger(),
+            "Visual drawer '%s' close continues from the held work pose "
+            "(rail %.4f m): skipping the tool calibration re-close; arms "
+            "already at the drawer work pose.",
+            control->id.c_str(), initial_state.position);
+          calibrated_robot_state =
+            synchronized_current_robot_state(*drawer_left_move_group);
+        } else {
+          const auto bimanual_states = ensure_bimanual_calibration_position(
+            *drawer_left_move_group, *move_group, goal_handle);
+          verify_bimanual_tool_calibration_state(
+            *bimanual_states.first, *bimanual_states.second);
+          calibrated_robot_state = bimanual_states.second;
+        }
       } else {
         calibrated_robot_state =
           ensure_tool_calibration_position(*move_group, goal_handle);
@@ -6098,6 +6129,31 @@ private:
         cabinet_to_planning.getRotation(), physics_anchor_local_origin_);
     const tf2::Vector3 previous_origin = cabinet_to_planning.getOrigin();
     const double shift = corrected_origin.distance(previous_origin);
+    // 2026-09-06 实体位移护栏 (db1 visual close 根因): 物理锚定的前提是锚定
+    // 实体相对 cabinet 系刚接（位姿恒等于声明局部原点）。但可配置锚定实体可
+    // 是随轨道滑动的抽屉本体 —— 电气夹层 db1 的 'b1' 是 prismatic 抽屉 body,
+    // 抽屉拉出 0.30 m 后 /get_entity_state 测得的真位姿比其声明原点整体东移了
+    // 一个轨位; 若照常“实测 − R·声明局部原点”覆写, odom→cabinet 原点会被错推
+    // +rail(实测 300 mm), 所有工作位姿随之东移 0.30 m → close 空 goal tree
+    // (OMPL “Unable to sample any valid states for goal tree”)。本护栏在覆写前
+    // 对比“物理测量隐含的原点位移”: 刚接夹具的原点修正只可能是落地/AMCL 信念
+    // 噪声 (实测 0-10 mm, 留 5 倍裕量), 远超即意味着锚定实体本身滑离了声明位
+    // 姿 (抽屉开着) —— 刚性前提不成立, 拒绝覆写并保留 latch 原值。抽屉轨道位
+    // 移本就由 rail 单独表示、不经 cabinet 系原点, 保留 latch (TF/站位真值) 对
+    // 于抽屉开位操作才是正确帧。0.30 m 滑移 >> 0.05 m 护栏, 边界清晰无歧义。
+    if (shift > physics_anchor_max_shift_) {
+      RCLCPP_WARN(
+        get_logger(),
+        "Cabinet physics-anchor measurement for entity '%s' implies a %.1f mm "
+        "odom->cabinet origin shift, far beyond the %.1f mm rigid-fixture "
+        "bound; the anchor entity has likely translated from its declared pose "
+        "(e.g. the drawer is open, rail not at 0); keeping the latched "
+        "odom->cabinet unchanged (drawer travel is tracked by the rail, not "
+        "the cabinet frame).",
+        physics_anchor_entity_.c_str(), shift * 1000.0,
+        physics_anchor_max_shift_ * 1000.0);
+      return false;
+    }
     cabinet_to_planning.setOrigin(corrected_origin);
     RCLCPP_INFO(
       get_logger(),
@@ -6868,6 +6924,52 @@ private:
       control, DrawerSide::RIGHT, position,
       drawer_grasp_contact_offset(control, position));
     return poses;
+  }
+
+  // 2026-09-06 视觉开→合"接续"判据：双臂当前是否已钉在给定轨位的工作位姿上。
+  // 视觉 open 成功后双臂留在工作位姿（未回标定、钩杆即工作态），此时 close 是
+  // 同一持把 tableau 的直接推回 —— 不得再强制手指回标定：拉出期接触把右支持/
+  // 钩杆微偏 (~0.037 rad)，带载强合拢到 0 settle 超时失败（roundtrip 现场）。
+  // 取两侧接触杆 (contact link) 规划系实时位姿与工作位姿靶比较；位带/转带取
+  // 裕量，用于区分"正持柜"(延续) 与"远端 home/transport / 停靠后新取"（fresh
+  // close 需照常标定合拢再到达），不是到位验证（到位由到达段负责）。仅作接续
+  // 门，不做执行判据。
+  bool arms_match_drawer_work_poses(
+    const ButtonSpec & control, double rail_position,
+    double position_band = 0.06, double rotation_band = 0.35)
+  {
+    const DrawerBimanualPoses poses =
+      calculate_drawer_bimanual_work_poses(control, rail_position);
+    const auto match_side = [&](const std::string & link,
+      const geometry_msgs::msg::Pose & target) -> bool {
+      try {
+        const auto tf = transform_buffer_->lookupTransform(
+          planning_frame_, link, tf2::TimePointZero,
+          tf2::durationFromSec(0.3));
+        const tf2::Transform current(
+          tf2::Quaternion(
+            tf.transform.rotation.x, tf.transform.rotation.y,
+            tf.transform.rotation.z, tf.transform.rotation.w),
+          tf2::Vector3(
+            tf.transform.translation.x, tf.transform.translation.y,
+            tf.transform.translation.z));
+        const tf2::Vector3 target_origin(
+          target.position.x, target.position.y, target.position.z);
+        const tf2::Quaternion target_rotation(
+          target.orientation.x, target.orientation.y,
+          target.orientation.z, target.orientation.w);
+        if (current.getOrigin().distance(target_origin) > position_band) {
+          return false;
+        }
+        return current.getRotation().angleShortestPath(
+          target_rotation) <= rotation_band;
+      } catch (const tf2::TransformException &) {
+        return false;
+      }
+    };
+    return
+      match_side(drawer_left_tool_.contact_tool_link, poses.left_work_pose) &&
+      match_side(drawer_right_tool_.contact_tool_link, poses.right_work_pose);
   }
 
   // 2026-09-05 AGENT §8.4 cap-2 v5 取证 fix #6: 密封钩爪抽屉首次到达后的实测
@@ -16528,6 +16630,8 @@ private:
   std::string physics_anchor_entity_;
   tf2::Vector3 physics_anchor_local_origin_{0.0, 0.0, 0.0};
   bool physics_anchor_configured_{false};
+  // 物理锚定实体位移护栏阈值 (m): 修正超此即认为锚定实体滑离声明位姿。
+  double physics_anchor_max_shift_{0.05};
   bool physics_anchor_measure_warned_{false};
   std::string cabinet_verify_frame_;
 
