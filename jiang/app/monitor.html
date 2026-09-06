@@ -731,8 +731,8 @@
     </div>
   </div>
 
-  <!-- Login / Token -->
-  <div class="control-section">
+  <!-- Login / Token（免登录模式 auth_required=false 时整卡隐藏，见 updateLoginStatus） -->
+  <div class="control-section" id="loginSection">
     <h4>🔐 用户登录</h4>
     <div class="ctrl-connect">
       <input type="text" id="loginUser" placeholder="用户名" autocomplete="username" style="width:90px">
@@ -1926,6 +1926,9 @@ function authHeaders(extra) {
 
 function updateLoginStatus() {
   const statusEl = $('loginStatus');
+  // 免登录模式(服务端 /health 报告 auth_required=false)下整卡隐藏账号密码入口。
+  const loginSectionEl = document.getElementById('loginSection');
+  if (loginSectionEl) loginSectionEl.hidden = !authRequired;
   if (!authRequired) {
     statusEl.textContent = '鉴权已关闭';
     statusEl.style.color = 'var(--warn, #f9a825)';

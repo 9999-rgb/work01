@@ -1258,6 +1258,17 @@ class CabinetClient(Node):
                 if outcome == "success"
                 else "Cabinet operation failed."
             )
+            # AGENT §5.2 结果透传：把 operator 原样 action result.message（封顶
+            # 标记 debug_stage_cap=N reached 所在）与该夹具实例代次
+            # catalog_generation 写入本次任务作用域的 result，供 cap 验收器从
+            # /task/{id}/status 的 result 读取本次任务取证，不复用 /health 柜体
+            # 缓存 message。这里只读 result_message、不改动下方 message 变量的
+            # 降级语义；即使被 malformed 分支改写 outcome，原始取证文本仍保留。
+            result["message"] = str(
+                getattr(result_message, "message", "") or ""
+            ).strip()
+            with self._lock:
+                result["catalog_generation"] = int(self._catalog_generation)
             # A successful terminal must not carry a failure reason; that is
             # another malformed backend result rather than a successful
             # operation with an ignorable warning.

@@ -17,6 +17,15 @@
     # 修正可达 20mm+ → 误中止 cap-2 docking）。共享柜体（odom 锚定）不设此项，
     # 回退 planning_frame 保持旧语义。
     cabinet_verify_frame: map
+    # 2026-09-05 fix#cap2 物理锚定：夹具几何真值实体 + 其 cabinet 系声明局部原点
+    # （b1 为 db1 抽拉柜抽屉本体连杆，声明位姿见 electrical_mezzanine.xacro
+    # <link name="b1"> 0.03 4.047 0.831870606，位于夹具系/世界系恒等原点模型）。
+    # latch odom→cabinet 后 operator 以 /get_entity_state 测 b1 在规划系(odom/
+    # world)的真位姿，减本局部原点得夹具系原点的规划系真值，覆写 latch 原点 ——
+    # 彻底消除 AMCL map→odom 信念 δ 与遥移车身落地误差 (cap-2 右杆 6-7 mm 北偏
+    # 骑缝塌缩根因)。实体测量失败自动保留 latch 原值，零回归。
+    physics_anchor_entity: "b1"
+    physics_anchor_local_origin: [0.03, 4.047, 0.831870606]
     manual_linear_axis: y
     manual_linear_sign: -1.0
     navigation_velocity_yaw_offset: -1.57079632679
@@ -242,7 +251,22 @@
         # x≈0.1076 — 距缝口平面 0.099 差 8.6mm > 8mm 几何门冻结容差。按
         # q = x0_q0 − 0.097 重新封定（杆端名义落口内 2-3mm，x 0.097±4mm 飘移
         # 窗内门余量 ≥5mm）；深压若撞到口沿硬阻会以杆位停滞形式暴露，届时回退。
+        # [2026-09-05 cap5 fix#16] 上述固定 q 的前提是 x0_q0 run 间不变；实测
+        # cap5 run 左 q0 悬停 x0≈0.1295（比封定 0.1376 近 ~9mm），固定 q=0.041
+        # 在无碰撞缝内空腔深插过缝口 ~10mm → support 距离门必挂。support_contact_
+        # position 保留为名义值/回退，加 support_contact_inset=0.002 启用活体自
+        # 标定：drive_drawer_support_stage 现场 FK 测当前 q0 悬停端 x，命令
+        # q = x0.x − 缝口x + inset（x0=0.1376 时=0.0406≈0.041，复现 fix#9）。
         support_contact_position: 0.041
+        # fix#16: 杆端停在缝口平面内的名义深度（= fix#9 的「0.097 = 0.099−0.002」
+        # 语义，改由活体 x0 计算）。<=0 = 固定 q 旧语义。
+        # 2026-09-06 fix#17 校准 inset 0.002→0.006（cap3 run A/B/C + run2 取证）：
+        # 0.002 让杆端悬停在缝口沿——tip 恰落在口沿/倒角上形成接触极限环（支撑 ref
+        # 静态、act ±13 mm 摆动，稳定性窗 0.003 带必挂）；0.010+ 深插稳定但距缝口
+        # 标定点 >8 mm 距离门必挂。0.006（口内 6 mm）落入稳定带且距离门 ~6 mm < 8 mm
+        # 留 ~2 mm 余量：cap3 run2 支撑双侧各稳持 14-17 s、GREEN（physical_outcome
+        # True）。真机/换场景需按同法重新封定。
+        support_contact_inset: 0.006
         gripper_joint: l_two_cyl_finger2_joint
         gripper_contact_link: l_two_cyl_finger2
         gripper_contact_point_local: [0.0, 0.0, -0.095]
@@ -307,7 +331,12 @@
         # [2026-09-05 cap-3 fix#9] 同左侧（见 drawer_tools.left.support_contact_position
         # 的封定注释）：右支撑杆 cap-1 实体探针 q0 悬停 x=0.1391，按
         # q = x0_q0 − 0.097 = 0.0421 封定 → 杆端名义 x≈0.097，落缝口平面以内 2mm。
+        # [2026-09-05 cap5 fix#16] 同左侧：加 inset 启用活体 FK 自标定
+        # （q = 现场 x0.x − 缝口x + inset），x0 漂移时杆端仍停在缝口内侧。
+        # [2026-09-06 fix#17] inset 0.002→0.006，同左侧（口沿极限环→口内 6 mm
+        # 稳定带，cap3 run2 GREEN）。
         support_contact_position: 0.042
+        support_contact_inset: 0.006
         gripper_joint: r_three_cyl_finger1_joint
         gripper_contact_link: r_three_cyl_finger1
         gripper_contact_point_local: [0.0, 0.0, -0.090]

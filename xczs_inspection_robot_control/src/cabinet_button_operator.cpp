@@ -63,6 +63,7 @@
 #include "xczs_inspection_robot_control/action_terminal_policy.hpp"
 #include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/drawer_hook_seat_projection.hpp"
+#include "xczs_inspection_robot_control/drawer_seat_confirm.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control_catalog.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
@@ -264,6 +265,14 @@ struct BimanualToolProfile
   tf2::Vector3 support_contact_point_base_at_zero{0.0, 0.0, 0.0};
   double support_retracted_position{0.0};
   double support_contact_position{0.0};      // >0 启用支撑伸出阶段（§7.2 封定）
+  // 2026-09-05 cap5 fix#16: 支撑杆端在缝口平面内的名义停留深度（世界 −X，
+  // 沿杆伸入缝内）。support_contact_position 是「固定 q 目标」，由一次 cap-1
+  // 探针的 q0 悬停 x0 反推（q = x0 − 0.097）；但 x0 随停靠/工作位姿 run 间
+  // 漂移（实测 cap5 run 左 0.1295 vs 封定 0.1376，~9mm 更近），固定 q 在无
+  // 碰撞的缝内空腔深插过缝口 → support 距离门必挂。>0 时 drive_drawer_
+  // support_stage 改用活体 FK 自标定 q = x0.x − 缝口x + inset，杆端无论 x0
+  // 落点都停在缝口内侧 inset 处；默认 0 = 固定 q 旧语义（其余抽屉零回归）。
+  double support_contact_inset{0.0};
   bool has_gripper_role{false};
   std::string gripper_joint;                 // 夹爪电缸移动关节
   std::string gripper_contact_link;          // 夹爪电缸移动连杆
@@ -708,6 +717,30 @@ public:
       "cabinet_pose_translation_tolerance", 0.020);
     cabinet_pose_rotation_tolerance_ = positive_parameter(
       "cabinet_pose_rotation_tolerance", 0.035);
+    // 2026-09-05 fix#cap2 (物理锚定): 夹具几何真值实体 + 其声明局部原点（都位于
+    // cabinet 系）。latch 后若测得该实体在规划系(odom/world)的真位姿，就把
+    // odom→cabinet 原点覆写为 (实测 − R·声明局部)，使抽屉轨/工作位姿直接落在
+    // 物理板面真值上，与 AMCL 信念 δ / 遥移落地误差无关。无配置或测不到实体时
+    // 保持既有 latch 行为（真机/无夹具实体场景零回归）。
+    physics_anchor_entity_ = declare_parameter<std::string>(
+      "physics_anchor_entity", "");
+    {
+      const auto flat_origin = declare_parameter<std::vector<double>>(
+        "physics_anchor_local_origin", std::vector<double>{});
+      if (flat_origin.size() == 3U &&
+        std::all_of(
+          flat_origin.begin(), flat_origin.end(),
+          [](double value) {return std::isfinite(value);}))
+      {
+        physics_anchor_local_origin_ =
+          tf2::Vector3(flat_origin[0], flat_origin[1], flat_origin[2]);
+        physics_anchor_configured_ = true;
+      } else if (!flat_origin.empty()) {
+        throw std::invalid_argument(
+                "Parameter 'physics_anchor_local_origin' must contain exactly "
+                "three finite [x, y, z] values.");
+      }
+    }
     const auto grasp_service = declare_parameter<std::string>(
       "grasp_service", "grasp");
     const auto bimanual_grasp_service = declare_parameter<std::string>(
@@ -1442,6 +1475,8 @@ private:
       prefix + "support_retracted_position", 0.0);
     profile.support_contact_position = declare_parameter<double>(
       prefix + "support_contact_position", 0.0);
+    profile.support_contact_inset = declare_parameter<double>(
+      prefix + "support_contact_inset", 0.0);
     profile.has_gripper_role = parse_role(
       profile.gripper_joint, profile.gripper_contact_link,
       profile.gripper_contact_point_local,
@@ -4659,11 +4694,16 @@ private:
         }
         if (!closing) {
           result->diagnostic_stage = "unlock";
+          // Mode-neutral until the unlock service returns the plugin's
+          // authoritative evidence (strict vs simulated_linkage).
+          last_unlock_acceptance_mode_.clear();
+          last_unlock_acceptance_message_.clear();
+          last_unlock_simulated_ = false;
           publish_operate_feedback(
             goal_handle,
             OperateCabinetControl::Feedback::APPROACHING,
             0.44F, target_position,
-            "Pressing the drawer unlock button with the right finger-3 rod.");
+            "Releasing the drawer rail latch with the right unlock rod.");
           // 2026-09-03 AGENT §3/§6.1: 解锁电机有界伸出到 pressed（经三电缸
           // 控制器全关节 FJT；读回真实电机关节 ∈ [retracted+floor, ceiling)
           // 且稳定后才放行，不达标 helper 先尽力收回再响亮抛错，绝不盲解锁）。
@@ -4684,10 +4724,11 @@ private:
               "rail still latched.",
               drawer_bimanual_attached, result);
           }
-          // 2026-09-03 AGENT §6.1: 调用解锁服务 —— 插件复核 finger3 真实
-          // 触点距按钮区 ≤ drawer_unlock_distance_threshold 且电机实际伸出
-          // ≥ floor 后放行轨道闩，抽屉进入可拉自由态（此刻仍被双侧钩爪与
-          // 支撑把持，不会漂移）。服务失败同样先尽力收回解锁电机再原样抛出。
+          // 2026-09-03 AGENT §6.1: 调用解锁服务 —— 插件复核放行（严格模式：
+          // finger3 真实触点距按钮区 ≤ drawer_unlock_distance_threshold 且电机
+          // 实际伸出 ≥ floor；db1 §4.2 simulated_linkage：真实电机行程 + 左右
+          // 把手真实保持）后放行轨道闩，抽屉进入可拉自由态（此刻仍被双侧钩爪
+          // 与支撑把持，不会漂移）。服务失败同样先尽力收回解锁电机再原样抛出。
           try {
             set_drawer_unlock(goal_handle, *control, true, true);
           } catch (...) {
@@ -4706,14 +4747,35 @@ private:
             }
             throw;
           }
+          // 2026-09-06 AGENT doc §4.2: 放行后把插件的模式标签亮出来 ——
+          // simulated_linkage 放行绝不报告为"finger3 真实端点按到了按钮"。
+          if (last_unlock_simulated_) {
+            RCLCPP_WARN(
+              get_logger(),
+              "Drawer '%s' unlock accepted under simulated_linkage: %s",
+              control->id.c_str(),
+              last_unlock_acceptance_message_.c_str());
+            publish_operate_feedback(
+              goal_handle,
+              OperateCabinetControl::Feedback::APPROACHING,
+              0.46F, target_position,
+              "simulated_linkage: rail latch released via an unmodelled "
+              "linkage (unlock motor real stroke; finger3 real tip not at "
+              "the button).");
+          }
           // 2026-09-03 AGENT §7.2 cap5: 真实解锁取证（§8.7）——服务放行、
           // 轨道闩已释放；解锁电机保持按压（不回撤，贯穿后续 attach/pull）。
           if (debug_stage_cap == 5) {
             finish_capped_drawer_stage(
               goal_handle, *control, drawer_left_move_group, move_group, 5,
-              "unlock service released the rail latch with finger-3 still "
-              "pressed at the button zone; drawer free and held by hooks "
-              "and supports.",
+              last_unlock_simulated_ ?
+                "unlock service released the rail latch under AGENT §4.2 "
+                "simulated_linkage (right unlock motor real stroke; latch "
+                "release via an unmodelled linkage; finger3 real tip NOT at "
+                "the button); drawer free and held by hooks and supports." :
+                "unlock service released the rail latch with finger-3 still "
+                "pressed at the button zone; drawer free and held by hooks "
+                "and supports.",
               drawer_bimanual_attached, result);
           }
         }
@@ -5505,6 +5567,7 @@ private:
           result->physical_outcome_confirmed = true;
           result->final_state_verified = true;
           result->transport_succeeded = true;
+          result->recovery_succeeded = true;
           result->grasp_released = true;
         }
         result->message = std::string("debug_stage_cap=") +
@@ -5803,12 +5866,108 @@ private:
       planning_frame_ : cabinet_verify_frame_;
   }
 
+  // 2026-09-05 fix#cap2 (cap-2 根因终结): 物理锚定。latch 出的 odom→cabinet 在
+  // map 锚定夹具（pose_parent_frame: map, 几何声明于 map 恒等）上途经
+  // AMCL map→odom（信念 δ 每轮不同, 实测 0-7 mm+）或站位锚定的车身落地误差
+  // (2-6 mm), 两路都会把 δ 打进全部 odom 帧命令 → 右钩 6-7 mm 北偏、phase-3
+  // 右杆骑缝塌缩。夹具几何连杆 (b1 抽屉本体等) 是 gazebo world==odom 的直接
+  // 实体, 测其规划系真位姿、减去 cabinet 系声明局部原点, 即得夹具系原点的规划
+  // 系真值 —— 不经任何信念/落地链。rails/工作位姿 = 修正后 odom→cabinet ⊗
+  // 局部坐标, 精确落在物理板面中心。仅当配置了实体且实体测量成功时修正; 否则
+  // 保留 latch 原值 (真机无 /get_entity_state 或非夹具场景零回归)。
+  std::optional<tf2::Vector3> measure_physics_anchor_entity_origin()
+  {
+    if (drawer_entity_client_ == nullptr || physics_anchor_entity_.empty()) {
+      return std::nullopt;
+    }
+    if (!drawer_entity_measure_available_ &&
+      !drawer_entity_client_->service_is_ready() &&
+      !drawer_entity_client_->wait_for_service(100ms))
+    {
+      if (!physics_anchor_measure_warned_) {
+        physics_anchor_measure_warned_ = true;
+        RCLCPP_WARN(
+          get_logger(),
+          "Cabinet physics-anchor service '%s' unavailable; keeping the "
+          "latched odom->cabinet unchanged (AMCL/landing bias may remain).",
+          drawer_entity_client_->get_service_name());
+      }
+      return std::nullopt;
+    }
+    auto request = std::make_shared<gazebo_msgs::srv::GetEntityState::Request>();
+    request->name = physics_anchor_entity_;
+    auto future = drawer_entity_client_->async_send_request(request);
+    if (future.wait_for(2s) != std::future_status::ready) {
+      if (!physics_anchor_measure_warned_) {
+        physics_anchor_measure_warned_ = true;
+        RCLCPP_WARN(
+          get_logger(),
+          "Cabinet physics-anchor query for '%s' timed out; keeping the "
+          "latched odom->cabinet unchanged.",
+          physics_anchor_entity_.c_str());
+      }
+      return std::nullopt;
+    }
+    const auto response = future.get();
+    if (response == nullptr || !response->success) {
+      if (!physics_anchor_measure_warned_) {
+        physics_anchor_measure_warned_ = true;
+        RCLCPP_WARN(
+          get_logger(),
+          "Cabinet physics-anchor query for '%s' failed; keeping the latched "
+          "odom->cabinet unchanged.",
+          physics_anchor_entity_.c_str());
+      }
+      return std::nullopt;
+    }
+    const auto & pose = response->state.pose;
+    const auto & p = pose.position;
+    const auto & o = pose.orientation;
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z) ||
+      !std::isfinite(o.x) || !std::isfinite(o.y) || !std::isfinite(o.z) ||
+      !std::isfinite(o.w))
+    {
+      return std::nullopt;
+    }
+    drawer_entity_measure_available_ = true;
+    return tf2::Vector3(p.x, p.y, p.z);
+  }
+
+  // 把物理锚定原点覆写到待锁存的 odom→cabinet（保持其旋转不变）。
+  // 返回 true = 已应用物理锚定; false = 未配置 / 测不到实体, latch 原值保留。
+  bool apply_physics_anchor_to_latch(tf2::Transform & cabinet_to_planning)
+  {
+    if (!physics_anchor_configured_) {
+      return false;
+    }
+    const auto measured = measure_physics_anchor_entity_origin();
+    if (!measured.has_value()) {
+      return false;
+    }
+    const tf2::Vector3 corrected_origin = *measured -
+      tf2::quatRotate(
+        cabinet_to_planning.getRotation(), physics_anchor_local_origin_);
+    const tf2::Vector3 previous_origin = cabinet_to_planning.getOrigin();
+    const double shift = corrected_origin.distance(previous_origin);
+    cabinet_to_planning.setOrigin(corrected_origin);
+    RCLCPP_INFO(
+      get_logger(),
+      "Cabinet physics-anchored to entity '%s': odom->cabinet origin moved "
+      "%.1f mm (%.4f, %.4f, %.4f) -> (%.4f, %.4f, %.4f); rails/work poses now "
+      "track the measured fixture geometry.",
+      physics_anchor_entity_.c_str(), shift * 1000.0,
+      previous_origin.x(), previous_origin.y(), previous_origin.z(),
+      corrected_origin.x(), corrected_origin.y(), corrected_origin.z());
+    return true;
+  }
+
   void latch_cabinet_transform()
   {
-    const auto transform = lookup_cabinet_transform(
+    auto transform = lookup_cabinet_transform(
       tf2::durationFromSec(system_wait_timeout_));
     const auto verify_transform = lookup_cabinet_transform_to(
       cabinet_verify_frame(), tf2::durationFromSec(system_wait_timeout_));
+    apply_physics_anchor_to_latch(transform);
     std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
     latched_cabinet_transform_ = transform;
     latched_cabinet_verify_transform_ = verify_transform;
@@ -5923,8 +6082,11 @@ private:
       // odom→cabinet = T_odom→body ⊗ (body_at_station)⁻¹ ⊗ T_map→cabinet:
       // 与 δ 无关, 命令落点 = 真值站位上的真实柜体。z 在 3D 站位下精确抵消
       // (odom_body.z − body_at_station.z + map→cab.z = 设计 z)。
-      const tf2::Transform anchored =
+      tf2::Transform anchored =
         odom_body * body_at_station.inverse() * cabinet_nav;
+      // fix#cap2: 站位锚定/遥移真值仍带车身落地误差 (2-6 mm), 经配置实体物理
+      // 锚定覆写原点后彻底与 landing 误差解耦（保持旋转）。
+      apply_physics_anchor_to_latch(anchored);
       const auto verify_transform = lookup_cabinet_transform_to(
         cabinet_verify_frame(), tf2::durationFromSec(system_wait_timeout_));
       std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
@@ -6598,9 +6760,27 @@ private:
     {
       return;
     }
-    constexpr double kSelfCenterBand = 0.0025;      // m: 收敛带（横向残差范数）
+    // 2026-09-05 fix#14 (cap2 run A/B 取证, §4.6 先取证再调参): 收敛带放宽到
+    // 5 mm。dwell 主动保持下钩杆端仍以 ~±2-3 mm 横向晃动 —— 测量窗逐轴 spread
+    // 现场实测 2.6-6.5 mm（run B round-2 R 侧 6.5 mm），1 s 中位数窗只能把真偏
+    // 平均到 ~spread/2 的相位残差；旧 2.5 mm 带与测量自身分辨率同量级，已对中
+    // 臂被噪声误判超带：run A/B 第二轮 L 0.1/0.3 mm 干净收敛、R 0.1/2.9 mm，
+    // 后者的 2.9 mm 是晃动中位数相位偏置而非真脱靶（同窗长窗中位数差 2.3 mm），
+    // 2.5 mm 带立在噪声地板上会逐次翻摆、cap2 ×3 无法稳定。真实脱靶（round-1
+    // 未修正残差）实测 ≥6 mm（run A L 11.2 / R 8.5，run B L 6.1 / R 10.2 mm）
+    // —— 5 mm 带仍拦得住真脱靶，只放行"钩已压到立板面上"的带内量。钩爪是否真
+    // 密封由其后 phase-1 力地板 + 3 s 保持 + 顶开上限这些真安全断言把关（§8.2
+    // 一律不动），本带只负责挡住明显的整体脱靶（≥6 mm 起）。超带仍按
+    // clamp_step 修正（轮数预算见下方 fix#22，3 轮后仍超带照旧硬失败）。
+    constexpr double kSelfCenterBand = 0.0050;      // m: 收敛带（横向残差范数）
     constexpr double kSelfCenterStepLimit = 0.020;  // m: 单轮修正上限
-    constexpr int kSelfCenterMaxIterations = 2;
+    // 2026-09-06 fix#22 (plate 时代 cap5 取证): 预算 2→3 轮。bjiq9qs75
+    // (s42d attempt#1) 自对中 round-1 左 z −24.8mm 超单步 20mm 上限 → 只修正
+    // 一次 → round-2 左 5.48mm 仍超 5mm 带被拦（R 0.009mm 已收敛）。残差全程
+    // 单调收敛（25.4→5.5mm），只是 2 轮预算饿死收敛算法：首轮被 clamp 截断的
+    // 超带脱靶永远差一轮。带 5mm/步长 20mm/各门限一律未动（非 §8.4 放宽），仅
+    // 放行"收敛途中差一轮"的单调情形；3 轮后仍超带照旧硬失败并提示重标 aim。
+    constexpr int kSelfCenterMaxIterations = 3;
     const tf2::Transform cabinet = resolve_cabinet_transform();
     const tf2::Vector3 axis_tf = tf2::quatRotate(
       cabinet.getRotation(), control.drawer_axis);
@@ -7934,7 +8114,18 @@ private:
     const std::vector<std::string> & joint_names,
     const std::vector<double> & desired_positions,
     double goal_tolerance_seconds = 5.0,
-    double ramp_seconds = 2.0)
+    double ramp_seconds = 2.0,
+    // fix#15 companion (AGENT §4.4): a downstream full-joint goal that carries
+    // a hook PRESS-hold ref (gripper_override = press_ref, physically blocked
+    // by the flush plate ~0.015 m short of 0.030) must not stall-abort at the
+    // grace end and stop pushing the hook.  Give the HOLD joint a wide goal
+    // tolerance so the JTC reports SUCCESS as soon as the role rod arrives;
+    // the succeeded goal then holds its final ref (hook kept positively
+    // pressed).  The caller judges arrival by the real measured ROLE joint, so
+    // the wide hold tolerance never masks a failed role rod.  Empty name =
+    // legacy per-joint auto tolerance (moving 0.005 / static 0.002).
+    const std::string & wide_tolerance_joint = std::string(),
+    double wide_position_tolerance = 0.0)
   {
     if (!client->wait_for_action_server(std::chrono::seconds(10))) {
       throw OperationError(
@@ -8000,9 +8191,12 @@ private:
       // Moving-joint tolerance is generous on purpose: a weak-gain finger motor
       // may rest a few mm short of target; the caller judges by the measured
       // joint, not by this tolerance.
-      tolerance.position =
-        (std::abs(desired_positions[index] - start_positions[index]) > 1e-4) ?
-        0.005 : 0.002;
+      const bool is_hold_joint = !wide_tolerance_joint.empty() &&
+        joint_names[index] == wide_tolerance_joint;
+      tolerance.position = is_hold_joint ?
+        wide_position_tolerance :
+        ((std::abs(desired_positions[index] - start_positions[index]) > 1e-4) ?
+         0.005 : 0.002);
       tolerance.velocity = 0.0;
       tolerance.acceleration = 0.0;
     }
@@ -8064,11 +8258,16 @@ private:
     MoveGroupInterface & move_group,
     const std::vector<std::string> & joint_names,
     const std::vector<double> & desired_positions,
-    double goal_tolerance_seconds = 5.0)
+    double goal_tolerance_seconds = 5.0,
+    // fix#15 companion: pass-through to accept_drawer_rod_goal — widen the
+    // HOLD joint's goal tolerance on full-joint goals carrying a press hold.
+    const std::string & wide_tolerance_joint = std::string(),
+    double wide_position_tolerance = 0.0)
   {
     const PendingRodGoal pending = accept_drawer_rod_goal(
       client, controller_label, goal_handle, move_group, joint_names,
-      desired_positions, goal_tolerance_seconds);
+      desired_positions, goal_tolerance_seconds, 2.0, wide_tolerance_joint,
+      wide_position_tolerance);
     try {
       while (pending.result.wait_for(50ms) != std::future_status::ready) {
         check_cancel(goal_handle);
@@ -8105,6 +8304,11 @@ private:
     const BimanualToolProfile & tool, const ButtonSpec & control,
     MoveGroupInterface & move_group, const std::string & stage,
     double gripper_position_override =
+      std::numeric_limits<double>::quiet_NaN(),
+    // 2026-09-05 cap5 fix#16: 非 NaN 时覆盖本侧 support 关节值（活体 FK
+    // 自标定的 q），与 gripper_position_override 同范式。仅 drive_drawer_
+    // support_stage 传；其余阶段调用不传（默认静态 support_contact_position）。
+    double support_position_override =
       std::numeric_limits<double>::quiet_NaN())
   {
     const auto state = synchronized_current_robot_state(move_group);
@@ -8120,9 +8324,13 @@ private:
                 "rod stage '" + stage + "'.");
       }
       if (tool.has_support_role && name == tool.support_joint) {
-        // 支撑杆: hook/home 阶段收拢, support 阶段伸到接触位。
+        // 支撑杆: hook/home 阶段收拢, support 阶段伸到接触位。fix#16:
+        // support 阶段若带活体 support_position_override（自标定 q），以它为
+        // 目标而非静态 support_contact_position（x0 漂移时固定 q 会深插过缝口）。
         value = (stage == "support") ?
-          tool.support_contact_position : tool.support_retracted_position;
+          (std::isfinite(support_position_override) ?
+            support_position_override : tool.support_contact_position) :
+          tool.support_retracted_position;
       } else if (tool.has_gripper_role && name == tool.gripper_joint) {
         // 钩爪杆: home 张开; hook/support 阶段都保持 grasp（§6.3 合同:
         // support 阶段钩爪不得松 —— 旧矩阵在此置 open, 违约时序已废止）。
@@ -8258,11 +8466,18 @@ private:
     double evidence_target,
     bool retracting,
     bool * operation_executed,
-    // 2026-09-05 AGENT doc §4.3/§4.4 (P1): 非 NaN 时作为本侧 gripper 位置
-    // 覆盖传给 drawer_rod_stage_desired —— support 阶段携带 seal 输出的座封
-    // joint_ref，防止静态 gripper_grasp_position 把钩爪命令从座封位拽开。
+    // 2026-09-05 AGENT doc §4.3/§4.4 (P1) + fix#15: 非 NaN 时作为本侧 gripper
+    // 位置覆盖传给 drawer_rod_stage_desired —— support 阶段携带 seal 输出的深压
+    // 保持参考 press_ref，防止静态 gripper_grasp_position 或座封 joint_ref 把钩爪
+    // 命令降回失力位（ref 0.030→0.016 的积分退火正是 cap2 右杆回弹根因）。
     // 默认 NaN = legacy 语义（静态 grasp）；retract/其它阶段调用不传。
-    double gripper_override = std::numeric_limits<double>::quiet_NaN())
+    double gripper_override = std::numeric_limits<double>::quiet_NaN(),
+    // 2026-09-05 cap5 fix#16: 非 NaN 时作为本侧 support 位置覆盖传给
+    // drawer_rod_stage_desired —— support 阶段携带活体 FK 自标定的 q，命令
+    // 杆端停在缝口内侧（而非固定 support_contact_position 深插过缝口）。
+    // 只 drive_drawer_support_stage 传；其余阶段调用不传（默认 NaN）。
+    double support_position_override =
+      std::numeric_limits<double>::quiet_NaN())
   {
     const auto & joint_names = tool.calibration_joint_names;
     if (std::find(joint_names.begin(), joint_names.end(), role_joint) ==
@@ -8290,7 +8505,20 @@ private:
     constexpr double kRodExtendGraceSeconds = 60.0;  // SIM seconds
     const double grace_seconds = retracting ? 5.0 : kRodExtendGraceSeconds;
     const std::vector<double> desired_positions = drawer_rod_stage_desired(
-      tool, control, move_group, stage, gripper_override);
+      tool, control, move_group, stage, gripper_override,
+      support_position_override);
+    // fix#15 companion (AGENT §4.4): 本阶段若携带有限 gripper_override（深压
+    // 保持参考 press_ref），钩爪物理上被位面钉在实测贴位（~0.015 m，press_ref
+    // 0.030 不可达）—— 给该 HOLD 关节宽目标容差，让 JTC 在 role 杆到位即报
+    // SUCCESS（成功目标继续顶住 press_ref 保持正压），而不是等 60 s 宽限耗尽
+    // 报 GOAL_TOLERANCE_VIOLATED 停推、钩爪复现 cap2 回弹。容差须覆盖
+    // press_ref − 最小可能贴位；role 杆仍持自动容差 + 调用方实测判据，不受影响。
+    constexpr double kRodGripperHoldTolerance = 0.030;  // m
+    const bool holding_gripper_override = std::isfinite(gripper_override);
+    const std::string hold_tolerance_joint = holding_gripper_override ?
+      tool.gripper_joint : std::string();
+    const double hold_tolerance = holding_gripper_override ?
+      kRodGripperHoldTolerance : 0.0;
     RCLCPP_INFO(
       get_logger(),
       "Drawer '%s' %s rod stage on the %s controller: commanding '%s' "
@@ -8299,7 +8527,8 @@ private:
       role_joint.c_str(), evidence_target);
     send_cylinder_full_joint_goal(
       client, controller_label, goal_handle, move_group, joint_names,
-      desired_positions, grace_seconds);
+      desired_positions, grace_seconds, hold_tolerance_joint,
+      hold_tolerance);
     *operation_executed = true;
 
     // Poll the REAL rod joint: a weak-gain finger motor may keep creeping after
@@ -8355,7 +8584,8 @@ private:
           control.id.c_str(), stage.c_str(), role_joint.c_str(), measured);
         send_cylinder_full_joint_goal(
           client, controller_label, goal_handle, move_group, joint_names,
-          desired_positions, grace_seconds);
+          desired_positions, grace_seconds, hold_tolerance_joint,
+          hold_tolerance);
       }
       const double budget = retracting ? kRodRetractPollBudget :
         kRodExtendPollBudget;
@@ -8528,6 +8758,73 @@ private:
               "support_contact_position.");
     }
     const double slide_before = button_snapshot(control).position;
+    // 2026-09-05 cap5 fix#16: 活体 FK 自标定支撑目标 q。support_contact_position
+    // 是「固定 q」，按某次 cap-1 实体探针的 q0 悬停 x0 反推（q = x0 − 0.097，
+    // 左 0.1376/右 0.1391 封定）；但 x0 随停靠/工作位姿 run 间漂移（实测 cap5
+    // run 左 x0≈0.1295，~9mm 更近），固定 q 在无碰撞的缝内空腔里深插过缝口
+    // ~10mm → support 距离门必挂。修复 = 支撑伸出前用 FK 测当前 q0 悬停杆端
+    // x（杆未伸出、自由空域，FK 即真值且无求解器噪声），命令 q = x0.x − 缝口x
+    // + inset —— x0=0.1376 时正好复现 fix#9 的 0.041，x0 漂移时杆端始终停在
+    // 缝口内侧 inset 处，门余量由几何合同恢复而非放宽容差。inset <= 0 或 FK
+    // 失败 → 退回固定 q（默认 inset 0 = 其余抽屉/场景零回归）。
+    const double kSupportLiveTargetCeiling = 0.050;  // 远低于 0.12 杆行程顶
+    const auto support_target_x = [&](const BimanualToolProfile & tool,
+      const tf2::Vector3 & support_point, double sealed_q) -> double {
+      if (tool.support_contact_inset <= 0.0) {
+        return sealed_q;
+      }
+      try {
+        // 当前 (q≈0) 悬停杆端接触点的世界 x。优先 gazebo 物理真值 —— 与下方
+        // support 距离门同源同帧（fix#7 原则），消除 fix#16 年代 MoveIt FK 与
+        // 物理侧 x 偏差（cap4 run 两侧杆端因此短 ~7mm、卡 8mm 门）。实体服务
+        // 不可用（真机）回退 MoveIt FK（自由空域即真值）。fix#17。
+        double hover_x = std::numeric_limits<double>::quiet_NaN();
+        const auto physics_end = drawer_physics_link_point(
+          tool.support_contact_link, tool.support_contact_point_local);
+        if (physics_end.has_value()) {
+          hover_x = physics_end->x();
+        } else {
+          const auto state = synchronized_current_robot_state(move_group);
+          const Eigen::Isometry3d & pose =
+            state->getGlobalLinkTransform(tool.support_contact_link);
+          const Eigen::Vector3d local(
+            tool.support_contact_point_local.x(),
+            tool.support_contact_point_local.y(),
+            tool.support_contact_point_local.z());
+          hover_x = (pose * local).x();
+        }
+        // 缝口平面随抽屉滑动的世界 x（与本函数下方距离门的参考同源）。
+        const double mouth_x =
+          drawer_world_rail_point(control, support_point, slide_before).x();
+        double q = hover_x - mouth_x + tool.support_contact_inset;
+        q = std::min(std::max(q, 0.0), kSupportLiveTargetCeiling);
+        RCLCPP_INFO(
+          get_logger(),
+          "Drawer '%s' %s support live target: q0-hover x0 %.4f m, seam-mouth "
+          "x %.4f m, inset %.4f m → command q %.4f m (sealed %.4f m).",
+          control.id.c_str(), tool.contact_tool_link.c_str(), hover_x,
+          mouth_x, tool.support_contact_inset, q, sealed_q);
+        return q;
+      } catch (const std::exception & fk_error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Drawer '%s' %s support live FK failed (%s) — falling back to the "
+          "sealed support_contact_position %.4f m.",
+          control.id.c_str(), tool.contact_tool_link.c_str(),
+          fk_error.what(), sealed_q);
+        return sealed_q;
+      }
+    };
+    const double support_target_left = control.has_left_support_point ?
+      support_target_x(
+        drawer_left_tool_, control.left_support_point,
+        drawer_left_tool_.support_contact_position) :
+      drawer_left_tool_.support_contact_position;
+    const double support_target_right = control.has_right_support_point ?
+      support_target_x(
+        drawer_right_tool_, control.right_support_point,
+        drawer_right_tool_.support_contact_position) :
+      drawer_right_tool_.support_contact_position;
     double measured_left = 0.0;
     double measured_right = 0.0;
     try {
@@ -8535,21 +8832,116 @@ private:
         goal_handle, control, move_group, drawer_left_tool_,
         two_cylinder_fjt_client_, "two-cylinder (left)", "support",
         drawer_left_tool_.support_joint,
-        drawer_left_tool_.support_contact_position, false, operation_executed,
+        support_target_left, false, operation_executed,
         hook_hold.valid ? hook_hold.left_joint_ref :
-          std::numeric_limits<double>::quiet_NaN());
+          std::numeric_limits<double>::quiet_NaN(),
+        support_target_left);
       measured_right = execute_drawer_rod_stage_side(
         goal_handle, control, move_group, drawer_right_tool_,
         unlock_motor_fjt_client_, "three-cylinder (right)", "support",
         drawer_right_tool_.support_joint,
-        drawer_right_tool_.support_contact_position, false, operation_executed,
+        support_target_right, false, operation_executed,
         hook_hold.valid ? hook_hold.right_joint_ref :
-          std::numeric_limits<double>::quiet_NaN());
+          std::numeric_limits<double>::quiet_NaN(),
+        support_target_right);
     } catch (...) {
       best_effort_drawer_rods_home(goal_handle, control, move_group,
         operation_executed);
       throw;
     }
+    // 2026-09-05 cap4 fix#17: 支撑落位闭环补驱。首轮驱杆后物理杆端可能因欠冲/
+    // 振铃停在缝口外数毫米（cap4 实测左 8.1mm/右 9.4mm > 8mm 门临界）。用与距离
+    // 门同源的 /get_entity_state 物理真值判有符号短差，只对「仍偏外」侧小额补伸
+    // （≤4mm/次、至多 3 次），使杆端进入落位带后再过 8mm 硬门；已过口(偏内)不回收
+    // —— 缝内空腔深插安全、杆回缩有 stiction 拖不动。补驱复用 execute_…
+    // _rod_stage_side（各自到达+稳定门），钩爪保持 ref 随重发（§6.3 不得松）。
+    constexpr double kSupportLandingRecheck = 0.006;
+    constexpr double kSupportTopUpMaxStep = 0.004;
+    constexpr int kSupportTopUpAttempts = 3;
+    const auto signed_support_shortfall = [&](const BimanualToolProfile & tool,
+      const tf2::Vector3 & support_point, double slide) -> double {
+      const auto tip = drawer_physics_link_point(
+        tool.support_contact_link, tool.support_contact_point_local);
+      if (!tip.has_value()) {
+        return std::numeric_limits<double>::quiet_NaN();  // 真机: 物理不可用不补驱
+      }
+      const double mouth_x = drawer_world_rail_point(
+        control, support_point, slide).x();
+      // 伸向 −x: 目标杆端 x = 缝口 x − inset。>0 偏外(短) → 需 +q 补伸。
+      return tip->x() - (mouth_x - tool.support_contact_inset);
+    };
+    double left_target = support_target_left;
+    double right_target = support_target_right;
+    for (int pass = 0; pass < kSupportTopUpAttempts; ++pass) {
+      const double slide_ref = button_snapshot(control).position;
+      bool left_short = false;
+      bool right_short = false;
+      if (control.has_left_support_point) {
+        const double d = measure_drawer_rod_contact(
+          move_group, control, "support",
+          drawer_left_tool_.support_contact_link,
+          drawer_left_tool_.support_contact_point_local,
+          drawer_world_rail_point(
+            control, control.left_support_point, slide_ref));
+        const double s = signed_support_shortfall(
+          drawer_left_tool_, control.left_support_point, slide_ref);
+        if (std::isfinite(s) && d > kSupportLandingRecheck && s >= 0.001) {
+          left_short = true;
+          left_target = std::min(
+            left_target + std::min(s, kSupportTopUpMaxStep),
+            drawer_left_tool_.support_contact_position + 0.012);
+        }
+      }
+      if (control.has_right_support_point) {
+        const double d = measure_drawer_rod_contact(
+          move_group, control, "support",
+          drawer_right_tool_.support_contact_link,
+          drawer_right_tool_.support_contact_point_local,
+          drawer_world_rail_point(
+            control, control.right_support_point, slide_ref));
+        const double s = signed_support_shortfall(
+          drawer_right_tool_, control.right_support_point, slide_ref);
+        if (std::isfinite(s) && d > kSupportLandingRecheck && s >= 0.001) {
+          right_short = true;
+          right_target = std::min(
+            right_target + std::min(s, kSupportTopUpMaxStep),
+            drawer_right_tool_.support_contact_position + 0.012);
+        }
+      }
+      if (!left_short && !right_short) {
+        break;  // 无偏外侧或物理不可用 → 交下方硬门
+      }
+      RCLCPP_INFO(
+        get_logger(),
+        "Drawer '%s' support landing pass %d: shortfall-driven top-up re-drive "
+        "left to q %.4f, right to q %.4f.",
+        control.id.c_str(), pass + 1, left_target, right_target);
+      try {
+        if (left_short) {
+          measured_left = execute_drawer_rod_stage_side(
+            goal_handle, control, move_group, drawer_left_tool_,
+            two_cylinder_fjt_client_, "two-cylinder (left)", "support",
+            drawer_left_tool_.support_joint, left_target, false,
+            operation_executed,
+            hook_hold.valid ? hook_hold.left_joint_ref :
+              std::numeric_limits<double>::quiet_NaN(), left_target);
+        }
+        if (right_short) {
+          measured_right = execute_drawer_rod_stage_side(
+            goal_handle, control, move_group, drawer_right_tool_,
+            unlock_motor_fjt_client_, "three-cylinder (right)", "support",
+            drawer_right_tool_.support_joint, right_target, false,
+            operation_executed,
+            hook_hold.valid ? hook_hold.right_joint_ref :
+              std::numeric_limits<double>::quiet_NaN(), right_target);
+        }
+      } catch (...) {
+        best_effort_drawer_rods_home(
+          goal_handle, control, move_group, operation_executed);
+        throw;
+      }
+    }
+    // Final 8 mm geometry gate (unchanged; drawer_support_contact_tolerance_).
     const double slide_after = button_snapshot(control).position;
     double left_contact_distance = std::numeric_limits<double>::infinity();
     double right_contact_distance = std::numeric_limits<double>::infinity();
@@ -8680,11 +9072,13 @@ private:
   //   追赶把混叠位置通道当座封（+10 mm 悬空事故）, park/freeze 长时间把链路
   //   挂在静止判据上。P1 后的 phase 3 = 「原位座封接管」: 压贴保持 3 s 后取
   //   physics 座封中位数, 沿真实伸缩轴有符号投影 extension 算 joint_ref
-  //   （= home_joint + extension, clamp 到杆行程 [0,0.120]）, 立即以新参考接管
-  //   抢占压贴目标（e≈0, 无失接触窗口）, 不重启控制器、不回家、不二次追赶、
+  //   （= home_joint + extension, clamp 到杆行程 [0,0.120]）。
+  //   fix#15（cap2 run A/B/C 取证, 见函数体 phase 3 头注）: 「接管」不降参考 ——
+  //   座封 joint_ref 只作记录与复核参照, phase-1/2 深压目标继续命令 press_ref,
+  //   不给杆「松压→失贴→拖回 home」的窗口; 不重启控制器、不回家、不二次追赶、
   //   无 park/freeze。home 基准（p_home/j_home/axis）必须在压贴前采样（见函数
-  //   体 phase 1 前置块）。输出 joint_ref 由 drive_drawer_hook_stage 填入
-  //   DrawerHookHoldState 贯穿 support（doc §4.4 保持矩阵）。
+  //   体 phase 1 前置块）。输出 press_ref（深压保持参考）由 drive_drawer_hook_stage
+  //   填入 DrawerHookHoldState 贯穿 support（doc §4.4 保持矩阵）。
   template<typename GoalHandleT>
   void seal_drawer_hooks_by_probe(
     const std::shared_ptr<GoalHandleT> & goal_handle,
@@ -8702,11 +9096,16 @@ private:
     // 追赶用混叠的位置通道当座封目标，凭空 +10 mm → 悬空。P1 已把这四连环从
     // 正常 db1 打开路径整体删除：压贴与 3 s 保持本身即稳定（phase 1/2 实测），
     // 之后只做一件事 —— 捕获两侧真实座封（gz physics 中位数），按真实伸缩轴
-    // 有符号投影算 joint_ref（= home_joint + extension，clamp 到杆行程），
-    // 以新参考立即原位接管（抢占压贴目标，e≈0，不制造失接触窗口）。控制器
-    // 复位只允许留在异常恢复路径（doc §4.1），正常路径不再调用。
-    // 输出约定：正常返回（两侧压贴保持 + 原位接管验证通过）→ *in_place_ok=true，
-    // *measured_* = joint_ref（doc §4.2 的 valid 语义）。任一侧面 home 基准 / 座封
+    // 有符号投影算 joint_ref（= home_joint + extension，clamp 到杆行程）。
+    // fix#15（cap2 run A/B/C 取证）修正「以新参考立即原位接管」：接管降参考正是
+    // 右杆回弹根因 —— ref 0.030→0.016 令积分退火、压贴力塌陷（Rg 36→27 N），
+    // 位面无钩挂腔、无机械互锁，杆随即穿内孔回缩力带拖回 home 卡死。故座封投影
+    // 只作记录与复核参照，phase-1/2 深压目标继续命令 press_ref，不给失接触窗口。
+    // 控制器复位只允许留在异常恢复路径（doc §4.1），正常路径不再调用。
+    // 输出约定：正常返回（两侧压贴保持 + 原位接管复核通过）→ *in_place_ok=true，
+    // *measured_* = press_ref（深压 ref，doc §4.2 的 valid 语义 —— 下游 support
+    // 的 hook_hold override 收到它才会持续正压；座封 joint_ref 只记录不命令）。
+    // 任一侧面 home 基准 / 座封
     // 端点捕获失败、投影超门、接管后复核失败 → 一律抛错，整阶段失败进入统一安全
     // 收尾（§4.2「任一侧计算、发送或读回失败，整阶段失败并进入统一安全收尾」）。
     // 本函数不会带着 in_place_ok=false 正常返回 —— 那会把没有实测依据的钩爪深度
@@ -9113,12 +9512,13 @@ private:
       }
     }
 
-    // ---- (2026-09-05 AGENT doc §4.1/§4.3 P1) phase 3: 原位座封接管 ----
+    // ---- (2026-09-05 AGENT doc §4.1/§4.3 P1 + fix#15) phase 3: 原位座封接管 ----
     // 取代旧 fix#7 v33 的 deactivate/configure/activate → 回 home → 慢驱重碰 →
     // 90 s park/freeze 四连环(doc §1.3 定案: 该复杂度本身即 cap3 不稳定根因,
     // 属 §4.1 删除项)。phase 1/2 的压贴+3 s 保持已证明稳定(力证据 + 保持窗口);
-    // 这里只把保持参考从深压 ref 改为座封行程对应的关节位并立即接管, 不给杆制造
-    // 「先失去接触再找回接触」的窗口。控制器复位只允许在异常恢复路径出现。
+    // fix#15(cap2 run A/B/C 取证, 见下): 接管绝不降参考 —— phase-1/2 的深压目标
+    // 继续命令 press_ref, 座封只捕获/投影/复核, 不给杆制造「先失去接触再找回
+    // 接触」的窗口。控制器复位只允许在异常恢复路径出现。
     if (!left_home_base.ok || !right_home_base.ok) {
       // doc §4.2/§4.5 (P1): 任一侧计算失败 = 整阶段失败。座封参考的 home 基准
       // （p_home/j_home/axis）必须在压贴前取得；physics 不可用（真机 / gazebo
@@ -9158,9 +9558,23 @@ private:
     // joint_ref = clamp(j_home + extension, [0, 行程上限])。横向残差 =
     // |位移 − extension·axis|; 残差或行程超门 → 座封与 home 不一致(伪差/轴错/
     // 臂漂)即抛, 不静默带病前进。
+    // 2026-09-05 fix#14 (cap2 run A 取证, §4.6 先取证再调参): 横向残差上限放宽
+    // 到 3 mm。run A 左钩 1.716 mm 横向残差发生在"未加载 home → 压贴 3 s 保持
+    // 后 seat"的跨载荷比较：10-23 N 密封力下臂/工具座有 ~1-2 mm 量级载荷挠度
+    // （home 空载、seat 载荷状态不同），横向残差混入该挠度属正常密封形变，并非
+    // 钩脱板。真正的脱钩/错板会先让压贴力塌穿 phase-1/2 力地板（≥5 mm 脱板即
+    // 失力被拦），几何上也是 ≥5 mm 量级 —— 3 mm 仍拦得住，且 phase-1 力地板 +
+    // 3 s 保持这些真安全断言（§8.2）本就不依赖本带。doc §4.3 公式本无横向带，
+    // 本带只是防"明显不一致座封"带病进入支撑/解锁的自检。
     constexpr double kRodSeatTravelSanityMin = 0.0015;  // m: 行程合理性下界
     constexpr double kRodSeatTravelSanityMax = 0.025;   // m: 上界(远低于行程上限)
-    constexpr double kRodSeatTransverseMax = 0.0010;    // m: 横向残差上限
+    // 2026-09-06 fix#18 (cap3 run C 取证): 3 mm 带低于当前测量噪声地板 —— 同
+    // 一压贴健康密封时 self-center 实测 physics tip-spread 达 L 3.0 / R 3.3-4.0
+    // mm, 而 run C 左钩在「0.0159 m @ 17.6 N / 0.0145 m @ 45.1 N 压贴 + 3 s 保持
+    // 通过」的健康密封上投影横残 3.472 mm 触发误报。横向残差只对「垂直杆轴的横向
+    // 不一致」敏感; 真实脱钩是沿轴回缩, 由行程带/接管下带 + phase-1/2 力地板拦截
+    // （正交）。放宽到 5 mm 只把自检门抬到噪声之上, 不削弱轴向脱钩防护。
+    constexpr double kRodSeatTransverseMax = 0.0050;    // m: 横向残差上限(fix#18 3→5 mm)
     constexpr double kRodSeatJointClampMax = 0.120;     // m: URDF finger-rod 上限
     const auto seat_joint_ref = [&](const HookHomeBase & home_base,
       const Eigen::Vector3d & seat_end,
@@ -9181,11 +9595,14 @@ private:
                 PressCabinetButton::Result::NOT_READY,
                 "Drawer '" + control.id + "' hook seat projection is out of "
                 "range (" + side_label + ": extension " +
-                std::to_string(projection.extension) + " m, expect 0.0015-"
-                "0.025 m; transverse residual " +
-                std::to_string(projection.transverse_residual) +
-                " m <= 0.0010 m) — the seat capture disagrees with the "
-                "pre-press home; re-seal the hooks.");
+                std::to_string(projection.extension) + " m, expect " +
+                std::to_string(kRodSeatTravelSanityMin) + "-" +
+                std::to_string(kRodSeatTravelSanityMax) + " m; transverse "
+                "residual " +
+                std::to_string(projection.transverse_residual) + " m > " +
+                std::to_string(kRodSeatTransverseMax) +
+                " m) — the seat capture disagrees with the pre-press home; "
+                "re-seal the hooks.");
       }
       return projection.joint_ref;
     };
@@ -9193,46 +9610,109 @@ private:
       left_home_base, *left_seat_end, left_label);
     const double right_joint_ref = seat_joint_ref(
       right_home_base, *right_seat_end, right_label);
-    const double left_extension = (*left_seat_end - left_home_base.home_end)
-      .dot(left_home_base.axis_world);
-    const double right_extension = (*right_seat_end - right_home_base.home_end)
-      .dot(right_home_base.axis_world);
+    const Eigen::Vector3d left_disp = *left_seat_end - left_home_base.home_end;
+    const Eigen::Vector3d right_disp =
+      *right_seat_end - right_home_base.home_end;
+    const double left_extension = left_disp.dot(left_home_base.axis_world);
+    const double right_extension = right_disp.dot(right_home_base.axis_world);
+    // fix#14: 座封相对 home 的横向残差也落到成功日志（取证累积）——旧代码只在
+    // 超门抛错时打印，正常通过的每次密封没有横向证据。真实脱钩先塌 phase-1/2
+    // 力地板、几何上 ≥5 mm；≤3 mm 为载荷挠度/读数噪声正常量级，不否决。
+    const double left_transverse =
+      (left_disp - left_extension * left_home_base.axis_world).norm();
+    const double right_transverse =
+      (right_disp - right_extension * right_home_base.axis_world).norm();
     RCLCPP_INFO(
       get_logger(),
-      "Drawer '%s' hook seat takeover (AGENT doc P1 in-place): projected "
-      "travel left %.4f m / right %.4f m (home joint %.4f / %.4f m) -> hold "
-      "refs %.4f / %.4f m; taking over at the current pressed pose — no "
-      "controller reset / re-home / re-chase / park.",
+      "Drawer '%s' hook seat takeover (AGENT doc P1 fix#15 in-place, no ref "
+      "drop): projected travel left %.4f m / right %.4f m (home joint %.4f / "
+      "%.4f m) -> seat joint refs %.4f / %.4f m (record only); hooks KEEP the "
+      "deep-press refs %.4f / %.4f m; transverse residual left %.4f m / right "
+      "%.4f m (band %.4f m).",
       control.id.c_str(), left_extension, right_extension,
       left_home_base.j_home, right_home_base.j_home, left_joint_ref,
-      right_joint_ref);
-    // 接管目标抢占 phase-1 压贴目标(JTC 新目标取消旧轨迹; 压贴目标的结果以预期
-    // 取消到达、故意不消费)。stage "hook" 矩阵 + override: 仅 gripper 改写为座封
-    // joint_ref, support/unlock 保持收拢, 其余角色不动 —— 不制造任何整杆回缩。
-    const std::vector<double> left_takeover_desired = drawer_rod_stage_desired(
-      left_tool, control, move_group, "hook", left_joint_ref);
-    const std::vector<double> right_takeover_desired = drawer_rod_stage_desired(
-      right_tool, control, move_group, "hook", right_joint_ref);
-    accept_drawer_rod_goal(
-      two_cylinder_fjt_client_, left_label, goal_handle, move_group,
-      left_tool.calibration_joint_names, left_takeover_desired,
-      kRodSealGraceSeconds);
-    accept_drawer_rod_goal(
-      unlock_motor_fjt_client_, right_label, goal_handle, move_group,
-      right_tool.calibration_joint_names, right_takeover_desired,
-      kRodSealGraceSeconds);
-    // 接管后的极短复核(1.5 s, 非旧 park/freeze): 杆端投影行程保持在座封 ±2 mm
-    // 内(未滑脱 / 未自由过冲), 抽屉仍闩定不顶开。此后进入支撑由调用方几何门把关
-    // (hook-retain 复核 + slide 不可动门)。复核窗口内 physics 读数偶发缺失时跳过
-    // 该侧行程判据并告警 —— 不把 1.5 s 采样抖动做成新的脆弱冻结窗(doc §4.1)。
-    constexpr double kRodSeatTakeoverVerifySeconds = 1.5;
-    constexpr double kRodSeatTakeoverTravelBand = 0.002;  // m
-    const auto verify_deadline = std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(kRodSeatTakeoverVerifySeconds);
-    double left_travel = std::numeric_limits<double>::quiet_NaN();
-    double right_travel = std::numeric_limits<double>::quiet_NaN();
-    while (std::chrono::steady_clock::now() < verify_deadline) {
-      refresh_arm_holds_if_due();
+      right_joint_ref, left_press_ref, right_press_ref, left_transverse,
+      right_transverse, kRodSeatTransverseMax);
+    // ---- fix#15 (cap2 run A/B/C 取证, AGENT §4.3 P1 修正): 接管不降参考 ----
+    // 旧相位在接管时把夹爪 FJT 参考从深压 ref(press_ref 0.030) 降到位面贴合座封
+    // joint_ref(~0.014-0.016), 同时目标基本到位使积分退火、压贴力塌陷 ——
+    // rod_trace_cap2*.log 三连取证: 接管瞬间 ref 0.030→0.016 且 effort 同步崩
+    // (Lg 51→40 N, Rg 36→27 N); 而深压(0.030 顶死位面)此前已稳定 20+ s。参考
+    // 回落后右杆先失贴(0.0156→0.0114→0.0077→0.0049, 穿 bore-guide 内回缩力带
+    // 拖回 ~0.003-0.005 卡死), 左杆 0.0152→0.0129 靠 ~40 N 勉强回稳; 抬回 ref
+    // 0.017 即恢复到 ~0.0146@30 N —— 证据链指向「降参考 = 松压 = 失贴」。
+    // flush 立板无钩挂腔, 「座封」本无机械互锁 —— 保持只能靠正向压贴, 而压贴力
+    // 又由「参考仍高于物理贴位」维持(位面把杆钉在实测触点, P+I 输出 ~36-51 N)。
+    // 故 fix#15 不再下发降参考的接管目标: phase-1/2 的深压目标(kRodSealGraceSeconds
+    // = 60 s 宽限, 从发送到 support 目标抢占远小于剩余宽限)继续命令 press_ref,
+    // 杆被位面钉住 —— 不给任何「先松压再找回」窗口。座封投影(extension /
+    // joint_ref)仅作记录与复核参照, 不再是新的命令参考。本阶段不发新目标。
+    // 复核窗口(1.5 s): 不判到达(无新目标即无移动可到达), 只盯「没滑脱 / 没冲出」。
+    // 单向带标定(2026-09-06 fix#19, 沿 fix#18 校准法): 本窗口统计的是 1.5 s 内
+    // physics 触点重构位移的 min/max 包络(非逐样稳态)。cap2 run1 失败取证: 左/右
+    // 杆全程正压(复核末 effort 仍 ≥ 力地板, 见下方正压复核), 但左包络 0.0072/
+    // 0.0166 m 绕座封 0.0112 双侧摆动 ±4.7 mm、右 ±1.6 mm —— 与 fix#18 已定标的
+    // 触点重构噪声地板(3-4 mm tip-spread)同源, 3 mm 单向带低于该包络而误报。
+    // 下带 3→5 mm: 介于噪声包络(~±4.7 mm 实测上限)与真实内孔滑脱塌陷之间 ——
+    // 真实滑脱把杆拖回 ~home(位移 ≥ 6-8 mm, 见 rod_trace 拖回 0.003-0.005 取证)
+    // 仍会被 5 mm 下带拦下, 且滑脱不会在 1.5 s 内自愈; 上带 6→8 mm: 顶开/冲出是
+    // 整杆外伸(≥ 十余 mm), 而本次噪声上摆 +5.4 mm 已逼近 6 mm 旧线, 留余量防
+    // 误报。交接态的正压仍由窗口后的 effort 力地板 + 下游 hook-retain 复核把关。
+    // 抽屉仍闩定不顶开; physics 读数偶发缺失时该侧按未验证处理 —— 不把 1.5 s 采样
+    // 抖动做成新的脆弱冻结窗(doc §4.1)。此后进入支撑由调用方几何门把关(hook-retain
+    // 复核 + slide 不可动门 + 本函数输出压贴 ref 的正压保持)。
+    // 2026-09-06 fix#20 (cap2 r3 取证, 保留): 复核窗口内绝不触发 9 s 臂驻留刷新 ——
+    // 避免把负载位形重钉回空载参考造成行程瞬时塌缩误报; 刷新一律移到窗口后。该修复
+    // 单独验证不充分(r3/r2/rA 仍 FAIL, 右钩回缩依旧), 其「ref 未变时杆不可能自行回缩」
+    // 推论被 rod_trace 证伪(见 fix#21)。
+    // 2026-09-06 fix#21 (cap2 r3/r2/rA 取证, 本实现): 复核判定从「固定 1.5 s 原始
+    // min/max 包络」改为「双侧连续在位确认」, 并改正 fix#20 的错误推论。rod_trace
+    // (fix20 日志 t=75-118)显示: 右钩 Rg 深压保持期 ref 恒 0.030、窗口无任何杆/臂目标,
+    // 但 Rg 实际关节仍周期性瞬时回缩 4-10 mm、0.1-0.7 s 内自愈 —— 接触颤振(回缩瞬间
+    // effort 反升至 ~25 N, 控制器仍在顶压), 与 fix#15 真滑脱「ref 松 + effort 崩 +
+    // 杆不回弹卡死 ~0.003-0.005」正交。左钩 Lg 同参 rock-steady(座封 0.018 恒定)。
+    // 原始 min ≥ ext−5 mm 无法区分「瞬态自愈颤振」与「持续滑脱」, 于是把三连运行中
+    // 2/3 的右钩颤振误判为滑脱(r3 0.0038 / r2 0.0052 / rA 0.0068 vs seat
+    // 0.0115/0.0144/0.0137)。fix#21 判定改为观察「双侧连续在位」:
+    //   (1) 最短被动观察 base 1.5 s(保留 fix#15「接管瞬间不滑」语义, 见上注释);
+    //   (2) 此后双侧「各自最近一次连续在带内」≥ confirm 0.4 s 即确认接管 —— 颤振的
+    //       带内间隔(实测 1-2 s)天然满足, 真滑脱/卡死永远凑不齐 0.4 s;
+    //   (3) 某侧连续低于下带 > 1.0 s(> 实测最长颤振 0.7 s)或行程高于上带 = 立即失败;
+    //   (4) 观察硬上限 2.6 s 内未确认 = 失败。
+    // 窗口仍全程被动不发目标(fix#20); 2.6 s 上限在旧驻留(≤9 s 前发, 12 s + 2 s 容差)
+    // 寿命内, 循环后照常补刷。抽屉闩定关闭、cap2 无可逃逸; 真滑脱另有窗口后 effort
+    // 力地板 + 下游 hook-retain 复核兜底拦截。
+    constexpr double kRodSeatTakeoverBaseSeconds = 1.5;  // s: 最短被动观察(fix#15 语义)
+    constexpr double kRodSeatTakeoverMaxSeconds = 2.6;   // s: 观察硬上限(自愈留余量)
+    constexpr double kRodSeatSlipDownBand = 0.005;  // m: 座封-5 mm 单向底线(fix#19)
+    constexpr double kRodSeatSlipUpBand = 0.008;    // m: 座封+8 mm 单向顶线(fix#19)
+    constexpr double kRodSeatConfirmSeconds = 0.4;  // s: 双侧连续在位确认时长(fix#21)
+    constexpr double kRodSeatSlipMaxSeconds = 1.0;  // s: 连续低于下带=真滑脱时限(fix#21)
+    // 2026-09-06 AGENT doc §5.1: fix#21 的时序判断抽到 SeatConfirmWindow 纯逻辑
+    // （drawer_seat_confirm.hpp，含合成事件单测）。语义与本处注释保持一致:
+    //   * 在位计时只由「双侧同帧新鲜在带样本」(配对帧)累计 —— 同步查询 / 单侧缺数
+    //     的墙钟从不直接算在位时长; 断数超过采样预算(0.5 s)即打断连续计时;
+    //   * 行程高于上带 = 超界, 新鲜样本即败; 连续低于下带 > slip 时限 = 持续回缩;
+    //   * base/max 是墙钟预算(最短被动观察 / 安全硬上限), 不直接计入在位时长。
+    const auto verify_start = std::chrono::steady_clock::now();
+    SeatConfirmParams seat_params;
+    seat_params.base_seconds = kRodSeatTakeoverBaseSeconds;
+    seat_params.max_seconds = kRodSeatTakeoverMaxSeconds;
+    seat_params.confirm_seconds = kRodSeatConfirmSeconds;
+    seat_params.slip_max_seconds = kRodSeatSlipMaxSeconds;
+    seat_params.down_band_m = kRodSeatSlipDownBand;
+    seat_params.up_band_m = kRodSeatSlipUpBand;
+    seat_params.fresh_budget_seconds = 0.5;  // 采样预算: 正常复核节拍远小于此
+    SeatConfirmWindow seat_confirm(seat_params);
+    seat_confirm.Reset(0.0);
+    const auto mono_seconds_since_start = [&]() {
+      return std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - verify_start).count();
+    };
+    bool seat_confirmed = false;
+    while (mono_seconds_since_start() < kRodSeatTakeoverMaxSeconds) {
+      // fix#20/fix#21: 复核全程被动观察 —— 不发任何臂/杆目标(见上注释), 只把每帧
+      // 新鲜样本喂给 SeatConfirmWindow, 由它做配对在位计时与超界/回缩/缺数判别。
       check_cancel(goal_handle);
       interruptible_hold(goal_handle, 0.05);
       drawer_position = button_snapshot(control).position;
@@ -9244,55 +9724,92 @@ private:
                 " m (> " + std::to_string(kHookDrawerPopCeiling) + " m "
                 "ceiling).");
       }
+      left_effort = read_real_joint_effort(
+        move_group, left_tool.gripper_joint, left_label);
+      right_effort = read_real_joint_effort(
+        move_group, right_tool.gripper_joint, right_label);
+      SeatConfirmSideFrame left_frame;
       const auto left_end = drawer_physics_link_point(
         left_tool.gripper_contact_link, left_tool.gripper_contact_point_local);
       if (left_end.has_value()) {
-        left_travel = (*left_end - left_home_base.home_end)
+        left_frame.present = true;
+        left_frame.travel = (*left_end - left_home_base.home_end)
           .dot(left_home_base.axis_world);
+        left_frame.seat = left_extension;
       }
+      SeatConfirmSideFrame right_frame;
       const auto right_end = drawer_physics_link_point(
         right_tool.gripper_contact_link,
         right_tool.gripper_contact_point_local);
       if (right_end.has_value()) {
-        right_travel = (*right_end - right_home_base.home_end)
+        right_frame.present = true;
+        right_frame.travel = (*right_end - right_home_base.home_end)
           .dot(right_home_base.axis_world);
+        right_frame.seat = right_extension;
+      }
+      // 配对在位确认 / 超界即时败 / 掉带超时败 / 缺数打断(>预算) 都在窗口内判定;
+      // Describe() 明确区分「超界 / 持续回缩 / 持续缺数 / 采样过旧 / 机械振荡」。
+      const SeatConfirmStatus seat_status = seat_confirm.Update(
+        mono_seconds_since_start(), left_frame, right_frame);
+      if (seat_status == SeatConfirmStatus::kConfirmed) {
+        seat_confirmed = true;
+        break;
+      }
+      if (seat_status != SeatConfirmStatus::kPending) {
+        throw OperationError(
+                PressCabinetButton::Result::NOT_READY,
+                "Drawer '" + control.id +
+                "' hook rod seat takeover did not verify (" +
+                seat_confirm.Describe(mono_seconds_since_start()) + ").");
       }
     }
-    const bool left_seat_kept = std::isfinite(left_travel) &&
-      std::abs(left_travel - left_extension) <= kRodSeatTakeoverTravelBand;
-    const bool right_seat_kept = std::isfinite(right_travel) &&
-      std::abs(right_travel - right_extension) <= kRodSeatTakeoverTravelBand;
-    if (!left_seat_kept || !right_seat_kept) {
+    if (!seat_confirmed) {
+      // 硬上限内未确认(持续掉带、冲出或读数缺失): 用窗口诊断区分缺数/过旧/振荡。
       throw OperationError(
               PressCabinetButton::Result::NOT_READY,
-              "Drawer '" + control.id + "' hook rod did not stay on its seat "
-              "right after the in-place takeover (left travel " +
-              std::to_string(left_travel) + " m vs seat " +
-              std::to_string(left_extension) + " m, right travel " +
-              std::to_string(right_travel) + " m vs seat " +
-              std::to_string(right_extension) + " m; band +-" +
-              std::to_string(kRodSeatTakeoverTravelBand) + " m).");
+              "Drawer '" + control.id + "' hook rod could not be confirmed "
+              "seated within " + std::to_string(kRodSeatTakeoverMaxSeconds) +
+              " s during the in-place takeover (" +
+              seat_confirm.Describe(mono_seconds_since_start()) + ").");
+    }
+    // fix#20: 观察结束立即续上 9 s 臂驻留 —— 旧驻留(观察前 ≤9 s 发送)寿命在观察期
+    // (≤2.6 s)内已消耗, 此处刷新保证下一阶段(支撑)臂控目标不因 goal_time_tolerance
+    // 超时脱手。刷新放在座封确认之后, 其重钉扰动不再污染判定。
+    refresh_arm_holds_if_due();
+    // 正向压贴力复核: flush 面上「仍贴住」的力信号。深压目标下位面把杆钉在实测
+    // 触点, effort 应稳定在力底之上; 某侧跌穿 = 已失正压(脱板 / 滑脱先兆)。
+    if (left_effort < left_force_floor || right_effort < right_force_floor) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Drawer '" + control.id + "' hook lost its positive press right "
+              "after the in-place takeover (left effort " +
+              std::to_string(left_effort) + " N < " +
+              std::to_string(left_force_floor) + " N floor, right effort " +
+              std::to_string(right_effort) + " N < " +
+              std::to_string(right_force_floor) + " N floor).");
     }
     drawer_position = button_snapshot(control).position;
-    left_effort = read_real_joint_effort(
-      move_group, left_tool.gripper_joint, left_label);
-    right_effort = read_real_joint_effort(
-      move_group, right_tool.gripper_joint, right_label);
+    // fix#15: 向下游(support 的 hook_hold override)输出的保持参考 = 深压 ref,
+    // 而不是随积分退火失力的座封位。flush 立板场景唯一稳定的保持态就是「参考仍
+    // 高于物理贴位」的正压; support 阶段收到 press_ref 会再次顶紧(短暂重压后回到
+    // 满压, 支撑杆收敛判据只盯支撑杆不受影响) —— 这正是 §4.4「钩爪保持」在该
+    // 几何下的物理实现。钩爪实际贴位由位面决定(~座封 joint_ref), 不复核 ref。
     if (in_place_ok != nullptr) {
       *in_place_ok = true;
     }
-    *measured_left = left_joint_ref;
-    *measured_right = right_joint_ref;
+    *measured_left = left_press_ref;
+    *measured_right = right_press_ref;
     RCLCPP_INFO(
       get_logger(),
-      "Drawer '%s' hook seat takeover verified (AGENT doc P1): left ref %.4f "
-      "m @ %.1f N, right ref %.4f m @ %.1f N; hooks hold their seats with no "
-      "controller reset / re-home / re-chase / park in the normal path.",
-      control.id.c_str(), left_joint_ref, left_effort, right_joint_ref,
+      "Drawer '%s' hook seat takeover verified (AGENT doc P1 fix#15): left "
+      "press ref %.4f m @ %.1f N, right press ref %.4f m @ %.1f N; hooks keep "
+      "their deep-press hold with no reference drop / controller reset / "
+      "re-home / re-chase / park in the normal path.",
+      control.id.c_str(), left_press_ref, left_effort, right_press_ref,
       right_effort);
-    // 原压贴目标被接管目标抢占(其结果以预期取消到达、不消费); 接管目标又被下一
-    // 阶段(支撑)的目标抢占 —— 本阶段判定依赖 physics 投影钉位, 从不依赖被抢占
-    // 目标的完成; 电缸回位由各 cap 收尾 / 阶段 epilogue 负责, 无长期挂起驱动。
+    // phase-1/2 压贴目标继续命令深压 ref, 由下一阶段(支撑)或收尾目标抢占 ——
+    // 本阶段判定依赖 physics 投影钉位 + 压贴力, 从不依赖被抢占目标的完成; 电缸
+    // 回位由各 cap 收尾 / 阶段 epilogue 负责, 无长期挂起驱动。
   }
 
   // 2026-09-03 AGENT §4.2/§6.1 (P4): hook stage.  Arms are at the single work
@@ -9350,11 +9867,13 @@ private:
         seal_drawer_hooks_by_probe(
           goal_handle, control, move_group, &measured_left, &measured_right,
           &in_place_ok, operation_executed);
-        // doc §4.4: seal 输出的座封 joint_ref 是下游 support 阶段必须携带的
-        // 保持参考。seal 只有两种结局 —— 接管验证通过（in_place_ok=true，上面
-        // 已填 measured=joint_ref），或抛错整阶段失败（§4.2）。故此处 valid
-        // 在 sealed 路径恒为 true；false 只可能来自下面 legacy unsealed 分支
-        //（其他抽屉/场景零回归，用静态 gripper_grasp_position）。
+        // doc §4.4 + fix#15: seal 输出的保持参考（深压 press_ref）是下游
+        // support 阶段必须携带的正压保持参考 —— 收到它, support 的 hook_hold
+        // override 才会持续命令 press_ref 把钩压贴位面; 若传座封 joint_ref, 积分
+        // 退火失力 → 复现 cap2 右杆回弹。seal 只有两种结局 —— 接管复核通过
+        //（in_place_ok=true，上面已填 measured=press_ref），或抛错整阶段失败
+        //（§4.2）。故此处 valid 在 sealed 路径恒为 true；false 只可能来自下面
+        // legacy unsealed 分支（其他抽屉/场景零回归，用静态 gripper_grasp_position）。
         if (hook_hold != nullptr) {
           hook_hold->left_joint_ref = measured_left;
           hook_hold->right_joint_ref = measured_right;
@@ -9508,7 +10027,19 @@ private:
       // report it so the failure is actionable (tip not in the unlock zone vs
       // the unlock motor not extended vs both).
       std::string evidence;
-      if (!response->right_tool_contact && !response->pressed) {
+      if (response->unlock_mode == "simulated_linkage") {
+        // 2026-09-06 AGENT doc §4.2: finger3 is never required at the button in
+        // this mode, so the "tool tip left the zone" branch does not apply.
+        evidence = "; simulated_linkage: unlock motor " +
+          std::string(response->pressed ? "pressed" : "not pressed");
+        if (response->pressed) {
+          evidence += "; handles held left=" +
+            std::string(response->left_handle_held ? "yes" : "no") + " (" +
+            std::to_string(response->left_hold_distance) + " m), right=" +
+            std::string(response->right_handle_held ? "yes" : "no") + " (" +
+            std::to_string(response->right_hold_distance) + " m)";
+        }
+      } else if (!response->right_tool_contact && !response->pressed) {
         evidence = "; tool tip is not inside the unlock zone and the unlock "
           "motor is not extended";
       } else if (!response->pressed) {
@@ -9528,6 +10059,13 @@ private:
               "Drawer unlock was acknowledged but the rail latch stayed "
               "engaged: " + response->message);
     }
+    // 2026-09-06 AGENT doc §4.2: keep the plugin's acceptance mode so callers
+    // can label cap/stage/Web evidence as simulated_linkage and never report a
+    // sim grant as a real finger3 button press.
+    last_unlock_acceptance_mode_ = response->unlock_mode.empty() ?
+      "strict" : response->unlock_mode;
+    last_unlock_simulated_ = response->simulation_acceptance;
+    last_unlock_acceptance_message_ = response->message;
   }
 
   template<typename GoalHandleT>
@@ -15211,6 +15749,12 @@ private:
   rclcpp::Client<
     xczs_inspection_robot_interfaces::srv::SetCabinetUnlock>::SharedPtr
     unlock_client_;
+  // 2026-09-06 AGENT doc §4.2: 最近一次抽屉解锁放行的插件证据（模式标签）。
+  // set_drawer_unlock 成功后据此把 cap/stage 摘要与 Web 文案标成
+  // simulated_linkage（绝不说成"finger3 按到了按钮"）；strict 模式为空/未置。
+  std::string last_unlock_acceptance_mode_;
+  std::string last_unlock_acceptance_message_;
+  bool last_unlock_simulated_{false};
   rclcpp::Client<std_srvs::srv::Trigger>::SharedPtr reset_physics_client_;
   rclcpp::Client<gazebo_msgs::srv::GetEntityState>::SharedPtr
     drawer_entity_client_;
@@ -15387,6 +15931,12 @@ private:
   // 校验真实柜体位移。
   tf2::Transform latched_cabinet_verify_transform_{tf2::Transform::getIdentity()};
   bool cabinet_transform_latched_{false};
+  // 物理锚定配置（fix#cap2）：夹具几何真值实体名 + 其 cabinet 系声明局部原点。
+  // 见构造器注释与 apply_physics_anchor_to_latch。
+  std::string physics_anchor_entity_;
+  tf2::Vector3 physics_anchor_local_origin_{0.0, 0.0, 0.0};
+  bool physics_anchor_configured_{false};
+  bool physics_anchor_measure_warned_{false};
   std::string cabinet_verify_frame_;
 
   std::string planning_frame_;

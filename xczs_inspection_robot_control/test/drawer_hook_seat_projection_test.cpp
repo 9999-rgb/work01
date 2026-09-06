@@ -6,7 +6,12 @@
 //
 // 用例轴线：z 轴为伸缩轴（axis=(0,0,1) 归一），home 端点取原点，home_joint=0。
 // 正/负/横向扰动对应座封点在轴正负向与横向的位置。行程门取 doc §4.3/当前实现
-// 的同款 [0.0015, 0.025]，横向残差上限 0.0010，关节上限 0.120（URDF finger-rod）。
+// 的同款 [0.0015, 0.025]，横向残差上限 0.0050（2026-09-05 fix#14 由 0.0010 校准至
+// 0.0030：cap2 run A 左钩 1.716 mm 横向 = 压贴 10-23 N 载荷下臂/工具座挠度的正常
+// 量级；2026-09-06 fix#18 校准至 0.0050：cap3 run C 健康密封上投影横残 3.472 mm,
+// self-center physics tip-spread 达 3.0-4.0 mm, 3 mm 带低于测量噪声地板 —— 轴向
+// 脱钩由行程带/力地板拦截, 与本带正交。见 operator 端 kRodSeatTransverseMax 注释），
+// 关节上限 0.120（URDF finger-rod）。
 // clamp 用关节 [-0.05, 0.120] 显式验证上下界两侧裁剪（上限取真实值之上做通用性
 // 断言，并另用收窄上限验证 clamp 生效）。
 
@@ -23,7 +28,7 @@ namespace
 
 constexpr double kTravelMin = 0.0015;
 constexpr double kTravelMax = 0.025;
-constexpr double kTransverseMax = 0.0010;
+constexpr double kTransverseMax = 0.0050;
 constexpr double kJointMin = -0.05;
 constexpr double kJointMax = 0.120;
 
@@ -71,26 +76,28 @@ TEST(DrawerHookSeatProjection, NegativeExtensionIsRejected)
 }
 
 // 纯横向扰动：位移几乎与轴垂直，欧氏距离会误判成行程；投影应给出 ~0 extension
-// 且横向残差超出上限 → ok=false（轴错/臂漂检测）。
+// 且横向残差超出上限 → ok=false（轴错/臂漂检测）。6 mm > 5 mm 上限：真实脱钩/
+// 错板（operator 端几何上 ≥5 mm 量级）在 fix#18 放宽后的带仍被拦。
 TEST(DrawerHookSeatProjection, TransverseOnlyIsRejected)
 {
   const auto out = project_drawer_hook_seat(
-    0.003, 0.0, 0.0,
+    0.006, 0.0, 0.0,
     0.0, 0.0, 0.0,
     0.0, 0.0, 1.0,
     0.0, kJointMin, kJointMax,
     kTravelMin, kTravelMax, kTransverseMax);
   EXPECT_FALSE(out.ok);
   EXPECT_NEAR(out.extension, 0.0, 1e-9);
-  EXPECT_NEAR(out.transverse_residual, 0.003, 1e-9);
+  EXPECT_NEAR(out.transverse_residual, 0.006, 1e-9);
 }
 
 // 横向分量不超过上限时允许：行程仍按轴向分量计，横向残余不否决（容许标定/读
-// 数噪声）。0.0005 m 横向 < 0.0010 上限。
+// 数噪声）。2 mm 横向 < 5 mm 上限 —— 直接镜像 cap2 run A 实测左钩 1.716 mm
+// 横向（压贴载荷下臂/工具座挠度），证明该量级在 live 带内照常通过。
 TEST(DrawerHookSeatProjection, SmallTransverseWithinLimitKeepsOk)
 {
   const auto out = project_drawer_hook_seat(
-    0.0005, 0.0, 0.005,
+    0.002, 0.0, 0.005,
     0.0, 0.0, 0.0,
     0.0, 0.0, 1.0,
     0.0, kJointMin, kJointMax,

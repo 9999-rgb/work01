@@ -228,12 +228,38 @@
           <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
-      <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+      <!-- 2026-09-04 碰撞代理：b1.STL（用户 SW 原版导出，与仿真场景20260831
+           逐字节一致）为全扇形退化网格——140 个三角形全部经由六个 ±1m 单元点
+           + 单位圆幽灵顶点连接，无任何真实表面三角形。两前把手立板因此无实体
+           碰撞：钩爪杆（l_two_cyl_finger2/r_three_cyl_finger1）压贴无物可抵，
+           旧几何门读数即源于此。视觉保留原网格（用户资产、不改外观），碰撞改
+           为两前把手立板的合同盒（P0 §2.1 与 live 接触封定：x 0.008..0.069
+           前缘 0.099 世界、y 0.052..0.068 与 0.638..0.654、z 0.072..0.168，
+           均 b1 局部）——抓取点即盒面中心，几何门参考语义精确成立。压贴证据
+           为杆电缸 effort ≥8N（AGENT §8.4 fix#3 v2，v1 杆位判据因 rigid 面
+           物理不可穿不可达而废止）。cap-2 读数噪声已另由代码侧 fix#21（双侧
+           连续在位 ≥0.4s）覆盖。
+           [2026-09-06 09-06 A/B 取证] 13:04 一度改回 b1.STL 网格碰撞重跑
+           cap5（干净启动#3）：右钩压贴 0N 自由空气直通 0.030 ref —— 纯网格
+           无立板面，力证据永不成立，必须保留合同盒。恢复本盒；s42b 时代右杆
+           接合偏二态（n1 10.5mm 短/ n2 28.3mm@8.5N 掠边）判为 boot 运气 +
+           dock/IK 分支敏感（09-06 12:16-12:38 同 operator 同盒连续 7 次右杆端
+           ≤1.5mm），clean-start #4 复核；若再现再按 probe 实测重标 aim
+           （adapter 09-04 fix#3 v3-v4/fix#5 注释：aim 随 dock 换 IK 分支）。 -->
+      <collision name="collision_plate_l">
+        <pose>0.0385 0.060 0.120 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1.STL</uri>
-          </mesh>
+          <box>
+            <size>0.061 0.016 0.096</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="collision_plate_r">
+        <pose>0.0385 0.646 0.120 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.061 0.016 0.096</size>
+          </box>
         </geometry>
       </collision>
       <!-- 圆形机构 b1r 并入抽屉本体 b1；指示灯 b1p 随下方 visual_p/collision_p
@@ -679,16 +705,34 @@
         <unlock_distance_threshold>0.008</unlock_distance_threshold>
         <!-- 解锁电机物证（AGENT §4.4 修订版）：unlock_press_point 现为右把手本体
              按钮接触区中心候选（b1 局部，世界 (0.099,4.693,0.952)，旧 0.085 浮动
-             废止）。plugin 解锁门 = 请求方右工具解锁接触链接（机器人模型 link）
-             世界位姿距该区中心 ≤ unlock_distance_threshold，且机器人模型上
-             unlock_motor_joint（右侧解锁短级电缸）实际位置 ≥
+             废止）。严格模式 plugin 解锁门 = 请求方右工具解锁接触链接（机器人
+             模型 link）世界位姿距该区中心 ≤ unlock_distance_threshold，且机器人
+             模型上 unlock_motor_joint（右侧解锁短级电缸）实际位置 ≥
              unlock_retracted_position + unlock_extension_floor（证明真的伸出），
-             且 < unlock_extension_ceiling（防过冲顶死）。数值由调试步骤 6/7 + §7.2
-             现场封定后收紧。 -->
+             且 < unlock_extension_ceiling（防过冲顶死）。 -->
         <unlock_motor_joint>r_three_cyl_finger3_joint</unlock_motor_joint>
         <unlock_retracted_position>0.0</unlock_retracted_position>
         <unlock_extension_floor>0.001</unlock_extension_floor>
         <unlock_extension_ceiling>0.0254</unlock_extension_ceiling>
+        <!-- 2026-09-06 AGENT 执行方案 §4.2 simulated_linkage（db1 仿真配置唯一启用）：
+             实测（cap5 probe 0.116347 m vs 适配器几何下界 0.11456 m）证明 finger3
+             解锁杆与右把手按钮区中心存在 ≥ 0.114 m 横向偏移，右把手本体无该杆
+             可达的真实备选作用面；§4.1#6 禁止把按钮移到空中追随 finger3 → 选定
+             §4.2 仿真机构近似：模拟"右解锁电缸经未建模传动件驱动右把手闩锁释放"，
+             按钮仍位于右把手、工具可见几何保持原样。放行仍需真实解锁电机行程
+             （pressed，上面同一 joint）+ 左右把手真实保持（下两把钩杆杆端距左右
+             把手抓取点 ≤ grasp_contact_threshold，插件独立实测，同 bimanual attach
+             判据）+ 有效租约会话 + 未附着。放行结论以 simulated_linkage /
+             simulation_acceptance 明确标识，绝不报告为"finger3 真实端点按到按钮"。
+             严格触点模式仍是其余场景的默认。 -->
+        <unlock_simulated_linkage>true</unlock_simulated_linkage>
+        <unlock_linkage_description>right unlock motor drives the right-handle
+             latch release through an unmodelled linkage; finger3 real tip is
+             NOT at the button</unlock_linkage_description>
+        <unlock_hold_left_link>l_two_cyl_finger2</unlock_hold_left_link>
+        <unlock_hold_left_point>0 0 -0.095</unlock_hold_left_point>
+        <unlock_hold_right_link>r_three_cyl_finger1</unlock_hold_right_link>
+        <unlock_hold_right_point>0 0 -0.090</unlock_hold_right_point>
         <!-- 双臂附着接触门：左右工具尖端距各自把手 ≤ grasp_contact_threshold
              才允许附着（收紧 0.12 → 0.02，拒绝探针悬空假附着）；耦合拖拽期间
              任一侧尖端脱离把手超过 coupling_contact_grace_seconds 即中止

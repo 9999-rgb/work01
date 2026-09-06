@@ -234,6 +234,19 @@ if(BUILD_TESTING)
       "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
       "$<INSTALL_INTERFACE:include>"
   )
+  # 2026-09-06 AGENT doc §5.1: fix#21 座封接管确认时序判断的纯逻辑单测（断数打断
+  # 连续计时 / 单侧缺数不过 / 持续回缩拒绝 / 正常双侧连续样本通过）。
+  ament_add_gtest(
+    drawer_seat_confirm_test
+    test/drawer_seat_confirm_test.cpp
+  )
+  target_compile_features(drawer_seat_confirm_test PUBLIC cxx_std_17)
+  target_include_directories(
+    drawer_seat_confirm_test
+    PUBLIC
+      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
+      "$<INSTALL_INTERFACE:include>"
+  )
   target_compile_features(planning_scene_profile_test PUBLIC cxx_std_17)
   target_include_directories(
     planning_scene_profile_test

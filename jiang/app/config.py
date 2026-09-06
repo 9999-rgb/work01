@@ -109,8 +109,10 @@ class Settings(BaseSettings):
     admin_password: str = ""
     # Swagger UI 访问 token；为空则不保护 /docs。
     swagger_token: str = ""
-    # 是否启用 JWT 门禁。迁移过渡期可用 XCZS_AUTH_ENABLED=false 关闭。
-    auth_enabled: bool = True
+    # 是否启用 JWT 门禁。默认关闭（本地仿真统一免账号密码直接使用，前端
+    # 依据 /health 的 auth_required 自动进入免登录模式）；确需鉴权时用
+    # XCZS_AUTH_ENABLED=true 重新开启（迁移/受控部署）。
+    auth_enabled: bool = False
 
     # ── 端口（三合一后主网关端口） ──────────────────────────────────
     host: str = "127.0.0.1"

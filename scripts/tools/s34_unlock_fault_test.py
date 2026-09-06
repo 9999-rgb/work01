@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""AGENT §3.4 解锁故障测试驱动（fail-loud 逐项验证）。
+"""AGENT §3.4/§4.2 抽屉解锁门故障测试驱动（fail-loud 逐项验证）。
 
 对电气夹层抽屉 db1，向插件解锁服务 /xczs/cabinet/electrical_mezzanine/unlock
 提交"预置条件被破坏"的解锁请求，逐项验证插件响亮失败且轨道保持锁止。
 
-两类用例：
-  * 无会话（停车场即可执行，无需机械臂运动）：
+注意（2026-09-06）：db1 自 AGENT 执行方案 §4.2 起运行 simulated_linkage
+（仿真机构近似，见 electrical_mezzanine.xacro db1 <unlock_simulated_linkage>）。
+该模式放行仍需真实解锁电机行程 + 左右把手真实保持 + 有效租约会话；唯一放松
+的是"finger3 真实杆端距按钮区 ≤ 8mm"这一几何上不可达的物理触点门。因此：
+  * 无会话用例（停车场即可，无需机械臂运动）：
       - case 3a  空操作租约 -> 拒绝"requires a non-empty operation lease identity"
       - case 3b  外来/从未授权的租约（无 active_control+heartbeat 会话）
                   -> 拒绝"requires a fresh heartbeat ... session"
-  * 有会话 + 真实解锁电机伸出（仅需末端 FJT，无需机械臂到抽屉）：
-      - case 2   解锁电机已伸出（pressed=true）但工具不在解锁区
-                  -> 拒绝"not inside the unlock zone（距离超阈值）"，轨道保持锁止
-
-依赖机械臂到达抽屉解锁区才能构造的用例（1 仅机械臂靠近但电机未伸、
-4 按压 *p 指示灯、5 电机过冲/达安全上限）在 §7.2 阶段 2/3 现场按序补测，
-本文件保留同一会话/请求骨架。
+  * 有会话 + 真实解锁电机驱动（仅需末端 FJT，机械臂停在远离抽屉处即可）：
+      - case S1 电机驱动到行程上限（0.0254，== URDF joint upper == 插件 ceiling）
+        -> 解锁仍被拒（抽屉锁止）：sim 模式不放宽电机行程安全门。实测 settle
+        0.02497 < ceiling，故实际由把手保持门拒绝；插件的"over its extension
+        ceiling"（measured >= ceiling）分支因关节限位==ceiling 无法由电机触发，
+        属硬件/配置过冲结构护栏，离线保留。
+      - case S2 电机伸出到位（pressed=true）但左右把手未保持（机械臂停在别处）
+                 -> 拒绝"handles are not both held"：sim 模式不放宽把手保持门。
+旧 §3.4 严格"工具不在解锁区距离门拒绝"用例（case 2）只适用于未启用 sim 的
+抽屉控制；db1 已启用 sim，该严格距离门保留在插件默认分支供其他场景使用。
 
 用法：
-  python3 scripts/tools/s34_unlock_fault_test.py          # 跑全部 park 用例
-  python3 scripts/tools/s34_unlock_fault_test.py --case 2 # 只跑指定用例
-先决条件：活栈（run_all.sh）已就绪、无人任务占用、db1 处于 closed。
+  python3 scripts/tools/s34_unlock_fault_test.py            # 跑全部 park 用例
+  python3 scripts/tools/s34_unlock_fault_test.py --case s2  # 只跑指定用例
+先决条件：活栈（run_all.sh）已就绪、无人任务占用、db1 处于 closed、机械臂
+停在远离 db1 的位置（S1/S2 需要"把手未保持"前提）。
 """
 import argparse
 import sys
@@ -51,11 +58,11 @@ from xczs_inspection_robot_interfaces.msg import CabinetControlState
 NS = "/xczs/cabinet/electrical_mezzanine"
 CONTROL = "db1"
 ROBOT_MODEL = "xczs_inspection_robot"
-RIGHT_TOOL_LINK = "r_three_cyl_base"
-# r_three_cyl_base 局部系下的有效工具尖端（适配器 drawer_tools.right.tool_tip_position）
-TIP = {"x": 0.0265, "y": -0.061735, "z": -0.3885}
-# 解锁逻辑区中心（operator 镜像值；插件实际用 SDF 局部点，请求字段仅为保真填写）
-PRESS_POINT = {"x": 0.115, "y": 4.693, "z": 0.952}
+# §4.2 sim 模式门：真实解锁电缸的移动连杆（finger3）必须存在于机器人模型上
+# （插件仍要求 link 解析 + 电机真实行程）；请求字段仅为保真填写。
+RIGHT_TOOL_LINK = "r_three_cyl_finger3"
+TIP = {"x": 0.0, "y": 0.0, "z": -0.013002}   # 适配器 drawer_tools.right.unlock 触点
+PRESS_POINT = {"x": 0.099, "y": 4.693, "z": 0.952}  # operator 镜像（插件用 SDF 点）
 
 UNLOCK_MOTOR = "r_three_cyl_finger3_joint"
 FINGER1 = "r_three_cyl_finger1_joint"
@@ -71,12 +78,13 @@ LEASE_SERVICE = "/xczs/operation_lease"
 OWNER_PREFIX = "s34_fault_test"
 HB_PERIOD = 0.4            # s；插件看门狗 2.0 s
 RENEW_PERIOD = 0.7         # s；协调器租约最大 5.0 s（本驱动请 3.0 s）
-MOTOR_EXTEND = 0.008       # = controls.db1.unlock_pressed_position（现场标定前占位）
+MOTOR_EXTEND = 0.008       # pressed 目标 ∈ [retracted+floor, ceiling)
+MOTOR_CEILING = 0.0254     # ≥ ceiling 即"过冲/达安全上限"，任何模式都拒绝
 MOTOR_TRAJECTORY_SEC = 2.0
 
 PASS_MSG = {
-    1: "Unlock contact link is not inside the unlock zone",
-    2: "Unlock contact link is not inside the unlock zone",
+    "S1": "unlock motor is over its extension ceiling",
+    "S2": "handles are not both held",
     "3a": "Drawer unlock requires a non-empty operation lease identity",
     "3b": "Drawer unlock requires a fresh heartbeat from the exact active "
           "control and global operation lease session",
@@ -210,6 +218,9 @@ class S34FaultTest(Node):
 
     # ---- 会话（active_control + heartbeat）---------------------------------
     def start_session(self):
+        # 上一会话 stop_session 会把 _hb_stop 置 True；新会话必须复位，否则
+        # 本会话心跳线程立刻空转退出（曾导致 S2 撞"心跳不新鲜"而非把手门）。
+        self._hb_stop = False
         self.active_pub.publish(String(data=CONTROL))
         self.hb_pub.publish(String(data=self.lease_id))
         t = threading.Thread(target=self._hb_loop, daemon=True)
@@ -305,31 +316,73 @@ def run_baseline(driver):
     return results
 
 
-def run_case2(driver):
-    """P1：真实会话 + 解锁电机伸出但工具不在解锁区 -> 距离门拒绝。"""
+def run_sim_negative(driver, case):
+    """§4.2 sim 门负例（停车场即可，机械臂停在远离 db1 处）。
+
+    S1：电机驱动到行程安全上限 MOTOR_CEILING（0.0254）-> 解锁必须仍被拒（抽屉
+        锁止、simulation_acceptance=false）——sim 不放宽电机行程安全门。
+        说明（2026-09-06 实测证据）：finger3 prismatic 关节 URDF upper limit ==
+        插件 ceiling == 0.0254，effort 控制停在 0.02497 < ceiling，因此插件的
+        "over its extension ceiling"（measured >= ceiling）分支在仿真内无法由
+        电机驱动触发——该分支是硬件/配置过冲的结构护栏，离线保留。实测只到行程
+        上限时 pressed=True，随后撞"把手未保持"门拒绝；两种拒绝都证明满行程电机
+        单靠行程绝不放行。
+    S2：电机伸出到位（pressed，0.008）但左右把手未保持 -> 拒绝 handles not both
+        held —— sim 不放宽把手保持门。
+    两者各自独立会话；每例后收回电机，抽屉滑轨必须保持 closed。
+    """
     results = []
+    target = MOTOR_CEILING if case == "S1" else MOTOR_EXTEND
+    label = ("§4.2-S1 电机满行程仍不放行(over ceiling 护栏)"
+             if case == "S1" else "§4.2-S2 把手未保持拒绝")
     driver.acquire_lease()
     driver.start_session()
+    # 上一例 finally 会置 _renew_stop=True；本例必须复位，续期线程才会跑。
+    driver._renew_stop = False
     renew_thread = threading.Thread(target=driver._renew_loop, daemon=True)
     renew_thread.start()
     try:
-        # 前置断言：确认会话已授权（否则会先撞心跳门而不是距离门）。
-        measured = driver.joint_position(UNLOCK_MOTOR, timeout=3.0)
-        base_motor = measured if measured is not None else 0.0
         slide_before = driver.drawer_position(timeout=3.0)
-        measured = driver.drive_unlock_motor(MOTOR_EXTEND)
-        extended_ok = (measured is not None and
-                       measured >= 0.001 and measured < 0.0254)
+        measured = driver.drive_unlock_motor(target)
         resp = driver.unlock_request(driver.lease_id)
+        ok_extra = True
+        detail = f"motor={measured if measured is not None else float('nan'):.4f}"
+        if case == "S1":
+            # 满行程：pressed=False 且命中 over ceiling 是理想分支；否则（实测
+            # < ceiling）pressed=True 后由把手保持门拒绝。两者都满足"不放行"。
+            if (resp.pressed is False
+                    and PASS_MSG["S1"] in resp.message):
+                gate_hit = "over-ceiling"
+            elif PASS_MSG["S2"] in resp.message:
+                gate_hit = "handle-hold(at-ceiling)"
+            else:
+                gate_hit = None
+            ok_extra = (resp.simulation_acceptance is False
+                        and gate_hit is not None)
+            detail += (f" pressed={resp.pressed} mode={resp.unlock_mode} "
+                       f"gate={gate_hit}")
+        else:  # S2
+            # pressed=True，随后把手保持门拒绝；两者都假。
+            ok_extra = (resp.pressed is True and
+                        resp.left_handle_held is False and
+                        resp.right_handle_held is False and
+                        resp.simulation_acceptance is False)
+            detail += (f" pressed={resp.pressed} mode={resp.unlock_mode} "
+                       f"left_held={resp.left_handle_held} "
+                       f"left={resp.left_hold_distance:.4f} "
+                       f"right_held={resp.right_handle_held} "
+                       f"right={resp.right_hold_distance:.4f}")
+        expect_msg = False
+        if case == "S1":
+            expect_msg = (PASS_MSG["S1"] in resp.message
+                          or PASS_MSG["S2"] in resp.message)
+        elif PASS_MSG[case] in resp.message:
+            expect_msg = True
         results.append(driver.check(
-            "§3.4-2 电机已伸出但工具不在解锁区拒绝",
+            label,
             (not resp.success and not resp.drawer_unlocked
-             and resp.right_tool_contact is False
-             and resp.pressed is True
-             and resp.distance is not None and resp.distance > 0.03
-             and PASS_MSG[2] in resp.message),
-            f"extended_ok={extended_ok} motor={base_motor:.4f}->"
-            f"{measured if measured is not None else float('nan'):.4f}"))
+             and expect_msg and ok_extra),
+            detail + " | " + resp.message))
         # 抽屉滑轨必须纹丝不动（轨道保持锁止）。
         time.sleep(0.3)
         slide_after = driver.drawer_position(timeout=3.0)
@@ -337,16 +390,16 @@ def run_case2(driver):
                        and abs(slide_after - slide_before) < 1e-3
                        and abs(slide_after) < 0.05)
         results.append(driver.check(
-            "§3.4-2 db1 滑轨保持 closed",
+            f"{label}: db1 滑轨保持 closed",
             slide_still,
             f"slide {slide_before if slide_before is not None else float('nan'):.4f}"
             f" -> {slide_after if slide_after is not None else float('nan'):.4f} m"))
+    finally:
         # 收回电机，不留半伸探杆。
         try:
             driver.drive_unlock_motor(0.0)
         except Exception as exc:  # noqa: BLE001
             print(f"[motor] retract error: {exc}")
-    finally:
         driver.stop_session()
         driver._renew_stop = True
         if renew_thread.is_alive():
@@ -358,7 +411,7 @@ def run_case2(driver):
 def main():
     parser = argparse.ArgumentParser(description="AGENT §3.4 解锁故障测试")
     parser.add_argument(
-        "--case", choices=["3a", "3b", "2", "all"], default="all")
+        "--case", choices=["3a", "3b", "S1", "S2", "all"], default="all")
     args = parser.parse_args()
 
     rclpy.init()
@@ -366,23 +419,26 @@ def main():
     driver.wait_service()
     results = []
     try:
-        if args.case == "2":
-            results += run_case2(driver)
+        if args.case == "S1":
+            results += run_sim_negative(driver, "S1")
+        elif args.case == "S2":
+            results += run_sim_negative(driver, "S2")
         elif args.case == "3a":
             resp = driver.unlock_request("")
             results.append(driver.check(
-                "§3.4-3a 空租约拒绝",
+                "§4.2-3a 空租约拒绝",
                 (not resp.success and not resp.drawer_unlocked
                  and PASS_MSG["3a"] in resp.message), resp.message))
         elif args.case == "3b":
             resp = driver.unlock_request("lease-not-mine")
             results.append(driver.check(
-                "§3.4-3b 外来租约拒绝",
+                "§4.2-3b 外来租约拒绝",
                 (not resp.success and not resp.drawer_unlocked
                  and PASS_MSG["3b"] in resp.message), resp.message))
-        else:  # all：无会话用例在前（不污染会话），有会话 case 2 在后。
+        else:  # all：无会话用例在前（不污染会话），有会话 S1/S2 在后。
             results += run_baseline(driver)
-            results += run_case2(driver)
+            results += run_sim_negative(driver, "S1")
+            results += run_sim_negative(driver, "S2")
     except Exception as exc:  # noqa: BLE001
         print(f"[driver] ERROR: {exc}")
         results.append(False)

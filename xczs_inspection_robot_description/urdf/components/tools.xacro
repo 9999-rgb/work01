@@ -137,10 +137,16 @@
       <child link="${prefix}_three_cyl_finger1" />
       <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
-      <!-- Low cylinder stiction lets the effort/PID controller settle to its
-           commanded physical position instead of parking several millimetres
-           short.  Meshes, collision geometry and joint origins are unchanged. -->
-      <dynamics damping="0.1" friction="0.05" />
+      <!-- Damping raised 0.1 -> 20.0 (2026-09-04), the bare rod's effort/PID
+           loop resonance (~17 Hz at p=800 on a 0.07-0.11 kg finger) sits above
+           the effective ~10 Hz controller rate, so free-air moves limit-cycled
+           0..0.12 regardless of gains.  Physical damping acts at the 500 Hz
+           physics rate and overdamps the rod (zeta ~1.0-1.3), making it
+           controllable at the slow controller rate.  Steady press force is
+           unaffected (damping opposes velocity only), and the strong I term
+           (i=200 / i_clamp=60) still settles it exactly on target; friction
+           stays low.  Meshes, collision geometry and joint origins unchanged. -->
+      <dynamics damping="20.0" friction="0.05" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
     </joint>
 
@@ -176,7 +182,8 @@
       <child link="${prefix}_three_cyl_finger2" />
       <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
-      <dynamics damping="0.1" friction="0.05" />
+      <!-- Damping raised to 20.0 (2026-09-04), see three_cyl_finger1 note. -->
+      <dynamics damping="20.0" friction="0.05" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
     </joint>
 
@@ -212,7 +219,11 @@
       <child link="${prefix}_three_cyl_finger3" />
       <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.0254" effort="100" velocity="1" />
-      <dynamics damping="0.1" friction="0.05" />
+      <!-- Finger3 is the light unlock motor (0.002 kg, p=120), its own free-air
+           resonance (~39 Hz) is even harder for the slow controller rate, but
+           heavy damping would slow the 8 mm unlock extension.  Damping 2.0 gives
+           zeta ~2 at the physics rate yet keeps the extension fast. -->
+      <dynamics damping="2.0" friction="0.05" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.0254" k_position="1" k_velocity="1" />
     </joint>
   </xacro:macro>
@@ -287,7 +298,8 @@
       <child link="${prefix}_two_cyl_finger1" />
       <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
-      <dynamics damping="0.1" friction="0.05" />
+      <!-- Damping raised to 20.0 (2026-09-04), see three_cyl_finger1 note. -->
+      <dynamics damping="20.0" friction="0.05" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
     </joint>
 
@@ -323,7 +335,8 @@
       <child link="${prefix}_two_cyl_finger2" />
       <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.12" effort="100" velocity="1" />
-      <dynamics damping="0.1" friction="0.05" />
+      <!-- Damping raised to 20.0 (2026-09-04), see three_cyl_finger1 note. -->
+      <dynamics damping="20.0" friction="0.05" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.12" k_position="1" k_velocity="1" />
     </joint>
   </xacro:macro>

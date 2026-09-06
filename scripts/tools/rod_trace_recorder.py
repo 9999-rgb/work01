@@ -4,15 +4,18 @@
 post-hoc diagnosis of hook/support rod travel (contact stalls etc.).
 
 Logs one line per 100 ms to the given file:
-  <t> L0..L6 R0..R6 | r1..r5 | e1..e5 | L2ref L2act L2err | R1ref R1act R1err
-      | drawer drawer_state
+  <t> L0..L6 R0..R6 | r1..r5 | e1..e5 | Lg Ls Rg Rs Ru | drawer drawer_state
 where L0..L6/R0..R6 are the ACTUAL left/right arm positions (joint_states,
 the same source the operator's real-JS cache consumes), r1..r5 the ACTUAL
-rod positions, e1..r5 their ACTUAL efforts, L2 = l_two_cyl_finger2 (left
-gripper), R1 = r_three_cyl_finger1 (right gripper) commanded-vs-actual from
-each cylinder controller's JointTrajectoryControllerState
-(reference=desired, feedback=actual, error=ref-act), and drawer is db1's
-slide.  Column order below the header comment:
+rod positions, e1..r5 their ACTUAL efforts, and each of Lg/Ls/Rg/Rs/Ru is a
+commanded-vs-actual triple (ref/act/err where err=ref-act) read from the
+cylinder controllers' JointTrajectoryControllerState, covering AGENT §12.4's
+target-vs-measured columns for both hook grippers, both side supports and
+the right unlock rod:
+  Lg = l_two_cyl_finger2 (left gripper)      Ls = l_two_cyl_finger1 (left support)
+  Rg = r_three_cyl_finger1 (right gripper)   Rs = r_three_cyl_finger2 (right support)
+  Ru = r_three_cyl_finger3 (right unlock rod)
+and drawer is db1's slide.  Column order below the header comment:
   L0..L6 = l_arm_0_joint..l_arm_6_joint
   R0..R6 = r_arm_0_joint..r_arm_6_joint
   r1..r5 = l_two_cyl_finger1/2, r_three_cyl_finger1/2/3
@@ -36,12 +39,15 @@ RODS = ["l_two_cyl_finger1_joint", "l_two_cyl_finger2_joint",
         "r_three_cyl_finger1_joint", "r_three_cyl_finger2_joint",
         "r_three_cyl_finger3_joint"]
 ALL = ARMS + RODS
-CTRL = {  # controller_state topic -> (label, grip, support)
+CTRL = {  # controller_state topic -> (label, roles by joint)
     "/xczs/two_cylinder_controller/controller_state":
-        ("L", "l_two_cyl_finger2_joint", "l_two_cyl_finger1_joint"),
+        ("L", {"g": "l_two_cyl_finger2_joint", "s": "l_two_cyl_finger1_joint"}),
     "/xczs/three_cylinder_controller/controller_state":
-        ("R", "r_three_cyl_finger1_joint", "r_three_cyl_finger2_joint"),
+        ("R", {"g": "r_three_cyl_finger1_joint", "s": "r_three_cyl_finger2_joint",
+               "u": "r_three_cyl_finger3_joint"}),
 }
+# Output order of the commanded-vs-actual triples.
+ROLE_ORDER = ("Lg", "Ls", "Rg", "Rs", "Ru")
 
 
 class RodTraceRecorder(Node):
@@ -103,27 +109,27 @@ class RodTraceRecorder(Node):
                 rp = [self._pos.get(r, float("nan")) for r in RODS]
                 re = [self._eff.get(r, float("nan")) for r in RODS]
                 refs = {}
-                for t, (label, grip_j, sup_j) in CTRL.items():
+                for t, (label, role_joints) in CTRL.items():
                     entry = self._ctrl.get(t)
                     if not entry:
                         continue
                     names, ref, fb = entry
-                    for role, jn in (("g", grip_j), ("s", sup_j)):
+                    for role, jn in role_joints.items():
                         if names and jn in names:
                             i = names.index(jn)
                             refs[label + role] = (ref.positions[i],
                                                   fb.positions[i],
                                                   ref.positions[i] - fb.positions[i])
                 dp, ds = self._drawer
-            l2 = refs.get("Lg", (float("nan"),) * 3)
-            r1 = refs.get("Rg", (float("nan"),) * 3)
+            def _triple(key: str) -> str:
+                v = refs.get(key, (float("nan"),) * 3)
+                return f"{v[0]:9.5f}/{v[1]:9.5f}({v[2]:+8.5f})"
             self._out.write(
                 f"{time.monotonic() - self._t0:8.2f} "
                 f"{' '.join(f'{v:.5f}' for v in ap)} | "
                 f"{' '.join(f'{v:.5f}' for v in rp)} | "
                 f"{' '.join(f'{v:+.1f}' for v in re)} | "
-                f"L {l2[0]:8.5f}/{l2[1]:8.5f}({l2[2]:+8.5f}) | "
-                f"R {r1[0]:8.5f}/{r1[1]:8.5f}({r1[2]:+8.5f}) | "
+                f"{' '.join(_triple(key) for key in ROLE_ORDER)} | "
                 f"{dp:.5f} {ds}\n")
             time.sleep(0.1)
 

@@ -1,0 +1,758 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""逐门驱动 db1 抽拉柜的 AGENT §7.2 分级封顶验收（cap1→cap8）。
+
+实现文档 docx/AGENT-电气夹层抽拉柜后续实现与验收执行方案.md §5.2：每个门只通过
+运行时参数 ``debug_stage_cap`` 切换（operator 节点），再经 Web 任务层对 db1
+发起一次 open 任务；operator 执行到对应阶段即完成安全收尾（脱离/电缸回位/
+退让/轨道闩重锁）并抛 "debug_stage_cap=N reached: ..." 成功标记，Web 任务以
+success 交付。本驱动只认定带正确封顶标记的 success，并在每个门后复核抽屉确实
+回到 closed 静止位 —— 保证下一次从干净的“关闭+闩定+电缸 home”出发，支持
+cap2/cap3 连续多次取证。
+
+§5.2 落点（逐条对代码）：
+1. 起始读取 operator 原 debug_stage_cap，非 0 直接拒绝；结束恢复为 0
+   （_RunGuard 保存 original_cap 并在 cleanup_and_restore 复原）。
+2. cleanup 覆盖成功/失败/超时/KeyboardInterrupt：finally 先取消本脚本仍活动
+   的任务并等待终态确认收尾，再恢复原参数。
+3. 每门记录 task_id / 场景代次(catalog_generation) / cap / 开始时间；封顶证据
+   从本次任务 /task/{id}/status 的 result.message 读取（gateway §5.2 透传），
+   绝不复用无任务关联的 /health 柜体缓存 message。
+4. 非目标控件按 control_id 集合比较，复用 _db1_shared 单一实现。
+5. 全部位置检查为有限数（拒绝 NaN/Inf），静止判定读当前 valid/in_motion。
+6. 每门输出本次任务的 physical/recovery/release 证据与 result_message；闩锁/
+   电缸 home 证据取不到就标记 not_verified，绝不用 closed 状态推导。
+7. 失败也输出已完成 gates、首个失败与 cleanup 状态（stdout JSON 摘要）。
+8. 离线失败恢复测试见 scripts/validate/test_validate_db1_cap_gates_offline.py。
+
+只使用标准库 + 项目已有 ros2 CLI（用于 param set/get，走当前 shell 的 ROS
+环境），鉴权只从环境变量读取，不打印令牌；stdout 只输出机器可读摘要。
+
+用法（需先 source ROS 并 ./run_all.sh --web 就绪）:
+  scripts/validate/validate_db1_cap_gates \
+      [--caps 1,2,2,2,3,3,3,4,5,6,7,8] [--no-navigate] ...
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional
+
+# 复用 validate_db1_drawer 的抽屉有效性/运动/位置/状态检查（单一实现）。
+from _db1_shared import (
+    Db1ValidationError,
+    TYPE_DRAWER,
+    control_by_id,
+    expected_position_for_state,
+    require_others_stable,
+    require_position_number,
+    require_stationary_and_valid,
+    require_untouched_unchanged,
+    untouched_snapshot,
+)
+
+# msg/CabinetControl.msg 常量。
+TERMINAL_STATUSES = frozenset({"success", "failed", "canceled"})
+
+DEFAULT_API = "http://127.0.0.1:8090"
+DEFAULT_SCENE = "electrical_mezzanine"
+DEFAULT_CABINET = "electrical_mezzanine"
+DEFAULT_DRAWER = "db1"
+DEFAULT_OPERATOR = (
+    "/xczs/cabinet/electrical_mezzanine/xczs_cabinet_button_operator"
+)
+# 门后抽屉回到 closed 的判定带宽（state=closed 的位置复核）。
+CLOSED_EPS_M = 0.02
+CATALOG_READY_TIMEOUT_S = 60
+POLL_INTERVAL_S = 2
+# 收尾阶段：取消本脚本任务后等待其终态的上限。
+CANCEL_SETTLE_TIMEOUT_S = 90
+
+# 本次任务结果里 operator 侧的终态物理证据标志（AGENT §10.2）。
+EVIDENCE_FLAGS = (
+    "physical_outcome_confirmed",
+    "final_state_verified",
+    "transport_succeeded",
+    "recovery_succeeded",
+    "grasp_released",
+)
+
+# 闩锁/轨道与电缸 home 证据的关键词（只做保守存在性判定，存在即按 operator
+# 文本显式断言取证；取不到就标记 not_verified，绝不用 closed 状态推导）。
+_LATCH_KEYWORDS = ("latch", "latched", "re-latch", "rail", "lock", "locked")
+_HOME_KEYWORDS = ("home", "retracted", "actuators")
+
+
+class WebError(Exception):
+    def __init__(self, status: int, payload: Dict[str, Any]) -> None:
+        super().__init__(
+            "HTTP %d: %s" % (status, payload.get("error", json.dumps(payload)))
+        )
+        self.status = status
+        self.payload = payload
+
+
+class GateError(Exception):
+    """门失败（人类可读原因）。"""
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr)
+
+
+def _now_iso() -> str:
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+def _json_number(value: Any) -> Any:
+    """位置数值只允许有限数；NaN/Inf/None 一律转 None，避免输出非法 JSON。"""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _plain(exc: BaseException) -> str:
+    return str(exc) or exc.__class__.__name__
+
+
+def _configure_auth(api: str, token: str, username: str, password: str) -> Dict[str, str]:
+    """返回 {Authorization, Content-Type...} 风格最小封装所需头，或去 /auth/login。
+
+    Web 鉴权默认关闭（auth_enabled=False），无令牌时 API 直接返回 200；因此
+    token 为空且未提供用户名时不再强行走 /auth/login。
+    """
+    if token:
+        return {"Authorization": "Bearer " + token}
+    if password and not username:
+        username = "admin"
+    if username and not password:
+        raise GateError("提供用户名时必须同时提供密码")
+    if not username:
+        return {}
+    payload = _request("POST", api, "/auth/login",
+                       {"username": username, "password": password})
+    token = payload.get("access_token")
+    if not isinstance(token, str) or not token:
+        raise GateError("/auth/login 未返回 access_token")
+    return {"Authorization": "Bearer " + token}
+
+
+def _request(
+    method: str, api: str, path: str,
+    body: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    payload = None
+    request_headers = {"Accept": "application/json"}
+    if headers:
+        request_headers.update(headers)
+    if body is not None:
+        request_headers["Content-Type"] = "application/json"
+        payload = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        api.rstrip("/") + path, data=payload, method=method,
+        headers=request_headers,
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20.0) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", "replace")
+        try:
+            parsed = json.loads(detail)
+        except (ValueError, TypeError):
+            parsed = {"error": detail or error.reason}
+        raise WebError(error.code, parsed) from error
+    except urllib.error.URLError as error:
+        raise GateError("%s %s 请求失败：%s" % (method, path, error.reason))
+    if not raw:
+        raise GateError("%s %s 返回空响应" % (method, path))
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except ValueError:
+        raise GateError("%s %s 返回的不是有效 JSON" % (method, path))
+
+
+def _wait_for_id(api: str, auth: Dict[str, str], task_id: str,
+                 task_timeout: float, label: str) -> Dict[str, Any]:
+    deadline = time.monotonic() + task_timeout
+    while True:
+        snapshot = _request("GET", api, "/task/" + urllib.parse.quote(task_id)
+                            + "/status", headers=auth)
+        status = snapshot.get("status")
+        if status in TERMINAL_STATUSES:
+            return snapshot
+        if time.monotonic() > deadline:
+            raise GateError("%s 任务 %s 在 %d 秒内未结束（status=%s）"
+                            % (label, task_id, int(task_timeout), status))
+        time.sleep(POLL_INTERVAL_S)
+
+
+def _submit_and_wait_terminal(api: str, auth: Dict[str, str], task_type: str,
+                              body: Dict[str, Any], task_timeout: float,
+                              label: str,
+                              track: Optional[Callable[[str], None]] = None,
+                              ) -> Dict[str, Any]:
+    """提交任务并轮询到终态；409 占用时先等占用任务结束再重试一次。
+
+    ``track`` 为本脚本自行提交的任务 id 回调（供收尾取消），409 占用的他人
+    任务不回调。
+    """
+    accepted = None
+    for attempt in (1, 2):
+        try:
+            accepted = _request("POST", api, "/task/" + task_type, body,
+                                headers=auth)
+            break
+        except WebError as error:
+            busy_id = (
+                (error.payload.get("details") or {}).get("active_task_id")
+                if attempt == 1 else None
+            )
+            if error.status != 409 or not isinstance(busy_id, str) or not busy_id:
+                raise
+            _log("[%s] 全局任务被 %s 占用，等待其结束后重试。" % (label, busy_id))
+            _wait_for_id(api, auth, busy_id, task_timeout, "preceding")
+    if accepted is None:
+        raise GateError("%s 两次提交均被全局占用" % label)
+    task_id = accepted.get("task_id")
+    if not isinstance(task_id, str) or not task_id:
+        raise GateError("%s 未返回合规 task_id" % label)
+    if track is not None:
+        track(task_id)
+    return _wait_for_id(api, auth, task_id, task_timeout, label)
+
+
+def _catalog_ready(api: str, auth: Dict[str, str], cabinet: str,
+                   drawer: str) -> Dict[str, Any]:
+    deadline = time.monotonic() + CATALOG_READY_TIMEOUT_S
+    last_reason = ""
+    while True:
+        response = _request("GET", api, "/cabinets/" + cabinet + "/controls",
+                            headers=auth)
+        controls = response.get("controls")
+        if (response.get("available") is True and isinstance(controls, list)
+                and any(item.get("control_id") == drawer for item in controls)):
+            return response
+        last_reason = (response.get("catalog_coherence_reason")
+                       or "controls 未就绪")
+        if time.monotonic() > deadline:
+            raise GateError("%s 控件目录 %d 秒内未就绪：%s"
+                            % (cabinet, CATALOG_READY_TIMEOUT_S, last_reason))
+        time.sleep(POLL_INTERVAL_S)
+
+
+def _require_success(snapshot: Dict[str, Any], label: str) -> Dict[str, Any]:
+    """任务终态必须为 success；否则抛出人类可读原因。返回本次任务 result。"""
+    status = snapshot.get("status")
+    if status != "success":
+        reason = snapshot.get("failure_reason") or snapshot.get("message") or ""
+        raise GateError("%s 任务以 %s 结束：%s" % (label, status, reason))
+    result = snapshot.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+# ---------------------------------------------------------------------------
+# operator debug_stage_cap 参数读写（走 ros2 CLI）。
+# ---------------------------------------------------------------------------
+def _operator_param_get(operator: str) -> int:
+    env = dict(os.environ)
+    result = subprocess.run(
+        ["ros2", "param", "get", operator, "debug_stage_cap"],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise GateError(
+            "ros2 param get %s debug_stage_cap 失败：%s"
+            % (operator, (result.stderr or result.stdout).strip()))
+    match = re.search(r"[-+]?\d+", result.stdout)
+    if match is None:
+        raise GateError(
+            "ros2 param get 未返回可解析整数（debug_stage_cap）：%s"
+            % result.stdout.strip())
+    return int(match.group(0))
+
+
+def _set_operator_cap(operator: str, cap: int) -> None:
+    env = dict(os.environ)
+    result = subprocess.run(
+        ["ros2", "param", "set", operator, "debug_stage_cap", str(cap)],
+        env=env, capture_output=True, text=True, timeout=60,
+    )
+    if result.returncode != 0:
+        raise GateError(
+            "ros2 param set %s debug_stage_cap=%d 失败：%s"
+            % (operator, cap, (result.stderr or result.stdout).strip()))
+    if _operator_param_get(operator) != cap:
+        raise GateError(
+            "ros2 param get 未确认 debug_stage_cap=%d" % cap)
+    _log("[param] operator debug_stage_cap=%d 已生效。" % cap)
+
+
+# ---------------------------------------------------------------------------
+# 收尾守卫：取消本脚本仍活动的任务→等待终态→恢复原参数（AGENT §5.2 #2）。
+# ---------------------------------------------------------------------------
+class _RunGuard:
+    """封装本脚本改动过的外部状态（参数 + 自行提交的任务），供 finally 复原。"""
+
+    def __init__(self, api: str, auth: Dict[str, str], operator: str,
+                 original_cap: int) -> None:
+        self.api = api
+        self.auth = auth
+        self.operator = operator
+        self.original_cap = original_cap
+        self.submitted_task_id: Optional[str] = None
+        self.param_changed = False
+        self.cleanup: Dict[str, Any] = {
+            "param_restored": False,
+            "param_original": original_cap,
+            "active_task_canceled": None,
+            "active_task_terminal": None,
+            "note": "",
+        }
+
+    def track_task(self, task_id: str) -> None:
+        self.submitted_task_id = task_id
+
+    def mark_param_changed(self) -> None:
+        self.param_changed = True
+
+    def _task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        return _request("GET", self.api,
+                        "/task/" + urllib.parse.quote(task_id) + "/status",
+                        headers=self.auth)
+
+    def cleanup_and_restore(self) -> Dict[str, Any]:
+        """取消并等待本脚本仍活动的任务；随后恢复原 debug_stage_cap=0。"""
+        errors: List[str] = []
+        task_id = self.submitted_task_id
+        if task_id is not None:
+            try:
+                snapshot = self._task_status(task_id)
+            except BaseException as error:  # noqa: BLE001 - 收尾必须继续
+                errors.append("查询任务 %s 状态失败：%s" % (task_id, _plain(error)))
+                snapshot = None
+            status = (snapshot or {}).get("status")
+            if status in TERMINAL_STATUSES:
+                self.cleanup["active_task_canceled"] = False
+                self.cleanup["active_task_terminal"] = status
+                self.cleanup["note"] = "任务已终态，无需取消"
+            elif snapshot is not None:
+                self.cleanup["note"] = "取消本脚本提交的仍活动任务 %s" % task_id
+                try:
+                    _request("POST", self.api,
+                             "/task/" + urllib.parse.quote(task_id) + "/cancel",
+                             headers=self.auth)
+                except BaseException as error:  # noqa: BLE001
+                    errors.append("取消任务 %s 失败：%s" % (task_id, _plain(error)))
+                terminal = None
+                deadline = time.monotonic() + CANCEL_SETTLE_TIMEOUT_S
+                while time.monotonic() < deadline:
+                    try:
+                        current = self._task_status(task_id)
+                    except BaseException as error:  # noqa: BLE001
+                        errors.append("取消后查询 %s 失败：%s"
+                                      % (task_id, _plain(error)))
+                        break
+                    terminal = (current or {}).get("status")
+                    if terminal in TERMINAL_STATUSES:
+                        break
+                    time.sleep(POLL_INTERVAL_S)
+                if terminal in TERMINAL_STATUSES:
+                    self.cleanup["active_task_canceled"] = True
+                    self.cleanup["active_task_terminal"] = terminal
+                else:
+                    self.cleanup["active_task_canceled"] = False
+                    errors.append("取消后任务 %s 在 %d 秒内未达终态"
+                                  % (task_id, CANCEL_SETTLE_TIMEOUT_S))
+        # 恢复原参数（=0）。只有当本脚本真的改过参数才执行。
+        if self.original_cap is not None and self.param_changed:
+            try:
+                _set_operator_cap(self.operator, self.original_cap)
+                self.cleanup["param_restored"] = True
+            except BaseException as error:  # noqa: BLE001 - 恢复必须尽量完成
+                self.cleanup["param_restored"] = False
+                errors.append("恢复 debug_stage_cap=%s 失败：%s"
+                              % (self.original_cap, _plain(error)))
+        else:
+            self.cleanup["param_restored"] = True
+            self.cleanup["note"] = (self.cleanup["note"] or "") + (
+                "；参数未改动（原值 %s）" % self.original_cap)
+        if errors:
+            self.cleanup["error"] = "; ".join(errors)
+        return dict(self.cleanup)
+
+
+# ---------------------------------------------------------------------------
+# 门评估。
+# ---------------------------------------------------------------------------
+def _latch_home_status(message: str) -> str:
+    """闩锁/电缸 home 证据：只按 operator 文本显式关键词存在性取证。
+
+    取不到就返回 not_verified —— 绝不用 drawer 的 closed 状态推导闩锁。
+    """
+    lowered = (message or "").lower()
+    latchish = any(keyword in lowered for keyword in _LATCH_KEYWORDS)
+    homeish = any(keyword in lowered for keyword in _HOME_KEYWORDS)
+    if latchish and homeish:
+        return "verified_by_operator_text_latch_and_home"
+    if latchish:
+        return "verified_by_operator_text_latch"
+    if homeish:
+        return "verified_by_operator_text_home"
+    return "not_verified"
+
+
+def _fetch_controls(api: str, auth: Dict[str, str],
+                    cabinet: str) -> List[Dict[str, Any]]:
+    response = _request("GET", api, "/cabinets/" + cabinet + "/controls",
+                        headers=auth)
+    return response.get("controls") or []
+
+
+def _execute_gate(gate: Dict[str, Any], api: str, auth: Dict[str, str],
+                  cabinet: str, drawer: str,
+                  drawer_item: Dict[str, Any],
+                  baseline: List[Dict[str, Any]],
+                  cap: int, index: int, task_timeout: float,
+                  track: Optional[Callable[[str], None]],
+                  gen_state: Dict[str, Any],
+                  closed_expected: float) -> None:
+    """执行单门并原地填 gate 条目；失败以异常抛出（异常前字段已尽量填好）。
+
+    调用方负责先 _set_operator_cap(cap) 并标记 guard.mark_param_changed()；
+    本函数从提交 operate 任务开始评估。
+    """
+    gate.update({
+        "cap": cap, "sequence": index, "started_at": _now_iso(),
+        "status": "running", "task_id": None,
+        "catalog_generation": None, "elapsed_s": None,
+    })
+    started = time.monotonic()
+    label = "gate-cap%d-%d" % (cap, index)
+    fail_reason: Optional[str] = None
+
+    def record_track(task_id: str) -> None:
+        # 接受即登记 task_id（即使后续轮询超时/中断，本门条目的任务 id 也在，
+        # 满足 §5.2 #3）；再交给收尾守卫登记活动任务。
+        gate["task_id"] = task_id
+        if track is not None:
+            track(task_id)
+
+    try:
+        terminal = _submit_and_wait_terminal(
+            api, auth, "operate",
+            {"cabinet": cabinet, "control_id": drawer,
+             "command": "set_state", "target_state": "open"},
+            task_timeout, label, track=record_track)
+        result = _require_success(terminal, "gate cap%d" % cap)
+        gate["catalog_generation"] = result.get("catalog_generation")
+
+        message = str(result.get("message") or "")
+        marker = "debug_stage_cap=%d reached" % cap
+
+        # 本次任务作用域结果必须带本门的封顶标记（§5.2 #3）。
+        if marker not in message:
+            fail_reason = ("本次任务结果缺少封顶标记 %r（result.message=%r）"
+                           % (marker, message[:300]))
+        # 本次任务终态物理/恢复/释放证据（§5.2 #6）。
+        evidence: Dict[str, Any] = {}
+        missing_evidence: List[str] = []
+        for flag in EVIDENCE_FLAGS:
+            value = result.get(flag)
+            if value is True:
+                evidence[flag] = True
+            elif value is False:
+                evidence[flag] = False
+                missing_evidence.append(flag)
+            else:
+                evidence[flag] = None
+                missing_evidence.append(flag)
+        gate["evidence"] = evidence
+        gate["evidence"]["result_message"] = message
+        gate["evidence"]["latch_or_home_evidence"] = _latch_home_status(message)
+        if fail_reason is None and missing_evidence:
+            fail_reason = ("本次任务结果缺少真值终态证据：%s"
+                           % ", ".join(missing_evidence))
+
+        # 本次任务请求身份必须与本门目标一致（§5.2 #3 task_id 关联）。
+        if fail_reason is None:
+            request = terminal.get("request") or {}
+            if (request.get("cabinet") != cabinet
+                    or request.get("control_id") != drawer):
+                fail_reason = ("本次任务请求身份与目标不符：%s" % json.dumps(
+                    {key: request.get(key) for key in
+                     ("cabinet", "control_id")}, ensure_ascii=False))
+
+        # 场景代次一致性（跨门代次变化说明夹具重生了，基线作废）。
+        generation = gate["catalog_generation"]
+        if isinstance(generation, bool) or not isinstance(generation, int):
+            generation = None
+        if generation is not None:
+            if gen_state["first"] is None:
+                gen_state["first"] = generation
+            elif gen_state["first"] != generation:
+                fail_reason = ("场景代次从 %s 变为 %s（夹具可能重生）"
+                               % (gen_state["first"], generation))
+
+        if fail_reason is None:
+            gate["evidence"]["physical_outcome"] = {
+                "final_state": result.get("final_state"),
+                "final_position": _json_number(result.get("final_position")),
+                "peak_position": _json_number(result.get("peak_position")),
+                "diagnostic_stage": result.get("diagnostic_stage"),
+            }
+
+        # 门后抽屉必须回到 closed 静止 detent（当前有效/in_motion，有限位置）。
+        if fail_reason is None:
+            controls_now = _fetch_controls(api, auth, cabinet)
+            settled_item = control_by_id(controls_now, drawer)
+            try:
+                require_stationary_and_valid(settled_item, drawer, label)
+            except Db1ValidationError as error:
+                fail_reason = str(error)
+            if fail_reason is None and settled_item.get("current_state") != "closed":
+                fail_reason = ("门后 %s 状态为 %s，期望 closed"
+                               % (drawer, settled_item.get("current_state")))
+            if fail_reason is None:
+                try:
+                    position = require_position_number(
+                        settled_item.get("current_position"),
+                        "%s 门后 current_position" % drawer)
+                except Db1ValidationError as error:
+                    fail_reason = str(error)
+                    position = None
+                if (fail_reason is None
+                        and abs(position - closed_expected) > CLOSED_EPS_M):
+                    fail_reason = ("门后 %s 位置 %.4f 超出 closed 带宽 %.3f"
+                                   % (drawer, position, CLOSED_EPS_M))
+            gate["drawer_after"] = {
+                "state": settled_item.get("current_state"),
+                "position": _json_number(settled_item.get("current_position")),
+                "in_motion": settled_item.get("in_motion"),
+                "valid": settled_item.get("valid"),
+            }
+            if fail_reason is None:
+                after = untouched_snapshot(controls_now, drawer)
+                try:
+                    require_untouched_unchanged(baseline, after, drawer)
+                except Db1ValidationError as error:
+                    fail_reason = str(error)
+    finally:
+        # 无论成功/失败/未预期异常，都记录该门耗时（§5.2 #3 每门开始时间）。
+        gate["elapsed_s"] = round(time.monotonic() - started, 1)
+
+    if fail_reason is not None:
+        gate["status"] = "FAIL"
+        raise GateError("cap%d 第 %d 次失败：%s" % (cap, index, fail_reason))
+    gate["status"] = "PASS"
+
+
+def _parse_arguments() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="逐门驱动 db1 AGENT §7.2 分级封顶验收（cap1→cap8）。")
+    parser.add_argument("--api", default=os.environ.get("XCZS_CONTROL_API_URL",
+                                                        DEFAULT_API))
+    parser.add_argument("--token", default=os.environ.get("XCZS_CONTROL_TOKEN", ""))
+    parser.add_argument("--username",
+                        default=os.environ.get("XCZS_CONTROL_USERNAME", ""))
+    parser.add_argument("--password",
+                        default=os.environ.get("XCZS_CONTROL_PASSWORD", ""))
+    parser.add_argument("--scene", default=DEFAULT_SCENE)
+    parser.add_argument("--cabinet", default=DEFAULT_CABINET)
+    parser.add_argument("--drawer", default=DEFAULT_DRAWER)
+    parser.add_argument("--operator-node", default=DEFAULT_OPERATOR)
+    parser.add_argument(
+        "--caps",
+        default="1,2,2,2,3,3,3,4,5,6,7,8",
+        help="门序列，逗号分隔；默认 1,2,2,2,3,3,3,4,5,6,7,8",
+    )
+    parser.add_argument("--no-navigate", action="store_true",
+                        help="跳过 db1 专用导航（已在工位时使用）")
+    parser.add_argument("--timeout", type=int, default=360,
+                        help="单个任务超时秒数")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = _parse_arguments()
+    api = args.api.rstrip("/")
+    task_timeout = float(args.timeout)
+    scene, cabinet, drawer = args.scene, args.cabinet, args.drawer
+    caps = [int(item) for item in args.caps.split(",") if item.strip() != ""]
+    if not caps or any(cap < 1 or cap > 8 for cap in caps):
+        _log("ERROR: --caps 必须是非空 1..8 的整数序列")
+        print(json.dumps({"ok": False, "error": "无效 caps"}, ensure_ascii=False))
+        return 1
+    summary: Dict[str, Any] = {
+        "driver": "validate_db1_cap_gates",
+        "scene": scene, "cabinet": cabinet, "drawer": drawer,
+        "caps": caps, "gates": [], "ok": False,
+        "cleanup": {"param_restored": None,
+                    "note": "未进入门序列（无需清理）"},
+    }
+    return_code = 1
+    guard: Optional[_RunGuard] = None
+    try:
+        auth = _configure_auth(api, args.token, args.username,
+                               args.password or os.environ.get("XCZS_ADMIN_PASSWORD", ""))
+        _log("[scene] 读取当前活动场景。")
+        scenes = _request("GET", api, "/scenes", headers=auth)
+        active = scenes.get("active")
+        summary["scene_before"] = active
+        if active != scene:
+            _log("[scene] 活动场景 %s → 显式切换到 %s。" % (active, scene))
+            switched = _request("POST", api, "/scene/switch", {"name": scene},
+                                headers=auth)
+            if switched.get("status") not in ("switched", "unchanged", "reconciled"):
+                raise GateError("场景切换失败：%s"
+                                % json.dumps(switched, ensure_ascii=False))
+        summary["scene_after"] = scene
+
+        catalog = _catalog_ready(api, auth, cabinet, drawer)
+        controls = catalog.get("controls") or []
+        drawer_item = control_by_id(controls, drawer)
+        if drawer_item.get("control_type") != TYPE_DRAWER:
+            raise GateError("%s 类型非 drawer" % drawer)
+        if drawer_item.get("required_toolset") != "A" or not drawer_item.get("operable"):
+            raise GateError("%s 不可操作（toolset=%s operable=%s）"
+                            % (drawer, drawer_item.get("required_toolset"),
+                               drawer_item.get("operable")))
+        summary["catalog_active_toolset"] = catalog.get("catalog_active_toolset")
+        _log("[catalog] %s type=drawer operable toolset=A 就绪。" % drawer)
+
+        # §5.2 #1：保存原参数；独占验收要求起始 cap=0，非 0 拒绝（不改动）。
+        original_cap = _operator_param_get(args.operator_node)
+        summary["debug_stage_cap_before"] = original_cap
+        if original_cap != 0:
+            raise GateError(
+                "独占验收要求 operator debug_stage_cap 起始为 0，实际为 %d；"
+                "请先手动复位后再运行。" % original_cap)
+
+        # §5.2 #4：记录非目标控件基线（按 control_id 集合，排除 db1）。
+        baseline = untouched_snapshot(controls, drawer)
+        require_others_stable(baseline, cabinet)
+        _log("[baseline] 已记录 %d 个非目标控件基线。" % len(baseline))
+
+        if not args.no_navigate:
+            _log("[navigate] %s -> %s 工位。" % (cabinet, drawer))
+            nav = _submit_and_wait_terminal(
+                api, auth, "navigate", {"cabinet": cabinet,
+                                        "control_id": drawer},
+                task_timeout, "navigate")
+            result = _require_success(nav, "navigate")
+            error = result.get("error") or {}
+            summary["first_nav"] = {"ok": True,
+                                    "position_error_m": error.get("position_m"),
+                                    "yaw_error_rad": error.get("yaw_rad")}
+            _log("[navigate] 完成，误差 %.3f m / %.3f rad。"
+                 % (error.get("position_m") or 0, error.get("yaw_rad") or 0))
+        else:
+            summary["first_nav"] = {"ok": True, "skipped": True}
+            _log("[navigate] --no-navigate，假定已在工位。")
+
+        # 基线必须是干净静止的 closed（门序列从不真正打开，只做分级动作）。
+        baseline_item = control_by_id(_fetch_controls(api, auth, cabinet), drawer)
+        require_stationary_and_valid(baseline_item, drawer, "基线")
+        if baseline_item.get("current_state") != "closed":
+            raise GateError("db1 基线状态 %s，门序列要求 closed；请先归位。"
+                            % baseline_item.get("current_state"))
+        closed_expected = expected_position_for_state(drawer_item, "closed")
+        baseline_pos = require_position_number(
+            baseline_item.get("current_position"),
+            "db1 基线 current_position")
+        if abs(baseline_pos - closed_expected) > CLOSED_EPS_M:
+            raise GateError("db1 基线位置 %.4f 超出 closed 带宽 %.3f"
+                            % (baseline_pos, CLOSED_EPS_M))
+        summary["closed_detent_m"] = closed_expected
+
+        guard = _RunGuard(api, auth, args.operator_node, original_cap)
+        gen_state: Dict[str, Any] = {"first": None}
+        all_passed = False
+        try:
+            for index, cap in enumerate(caps, start=1):
+                _log("\n[gate %d/%d] debug_stage_cap=%d" % (index, len(caps), cap))
+                gate: Dict[str, Any] = {
+                    "cap": cap, "sequence": index, "started_at": _now_iso(),
+                    "status": "running", "task_id": None,
+                    "catalog_generation": None, "elapsed_s": None,
+                }
+                try:
+                    # §5.2 #2 守护：先设门参数并立即登记已改动；门内任何后续
+                    # 异常/超时/KeyboardInterrupt 都会由 finally 复原参数。
+                    _set_operator_cap(args.operator_node, cap)
+                    guard.mark_param_changed()
+                    _execute_gate(
+                        gate, api, auth, cabinet, drawer,
+                        drawer_item, baseline, cap, index,
+                        task_timeout, guard.track_task, gen_state,
+                        closed_expected)
+                    gate["first_fail"] = None
+                    summary["gates"].append(gate)
+                    _log("[gate %d/%d] PASS (%.1fs)"
+                         % (index, len(caps), gate.get("elapsed_s") or 0))
+                except KeyboardInterrupt:
+                    _log("[gate %d/%d] 收到 KeyboardInterrupt。"
+                         % (index, len(caps)))
+                    gate["status"] = "FAIL"
+                    gate["first_fail"] = "KeyboardInterrupt"
+                    summary["gates"].append(gate)
+                    summary.setdefault("first_fail_gate", {
+                        "cap": cap, "sequence": index,
+                        "reason": "KeyboardInterrupt"})
+                    raise
+                except BaseException as error:
+                    reason = _plain(error)
+                    gate["status"] = "FAIL"
+                    gate["first_fail"] = reason
+                    summary["gates"].append(gate)
+                    summary.setdefault("first_fail_gate", {
+                        "cap": cap, "sequence": index, "reason": reason})
+                    _log("[gate %d/%d] FAIL：%s" % (index, len(caps), reason))
+                    raise
+            all_passed = True
+        finally:
+            # §5.2 #2：无论成功/失败/超时/KeyboardInterrupt，取消本脚本仍活动
+            # 的任务并恢复原参数（guard 只在参数已被读取后创建）。
+            if guard is not None:
+                cleanup = guard.cleanup_and_restore()
+                summary["cleanup"] = cleanup
+                _log("[cleanup] %s" % json.dumps(cleanup, ensure_ascii=False))
+                if (cleanup.get("param_restored") is not True
+                        and all_passed):
+                    raise GateError("门序列完成但参数恢复失败：%s"
+                                    % (cleanup.get("error") or "未知"))
+        summary["ok"] = True
+        return_code = 0
+    except KeyboardInterrupt:
+        summary["ok"] = False
+        summary["interrupted"] = True
+        _log("KeyboardInterrupt：已进入 cleanup 收尾。")
+        return_code = 130
+    except (GateError, WebError, Db1ValidationError) as error:
+        summary["ok"] = False
+        summary["error"] = str(error)
+        _log("ERROR: %s" % error)
+        return_code = 1
+    finally:
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return return_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

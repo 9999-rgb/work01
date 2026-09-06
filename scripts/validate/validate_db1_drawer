@@ -8,7 +8,8 @@
 加 1 个可操作抽屉，故本脚本按 AGENT §9 单独验收 db1。
 
 流程（与 AGENT §9.2 一致）：
-  1. 读取当前活动场景；若与 --scene 不一致，通过显式参数切换到目标场景；
+  1. 读取当前活动场景；若与 --scene 不一致，通过显式参数切换到目标场景
+     （--check-only 为只读验收：场景不符时不做切换写操作，直接报错）；
   2. GET 目标场景所在柜体（--cabinet）的控件列表；
   3. 校验 db1 存在、类型为 drawer、可操作且要求 toolset A；
   4. 记录其余控件的状态快照；
@@ -38,21 +39,20 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
-# msg/CabinetControl.msg 常量（与接口定义保持一致）。
-TYPE_BUTTON = 0
-TYPE_KNOB = 1
-TYPE_SWITCH = 2
-TYPE_DOOR = 3
-TYPE_SLIDER = 4
-TYPE_DRAWER = 5
-TYPE_LABELS = {
-    TYPE_BUTTON: "button",
-    TYPE_KNOB: "knob",
-    TYPE_SWITCH: "switch",
-    TYPE_DOOR: "door",
-    TYPE_SLIDER: "slider",
-    TYPE_DRAWER: "drawer",
-}
+# msg/CabinetControl.msg 常量、控件有效性/运动/位置/状态检查统一来自
+# _db1_shared —— validate_db1_cap_gates 与 validate_db1_drawer 共同调用同一份
+# 实现，避免复制逻辑后各自漂移（AGENT §5）。
+from _db1_shared import (
+    Db1ValidationError as ValidationError,
+    TYPE_DRAWER,
+    TYPE_LABELS,
+    control_by_id as _control_by_id,
+    expected_position_for_state as _drawer_expected_position,
+    untouched_snapshot as _untouched_snapshot,
+    require_others_stable as _require_others_stable,
+    require_untouched_unchanged as _assert_untouched_unchanged,
+    require_settled,
+)
 
 DEFAULT_API = "http://127.0.0.1:8090"
 DEFAULT_SCENE = "electrical_mezzanine"
@@ -64,8 +64,7 @@ DEFAULT_NAV_POSITION_TOLERANCE_M = 1.0
 DEFAULT_NAV_YAW_TOLERANCE_RAD = 0.25
 # 控件终态校验：db1 目标 detent 位置（closed=0/open=0.3）的允许误差。
 DEFAULT_STATE_POSITION_TOLERANCE_M = 0.06
-# 其余控件“未变化”的判定误差。
-DEFAULT_UNTOUCHED_POSITION_EPS_M = 1e-4
+# 其余控件“未变化”的判定误差来自 _db1_shared（DEFAULT_UNTOUCHED_POSITION_EPS_M）。
 DEFAULT_CATALOG_READY_TIMEOUT_S = 60
 DEFAULT_POLL_INTERVAL_S = 2
 
@@ -81,10 +80,6 @@ class WebError(Exception):
         )
         self.status = status
         self.payload = payload
-
-
-class ValidationError(Exception):
-    """验收失败（人类可读原因）。"""
 
 
 def _log(message: str) -> None:
@@ -368,92 +363,6 @@ def _require_identifier(value: str, label: str) -> str:
     return value
 
 
-def _control_by_id(
-    controls: List[Dict[str, Any]], drawer: str
-) -> Dict[str, Any]:
-    for item in controls:
-        if item.get("control_id") == drawer:
-            return item
-    raise ValidationError("控件目录中不存在 %s" % drawer)
-
-
-def _untouched_snapshot(
-    controls: List[Dict[str, Any]], drawer: str
-) -> List[Dict[str, Any]]:
-    snapshot: List[Dict[str, Any]] = []
-    for item in controls:
-        if item.get("control_id") == drawer:
-            continue
-        control_id = item.get("control_id")
-        snapshot.append(
-            {
-                "control_id": control_id,
-                "valid": item.get("valid"),
-                "in_motion": item.get("in_motion"),
-                "current_state": item.get("current_state"),
-                "current_position": item.get("current_position"),
-                "transition_sequence": item.get("transition_sequence"),
-            }
-        )
-    return sorted(snapshot, key=lambda entry: str(entry["control_id"]))
-
-
-def _require_others_stable(snapshot: List[Dict[str, Any]], cabinet: str) -> None:
-    unstable = [
-        entry
-        for entry in snapshot
-        if entry["valid"] is not True or entry["in_motion"] is not False
-    ]
-    if unstable:
-        raise ValidationError(
-            "%s 的非目标控件初始即非静止/无效：%s"
-            % (
-                cabinet,
-                ", ".join(
-                    "%s(valid=%s,in_motion=%s)"
-                    % (entry["control_id"], entry["valid"], entry["in_motion"])
-                    for entry in unstable
-                ),
-            )
-        )
-
-
-def _assert_untouched_unchanged(
-    before: List[Dict[str, Any]], after: List[Dict[str, Any]], drawer: str
-) -> None:
-    if len(before) != len(after):
-        raise ValidationError("控件目录在验收期间数量发生变化")
-    drifted: List[str] = []
-    for previous, current in zip(before, after):
-        delta = current["current_position"] - previous["current_position"]
-        if not (
-            previous["control_id"] == current["control_id"]
-            and current["valid"] is True
-            and current["in_motion"] is False
-            and current["current_state"] == previous["current_state"]
-            and current["transition_sequence"] == previous["transition_sequence"]
-            and delta >= -DEFAULT_UNTOUCHED_POSITION_EPS_M
-            and delta <= DEFAULT_UNTOUCHED_POSITION_EPS_M
-        ):
-            drifted.append(str(previous["control_id"]))
-    if drifted:
-        raise ValidationError(
-            "检测到物理串扰：非目标控件状态发生变化：%s（目标=%s）"
-            % (", ".join(drifted), drawer)
-        )
-
-
-def _drawer_expected_position(drawer_item: Dict[str, Any], state: str) -> float:
-    state_ids = drawer_item.get("state_ids") or []
-    state_positions = drawer_item.get("state_positions") or []
-    for index, state_id in enumerate(state_ids):
-        if state_id == state:
-            if index >= len(state_positions):
-                raise ValidationError("目录缺少 %s 的状态位置" % state)
-            return float(state_positions[index])
-    raise ValidationError("目录缺少 %s 状态（state_ids=%s）" % (state, state_ids))
-
-
 def _assert_drawer_settled(
     client: _ApiClient,
     cabinet: str,
@@ -463,26 +372,17 @@ def _assert_drawer_settled(
     tolerance: float,
     label: str,
 ) -> None:
-    response = client.get("/cabinets/" + cabinet + "/controls")
-    item = _control_by_id(response.get("controls") or [], drawer)
-    if item.get("valid") is not True or item.get("in_motion") is not False:
-        raise ValidationError(
-            "%s 后 %s 未静止（valid=%s in_motion=%s）"
-            % (label, drawer, item.get("valid"), item.get("in_motion"))
-        )
-    state = item.get("current_state")
-    position = item.get("current_position")
-    expected_position = _drawer_expected_position(drawer_item, expected_state)
-    if state != expected_state or not isinstance(position, (int, float)):
-        raise ValidationError(
-            "%s 后 %s 状态为 %s，期望 %s" % (label, drawer, state, expected_state)
-        )
-    if abs(float(position) - expected_position) > tolerance:
-        raise ValidationError(
-            "%s 后 %s 位置 %.4f 超出 %s 容差 %.4f±%.3f"
-            % (label, drawer, float(position), expected_state, expected_position,
-               tolerance)
-        )
+    """复核抽屉静止于期望状态/位置；实现统一在 _db1_shared.require_settled。"""
+    require_settled(
+        lambda: (
+            client.get("/cabinets/" + cabinet + "/controls").get("controls") or []
+        ),
+        drawer_item,
+        drawer,
+        expected_state,
+        tolerance,
+        label,
+    )
 
 
 def _verify_operation_snapshot(
@@ -614,6 +514,16 @@ def run(arguments: argparse.Namespace) -> Dict[str, Any]:
     active_scene = scenes.get("active")
     summary["scene_before"] = active_scene
     if active_scene != scene:
+        if arguments.check_only:
+            # --check-only 是只读验收：场景不符时不做 /scene/switch 写操作，明确报错。
+            summary["scene_mismatch"] = True
+            summary["scene_required"] = scene
+            summary["scene_actual"] = active_scene
+            raise ValidationError(
+                "--check-only 需要活动场景 %s，当前为 %s；只读校验不执行场景切换，"
+                "请先使活动场景为 %s 后再运行。"
+                % (scene, active_scene, scene)
+            )
         _log("[scene] 活动场景为 %s，显式切换到 %s。" % (active_scene, scene))
         switched = client.post("/scene/switch", {"name": scene})
         status = switched.get("status")
@@ -638,7 +548,6 @@ def run(arguments: argparse.Namespace) -> Dict[str, Any]:
     drawer_type = drawer_item.get("control_type")
     required_toolset = drawer_item.get("required_toolset")
     operable = drawer_item.get("operable") is True
-    toolset_compatible = drawer_item.get("toolset_compatible") is True
     summary["drawer_control_type"] = TYPE_LABELS.get(drawer_type, drawer_type)
     summary["drawer_required_toolset"] = required_toolset
     summary["drawer_operable"] = operable

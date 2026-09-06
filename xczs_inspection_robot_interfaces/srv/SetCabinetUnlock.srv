@@ -28,3 +28,18 @@ bool drawer_unlocked
 bool pressed
 # 解锁电缸真实杆端是否处于解锁逻辑区容差内。
 bool right_tool_contact
+
+# --- 2026-09-06 AGENT doc §4.2 放行模式标签 --------------------------------
+# unlock_mode: "strict"（默认）= finger3 真实杆端在解锁逻辑区内触发放行；
+#   "simulated_linkage" = db1 仿真配置下的机构近似（真实解锁电机行程 +
+#   左右把手真实保持，闩锁释放经未建模传动件驱动），FINGER3 并未接触按钮。
+# simulation_acceptance: 仅在 simulated_linkage 分支实际放行时为 true。消费方
+#   绝不允许把该分支报告为"finger3 真实端点按到了按钮"。
+string unlock_mode
+bool simulation_acceptance
+# simulated_linkage 的把手保持证据（插件实测钩杆杆端距抽屉把手抓取点，m）。
+# strict 模式不测量这些距离，保持 NaN / false。
+float64 left_hold_distance
+float64 right_hold_distance
+bool left_handle_held
+bool right_handle_held
