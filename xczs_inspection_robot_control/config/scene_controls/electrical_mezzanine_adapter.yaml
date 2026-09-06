@@ -134,6 +134,18 @@
     # （夹具导航工位）与 operable_control_ids 按电气夹层夹具定制 —— AGENT
     # P3 起 db1 为唯一 drawer 流程操作对象；dm1/ds2/ds3 维持既有 slider 语义
     # 待 §9 推广；ds1（高抽屉不可达）仅保留停靠工位 + 状态展示。
+    # 2026-09-06 AGENT 可视化后端开关（doc: 电气夹层抽拉柜可视化快速落地执行
+    # 清单 T1/T3）：db1 由 drawer_execution_backend=visual 白名单接管 —— 抽屉
+    # 沿轨由插件 SetCabinetPlayback 运动学播放（主）、底盘按 TF(planning_frame
+    # →docking_base_frame) 实测位移 1:1 跟随（从）；旧 seal/hook effort 封定/
+    # 侧缝真实接触/解锁触点距离门/双手力耦合拉动整链旁路。visual_pull_speed
+    # 为播放线速（m/s，双臂持把出片节奏）；playback_service 相对 operator 实例
+    # 命名空间解析（与 unlock_service 同约定），对应插件每实例派生服务名。
+    drawer_execution_backend: visual
+    visual_drawer_control_ids: [db1]
+    visual_pull_speed: 0.10
+    visual_pull_timeout: 90.0
+    playback_service: playback
     robot_model_name: xczs_inspection_robot
     move_group_namespace: /
     planning_time: 10.0

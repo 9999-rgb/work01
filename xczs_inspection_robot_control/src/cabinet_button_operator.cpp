@@ -51,6 +51,7 @@
 #include "std_srvs/srv/set_bool.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "tf2/LinearMath/Matrix3x3.h"
+#include "trajectory_msgs/msg/joint_trajectory.hpp"
 #include "tf2/LinearMath/Quaternion.h"
 #include "tf2/LinearMath/Transform.h"
 #include "tf2/LinearMath/Vector3.h"
@@ -75,6 +76,7 @@
 #include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_bimanual_grasp.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_playback.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_unlock.hpp"
 
 namespace xczs_inspection_robot_control
@@ -97,6 +99,8 @@ using MoveGroupInterface =
   moveit::planning_interface::MoveGroupInterface;
 using ManageOperationLease =
   xczs_inspection_robot_interfaces::srv::ManageOperationLease;
+using SetCabinetPlayback =
+  xczs_inspection_robot_interfaces::srv::SetCabinetPlayback;
 
 constexpr char kActionName[] = "press_cabinet_button";
 constexpr char kOperateActionName[] = "operate_cabinet_control";
@@ -148,6 +152,20 @@ public:
   }
 
   int stage{0};
+};
+
+// 2026-09-06 AGENT 可视化后端（doc: 可视化快速落地执行清单 T1/T3）：正常交付
+// 标记，不是失败。drawer_execution_backend=visual 的抽屉操作在分支内完成独立
+// 运动学播放序列（工作位姿 → 抽屉沿轨播放 + 底盘 1:1 跟随 → 开位/关位驻停
+// 释放）后抛出本异常；execute_operate 的专用 catch 在失败回收之前截获它，把
+// 结果按成功塑形（execution_backend="visual"，见 catch）。
+class VisualDrawerMotionComplete : public std::runtime_error
+{
+public:
+  explicit VisualDrawerMotionComplete(const std::string & message)
+  : std::runtime_error(message)
+  {
+  }
 };
 
 struct OperationPoses
@@ -747,6 +765,10 @@ public:
       "bimanual_grasp_service", "bimanual_grasp");
     const auto unlock_service = declare_parameter<std::string>(
       "unlock_service", "unlock");
+    // 2026-09-06 AGENT 可视化后端：插件侧同一实例的 SetCabinetPlayback 服务
+    // 名（相对名经本节点命名空间解析，与 grasp/unlock 同语义）。
+    const auto playback_service = declare_parameter<std::string>(
+      "playback_service", "playback");
     const auto reset_physics_service = declare_parameter<std::string>(
       "reset_physics_service", "reset_physics");
     // gazebo 实体位姿服务（物理真值测量，见 drawer_physics_link_point）。
@@ -834,6 +856,23 @@ public:
       "drawer_base_drive_gain", 1.0);
     drawer_base_drive_timeout_ = positive_parameter(
       "drawer_base_drive_timeout", 60.0);
+    // 2026-09-06 AGENT 可视化后端（切片B/T1）：内部执行后端选择器不进用户界面。
+    // 空 = 禁用（默认走 bimanual_force 力耦合全流程）；"visual" = 电气夹层适配器
+    // 对 visual_drawer_control_ids 里的抽屉（db1）启用运动学播放执行模块。
+    drawer_execution_backend_ = declare_parameter<std::string>(
+      "drawer_execution_backend", "");
+    {
+      const auto visual_ids = declare_parameter<std::vector<std::string>>(
+        "visual_drawer_control_ids", std::vector<std::string>{});
+      visual_drawer_control_ids_.insert(
+        visual_ids.begin(), visual_ids.end());
+    }
+    // 可视化拉/推的期望轨位滑速（抽屉沿轨 + 底盘 1:1 同步移动）。比旧耦合
+    // 拉速 (drawer_base_drive_max_speed_, 0.05) 快一些，画面观感更利落；仍远
+    // 低于安全上限。异常回卷同速。
+    visual_pull_speed_ = positive_parameter("visual_pull_speed", 0.08);
+    visual_pull_timeout_ = positive_parameter(
+      "visual_pull_timeout", 90.0);
     const auto & parameter_overrides =
       get_node_parameters_interface()->get_parameter_overrides();
     const bool navigation_yaw_offset_overridden =
@@ -1094,6 +1133,8 @@ public:
     unlock_client_ =
       create_client<xczs_inspection_robot_interfaces::srv::SetCabinetUnlock>(
       unlock_service);
+    drawer_playback_client_ =
+      create_client<SetCabinetPlayback>(playback_service);
     reset_client_callback_group_ = create_callback_group(
       rclcpp::CallbackGroupType::Reentrant);
     reset_physics_client_ = create_client<std_srvs::srv::Trigger>(
@@ -4386,6 +4427,62 @@ private:
                 "Robot-adapter policy blocked physical cabinet motion.");
       }
 
+      // 2026-09-06 AGENT 可视化后端分派（doc: 电气夹层抽拉柜可视化快速落地执行
+      // 清单 T1/T3）。drawer_execution_backend=visual 且本抽屉在
+      // visual_drawer_control_ids 白名单时，整条旧力耦合链（seal_drawer_hooks_
+      // by_probe()/hook effort 封定/侧缝真实接触/解锁触点距离门/双手力耦合拉动
+      // 路径）在此被旁路：本后端只做“双臂钉单工作位姿 → 抽屉插件运动学播放
+      // （主）→ 底盘 1:1 跟随（从）→ RELEASE + 终态驻停”，终态以
+      // VisualDrawerMotionComplete 塑形成功（证据：物理真值两枚 true；transport/
+      // recovery/grasp 力封证据恒 false，客户端按 execution_backend=visual 特判）。
+      // execute_embedded_navigation 一律拒绝：可视化驱动方先经任务层把底盘导航
+      // 到抽拉柜工位；open 在本分派于抽屉闭合时做精确停靠；close 绝不再前向重
+      // 停靠（此时抽屉已拉出 0.3 m，前向停靠会把底盘开进拉出的抽屉，旧力耦合
+      // 关闭路径的断点就在于此）。
+      if (is_drawer && !validation_only &&
+        drawer_execution_backend_ == "visual" &&
+        visual_drawer_control_ids_.count(control->id) > 0U)
+      {
+        if (preparation_policy.execute_embedded_navigation) {
+          throw GenericOperationError(
+                  OperateCabinetControl::Result::NAVIGATION_FAILED,
+                  "Visual drawer '" + control->id +
+                  "' requires the task layer to navigate the base to the "
+                  "drawer station first (set navigate_to_staging_pose=false).");
+        }
+        result->execution_backend = "visual";
+        const bool visual_closing = target_position < initial_state.position;
+        const bool dock_needed =
+          !visual_closing && initial_state.position <= 0.02 &&
+          preparation_policy.execute_precision_docking &&
+          control->navigation_station;
+        if (preparation_policy.enter_manual_base_mode) {
+          set_navigation_mode(goal_handle, false);
+        }
+        if (dock_needed) {
+          result->diagnostic_stage = "docking";
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::DOCKING,
+            0.12F, target_position,
+            "Visual drawer: refining the staged handle reach pose.");
+          const auto visual_staging = calculate_control_staging_poses(*control);
+          dock_to_staging_pose(goal_handle, visual_staging.planning_pose);
+          verify_staging_pose_before_arm_motion(
+            goal_handle, visual_staging.planning_pose);
+        }
+        result->diagnostic_stage = "ready";
+        // target_state 留空：可视化交付以轨位实测为准（终态 state 标签可能因
+        // 插件 detent 命名与操作枚举差异造成误报），位置到达已由后端紧判据验证。
+        execute_drawer_visual_backend(
+          goal_handle, *control, drawer_left_move_group, move_group,
+          target_position, std::string{},
+          &result->operation_executed, result);
+        throw VisualDrawerMotionComplete(
+          "Drawer '" + control->id +
+          "' visual backend returned without a completion marker.");
+      }
+
       if (preparation_policy.execute_embedded_navigation) {
         result->diagnostic_stage = "navigation";
         publish_operate_feedback(
@@ -5583,6 +5680,58 @@ private:
             "Could not commit the physical outcome of the capped drawer "
             "stage %d; finishing as success anyway (AGENT §7.2 debug).",
             cap.stage);
+        }
+      }
+    } catch (const VisualDrawerMotionComplete & visual) {
+      // 2026-09-06 AGENT 可视化后端成功交付（doc: 可视化快速落地执行清单 T3）。
+      // execute_drawer_visual_backend 已完成后播放 RELEASE + 终态驻停验证才抛出，
+      // 这里只塑形成功结果并落入共享收尾 —— 不得调用 recover_failed_operate_goal
+      // （会"收回"本应保留的双手持把 tableau）。开/合是纯运动学+纯几何交付：
+      // physical_outcome_confirmed/final_state_verified 取真（轨位由插件实测读
+      // 回），transport/recovery/grasp 三类力封证据恒为假；cabinet_client.py 按
+      // execution_backend=visual 特判，见 T5。
+      if (operation_lease_lost_.load()) {
+        result->success = false;
+        result->error_code = OperateCabinetControl::Result::LEASE_LOST;
+        result->message =
+          "The global robot operation lease was lost during the visual drawer "
+          "cleanup; all motion was stopped.";
+      } else if (is_operate_goal_canceling(goal_handle)) {
+        result->success = false;
+        result->error_code = OperateCabinetControl::Result::CANCELED;
+        result->message =
+          "Cabinet operation was canceled during the visual drawer cleanup.";
+      } else {
+        if (validation_only) {
+          snapshot_planning_only_result(result, control);
+        } else {
+          const auto visual_state = button_snapshot(*control);
+          result->success = true;
+          result->error_code = OperateCabinetControl::Result::SUCCESS;
+          // 成功路径惯例：diagnostic_stage 清空（不冒充规划校验诊断），可视化
+          // 证据留在 message。
+          result->diagnostic_stage.clear();
+          result->final_position = visual_state.position;
+          result->peak_position = visual_state.peak_position;
+          result->final_state = visual_state.state_id;
+          result->execution_backend = "visual";
+          result->physical_outcome_confirmed = true;
+          result->final_state_verified = true;
+          result->transport_succeeded = false;
+          result->recovery_succeeded = false;
+          result->grasp_released = false;
+        }
+        result->message = std::string("visual_drawer_backend=") + visual.what();
+        request_success = true;
+        // 底盘与抽屉均已发生运动学位移；提交活跃目标物理结果以免重试造成重复
+        // 动作。提交失败只告警，不影响成功交付。
+        if (!commit_active_goal_physical_outcome(
+            ActiveGoalType::OPERATE, goal_handle->get_goal_id()))
+        {
+          RCLCPP_WARN(
+            get_logger(),
+            "Could not commit the physical outcome of the visual drawer; "
+            "finishing as success anyway (AGENT visual backend).");
         }
       }
     } catch (const GenericOperationError & error) {
@@ -10463,6 +10612,441 @@ private:
             PressCabinetButton::Result::EXECUTION_FAILED,
             "The drawer base drive did not reach the requested detent within "
             "the timeout.");
+  }
+
+  // =====================================================================
+  // 2026-09-06 AGENT 可视化后端（doc: 电气夹层抽拉柜可视化快速落地执行清单
+  // T1/T3）。抽屉（db1）在 drawer_execution_backend=visual 时走独立运动学播放
+  // 执行模块，不再调用：seal_drawer_hooks_by_probe()；hook 电缸力封定；旧侧缝
+  // 真实接触流程；旧解锁触点距离门；旧双手力耦合拉动路径。
+  //
+  // 机理：双臂先钉到单工作位姿（杆端贴把手立板；钩/支撑/解锁电缸一概不动作）；
+  // 随后抽屉沿轨由插件 SetCabinetPlayback 做运动学播放（真正径 1:1 从 q0 到
+  // target），operator 把底盘按 TF(planning_frame → docking_base_frame) 实测
+  // 位移做成"抽屉为主、底盘 1:1 跟随"——双臂保持构型不动、尖端恒随底盘、抽屉
+  // 恒贴尖端，因此不存在旧力耦合链，也不会出现超过 p≈0.15 后的手臂折叠自碰撞
+  // （P3-8 注释里的根因）。开：底盘外移 travel、抽屉滑出 target；关：底盘回移、
+  // 抽屉滑回 origin。终态开 = 双手保持工作位姿在开位驻停（tableau），关 = 复闩。
+  // 任何驱动中异常先回卷（播放 RELEASE + 抽屉回 origin + 底盘回位）再上抛。
+  // =====================================================================
+
+  // 同步调用插件 SetCabinetPlayback（START 线性轨位调度 / HOLD / RELEASE），
+  // 返回服务响应的当前轨位。
+  template<typename GoalHandleT>
+  double visual_playback_request(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    std::uint8_t command,
+    double from_position,
+    double to_position,
+    double seconds)
+  {
+    auto request = std::make_shared<SetCabinetPlayback::Request>();
+    request->control_id = control.id;
+    request->command = command;
+    {
+      std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+      if (operation_lease_id_.empty()) {
+        throw OperationError(
+                PressCabinetButton::Result::NOT_READY,
+                "Visual drawer playback requires an active operation lease.");
+      }
+      request->operation_lease_id = operation_lease_id_;
+    }
+    if (command == SetCabinetPlayback::Request::COMMAND_START) {
+      trajectory_msgs::msg::JointTrajectory trajectory;
+      trajectory.joint_names.push_back(control.id);
+      const int sample_count = std::max(
+        2, static_cast<int>(std::ceil(std::max(seconds, 0.01) * 20.0)));
+      for (int index = 0; index <= sample_count; ++index) {
+        const double fraction =
+          static_cast<double>(index) / static_cast<double>(sample_count);
+        trajectory_msgs::msg::JointTrajectoryPoint point;
+        point.time_from_start =
+          rclcpp::Duration::from_seconds(std::max(seconds, 0.01) * fraction);
+        point.positions.push_back(
+          from_position + (to_position - from_position) * fraction);
+        point.velocities.push_back(0.0);
+        trajectory.points.push_back(point);
+      }
+      request->trajectory = trajectory;
+    }
+    if (!drawer_playback_client_->wait_for_service(
+        std::chrono::duration<double>(system_wait_timeout_)))
+    {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "The drawer visual playback service is unavailable for '" +
+              control.id + "'.");
+    }
+    auto future = drawer_playback_client_->async_send_request(request);
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(system_wait_timeout_);
+    while (future.wait_for(50ms) != std::future_status::ready) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() >= deadline) {
+        throw OperationError(
+                PressCabinetButton::Result::EXECUTION_FAILED,
+                "The drawer visual playback request timed out for '" +
+                control.id + "'.");
+      }
+    }
+    const auto response = future.get();
+    if (!response->success) {
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "The drawer visual playback was refused for '" + control.id +
+              "': " + response->message);
+    }
+    return response->position;
+  }
+
+  // 底盘 1:1 跟随器：抽屉为主（由调用方以 START 调度驱动），这里让底盘实测
+  // 沿抽屉世界轴的位移始终贴住"抽屉轨位相对操作起始的位移"。双臂保持构型不动，
+  // 尖端恒随底盘 → 双手全程贴把手。抽屉速度用实测差分作前馈（对仿真时钟与
+  // 墙钟偏差不敏感），位置误差用 drawer_base_drive_gain_ 闭环消除。
+  template<typename GoalHandleT>
+  void visual_glued_base_follow(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    const tf2::Vector3 & axis_world,
+    const tf2::Vector3 & reference_position,
+    double reference_yaw,
+    double origin_rail_position,
+    double target_rail_position,
+    double tolerance_seconds,
+    bool * operation_executed)
+  {
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(tolerance_seconds);
+    const auto base_started_at = std::chrono::steady_clock::now();
+    auto last_feedback = std::chrono::steady_clock::time_point{};
+    double previous_rail = origin_rail_position;
+    auto previous_time = base_started_at;
+    double previous_rail_speed = 0.0;
+    bool base_commanded = false;
+    constexpr double kRailStopTolerance = 0.006;   // m: 运动学播放末点紧判据
+    constexpr double kBaseStopTolerance = 0.012;   // m: 底盘同步末点判据
+    const double max_command_speed = std::max(
+      visual_pull_speed_ * 2.0, drawer_base_drive_max_speed_ * 3.0);
+    const double travel = target_rail_position - origin_rail_position;
+    try {
+      while (std::chrono::steady_clock::now() < deadline) {
+        check_cancel(goal_handle);
+        const auto now = std::chrono::steady_clock::now();
+        const double rail_now = button_snapshot(control).position;
+        const double rail_remaining = target_rail_position - rail_now;
+
+        geometry_msgs::msg::TransformStamped current_transform;
+        try {
+          current_transform = transform_buffer_->lookupTransform(
+            planning_frame_, docking_base_frame_, tf2::TimePointZero);
+        } catch (const tf2::TransformException & error) {
+          throw OperationError(
+                  PressCabinetButton::Result::NOT_READY,
+                  "Could not read the robot odometry during the visual drawer "
+                  "drive: " + std::string(error.what()));
+        }
+        const tf2::Vector3 base_now(
+          current_transform.transform.translation.x,
+          current_transform.transform.translation.y,
+          current_transform.transform.translation.z);
+        const double displacement = (base_now - reference_position).dot(axis_world);
+        const bool drawer_done = std::abs(rail_remaining) <= kRailStopTolerance;
+        const bool base_done = std::abs(displacement - travel) <= kBaseStopTolerance;
+        if (drawer_done && base_done) {
+          break;
+        }
+
+        // Drawer measured rail speed as the feed-forward (signed).
+        const double elapsed_since_previous =
+          std::chrono::duration<double>(now - previous_time).count();
+        double rail_speed = previous_rail_speed;
+        if (elapsed_since_previous >= 0.005 && elapsed_since_previous <= 0.5) {
+          const double measured =
+            (rail_now - previous_rail) / elapsed_since_previous;
+          rail_speed = 0.7 * previous_rail_speed + 0.3 * measured;
+        }
+        previous_rail = rail_now;
+        previous_time = now;
+        previous_rail_speed = rail_speed;
+
+        const double gluing_error = (rail_now - origin_rail_position) - displacement;
+        const double correction = std::clamp(
+          drawer_base_drive_gain_ * gluing_error,
+          -visual_pull_speed_, visual_pull_speed_);
+        double command_speed = std::clamp(
+          rail_speed + correction, -max_command_speed, max_command_speed);
+        // A fully-settled drawer with a residual base offset must keep closing
+        // the gap (no rail_speed to lean on).
+        if (drawer_done && !base_done) {
+          command_speed = std::clamp(
+            drawer_base_drive_gain_ * (travel - displacement),
+            -max_command_speed, max_command_speed);
+        }
+        if (std::abs(command_speed) <= 1.0e-4 && !base_commanded) {
+          // Still within the drawer START ramp-up; give the schedule a beat.
+          std::this_thread::sleep_for(30ms);
+          continue;
+        }
+
+        tf2::Quaternion current_rotation;
+        tf2::fromMsg(current_transform.transform.rotation, current_rotation);
+        current_rotation.normalize();
+        const double current_yaw = tf2::getYaw(current_rotation);
+        const double world_vx = axis_world.x() * command_speed;
+        const double world_vy = axis_world.y() * command_speed;
+        geometry_msgs::msg::Twist command;
+        command.linear.x = std::cos(current_yaw) * world_vx +
+          std::sin(current_yaw) * world_vy;
+        command.linear.y = -std::sin(current_yaw) * world_vx +
+          std::cos(current_yaw) * world_vy;
+        command.angular.z = std::clamp(
+          docking_angular_gain_ *
+            std::atan2(
+              std::sin(reference_yaw - current_yaw),
+              std::cos(reference_yaw - current_yaw)),
+          -docking_max_angular_speed_,
+          docking_max_angular_speed_);
+        manual_base_publisher_->publish(command);
+        base_commanded = true;
+        if (operation_executed != nullptr) {
+          *operation_executed = true;
+        }
+        if (now - last_feedback >= 500ms) {
+          last_feedback = now;
+          publish_operate_feedback(
+            goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING,
+            0.62F, target_rail_position,
+            "Visual drawer pull: remaining rail travel " +
+            std::to_string(std::abs(rail_remaining)) + " m, base glue error " +
+            std::to_string(gluing_error * 1000.0) + " mm.");
+        }
+        std::this_thread::sleep_for(40ms);
+      }
+    } catch (...) {
+      publish_manual_base_stop();
+      throw;
+    }
+    publish_manual_base_stop();
+    if (!base_commanded && operation_executed != nullptr) {
+      // No base motion was needed; keep whatever the caller already marked.
+    }
+    const double final_rail = button_snapshot(control).position;
+    const double final_rail_remaining = std::abs(target_rail_position - final_rail);
+    if (final_rail_remaining > kRailStopTolerance) {
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "The visual drawer drive stopped short of its target (" +
+              std::to_string(final_rail_remaining * 1000.0) +
+              " mm remaining) within the timeout.");
+    }
+  }
+
+  // 可视化后端编排：工作位姿 → （若需移动）抽屉播放 + 底盘跟随 → 播放释放 +
+  // 终态驻停验证。成功抛出 VisualDrawerMotionComplete 交由 execute_operate 的
+  // 专用 catch 塑形成功结果；驱动中失败先回卷再上抛 OperationError。
+  template<typename GoalHandleT>
+  void execute_drawer_visual_backend(
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const ButtonSpec & control,
+    const std::shared_ptr<MoveGroupInterface> & left_group,
+    const std::shared_ptr<MoveGroupInterface> & right_group,
+    double target_position,
+    const std::string & target_state,
+    bool * operation_executed,
+    const std::shared_ptr<OperateCabinetControl::Result> & result)
+  {
+    const double q_origin = button_snapshot(control).position;
+    const double travel = target_position - q_origin;
+    const bool closing = travel < 0.0;
+    constexpr double kVisualSkipTolerance = 0.006;
+    const std::string phase_label = closing ? "push-close" : "open";
+
+    result->diagnostic_stage = "ready";
+    publish_operate_feedback(
+      goal_handle,
+      OperateCabinetControl::Feedback::MOVING_TO_READY,
+      0.18F, target_position,
+      "Visual backend: ready to " + phase_label + " drawer '" +
+      control.id + "' (kinematic playback, no force gates).");
+
+    // ---- 已在目标位（例如重复 open/close）：不做任何动作直接交付。 ----
+    if (std::abs(travel) <= kVisualSkipTolerance) {
+      throw VisualDrawerMotionComplete(
+        "Drawer '" + control.id + "' is already at the requested rail "
+        "position " + std::to_string(q_origin) + " m (visual backend " +
+        phase_label + "; no motion was needed).");
+    }
+
+    // ---- 双臂钉到单工作位姿（杆端贴把手立板），锚定实测轨位。 ----
+    const auto poses = calculate_drawer_bimanual_work_poses(control, q_origin);
+    RCLCPP_INFO(
+      get_logger(),
+      "Visual drawer '%s': anchoring bimanual work poses at rail position "
+      "%.4f m before the kinematic %s.",
+      control.id.c_str(), q_origin, phase_label.c_str());
+    // 工作位姿到达+verify 有已知的 IK 分支抖动：同一目标位姿（深关位 detent
+    // 工作位）已证可达且在带内（cap1/run3 全绿，非门限放宽），但 MoveIt 采样
+    // 分支偶尔落出 FK 残差带（run1 FJT PATH_TOLERANCE_VIOLATED、run2 verify
+    // ~10 mm 残差，均为 EXECUTION_FAILED）。verify 失败路径已 stop_active_motion，
+    // 双臂停在距目标 ~10 mm 的近态 —— 从该实测近态重规划是"短而准"的修正轨迹
+    // （短程执行准确），而非重放大长程。故对 EXECUTION_FAILED 做有界重试
+    // （总尝试 ≤3，AGENT §0 ⑧ 同一配置最多验证 3 次）；规划失败/取消等其余
+    // 异常（兄弟类型或不同 code）立即原样上抛，不吞。
+    constexpr int kMaxVisualWorkPoseReachAttempts = 3;
+    for (int reach_attempt = 1;
+         reach_attempt <= kMaxVisualWorkPoseReachAttempts; ++reach_attempt)
+    {
+      try {
+        plan_and_execute_bimanual_poses(
+          left_group, right_group, goal_handle,
+          drawer_left_tool_.move_group, drawer_right_tool_.move_group,
+          poses.left_work_pose, poses.right_work_pose,
+          {}, {}, operation_executed, "drawer visual work pose", false);
+        break;
+      } catch (const OperationError & reach_error) {
+        const bool retryable =
+          reach_error.error_code == PressCabinetButton::Result::EXECUTION_FAILED;
+        if (!retryable || reach_attempt == kMaxVisualWorkPoseReachAttempts) {
+          throw;
+        }
+        RCLCPP_WARN(
+          get_logger(),
+          "Visual drawer '%s': work-pose reach attempt %d/%d ended outside "
+          "the arrival band (code %u: %s); replanning a short corrective "
+          "move from the actual near pose.",
+          control.id.c_str(), reach_attempt,
+          kMaxVisualWorkPoseReachAttempts, reach_error.error_code,
+          reach_error.what());
+        check_cancel(goal_handle);
+        std::this_thread::sleep_for(100ms);
+      }
+    }
+
+    // ---- 抽屉世界轴向 + 操作起始底盘参考系（随双臂保持，全程不变）。 ----
+    const tf2::Transform cabinet = resolve_cabinet_transform();
+    const tf2::Vector3 axis_world = tf2::quatRotate(
+      cabinet.getRotation(), control.drawer_axis).normalized();
+    geometry_msgs::msg::TransformStamped reference_transform;
+    try {
+      reference_transform = transform_buffer_->lookupTransform(
+        planning_frame_, docking_base_frame_, tf2::TimePointZero);
+    } catch (const tf2::TransformException & error) {
+      throw OperationError(
+              PressCabinetButton::Result::NOT_READY,
+              "Could not read the robot odometry before the visual drawer "
+              "drive: " + std::string(error.what()));
+    }
+    const tf2::Vector3 reference_position(
+      reference_transform.transform.translation.x,
+      reference_transform.transform.translation.y,
+      reference_transform.transform.translation.z);
+    tf2::Quaternion reference_rotation;
+    tf2::fromMsg(reference_transform.transform.rotation, reference_rotation);
+    const double reference_yaw = tf2::getYaw(reference_rotation);
+
+    // ---- 主/从同步驱动，失败回卷到操作起始态再上抛。 ----
+    const double speed = visual_pull_speed_;
+    const double drive_seconds = std::abs(travel) / speed;
+    try {
+      // 抽屉为主：单段线性运动学播放 q_origin -> target。
+      visual_playback_request(
+        goal_handle, control, SetCabinetPlayback::Request::COMMAND_START,
+        q_origin, target_position, drive_seconds);
+      // 底盘为从：按实测抽屉位移 1:1 跟随。
+      visual_glued_base_follow(
+        goal_handle, control, axis_world, reference_position, reference_yaw,
+        q_origin, target_position, visual_pull_timeout_, operation_executed);
+    } catch (const std::exception & error) {
+      publish_manual_base_stop();
+      // Best-effort 回卷：释放播放，把抽屉放回操作起始轨位并让底盘回位。
+      try {
+        const double current = button_snapshot(control).position;
+        if (std::abs(current - q_origin) > 0.004) {
+          const double rewind_seconds =
+            std::max(0.5, std::abs(current - q_origin) / speed);
+          visual_playback_request(
+            goal_handle, control, SetCabinetPlayback::Request::COMMAND_START,
+            current, q_origin, rewind_seconds);
+          visual_glued_base_follow(
+            goal_handle, control, axis_world, reference_position,
+            reference_yaw, q_origin, q_origin,
+            std::min(20.0, visual_pull_timeout_), operation_executed);
+        }
+        publish_manual_base_stop();
+      } catch (const std::exception & rewind_error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Visual drawer rewind after failure did not complete cleanly: %s",
+          rewind_error.what());
+      }
+      try {
+        visual_playback_request(
+          goal_handle, control, SetCabinetPlayback::Request::COMMAND_RELEASE,
+          q_origin, q_origin, 0.0);
+      } catch (const std::exception & release_error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Visual drawer playback release after failure failed: %s",
+          release_error.what());
+      }
+      throw;
+    }
+
+    // ---- 正常终态：停底盘、释放播放、短暂驻停让插件复闩/稳定并验证。 ----
+    publish_manual_base_stop();
+    try {
+      visual_playback_request(
+        goal_handle, control, SetCabinetPlayback::Request::COMMAND_RELEASE,
+        target_position, target_position, 0.0);
+    } catch (const std::exception & release_error) {
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "Visual drawer playback release failed at the terminal detent: " +
+              std::string(release_error.what()));
+    }
+    // 关：复闩需要抽屉回到闭合位并静止（插件 normal path 判据）；开：open
+    // detent 状态翻转也发生在释放后的 normal path。短暂驻停后验证。
+    constexpr double kVisualSettleSeconds = 0.8;
+    const auto settle_deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(kVisualSettleSeconds);
+    while (std::chrono::steady_clock::now() < settle_deadline) {
+      check_cancel(goal_handle);
+      std::this_thread::sleep_for(50ms);
+    }
+    const auto terminal_state = button_snapshot(control);
+    const double terminal_remaining = std::abs(target_position - terminal_state.position);
+    constexpr double kVisualTerminalTolerance = 0.010;
+    if (terminal_remaining > kVisualTerminalTolerance) {
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "The visual drawer did not settle at the requested rail detent "
+              "(remaining " + std::to_string(terminal_remaining * 1000.0) +
+              " mm).");
+    }
+    const bool state_matches = target_state.empty() ||
+      terminal_state.state_id == target_state;
+    if (!state_matches) {
+      throw OperationError(
+              PressCabinetButton::Result::EXECUTION_FAILED,
+              "The visual drawer rail reached the target but the cabinet state "
+              "is '" + terminal_state.state_id + "' instead of '" +
+              target_state + "'.");
+    }
+    RCLCPP_INFO(
+      get_logger(),
+      "Visual drawer '%s' %s complete: rail %.4f -> %.4f m (%.3f m travel), "
+      "state '%s'.",
+      control.id.c_str(), phase_label.c_str(), q_origin,
+      terminal_state.position, travel, terminal_state.state_id.c_str());
+    throw VisualDrawerMotionComplete(
+      "Visual backend " + phase_label + " of drawer '" + control.id +
+      "' complete: rail moved " + std::to_string(q_origin) + " -> " +
+      std::to_string(terminal_state.position) +
+      " m with the arms holding the handles; state '" +
+      terminal_state.state_id + "'.");
   }
 
   void release_drawer_bimanual_grasp_noexcept(
@@ -15749,6 +16333,14 @@ private:
   rclcpp::Client<
     xczs_inspection_robot_interfaces::srv::SetCabinetUnlock>::SharedPtr
     unlock_client_;
+  rclcpp::Client<SetCabinetPlayback>::SharedPtr drawer_playback_client_;
+  // 2026-09-06 AGENT 可视化后端（T1）：执行后端选择器 + 启用名单。仅在
+  // drawer_execution_backend_=="visual" 且 control.id 命中名单的抽屉进入
+  // execute_drawer_visual_backend（运动学播放 + 底盘 1:1 跟随）。
+  std::string drawer_execution_backend_;
+  std::unordered_set<std::string> visual_drawer_control_ids_;
+  double visual_pull_speed_{0.08};
+  double visual_pull_timeout_{90.0};
   // 2026-09-06 AGENT doc §4.2: 最近一次抽屉解锁放行的插件证据（模式标签）。
   // set_drawer_unlock 成功后据此把 cap/stage 摘要与 Web 文案标成
   // simulated_linkage（绝不说成"finger3 按到了按钮"）；strict 模式为空/未置。

@@ -63,6 +63,12 @@ bool final_state_verified
 bool transport_succeeded
 bool recovery_succeeded
 bool grasp_released
+# Execution backend that produced this result.  Empty for the legacy
+# force-coupled path; "visual" marks the 2026-09-06 kinematic-playback drawer
+# backend (T1/T3), where transport/recovery/grasp evidence flags are
+# intentionally false (pure kinematic + geometric delivery) and clients must
+# NOT downgrade success for their absence.
+string execution_backend
 ---
 # Feedback
 uint8 WAITING_FOR_SYSTEM=0

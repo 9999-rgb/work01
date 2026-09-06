@@ -1226,15 +1226,29 @@ class CabinetClient(Node):
                 "policy_reason": str(
                     getattr(result_message, "policy_reason", "")
                 ),
+                "execution_backend": str(
+                    getattr(result_message, "execution_backend", "") or ""
+                ),
             }
+            # 2026-09-06 AGENT 可视化后端（T5）：db1 drawer 的 operator 交付为
+            # "visual" —— 纯运动学+纯几何（抽屉插件播放+底盘 1:1 跟随），成功时
+            # transport/recovery/grasp 三类力封证据恒为 false，只有
+            # physical_outcome_confirmed/final_state_verified 两枚物理真值。这类
+            # 结果不得因缺力封证据被降级成 invalid_backend_result。
+            visual_backend = result.get("execution_backend") == "visual"
             evidence: Dict[str, bool] = {}
-            for name in (
-                "physical_outcome_confirmed",
-                "final_state_verified",
-                "transport_succeeded",
-                "recovery_succeeded",
-                "grasp_released",
-            ):
+            required_evidence = (
+                ("physical_outcome_confirmed", "final_state_verified")
+                if visual_backend
+                else (
+                    "physical_outcome_confirmed",
+                    "final_state_verified",
+                    "transport_succeeded",
+                    "recovery_succeeded",
+                    "grasp_released",
+                )
+            )
+            for name in required_evidence:
                 if hasattr(result_message, name):
                     evidence[name] = bool(getattr(result_message, name))
                     result[name] = evidence[name]

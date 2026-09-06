@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """db1 运动学播放探针（可视化快速落地 切片A 活验）。
 
-直接调用 /xczs/cabinet/playback（SetCabinetPlayback），不经过 Web/operator：
-绕开管理员鉴权，只验证抽屉能否被运动学调度命令 开→等→关→释放，并用
+直接调用电气夹层 operator 命名空间下的 /xczs/cabinet/electrical_mezzanine/playback
+（SetCabinetPlayback，插件按 grasp_service_name 所在目录实例化注册），不经过
+Web/operator 鉴权，只验证抽屉能否被运动学调度命令 开→等→关→释放，并用
 db1/state（CabinetControlState.position，单位 m）读回验证。
 
 用法:
@@ -30,7 +31,7 @@ from xczs_inspection_robot_interfaces.srv import SetCabinetPlayback
 from xczs_inspection_robot_interfaces.msg import CabinetControlState
 
 CONTROL_ID = "db1"
-PLAYBACK_SERVICE = "/xczs/cabinet/playback"
+PLAYBACK_SERVICE = "/xczs/cabinet/electrical_mezzanine/playback"
 STATE_TOPIC = "/xczs/cabinet/electrical_mezzanine/db1/state"
 
 
