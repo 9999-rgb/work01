@@ -16,6 +16,7 @@ find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(trajectory_msgs REQUIRED)
 find_package(xczs_inspection_robot_control REQUIRED)
 find_package(xczs_inspection_robot_interfaces REQUIRED)
 
@@ -55,6 +56,7 @@ ament_target_dependencies(
   sensor_msgs
   std_msgs
   std_srvs
+  trajectory_msgs
   xczs_inspection_robot_control
   xczs_inspection_robot_interfaces
 )

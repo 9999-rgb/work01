@@ -42,6 +42,7 @@
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_bimanual_grasp.hpp"
+#include "xczs_inspection_robot_interfaces/srv/set_cabinet_playback.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_unlock.hpp"
 
 namespace xczs_inspection_robot_control
@@ -60,6 +61,8 @@ using SetCabinetBimanualGrasp =
   xczs_inspection_robot_interfaces::srv::SetCabinetBimanualGrasp;
 using SetCabinetUnlock =
   xczs_inspection_robot_interfaces::srv::SetCabinetUnlock;
+using SetCabinetPlayback =
+  xczs_inspection_robot_interfaces::srv::SetCabinetPlayback;
 
 constexpr auto kPhysicsRequestTimeout = std::chrono::seconds(2);
 constexpr auto kWatchdogReleaseRetryDelay = std::chrono::milliseconds(100);
@@ -92,6 +95,10 @@ constexpr double kDrawerReLatchVelocityThreshold = 0.05;
 // drawer latch 500 N/m * 0.1 m = 50 N.  Grasp-coupling drive is separate and
 // already bounded by grasp_coupling_max_effort.
 constexpr double kMaxParkingEffort = 50.0;
+// Visual playback (2026-09-06): how far the first trajectory sample may sit
+// from the drawer's current rail position before START is rejected as a jump.
+constexpr double kPlaybackStartWindow = 0.03;
+constexpr std::size_t kPlaybackMaxSamples = 4096;
 
 enum class ControlKind
 {
@@ -345,6 +352,18 @@ public:
         "bimanual_grasp_service", "/xczs/cabinet/bimanual_grasp").first;
       unlock_service_name_ = sdf->Get<std::string>(
         "unlock_service", "/xczs/cabinet/unlock").first;
+      // Visual playback is a per-instance drawer service: when the SDF does not
+      // pin one, derive it from the instance's grasp service (same namespace,
+      // "/playback" leaf) so multiple cabinet plugin instances in one world can
+      // never collide on a shared default name.
+      if (sdf->HasElement("playback_service")) {
+        playback_service_name_ = sdf->Get<std::string>("playback_service");
+      } else {
+        const auto slash = grasp_service_name_.find_last_of('/');
+        playback_service_name_ = (slash == std::string::npos) ?
+          "/xczs/cabinet/playback" :
+          grasp_service_name_.substr(0, slash) + "/playback";
+      }
       grasp_active_topic_ = sdf->Get<std::string>(
         "grasp_active_topic", "/xczs/cabinet/grasp_active").first;
       active_control_topic_ = sdf->Get<std::string>(
@@ -360,6 +379,7 @@ public:
       require_absolute_topic(
         bimanual_grasp_service_name_, "bimanual_grasp_service");
       require_absolute_topic(unlock_service_name_, "unlock_service");
+      require_absolute_topic(playback_service_name_, "playback_service");
       require_absolute_topic(grasp_active_topic_, "grasp_active_topic");
       require_absolute_topic(active_control_topic_, "active_control_topic");
       require_absolute_topic(
@@ -540,6 +560,51 @@ public:
         response->left_handle_held = outcome.left_handle_held;
         response->right_handle_held = outcome.right_handle_held;
       });
+    drawer_controls_present_ = false;
+    for (const auto & control : controls_) {
+      if (control.kind == ControlKind::kDrawer) {
+        drawer_controls_present_ = true;
+        break;
+      }
+    }
+    if (drawer_controls_present_) {
+      playback_service_ = ros_node_->create_service<SetCabinetPlayback>(
+        playback_service_name_,
+        [callback_lifetime](
+          const std::shared_ptr<SetCabinetPlayback::Request> request,
+          std::shared_ptr<SetCabinetPlayback::Response> response)
+        {
+          auto * owner = acquire_service_callback(callback_lifetime);
+          if (!owner) {
+            response->success = false;
+            response->message = "Cabinet state plugin is shutting down.";
+            response->position = std::numeric_limits<double>::quiet_NaN();
+            response->finished = false;
+            return;
+          }
+          ServiceCallbackLease lease(callback_lifetime);
+          auto physics_request = std::make_shared<PhysicsRequest>();
+          physics_request->kind = PhysicsRequest::Kind::kPlayback;
+          physics_request->control_id = request->control_id;
+          physics_request->operation_lease_id = request->operation_lease_id;
+          physics_request->playback_command = request->command;
+          physics_request->playback_samples.reserve(
+            request->trajectory.points.size());
+          for (const auto & point : request->trajectory.points) {
+            const double stamp =
+              rclcpp::Duration(point.time_from_start).seconds();
+            const double value = point.positions.empty()
+              ? std::numeric_limits<double>::quiet_NaN()
+              : point.positions.front();
+            physics_request->playback_samples.emplace_back(stamp, value);
+          }
+          const auto outcome = owner->run_physics_request(physics_request);
+          response->success = outcome.success;
+          response->message = outcome.message;
+          response->position = outcome.distance;
+          response->finished = outcome.finished;
+        });
+    }
 
     const double simulation_time = world_->SimTime().Double();
     last_publish_time_ = simulation_time - publish_period_;
@@ -558,13 +623,23 @@ public:
         ServiceCallbackLease lease(callback_lifetime);
         owner->on_update();
       });
-    RCLCPP_INFO(
-      ros_node_->get_logger(),
-      "Cabinet state plugin loaded %zu controls; reset=%s grasp=%s "
-      "bimanual=%s unlock=%s.",
-      controls_.size(), reset_service_name_.c_str(),
-      grasp_service_name_.c_str(), bimanual_grasp_service_name_.c_str(),
-      unlock_service_name_.c_str());
+    if (drawer_controls_present_) {
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Cabinet state plugin loaded %zu controls; reset=%s grasp=%s "
+        "bimanual=%s unlock=%s playback=%s.",
+        controls_.size(), reset_service_name_.c_str(),
+        grasp_service_name_.c_str(), bimanual_grasp_service_name_.c_str(),
+        unlock_service_name_.c_str(), playback_service_name_.c_str());
+    } else {
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Cabinet state plugin loaded %zu controls; reset=%s grasp=%s "
+        "bimanual=%s unlock=%s (no drawer controls, no playback service).",
+        controls_.size(), reset_service_name_.c_str(),
+        grasp_service_name_.c_str(), bimanual_grasp_service_name_.c_str(),
+        unlock_service_name_.c_str());
+    }
   }
 
   void Reset() override
@@ -691,6 +766,20 @@ private:
     // has been opened at least once, returned to closed, and settled.
     bool drawer_unlocked{false};
     bool drawer_has_opened{false};
+    // Visual playback (2026-09-06, SetCabinetPlayback): while playback_active
+    // this drawer's latch/spring/coupling physics is bypassed and the prismatic
+    // rail joint is driven kinematically along a piecewise-linear (time, q)
+    // schedule.  Only a drawer control accepts playback.  All playback fields
+    // are written by the physics request drain and read only inside on_update,
+    // both under physics_callback_mutex_ (single writer).
+    bool playback_active{false};
+    bool playback_paused{false};
+    bool playback_finished{false};
+    std::string playback_lease_id;
+    std::vector<std::pair<double, double>> playback_samples;  // (time, position)
+    double playback_start_sim{0.0};
+    double playback_elapsed{0.0};
+    double playback_last_sim{-1.0};
     std::size_t reset_state_index{0U};
     std::size_t detent_target_index{0U};
     std::size_t state_index{0U};
@@ -738,11 +827,17 @@ private:
     double right_hold_distance{std::numeric_limits<double>::quiet_NaN()};
     bool left_handle_held{false};
     bool right_handle_held{false};
+    // Visual playback (2026-09-06): true when a START schedule had fully
+    // completed before the request was applied.
+    bool finished{false};
   };
 
   struct PhysicsRequest
   {
-    enum class Kind {kReset, kGrasp, kBimanualGrasp, kUnlock};
+    enum class Kind {kReset, kGrasp, kBimanualGrasp, kUnlock, kPlayback};
+    static constexpr std::uint8_t kPlaybackStart = 0U;
+    static constexpr std::uint8_t kPlaybackHold = 1U;
+    static constexpr std::uint8_t kPlaybackRelease = 2U;
     enum class State {kPending, kExecuting, kCanceled, kCompleted};
     Kind kind{Kind::kReset};
     std::string control_id;
@@ -766,6 +861,9 @@ private:
     ignition::math::Vector3d right_handle_point{0.0, 0.0, 0.0};
     ignition::math::Vector3d unlock_press_point{0.0, 0.0, 0.0};
     bool drawer_unlock{false};
+    // Visual playback (2026-09-06): command + 1-D rail schedule (time, q).
+    std::uint8_t playback_command{kPlaybackStart};
+    std::vector<std::pair<double, double>> playback_samples;
     std::promise<PhysicsOutcome> promise;
     std::atomic<State> state{State::kPending};
     std::atomic<bool> completed{false};
@@ -1244,6 +1342,15 @@ private:
     for (auto & control : controls_) {
       const double raw_position = control.joint->Position(0);
       const double velocity = control.joint->GetVelocity(0);
+      // Visual playback (2026-09-06): while a drawer is under a kinematic
+      // playback schedule its rail latch/spring/coupling physics and the
+      // pre-grasp disturbance detector are bypassed and the prismatic joint is
+      // driven along the (time, q) samples.  Single writer: the schedule is
+      // written only by the physics-request drain under physics_callback_mutex_.
+      if (control.playback_active) {
+        drive_drawer_playback(control, simulation_time);
+        continue;
+      }
       const bool control_is_being_grasped = grasp_is_active() &&
         active_grasp_control_ == control.id;
       record_pregrasp_disturbance(
@@ -2501,6 +2608,9 @@ private:
           case PhysicsRequest::Kind::kUnlock:
             outcome = handle_unlock_request(*request);
             break;
+          case PhysicsRequest::Kind::kPlayback:
+            outcome = handle_playback_request(*request);
+            break;
           default:
             outcome = handle_grasp_request(*request);
             break;
@@ -2519,6 +2629,186 @@ private:
       }
       complete_request(request, std::move(outcome));
     }
+  }
+
+  // Visual playback (2026-09-06): drives one drawer's prismatic rail joint
+  // along its (time, q) schedule.  Called from on_update for a control whose
+  // playback_active flag is set, so latch/spring/coupling physics and the
+  // pre-grasp disturbance detector are already bypassed.  Positions are set in
+  // place and the velocity zeroed so the ODE rail does not accumulate a
+  // corrective jump; a single tick is clamped so a long world stall cannot
+  // teleport the drawer.
+  void drive_drawer_playback(Control & control, double simulation_time)
+  {
+    if (control.playback_last_sim >= 0.0) {
+      const double dt = simulation_time - control.playback_last_sim;
+      if (!control.playback_paused && !control.playback_finished &&
+        dt > 0.0 && control.playback_samples.size() >= 2U)
+      {
+        control.playback_elapsed += std::min(dt, 0.25);
+      }
+    }
+    control.playback_last_sim = simulation_time;
+
+    double target = control.playback_samples.back().second;
+    if (control.playback_samples.size() >= 2U) {
+      const double total = control.playback_samples.back().first;
+      if (control.playback_elapsed < total) {
+        const auto upper = std::upper_bound(
+          control.playback_samples.begin(), control.playback_samples.end(),
+          control.playback_elapsed,
+          [](double t, const std::pair<double, double> & sample) {
+            return t < sample.first;
+          });
+        if (upper == control.playback_samples.end()) {
+          target = control.playback_samples.back().second;
+        } else if (upper == control.playback_samples.begin()) {
+          target = control.playback_samples.front().second;
+        } else {
+          const auto & previous = *(upper - 1);
+          const double span = upper->first - previous.first;
+          const double factor = span > 0.0 ?
+            (control.playback_elapsed - previous.first) / span : 0.0;
+          target = previous.second + factor * (upper->second - previous.second);
+        }
+      } else {
+        control.playback_finished = true;
+        control.playback_elapsed = total;
+        target = control.playback_samples.back().second;
+      }
+    }
+
+    control.joint->SetPosition(0, target);
+    control.joint->SetVelocity(0, 0.0);
+    control.effort = 0.0;
+    update_control_state(control, true);
+  }
+
+  PhysicsOutcome handle_playback_request(const PhysicsRequest & request)
+  {
+    const auto it = control_indices_.find(request.control_id);
+    if (it == control_indices_.end()) {
+      return {false, "Unknown drawer playback control: " + request.control_id,
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    Control & control = controls_[it->second];
+    if (control.kind != ControlKind::kDrawer) {
+      return {false, "Control '" + request.control_id +
+        "' is not a drawer and does not accept visual playback.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (request.operation_lease_id.empty()) {
+      return {false, "Drawer '" + request.control_id +
+        "' playback requires a non-empty operation_lease_id.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    if (control.playback_active &&
+      control.playback_lease_id != request.operation_lease_id)
+    {
+      return {false, "Drawer '" + request.control_id +
+        "' playback is owned by another operation lease.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    // A physical grasp/coupling session on this drawer wins over playback.
+    if ((grasp_is_active() || bimanual_grasp_is_active()) &&
+      active_grasp_control_ == request.control_id)
+    {
+      return {false, "Drawer '" + request.control_id +
+        "' is physically grasped; playback refused.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+
+    if (request.playback_command == PhysicsRequest::kPlaybackRelease) {
+      const bool was_finished = control.playback_finished;
+      control.playback_active = false;
+      control.playback_paused = false;
+      control.playback_finished = false;
+      control.playback_lease_id.clear();
+      control.playback_samples.clear();
+      control.playback_last_sim = -1.0;
+      PhysicsOutcome outcome{
+        true, "Drawer '" + request.control_id + "' playback released.",
+        control.joint->Position(0)};
+      outcome.finished = was_finished;
+      return outcome;
+    }
+    if (request.playback_command == PhysicsRequest::kPlaybackHold) {
+      if (!control.playback_active) {
+        return {true, "Drawer '" + request.control_id +
+          "' has no active playback; nothing to hold.",
+          control.joint->Position(0)};
+      }
+      control.playback_paused = true;
+      return {true, "Drawer '" + request.control_id +
+        "' playback paused at the current rail position.",
+        control.joint->Position(0)};
+    }
+    if (request.playback_command != PhysicsRequest::kPlaybackStart) {
+      return {false, "Drawer '" + request.control_id +
+        "' playback received an unknown command.",
+        control.joint->Position(0)};
+    }
+
+    // START: validate and adopt the schedule.
+    const double lower = control.joint->LowerLimit(0);
+    const double upper = control.joint->UpperLimit(0);
+    double previous_time = -1.0;
+    bool starts_at_zero = false;
+    std::vector<std::pair<double, double>> samples;
+    samples.reserve(request.playback_samples.size());
+    for (const auto & sample : request.playback_samples) {
+      const double t = sample.first;
+      const double q = sample.second;
+      if (!std::isfinite(t) || !std::isfinite(q) || t < 0.0 ||
+        t <= previous_time || q < lower || q > upper)
+      {
+        return {false, "Drawer '" + request.control_id +
+          "' playback trajectory rejected: samples must be finite, have "
+          "strictly increasing time_from_start >= 0, and keep the rail "
+          "position inside the drawer joint limits.",
+          std::numeric_limits<double>::quiet_NaN()};
+      }
+      if (std::abs(t) <= 1e-9) {
+        starts_at_zero = true;
+      }
+      previous_time = t;
+      samples.push_back(sample);
+    }
+    if (samples.size() < 2U || !starts_at_zero ||
+      samples.size() > kPlaybackMaxSamples)
+    {
+      return {false, "Drawer '" + request.control_id +
+        "' playback needs 2.." + std::to_string(kPlaybackMaxSamples) +
+        " samples with the first exactly at t=0.",
+        std::numeric_limits<double>::quiet_NaN()};
+    }
+    const double current = control.joint->Position(0);
+    if (std::abs(samples.front().second - current) > kPlaybackStartWindow) {
+      return {false, "Drawer '" + request.control_id +
+        "' playback START refused: the schedule starts " +
+        std::to_string(samples.front().second - current) +
+        " m from the current rail position (allowed window " +
+        std::to_string(kPlaybackStartWindow) + " m).",
+        current};
+    }
+
+    control.playback_samples = std::move(samples);
+    control.playback_active = true;
+    control.playback_paused = false;
+    control.playback_finished = false;
+    control.playback_lease_id = request.operation_lease_id;
+    control.playback_elapsed = 0.0;
+    control.playback_last_sim = world_->SimTime().Double();
+    // The rail is now kinematic; reflect that in the latch state so a later
+    // RELEASE at the closed position re-engages normally and a mid-travel
+    // RELEASE is not fought by the closed-detent latch.
+    control.drawer_unlocked = true;
+    control.drawer_has_opened = true;
+    PhysicsOutcome outcome{
+      true, "Drawer '" + request.control_id + "' playback started.",
+      current};
+    outcome.finished = control.playback_samples.empty();
+    return outcome;
   }
 
   PhysicsOutcome recover_failed_grasp_attach(
@@ -3811,6 +4101,7 @@ private:
   rclcpp::Service<SetCabinetGrasp>::SharedPtr grasp_service_;
   rclcpp::Service<SetCabinetBimanualGrasp>::SharedPtr bimanual_grasp_service_;
   rclcpp::Service<SetCabinetUnlock>::SharedPtr unlock_service_;
+  rclcpp::Service<SetCabinetPlayback>::SharedPtr playback_service_;
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr grasp_active_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     active_control_subscription_;
@@ -3822,6 +4113,8 @@ private:
   std::string grasp_service_name_;
   std::string bimanual_grasp_service_name_;
   std::string unlock_service_name_;
+  std::string playback_service_name_;
+  bool drawer_controls_present_{false};
   std::string grasp_active_topic_;
   std::string active_control_topic_;
   std::string operation_heartbeat_topic_;

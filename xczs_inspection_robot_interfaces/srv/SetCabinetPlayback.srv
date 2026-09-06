@@ -1,0 +1,39 @@
+# Submit or stop a 1-D kinematic drawer playback (2026-09-06 visual backend).
+#
+# Only the electrical-mezzanine db1 drawer (kind=drawer) accepts playback today.
+# While a START playback is active the cabinet plugin bypasses that drawer's
+# latch/spring/coupling physics and drives its prismatic rail joint along a
+# piecewise-linear position schedule (trajectory) so an external visual
+# executor can open/close the drawer kinematically without a force seal.
+#
+# Ownership contract (mirrors the other cabinet services):
+#   * control_id + operation_lease_id must be valid; a playback already owned by
+#     a DIFFERENT lease is refused (stale tasks cannot hijack the rail).
+#   * START  arms the schedule and begins playing; accepted does not mean the
+#     motion finished -- completion is verified by the drawer's live state.
+#   * HOLD   freezes the drawer at the current playback position.
+#   * RELEASE ends playback ownership; the drawer returns to plugin default
+#     control parked at its current position.
+# Trajectory rules (rejected otherwise):
+#   * single joint, positions in metres along the rail axis 0;
+#   * header.stamp is the (sim) time the schedule starts from, time_from_start
+#     must be finite and strictly increasing, first point >= 0;
+#   * no NaN/Inf; every position inside the drawer joint limits;
+#   * the drawer is driven kinematically -- never jump from an arbitrary start:
+#     the first sample must be within a small window of the current position.
+uint8 COMMAND_START = 0
+uint8 COMMAND_HOLD  = 1
+uint8 COMMAND_RELEASE = 2
+
+uint8 command
+string control_id
+string operation_lease_id
+trajectory_msgs/JointTrajectory trajectory
+---
+bool success
+string message
+# Measured drawer rail position when the request was applied (metres).
+float64 position
+# START: true once the whole schedule has already finished at apply time.
+# HOLD/RELEASE: whether playback had completed before ownership ended.
+bool finished

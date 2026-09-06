@@ -19,6 +19,7 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>trajectory_msgs</depend>
   <depend>xczs_inspection_robot_control</depend>
   <depend>xczs_inspection_robot_interfaces</depend>
 
