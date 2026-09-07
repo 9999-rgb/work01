@@ -106,6 +106,13 @@ constexpr std::size_t kPlaybackMaxSamples = 4096;
 // 起播，等待期内把轨条钉在原位（velocity 0），中途 RELEASE 即取消。
 constexpr double kPlaybackStampPastGraceSeconds = 1.0;
 constexpr double kPlaybackStampEpsilon = 1e-6;
+// 2026-09-07 AGENT T3 leak guard: a playback lease whose owner never sends a
+// further command is abandoned.  A schedule is only a few seconds long, so a
+// lease that has sat idle in a FINISHED or PAUSED state for this many seconds
+// of sim time can only belong to a crashed / aborted client -- release it to
+// idle-hold (or re-latch at the closed detent) so the drawer is not bricked
+// for every other operation lease until the next gzserver restart.
+constexpr double kPlaybackLeaseIdleTimeoutSeconds = 60.0;
 
 enum class ControlKind
 {
@@ -793,12 +800,23 @@ private:
     double playback_start_sim{0.0};
     double playback_elapsed{0.0};
     double playback_last_sim{-1.0};
+    // AGENT T3 leak guard: sim time of the last accepted playback command
+    // (START/HOLD/RELEASE) for this lease.  Used to detect an abandoned owner;
+    // see kPlaybackLeaseIdleTimeoutSeconds.
+    double playback_last_cmd_sim{-1.0};
     // AGENT T3: sim time at which this playback's schedule begins advancing
     // (elapsed t=0 maps to header.stamp).  0.0 = start immediately on apply,
     // matching the historical zero-stamp behaviour.  While > 0 the drawer is
     // parked at the schedule's first sample (velocity 0) until the sim clock
     // reaches playback_start_at.
     double playback_start_at{0.0};
+    // AGENT T3 keep semantics: after a playback RELEASE that leaves the drawer
+    // away from the closed position, the rail is parked statically here (no
+    // auto-drag toward the nearest detent by the ordinary latch spring) until a
+    // new playback START, a physical grasp takeover, or a control reset.  This
+    // is the plugin-side IDLE_HOLD: ownership is returned, the rail is not.
+    bool playback_idle_hold{false};
+    double playback_hold_position{0.0};
     std::size_t reset_state_index{0U};
     std::size_t detent_target_index{0U};
     std::size_t state_index{0U};
@@ -1370,8 +1388,52 @@ private:
       // driven along the (time, q) samples.  Single writer: the schedule is
       // written only by the physics-request drain under physics_callback_mutex_.
       if (control.playback_active) {
+        // AGENT T3 leak guard: a finished or paused schedule whose owner sends
+        // no further command for kPlaybackLeaseIdleTimeoutSeconds of sim time
+        // is abandoned (a live drive is seconds long and the owner RELEASEs or
+        // follows up).  End it through the same path as RELEASE so the drawer
+        // re-latches at the closed position or idle-holds, instead of staying
+        // bricked for every other operation lease until a gzserver restart.
+        if ((control.playback_finished || control.playback_paused) &&
+          control.playback_last_cmd_sim >= 0.0 &&
+          simulation_time - control.playback_last_cmd_sim >
+            kPlaybackLeaseIdleTimeoutSeconds)
+        {
+          RCLCPP_WARN(
+            ros_node_->get_logger(),
+            "Drawer '%s' playback lease '%s' has been idle for %.1f s of sim "
+            "time after its schedule %s; ending the abandoned session so the "
+            "drawer is not bricked for other operation leases.",
+            control.id.c_str(), control.playback_lease_id.c_str(),
+            simulation_time - control.playback_last_cmd_sim,
+            control.playback_finished ? "finished" : "paused");
+          end_playback_session(control, "abandoned (lease idle timeout)");
+          // Next tick handles the idle-hold / latched rail; do not drive now.
+          continue;
+        }
         drive_drawer_playback(control, simulation_time);
         continue;
+      }
+      // AGENT T3 IDLE_HOLD: a drawer released away from the closed detent is
+      // parked kinematically at the rail position captured at RELEASE.  Without
+      // this the ordinary unlocked-drawer branch re-engages the detent spring,
+      // whose target is the NEAREST detent -- a rail left at an intermediate or
+      // open position is then auto-dragged (observed ~1 mm/s drift from 0.25 m
+      // toward the 0.30 m open detent).  Yield only to a physical grasp session
+      // on this exact drawer, so the legacy force path can still take the rail.
+      if (control.playback_idle_hold) {
+        const bool physical_takeover =
+          active_grasp_control_ == control.id &&
+          (grasp_is_active() || bimanual_grasp_is_active());
+        if (physical_takeover) {
+          control.playback_idle_hold = false;
+        } else {
+          control.joint->SetPosition(0, control.playback_hold_position);
+          control.joint->SetVelocity(0, 0.0);
+          control.effort = 0.0;
+          update_control_state(control, true);
+          continue;
+        }
       }
       const bool control_is_being_grasped = grasp_is_active() &&
         active_grasp_control_ == control.id;
@@ -2454,6 +2516,10 @@ private:
       if (control->kind == ControlKind::kDrawer) {
         control->drawer_unlocked = false;
         control->drawer_has_opened = false;
+        // A reset returns the rail to its closed reset pose under ordinary
+        // physics; no stale idle-hold may keep braking it at an open rail.
+        control->playback_idle_hold = false;
+        control->playback_hold_position = control->reset_position;
       }
     }
     // Moving an articulated parent can transfer velocity back into nested
@@ -2660,6 +2726,54 @@ private:
   // place and the velocity zeroed so the ODE rail does not accumulate a
   // corrective jump; a single tick is clamped so a long world stall cannot
   // teleport the drawer.
+  //
+  // AGENT T3 keep semantics / leak guard: end a playback session and hand the
+  // rail back safely.  A RELEASE that finds the rail settled at the closed
+  // position re-latches it (as a physical close would); a RELEASE anywhere else
+  // parks the rail statically (IDLE_HOLD) so the ordinary unlocked-drawer
+  // detent spring never drags a drawer the client left open or mid-rail toward
+  // the nearest detent.  Shared by the explicit RELEASE command and the
+  // abandoned-lease watchdog, so both end a session through the same path.
+  void end_playback_session(Control & control, const char * verb)
+  {
+    const bool ended_active_session = control.playback_active;
+    const double released_rail = control.joint->Position(0);
+    const double released_vel = control.joint->GetVelocity(0);
+    control.playback_active = false;
+    control.playback_paused = false;
+    control.playback_finished = false;
+    control.playback_lease_id.clear();
+    control.playback_samples.clear();
+    control.playback_last_sim = -1.0;
+    control.playback_start_at = 0.0;
+    control.playback_last_cmd_sim = -1.0;
+    if (!ended_active_session) {
+      control.playback_idle_hold = false;
+      return;
+    }
+    if (released_rail <= control.detents.front() + control.motion_tolerance &&
+      std::abs(released_vel) <= kDrawerReLatchVelocityThreshold)
+    {
+      control.playback_idle_hold = false;
+      control.drawer_unlocked = false;
+      control.drawer_has_opened = false;
+      control.detent_target_index = control.reset_state_index;
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Drawer '%s' playback %s at the closed position; the rail latch "
+        "re-engaged.",
+        control.id.c_str(), verb);
+    } else {
+      control.playback_idle_hold = true;
+      control.playback_hold_position = released_rail;
+      RCLCPP_INFO(
+        ros_node_->get_logger(),
+        "Drawer '%s' playback %s; idle-holding the rail at %.4f m (no "
+        "auto-drag toward a detent).",
+        control.id.c_str(), verb, released_rail);
+    }
+  }
+
   void drive_drawer_playback(Control & control, double simulation_time)
   {
     // AGENT T3 deferred start: a START whose trajectory.header.stamp lies in
@@ -2768,13 +2882,7 @@ private:
 
     if (request.playback_command == PhysicsRequest::kPlaybackRelease) {
       const bool was_finished = control.playback_finished;
-      control.playback_active = false;
-      control.playback_paused = false;
-      control.playback_finished = false;
-      control.playback_lease_id.clear();
-      control.playback_samples.clear();
-      control.playback_last_sim = -1.0;
-      control.playback_start_at = 0.0;
+      end_playback_session(control, "released");
       PhysicsOutcome outcome{
         true, "Drawer '" + request.control_id + "' playback released.",
         control.joint->Position(0)};
@@ -2788,6 +2896,7 @@ private:
           control.joint->Position(0)};
       }
       control.playback_paused = true;
+      control.playback_last_cmd_sim = world_->SimTime().Double();
       return {true, "Drawer '" + request.control_id +
         "' playback paused at the current rail position.",
         control.joint->Position(0)};
@@ -2876,7 +2985,10 @@ private:
     control.playback_lease_id = request.operation_lease_id;
     control.playback_elapsed = 0.0;
     control.playback_last_sim = world_->SimTime().Double();
+    control.playback_last_cmd_sim = control.playback_last_sim;
     control.playback_start_at = start_at;
+    // A new session takes the rail over from any prior idle-hold.
+    control.playback_idle_hold = false;
     // The rail is now kinematic; reflect that in the latch state so a later
     // RELEASE at the closed position re-engages normally and a mid-travel
     // RELEASE is not fought by the closed-detent latch.
