@@ -573,8 +573,60 @@
         </dynamics>
       </axis>
     </joint>
-    
-    
+
+    <!-- ============================================================
+         2026-09-07 db1 支撑版面合同盒（用户裁决：支撑杆应压「左右相邻柜体
+         之间的版面」，非插入侧缝空腔自由悬停）。
+
+         实测几何（boot-j work-pose audit + STL 世界 bbox）：db1(b1) 抽屉
+         占 y∈[4.047,4.753] z∈[0.832,1.072]；下层东邻为 m1(y∈[4.847,5.553],
+         实体 STL 碰撞)，两柜间为 94mm 空隙[4.753,4.847]；西缘(y<4.047)为空
+         开放边界（相邻柜未建模实体）。支撑杆端落点 support_L y=4.039 /
+         support_R y=4.761 均在无碰撞空腔里——支撑段杆端位置证据「自由伸入缝
+         口内 6mm(0.093)」时无物可抵，视觉上末端悬空（用户三番反馈「没碰到柜
+         体」即源于此）。
+
+         修复 = 两扇不可见(仅 collision、无 visual、不改外观)的固定版面：
+           西  b1_flank_west  y∈[3.800,4.045]  邻 b1 西缘(4.047，留 2mm 滑隙)
+           东  b1_flank_east   y∈[4.757,4.845]  b1(4.753) 与 m1(4.847) 柜间
+                                            94mm 空隙的中分版面
+         两者前脸(最大 x 面)同为 x=0.096，z∈[0.84,1.06] 覆盖杆端 z≈0.952。
+         支撑命令端 = 缝口x(0.099) − inset(0.006) = 0.093，比版面前脸再深 3mm
+         → 实体跨模型碰撞把杆端顶在前脸 0.096：到达判据(≤6mm 容差)净余 3mm
+         通过、补驱门(>6mm 才触发)不误触、8mm 硬门余量 5mm——杆端真实压贴
+         版面(非幻影空走)，外观零改动。self_collide 关 → 与抽屉同模型不相撞，
+         抽拉/回位零干涉；对机器人(异模型)为真实刚面。五门 <pose> 全零、offset
+         放子 link 的夹具约定同样适用——两版面自身 <pose> 即世界位。
+         ============================================================ -->
+    <link name="b1_flank_west">
+      <pose>0.071 3.9225 0.95 0 0 0</pose>
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.05 0.245 0.22</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+    <link name="b1_flank_east">
+      <pose>0.071 4.801 0.95 0 0 0</pose>
+      <collision name="collision">
+        <geometry>
+          <box>
+            <size>0.05 0.088 0.22</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="b1_flank_west_fix" type="fixed">
+      <parent>dianqiground</parent>
+      <child>b1_flank_west</child>
+    </joint>
+    <joint name="b1_flank_east_fix" type="fixed">
+      <parent>dianqiground</parent>
+      <child>b1_flank_east</child>
+    </joint>
+
     <!-- 电气夹层 3.0 动态化：整模型取消 static，地面经固定关节锚定世界，
          五扇滑门（ds1/ds2/db1/ds3/dm1，prismatic (1,0,0)）保留可动。门为
          push-push 闩锁 slider（B3b live 验证）：开 = 推至 detent 0.3 闩住；
