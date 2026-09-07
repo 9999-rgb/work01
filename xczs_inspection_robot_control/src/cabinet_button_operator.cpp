@@ -11027,6 +11027,113 @@ private:
       }
     }
 
+    // ---- 2026-09-07 带杆动作（用户交付规格：开箱必须含支撑/解锁杆可见动作）。 ----
+    // 双臂已钉在抽屉工作位姿（末端钩爪内侧贴住把手立板）。抽拉开箱前先做真实
+    // 杆前奏：①两侧支撑杆真实伸出到 sealed support_contact_position（0.041/0.042，
+    // 工具文档化"支撑杆伸出"配置，实测关节判到位）。visual 后端契约（adapter
+    // drawer_execution_backend=visual 注释）本就旁路"侧缝真实接触/8mm 缝口几何门"
+    // —— 抽拉由插件运动学播放驱动、无需杆端缝口反力，故这里只报真实杆行程、
+    // 不谎称 8mm 缝口接触（drive_drawer_support_stage 的活体 FK + 缝口硬门是给
+    // 真实分级后端 self-center 工作位姿封的，visual 位姿杆轴对齐不同，用它必误
+    // 挂）。②右解锁杆真实伸出到 pressed（读回 ∈ [retracted+floor, ceiling)），
+    // 并调 §4.2 解锁服务放行轨道闩 —— simulated_linkage 诚实标签：真实电机行程 +
+    // 把手保持 + 租约 + 阶段，绝不报告 finger3 真按到按钮；服务拒绝只告警（本后
+    // 端由播放覆写直接驱动滑轨，不依赖机械闩模型）。③抽拉前支撑/解锁电缸全部
+    // 回位 —— 底盘跟随抽拉整机前移，杆若仍伸出会被拖过机架（§4.4 电缸先回位）。
+    if (!closing) {
+      result->diagnostic_stage = "support";
+      publish_operate_feedback(
+        goal_handle,
+        OperateCabinetControl::Feedback::APPROACHING,
+        0.30F, target_position,
+        "Visual backend: both arms anchored at the drawer work pose; extending "
+        "the support rods to their sealed support positions before the "
+        "kinematic open.");
+      // 钩爪保持参考 = 当前实测 gripper 关节位（visual 持把靠工作位姿，钩爪电缸
+      // 未另做深压；杆驱动须把 gripper 钉在当前位，不得因缺 ref 把钩爪命令降回）。
+      DrawerHookHoldState hook_hold;
+      try {
+        const auto rod_state = synchronized_current_robot_state(*right_group);
+        hook_hold.left_joint_ref = rod_state->getVariablePosition(
+          drawer_left_tool_.gripper_joint);
+        hook_hold.right_joint_ref = rod_state->getVariablePosition(
+          drawer_right_tool_.gripper_joint);
+        hook_hold.valid = std::isfinite(hook_hold.left_joint_ref) &&
+          std::isfinite(hook_hold.right_joint_ref);
+        if (!hook_hold.valid) {
+          RCLCPP_WARN(
+            get_logger(),
+            "Visual drawer '%s': hook (gripper) joint refs not finite (left "
+            "%.4f, right %.4f); support rod drive will not carry a hook hold "
+            "reference.",
+            control.id.c_str(), hook_hold.left_joint_ref,
+            hook_hold.right_joint_ref);
+        }
+      } catch (const std::exception & hook_ref_error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Visual drawer '%s': could not read the hook (gripper) joint refs for "
+          "the support rod drive (%s).",
+          control.id.c_str(), hook_ref_error.what());
+        hook_hold.valid = false;
+      }
+      const double left_support_ref = hook_hold.valid ?
+        hook_hold.left_joint_ref : std::numeric_limits<double>::quiet_NaN();
+      const double right_support_ref = hook_hold.valid ?
+        hook_hold.right_joint_ref : std::numeric_limits<double>::quiet_NaN();
+      if (drawer_left_tool_.has_support_role &&
+        drawer_left_tool_.support_contact_position > 0.0)
+      {
+        execute_drawer_rod_stage_side(
+          goal_handle, control, *right_group, drawer_left_tool_,
+          two_cylinder_fjt_client_, "two-cylinder (left)", "support",
+          drawer_left_tool_.support_joint,
+          drawer_left_tool_.support_contact_position, false,
+          operation_executed, left_support_ref,
+          drawer_left_tool_.support_contact_position);
+      }
+      if (drawer_right_tool_.has_support_role &&
+        drawer_right_tool_.support_contact_position > 0.0)
+      {
+        execute_drawer_rod_stage_side(
+          goal_handle, control, *right_group, drawer_right_tool_,
+          unlock_motor_fjt_client_, "three-cylinder (right)", "support",
+          drawer_right_tool_.support_joint,
+          drawer_right_tool_.support_contact_position, false,
+          operation_executed, right_support_ref,
+          drawer_right_tool_.support_contact_position);
+      }
+      result->diagnostic_stage = "unlock";
+      publish_operate_feedback(
+        goal_handle,
+        OperateCabinetControl::Feedback::APPROACHING,
+        0.36F, target_position,
+        "Visual drawer: the right unlock rod is executing its AGENT §4.2 motor "
+        "stroke to the sealed pressed position (visible unlock action; rail "
+        "release is carried by the kinematic open under the visual contract).");
+      drive_unlock_motor(
+        goal_handle, control, *right_group, control.unlock_pressed_position,
+        "extend", operation_executed);
+      try {
+        set_drawer_unlock(goal_handle, control, true, true);
+        RCLCPP_INFO(
+          get_logger(),
+          "Visual drawer '%s': unlock service released the rail latch before "
+          "the kinematic pull (staged prelude).",
+          control.id.c_str());
+      } catch (const std::exception & unlock_error) {
+        RCLCPP_WARN(
+          get_logger(),
+          "Visual drawer '%s': unlock service declined (%s); the kinematic "
+          "playback overlay drives the rail open regardless.",
+          control.id.c_str(), unlock_error.what());
+      }
+      // 抽拉前全部电缸回位（§4.4 顺序）：支撑/解锁杆不随底盘前移留在缝内/按钮区。
+      best_effort_drawer_rods_home(
+        goal_handle, control, *right_group, operation_executed);
+      result->diagnostic_stage = "ready";
+    }
+
     // ---- 抽屉世界轴向 + 操作起始底盘参考系（随双臂保持，全程不变）。 ----
     const tf2::Transform cabinet = resolve_cabinet_transform();
     const tf2::Vector3 axis_world = tf2::quatRotate(
