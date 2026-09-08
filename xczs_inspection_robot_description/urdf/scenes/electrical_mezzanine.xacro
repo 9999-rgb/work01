@@ -262,6 +262,35 @@
           </box>
         </geometry>
       </collision>
+      <!-- [2026-09-08 用户拍板：仅显示层标记] b1.STL 退化无真实面，两前把手立板仅剩
+           碰撞盒（画面上不可见）。经用户确认立板即"左右把手"所在（右把手顶有红帽
+           b1p），并同意加灰色薄板显示——纯 <visual> 显示层，不动物理/碰撞，与上方
+           collision_plate_l/r 盒同尺寸同位，让钩爪（内叉）咬合位置一眼可见。还原：
+           删除下两段 <visual name="visual_plate_*">。 -->
+      <visual name="visual_plate_l">
+        <pose>0.0385 0.060 0.120 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.061 0.016 0.096</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.9 0.91 0.94 1</ambient>
+          <diffuse>0.9 0.91 0.94 1</diffuse>
+        </material>
+      </visual>
+      <visual name="visual_plate_r">
+        <pose>0.0385 0.646 0.120 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.061 0.016 0.096</size>
+          </box>
+        </geometry>
+        <material>
+          <ambient>0.9 0.91 0.94 1</ambient>
+          <diffuse>0.9 0.91 0.94 1</diffuse>
+        </material>
+      </visual>
       <!-- 圆形机构 b1r 并入抽屉本体 b1；指示灯 b1p 随下方 visual_p/collision_p
            并入 b1（固定装饰，仅显示，与 s2p/s3p 同范式，非按钮、无行程）。 -->
       <visual name="visual_r">
