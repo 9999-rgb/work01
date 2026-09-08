@@ -16,6 +16,9 @@
   python3 scripts/tools/db1_stage_cap_driver.py --cap 7   # 拉距封顶 0.03（§8.9）
   python3 scripts/tools/db1_stage_cap_driver.py --cap 8   # 拉距封顶 0.10（§8.10）
 
+cap2 现场观察:--cap 2 --hold-sec 30 让钩咬把手 + 工作位姿保持 30 s 不退让,
+供 GUI 逐帧查看后再收尾（电缸回位→退让→复闩）。
+
 先决条件：活栈（run_all.sh）已就绪、无人任务占用、db1 处于 closed+闩定
 （本驱动每次跑完 cap>=3 后都会把抽屉重新闩定，可连续递增跑）。跑完后参数
 复位为 0（全流程）；--keep-cap 可保留。
@@ -47,14 +50,16 @@ NS = "/xczs/cabinet/electrical_mezzanine"
 OPERATOR_NODE = "xczs_cabinet_button_operator"
 CONTROL = "db1"
 PARAM = "debug_stage_cap"
+HOLD_PARAM = "drawer_hook_hold_seconds"
 ACTION = NS + "/operate_cabinet_control"
 
 
 class Db1StageCapDriver(Node):
-    def __init__(self, cap, keep_cap):
+    def __init__(self, cap, keep_cap, hold_sec=0.0):
         super().__init__("db1_stage_cap_driver")
         self._cap = cap
         self._keep_cap = keep_cap
+        self._hold_sec = hold_sec
         self._param_cli = self.create_client(
             SetParameters, f"{NS}/{OPERATOR_NODE}/set_parameters")
         self._action = ActionClient(self, OperateCabinetControl, ACTION)
@@ -94,26 +99,30 @@ class Db1StageCapDriver(Node):
             time.sleep(0.1)
         raise RuntimeError(f"timeout waiting for {what}")
 
-    def _set_param(self, value):
+    def _set_param_int(self, name, value):
+        self._set_param(name, ParameterValue(
+            type=ParameterType.PARAMETER_INTEGER, integer_value=value))
+
+    def _set_param_double(self, name, value):
+        self._set_param(name, ParameterValue(
+            type=ParameterType.PARAMETER_DOUBLE, double_value=value))
+
+    def _set_param(self, name, pvalue):
         self._wait(lambda: self._param_cli.service_is_ready(), 10.0,
                    "operator parameter service")
         request = SetParameters.Request()
-        request.parameters = [Parameter(
-            name=PARAM,
-            value=ParameterValue(
-                type=ParameterType.PARAMETER_INTEGER, integer_value=value))]
+        request.parameters = [Parameter(name=name, value=pvalue)]
         future = self._param_cli.call_async(request)
         deadline = time.monotonic() + 10.0
         while rclpy.ok() and not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
         if not future.done():
             raise RuntimeError(
-                f"could not set {OPERATOR_NODE}.{PARAM}={value}: no reply "
-                "within 10 s")
+                f"could not set {OPERATOR_NODE}.{name}: no reply within 10 s")
         result = future.result()
         if not result.results or not result.results[0].successful:
             raise RuntimeError(
-                f"could not set {OPERATOR_NODE}.{PARAM}={value}; "
+                f"could not set {OPERATOR_NODE}.{name}: "
                 f"reply={result.results[0].reason if result.results else 'empty results'}")
 
     def _operate_open(self, timeout_s=600.0):
@@ -170,15 +179,24 @@ class Db1StageCapDriver(Node):
                    "drawer state topic")
         before = self._drawer_state
         try:
-            self._set_param(self._cap)
+            self._set_param_int(PARAM, self._cap)
+            if self._hold_sec > 0.0:
+                self._set_param_double(HOLD_PARAM, self._hold_sec)
             self.get_logger().info(
-                f"set {OPERATOR_NODE}.{PARAM}={self._cap}; before: "
-                f"state={before.state_id} position={before.position:.4f}")
+                f"set {OPERATOR_NODE}.{PARAM}={self._cap}"
+                + (f", {HOLD_PARAM}={self._hold_sec}" if self._hold_sec > 0.0
+                   else "")
+                + f"; before: state={before.state_id} "
+                f"position={before.position:.4f}")
             outcome = self._operate_open()
         finally:
             if not self._keep_cap:
-                self._set_param(0)
-                self.get_logger().info(f"reset {OPERATOR_NODE}.{PARAM}=0")
+                self._set_param_int(PARAM, 0)
+                if self._hold_sec > 0.0:
+                    self._set_param_double(HOLD_PARAM, 0.0)
+                self.get_logger().info(
+                    f"reset {OPERATOR_NODE}.{PARAM}=0"
+                    + (f", {HOLD_PARAM}=0" if self._hold_sec > 0.0 else ""))
 
         status = outcome.status
         result = outcome.result
@@ -211,10 +229,13 @@ def main():
                         help="AGENT §7.2 stage cap (1-8, §8.3-§8.10 顺序)")
     parser.add_argument("--keep-cap", action="store_true",
                         help="leave debug_stage_cap set after the run")
+    parser.add_argument("--hold-sec", type=float, default=0.0,
+                        help="cap2 hook-engaged dwell seconds before teardown "
+                             "(0 = off, zero-regression)")
     args = parser.parse_args()
 
     rclpy.init()
-    driver = Db1StageCapDriver(args.cap, args.keep_cap)
+    driver = Db1StageCapDriver(args.cap, args.keep_cap, args.hold_sec)
     try:
         driver.run()
     finally:

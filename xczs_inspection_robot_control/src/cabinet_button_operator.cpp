@@ -696,6 +696,11 @@ public:
     // execute_operate 每次执行时重新读取，无需重启 operator。不改 msg/action
     // 合同，Web 无感知。
     debug_stage_cap_ = declare_parameter<int>("debug_stage_cap", 0);
+    // 2026-09-08 用户现场观察:cap2 钩爪闭合取证后驻留 N 秒(默认 0 零回归),
+    // 保持「钩咬把手 + 工作位姿」供 GUI 细看,再进入正常收尾。driver 用
+    // --hold-sec 设置;每次 execute 重新读取,无需重启 operator。
+    drawer_hook_hold_seconds_ = declare_parameter<double>(
+      "drawer_hook_hold_seconds", 0.0);
     planning_velocity_scale_ = unit_interval_parameter(
       "planning_velocity_scale", 0.20);
     planning_acceleration_scale_ = unit_interval_parameter(
@@ -4792,6 +4797,21 @@ private:
         // 2026-09-03 AGENT §7.2 cap2: 双侧钩爪闭合取证（§8.4）——钩爪贴合
         // 把手立板、抽屉仍闩定、支撑/解锁电缸收拢。收尾电缸回位→退让→复闩。
         if (!closing && debug_stage_cap == 2) {
+          // 2026-09-08 用户现场观察:cap2 钩住后可驻留 N 秒(参数
+          // drawer_hook_hold_seconds>0),期间保持工作位姿 + 双钩咬把手不动,
+          // 供 GUI 逐帧查看后再进入收尾。驻留可被取消/租约丢失打断(与 cap6
+          // 的 interruptible_hold 同一语义);默认 0 不驻留,行为与历史一致。
+          const double hook_hold_seconds =
+            get_parameter("drawer_hook_hold_seconds").as_double();
+          if (hook_hold_seconds > 0.0) {
+            publish_operate_feedback(
+              goal_handle,
+              OperateCabinetControl::Feedback::GRASPING,
+              0.34F, target_position,
+              "Holding both hook fingers engaged on the handle plates at the "
+              "work pose for visual inspection.");
+            interruptible_hold(goal_handle, hook_hold_seconds);
+          }
           finish_capped_drawer_stage(
             goal_handle, *control, drawer_left_move_group, move_group, 2,
             "both hook fingers closed onto the handle plates at the work pose "
@@ -16834,6 +16854,10 @@ private:
   int planning_attempts_{10};
   // AGENT §7.2 现场分级封顶调试（0 = 全流程；1/3/4/5/6/7/8 = 阶段边界/拉距）。
   int debug_stage_cap_{0};
+  // cap2 钩咬取证后、收尾前可选的驻留秒数（0 = 不驻留，零回归）。现场观察时
+  // 让「钩咬把手 + 工作位姿」保持住供 GUI 查看，超时后照常走收尾（电缸回位/
+  // 退让/复闩）。
+  double drawer_hook_hold_seconds_{0.0};
   double planning_velocity_scale_{0.20};
   double planning_acceleration_scale_{0.20};
   double goal_position_tolerance_{0.005};
