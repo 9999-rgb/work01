@@ -228,67 +228,55 @@
           <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
-      <!-- 2026-09-04 碰撞代理：b1.STL（用户 SW 原版导出，与仿真场景20260831
-           逐字节一致）为全扇形退化网格——140 个三角形全部经由六个 ±1m 单元点
-           + 单位圆幽灵顶点连接，无任何真实表面三角形。两前把手立板因此无实体
-           碰撞：钩爪杆（l_two_cyl_finger2/r_three_cyl_finger1）压贴无物可抵，
-           旧几何门读数即源于此。视觉保留原网格（用户资产、不改外观），碰撞改
-           为两前把手立板的合同盒（P0 §2.1 与 live 接触封定：x 0.008..0.069
-           前缘 0.099 世界、y 0.052..0.068 与 0.638..0.654、z 0.072..0.168，
-           均 b1 局部）——抓取点即盒面中心，几何门参考语义精确成立。压贴证据
-           为杆电缸 effort ≥8N（AGENT §8.4 fix#3 v2，v1 杆位判据因 rigid 面
-           物理不可穿不可达而废止）。cap-2 读数噪声已另由代码侧 fix#21（双侧
-           连续在位 ≥0.4s）覆盖。
-           [2026-09-06 09-06 A/B 取证] 13:04 一度改回 b1.STL 网格碰撞重跑
-           cap5（干净启动#3）：右钩压贴 0N 自由空气直通 0.030 ref —— 纯网格
-           无立板面，力证据永不成立，必须保留合同盒。恢复本盒；s42b 时代右杆
-           接合偏二态（n1 10.5mm 短/ n2 28.3mm@8.5N 掠边）判为 boot 运气 +
-           dock/IK 分支敏感（09-06 12:16-12:38 同 operator 同盒连续 7 次右杆端
-           ≤1.5mm），clean-start #4 复核；若再现再按 probe 实测重标 aim
-           （adapter 09-04 fix#3 v3-v4/fix#5 注释：aim 随 dock 换 IK 分支）。 -->
-      <collision name="collision_plate_l">
-        <pose>0.0385 0.060 0.120 0 0 0</pose>
+      <!-- 2026-09-09 把手几何换型（用户拍板：横向贯通拉杆；017b 灰板已废、下废）。
+           背景：b1.STL（SW 原版导出 20260831，与场景逐字节一致）为全扇形退化网格
+           ——140 个三角形全部经由六个 ±1m 单元点 + 单位圆幽灵顶点连接，无真实表面。
+           两前把手原先只靠两块「齐平前脸 x0.099 的碰撞合同盒」压贴得力（2026-09-04
+           P0 §2.1 live 封定：x 0.008..0.069 前缘 0.099 世界、y 0.052..0.068 与
+           0.638..0.654、z 0.072..0.168，b1 局部；抓取点即盒面中心）。017b 加仅显示
+           灰板后用户指出「平齐板子钩爪没法钩住」。取证：两齿钩叉沿工具 Y（=世界 z）
+           c-c 40mm、净缝 28mm，只能横向吞 ≤28mm 厚的杆——鳍/立板不可钩，贯通横杆
+           可钩。换型 = 下两元素：
+             a. handle_bar_backing（collision-only 受力墙，兼前脸碰撞）：前缘仍
+                x0.099（原合同面——grasp/handle/support/unlock 点值全部零改动，
+                插件门语义不变），y 4.060..4.740（两端距侧缝 ~21mm，不挡支撑入缝），
+                z 0.904..1.000（覆盖两叉全 z 带 0.926..0.978）——叉指端面压贴得力
+                ≥8N 照旧成立；
+             b. handle_bar（visual + collision 贯通拉杆）：Ø16 圆杆、轴沿世界 y、
+                杆背与背衬前缘齐平（杆背 x0.099、前凸至 x0.115），杆带 z 0.944..
+                0.960 落在叉缝 0.938..0.966 内、上下各余 ~6mm——上叉跨杆顶、下叉穿
+                杆底，拉杆在两叉之间被吞住；z 残差 >6mm 先触杆得力，杜绝自由空气
+                空走（aim z 重标应优先，勿放宽容差）。
+           受力墙与拉杆同属 b1 link，无自碰撞；红帽 b1p 在杆带上方 ~40mm 不干涉。
+           还原此换型 = 删除下两元素，恢复旧注释所述的碰撞合同盒。 -->
+      <collision name="handle_bar_backing">
+        <pose>0.064 0.353 0.120 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.061 0.016 0.096</size>
+            <size>0.010 0.680 0.096</size>
           </box>
         </geometry>
       </collision>
-      <collision name="collision_plate_r">
-        <pose>0.0385 0.646 0.120 0 0 0</pose>
+      <collision name="handle_bar">
+        <pose>0.077 0.353 0.120 1.57079632679 0 0</pose>
         <geometry>
-          <box>
-            <size>0.061 0.016 0.096</size>
-          </box>
+          <cylinder>
+            <radius>0.008</radius>
+            <length>0.680</length>
+          </cylinder>
         </geometry>
       </collision>
-      <!-- [2026-09-08 用户拍板：仅显示层标记] b1.STL 退化无真实面，两前把手立板仅剩
-           碰撞盒（画面上不可见）。经用户确认立板即"左右把手"所在（右把手顶有红帽
-           b1p），并同意加灰色薄板显示——纯 <visual> 显示层，不动物理/碰撞，与上方
-           collision_plate_l/r 盒同尺寸同位，让钩爪（内叉）咬合位置一眼可见。还原：
-           删除下两段 <visual name="visual_plate_*">。 -->
-      <visual name="visual_plate_l">
-        <pose>0.0385 0.060 0.120 0 0 0</pose>
+      <visual name="visual_handle_bar">
+        <pose>0.077 0.353 0.120 1.57079632679 0 0</pose>
         <geometry>
-          <box>
-            <size>0.061 0.016 0.096</size>
-          </box>
+          <cylinder>
+            <radius>0.008</radius>
+            <length>0.680</length>
+          </cylinder>
         </geometry>
         <material>
-          <ambient>0.9 0.91 0.94 1</ambient>
-          <diffuse>0.9 0.91 0.94 1</diffuse>
-        </material>
-      </visual>
-      <visual name="visual_plate_r">
-        <pose>0.0385 0.646 0.120 0 0 0</pose>
-        <geometry>
-          <box>
-            <size>0.061 0.016 0.096</size>
-          </box>
-        </geometry>
-        <material>
-          <ambient>0.9 0.91 0.94 1</ambient>
-          <diffuse>0.9 0.91 0.94 1</diffuse>
+          <ambient>0.62 0.64 0.68 1</ambient>
+          <diffuse>0.62 0.64 0.68 1</diffuse>
         </material>
       </visual>
       <!-- 圆形机构 b1r 并入抽屉本体 b1；指示灯 b1p 随下方 visual_p/collision_p
@@ -763,8 +751,11 @@
         <detent_hysteresis>0.01</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <!-- 双手抽拉（bimanual drawer 合同）：左两电缸探针附着左把手立板、
-             右三电缸探针附着右把手立板。解锁（2026-09-03 AGENT §4.4 修订语义，
+        <!-- 双手抽拉（bimanual drawer 合同；把手几何 2026-09-09 已换型为贯通
+             拉杆 + 前脸受力背衬，下述「立板/把手本体」多为历史措辞、合同点值不变）：
+             左右钩爪（config B = l_two_cyl_finger1 / r_three_cyl_finger2）自正面推进，
+             上叉跨杆顶、下叉穿杆底，端面压贴背衬前缘 x0.099。解锁（2026-09-03
+             AGENT §4.4 修订语义，
              废止 §3 版浮动区）= 解锁按钮位于右把手本体上：右侧解锁电机
              （r_three_cyl_finger3_joint）自「右钩住+右支撑入缝」的同一工作位姿
              独立伸出（不移动整臂），使其真实触点贴到右把手本体按钮接触区；plugin
@@ -810,10 +801,15 @@
         <unlock_linkage_description>right unlock motor drives the right-handle
              latch release through an unmodelled linkage; finger3 real tip is
              NOT at the button</unlock_linkage_description>
-        <unlock_hold_left_link>l_two_cyl_finger2</unlock_hold_left_link>
-        <unlock_hold_left_point>0 0 -0.095</unlock_hold_left_point>
-        <unlock_hold_right_link>r_three_cyl_finger1</unlock_hold_right_link>
-        <unlock_hold_right_point>0 0 -0.090</unlock_hold_right_point>
+        <!-- [2026-09-09 config B 角色修正] 上两 link 是 009 时代 pre-swap 旧钩名：
+             换杆后现役钩 = l_two_cyl_finger1 / r_three_cyl_finger2（端深均 -0.075），
+             插件以两钩杆端距左右 grasp_point <= grasp_contact_threshold 独立实测
+             （simulated_linkage 放行双物证之一）；旧名指向的是支撑杆（距把手 0.068 m
+             必拒）。 -->
+        <unlock_hold_left_link>l_two_cyl_finger1</unlock_hold_left_link>
+        <unlock_hold_left_point>0 0 -0.075</unlock_hold_left_point>
+        <unlock_hold_right_link>r_three_cyl_finger2</unlock_hold_right_link>
+        <unlock_hold_right_point>0 0 -0.075</unlock_hold_right_point>
         <!-- 双臂附着接触门：左右工具尖端距各自把手 ≤ grasp_contact_threshold
              才允许附着（收紧 0.12 → 0.02，拒绝探针悬空假附着）；耦合拖拽期间
              任一侧尖端脱离把手超过 coupling_contact_grace_seconds 即中止
@@ -826,7 +822,7 @@
              作用力落在柜体轨道上而不是轻工具上，运动学遥移的臂完全按轨迹
              执行，joint_trajectory_controller 不再出现跟踪误差（run8 根
              因修复）。k=20000 N/m / d=500 下跟踪滞后 <1mm，卡滞时滞差有
-             界 7.5mm < 指缝半间距 34mm，指爪始终咬住把手立板。 -->
+             界 7.5mm < 指缝半间距 34mm，指爪始终跨住贯通拉杆（端面压贴背衬）。 -->
         <grasp_coupling_stiffness>20000</grasp_coupling_stiffness>
         <grasp_coupling_damping>500</grasp_coupling_damping>
         <grasp_coupling_max_effort>150</grasp_coupling_max_effort>
