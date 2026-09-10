@@ -15761,6 +15761,19 @@ private:
     // （真实关节值缓存）才是判据 —— 被几何卡住时控制器会照章报容忍度越限，
     // 而"报成功但没到"也必须由实测抓住。
     constexpr double kRodStartPollSeconds = 0.10;
+    // 2026-09-10 fix#22: 轮询窗内必须继续钉住双臂，否则门量的是自由下沉的构型。
+    // send_cylinder_full_joint_goal 是阻塞式（ramp 2 s + goal_time_tolerance 5 s
+    // 的 sim 时长，按 RTF≈1/3 折墙钟 ≈14 s），比 kDwellHoldSeconds(12 s) 长 ——
+    // 上面那次 refresh_arm_holds() 挂的驻留，在杆回位指令返回时**已经到期**。
+    // 实测 boot10：t=66.3 挂驻留、同时杆回位归零，t=78.4(=66.3+12) 驻留到期的
+    // 同一瞬间，贴住柜面的左侧 support 杆以 ≈0 effort 被下沉的臂沿面拖出，渐近
+    // 停在 0.074 m 的接触平衡位（同期未贴面的 gripper 杆纹丝不动 —— 拖拽而非
+    // 重力/指令），门 5 s 后按"杆不在起始位"超时。刷新只是让测量对象保持在被
+    // 钉住的构型上；判据仍是物理实测。
+    constexpr double kRodStartArmRefreshSeconds = 3.0;
+    // 初值取过去时刻：首轮即刷新一次（阻塞的杆回位指令期间驻留也已耗尽）。
+    auto last_arm_refresh = std::chrono::steady_clock::now() -
+      std::chrono::duration<double>(kRodStartArmRefreshSeconds);
     const auto deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(drawer_rod_start_timeout_seconds_);
     auto band_started = std::chrono::steady_clock::time_point{};
@@ -15790,6 +15803,13 @@ private:
     };
     for (;;) {
       check_cancel(goal_handle);
+      const auto now = std::chrono::steady_clock::now();
+      if (now - last_arm_refresh >=
+        std::chrono::duration<double>(kRodStartArmRefreshSeconds))
+      {
+        last_arm_refresh = now;
+        refresh_arm_holds();
+      }
       const double worst = measure_all();
       if (worst <= drawer_rod_start_tolerance_) {
         if (!in_band) {

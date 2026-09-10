@@ -249,30 +249,37 @@
         # 垂直列无镜像作用，故旧 180° 从未生效。修复 = 绕杆轴转 -90°：列方向
         # -ẑ → -ŷ（西侧缝 4.039）。修正后列落世界 y，两列 z 同位、x-hover 同
         # 位 → 支撑杆端与钩爪同级瞄准（y/z 由自对中闭环吸收）。
-        # [2026-09-07 用户指令·最高优先级] 操作位姿两个末端整体绕作业轴再转 180°：
-        #   roll +π/2 → −π/2（列已横排于世界 y，π 对横列有镜像作用——旧注释“π 对
-        #   垂直列无镜像”已不适用于此叠加）。钩=工作位姿锚点仍贴立板；支撑列镜像到
-        #   钩的异侧。
-        # [2026-09-07 活验裁决 → 角色对调] 翻转生效后支撑门实测失败（left 0.136311 /
-        #   right 0.135945 m > 0.008 冻结容差），两值恰 = 2×0.068 杆距：支撑杆被镜像到
-        #   立板内侧，钩贴立板仍过（phase 5 PASS）。翻转下无任何锚点能同时放一杆@立板
-        #   + 一杆@外缝（杆对指向反）。修复 = 换杆：钩=finger1（锚点贴左立板 4.107）、
-        #   撑=finger2（伙伴恰落西侧缝 4.039）。杆专属字段随杆，角色语义不变。钩正面
-        #   咬板仍为 plugin grasp 合同。待活验支撑贴缝复归。
-        tool_roll_offset: -1.57079632679
+        # [2026-09-10 撤销 09-07 的 180° 翻转，回到 fix#8 的 +π/2 列向]
+        #   09-07 用户指令曾令两末端再转 180°（+π/2 → −π/2）并把角色对调为
+        #   钩=finger1/撑=finger2。09-10 三次活验证明该叠加与支撑合同**几何互斥**：
+        #   钩=finger1(端深 0.075) 贴立板座封后（实测 tip x 0.0996、行程 0.0099），
+        #   工具原点必然落在 X_T = 0.0996+0.075+0.0099 = 0.1845；此时撑=finger2
+        #   (端深 0.095) 在 q=0 的杆端 x = 0.1845−0.095 = 0.0895 —— 已越过缝口
+        #   0.099 与版面前脸 0.096 各 9.5/6.5 mm（实测 tip 0.0891，与算式差 0.4 mm）。
+        #   杆行程下限为 0（不可回缩），故撑杆既无法"伸出到缝口"也无法退回，
+        #   drive_drawer_support_stage 的活体自标算得负行程、夹到 q=0 空走，
+        #   距离门实测 left 0.011221 / right 0.011780 m > 0.008 必挂。
+        #   fix#8 的 +π/2 下（钩=finger2 0.095、撑=finger1 0.075）同一算式给出
+        #   X_T = 0.099+0.095+0.010 = 0.204，撑杆 q0 悬停 x = 0.204−0.075 = 0.129
+        #   （实测 0.1376），距缝口 30 mm 安全在外，再伸出 0.041 m 由 b1_flank_west
+        #   碰撞面挡停于 x≈0.0965，距标定缝口 0.099 仅 2.5 mm < 8 mm 门 —— 正是 016
+        #   (06411b1) 活验「短 2.8–3.9 mm、双 SUCCESS 完整 OPEN」的配置。故撤回翻转
+        #   与角色对调，恢复 fix#8 原值。翻转诉求（钩爪自外侧绕入）与「支撑杆压墙」
+        #   在同轴双杆 + 杆 min=0 的约束下不能同时成立，需改模型几何才能两全。
+        tool_roll_offset: 1.57079632679
         tool_tip_position: [-0.034, -0.061735, -0.3885]
         calibration_joint_names:
           - l_two_cyl_finger1_joint
           - l_two_cyl_finger2_joint
         calibration_joint_positions: [0.0, 0.0]
-        # [2026-09-07 角色对调] 支撑角色现由 finger2 担任（见上方裁决注释）：锚定
-        #   finger1@立板 4.107 时 finger2 恰落西侧缝 4.039。finger2 物理端深 -0.095、
-        #   base [-0.034,...]，随杆带走。inset 活体自标仍按当前支撑杆实测 x0 计算。
-        support_joint: l_two_cyl_finger2_joint
-        support_contact_link: l_two_cyl_finger2
-        support_contact_point_local: [0.0, 0.0, -0.095]
-        # finger2 joint origin [-0.034,-0.061735,-0.2935] + 杆端局部偏移。
-        support_contact_point_base_at_zero: [-0.034, -0.061735, -0.3885]
+        # [2026-09-10 恢复 fix#8 角色] 支撑角色回到 finger1：+π/2 下列中能贴左立板
+        #   4.107 的是 finger2（钩），与它同轴 0.068 m 外的 finger1 恰落西侧缝
+        #   4.039（撑）。finger1 物理端深 -0.075、base [+0.034,...]。
+        support_joint: l_two_cyl_finger1_joint
+        support_contact_link: l_two_cyl_finger1
+        support_contact_point_local: [0.0, 0.0, -0.075]
+        # finger1 joint origin [0.034,-0.061735,-0.2935] + 杆端局部偏移。
+        support_contact_point_base_at_zero: [0.034, -0.061735, -0.3685]
         support_retracted_position: 0.0
         # 支撑 0.030 与夹爪 0.010 后两根杆端的工具轴坐标同为 -0.3985，
         # 轴向齐平 → 同一工作位姿下钩爪贴把手立板（z 0.952 带）、支撑杆端同时
@@ -299,13 +306,15 @@
         # 留 ~2 mm 余量：cap3 run2 支撑双侧各稳持 14-17 s、GREEN（physical_outcome
         # True）。真机/换场景需按同法重新封定。
         support_contact_inset: 0.006
-        # [2026-09-07 角色对调] 钩爪角色现由 finger1 担任（翻转下列中可贴立板东侧
-        #   杆，作为工作位姿锚点正对左立板 4.107）。finger1 物理端深 -0.075、base
-        #   [+0.034,...]，随杆带走。压贴力地/overshoot 仍按角色生效。
-        gripper_joint: l_two_cyl_finger1_joint
-        gripper_contact_link: l_two_cyl_finger1
-        gripper_contact_point_local: [0.0, 0.0, -0.075]
-        gripper_contact_point_base_at_zero: [0.034, -0.061735, -0.3685]
+        # [2026-09-10 恢复 fix#8 角色] 钩爪角色回到 finger2（左列中正对左立板 4.107
+        #   的杆，作为工作位姿锚点）。finger2 物理端深 -0.095、base [-0.034,...]；
+        #   端深比撑杆多 20 mm，正是撑杆能在 q=0 悬停于缝口之外 30 mm、再伸出压墙
+        #   的余量来源（见上方 tool_roll_offset 注释的算式）。压贴力地/overshoot
+        #   仍按角色生效。
+        gripper_joint: l_two_cyl_finger2_joint
+        gripper_contact_link: l_two_cyl_finger2
+        gripper_contact_point_local: [0.0, 0.0, -0.095]
+        gripper_contact_point_base_at_zero: [-0.034, -0.061735, -0.3885]
         gripper_open_position: 0.0
         gripper_grasp_position: 0.010
         # 2026-09-04 AGENT §8.4 fix#3 v2 (cap2 run1/run2 取证): 钩爪封定 = 压贴
@@ -351,24 +360,26 @@
         # 转 +90° 使支撑列 -ẑ → +ŷ（东侧缝 4.761）。左 +π/2 / 右 +π/2 的同值
         # 外观源于 xacro 镜像安装（左支撑 +x 侧 / 右支撑 -x 侧）；两侧修正角
         # 实测为 -89.7°/+90.1°（cap-1 实体探针 y-z 平面方位角差）。
-        # [2026-09-07 用户指令·最高优先级] 同左侧：操作位姿末端整体再转 180°，
-        #   roll +π/2 → −π/2。钩=锚点仍贴立板；支撑列镜像到钩的异侧。
-        # [2026-09-07 活验裁决 → 角色对调] 镜像裁决与换杆同左侧：锚定 finger2@右立板
-        #   4.693 时 finger1 恰落东侧缝 4.761 → 钩=finger2、撑=finger1（东杆）。
-        tool_roll_offset: -1.57079632679
+        # [2026-09-10 撤销 09-07 的 180° 翻转] 同左侧（算式见 drawer_tools.left 的
+        #   tool_roll_offset 注释）：+π/2 下钩=finger1(端深 0.090) 贴右立板 4.693，
+        #   撑=finger2(端深 0.075) 落东侧缝 4.761 且 q0 悬停 x=0.1391（实测），
+        #   伸出 0.042 m 由 b1_flank_east 挡停，距缝口 0.099 约 2.5 mm < 8 mm 门。
+        #   −π/2 + 角色对调下撑=finger1(0.090) 在 q0 即越过缝口，距离门实测
+        #   0.011780 m 必挂。
+        tool_roll_offset: 1.57079632679
         tool_tip_position: [0.0265, -0.061735, -0.3885]
         calibration_joint_names:
           - r_three_cyl_finger1_joint
           - r_three_cyl_finger2_joint
           - r_three_cyl_finger3_joint
         calibration_joint_positions: [0.0, 0.0, 0.0]
-        # [2026-09-07 角色对调] 右支撑现由 finger1 担任（同左侧裁决）：锚定 finger2@
-        #   立板 4.693 时 finger1 恰落东侧缝 4.761。finger1 物理端深 -0.090、base
-        #   [+0.034,...]，随杆带走。inset 活体自标仍按当前支撑杆实测 x0 计算。
-        support_joint: r_three_cyl_finger1_joint
-        support_contact_link: r_three_cyl_finger1
-        support_contact_point_local: [0.0, 0.0, -0.090]
-        support_contact_point_base_at_zero: [0.034, -0.061735, -0.3885]
+        # [2026-09-10 恢复 fix#8 角色] 右支撑回到 finger2（同左侧裁决）：锚定
+        #   finger1@右立板 4.693 时 finger2 恰落东侧缝 4.761。finger2 物理端深
+        #   -0.075、base [-0.034,...]。inset 活体自标仍按当前支撑杆实测 x0 计算。
+        support_joint: r_three_cyl_finger2_joint
+        support_contact_link: r_three_cyl_finger2
+        support_contact_point_local: [0.0, 0.0, -0.075]
+        support_contact_point_base_at_zero: [-0.034, -0.061735, -0.3685]
         support_retracted_position: 0.0
         # [2026-09-05 cap-3 fix#9] 同左侧（见 drawer_tools.left.support_contact_position
         # 的封定注释）：右支撑杆 cap-1 实体探针 q0 悬停 x=0.1391，按
@@ -379,13 +390,13 @@
         # 稳定带，cap3 run2 GREEN）。
         support_contact_position: 0.042
         support_contact_inset: 0.006
-        # [2026-09-07 角色对调] 右钩爪现由 finger2 担任（列中可贴立板西侧杆，工作
-        #   位姿锚点正对右立板 4.693）。finger2 物理端深 -0.075、base [-0.034,...]，
-        #   随杆带走。压贴力地/overshoot 仍按角色生效。
-        gripper_joint: r_three_cyl_finger2_joint
-        gripper_contact_link: r_three_cyl_finger2
-        gripper_contact_point_local: [0.0, 0.0, -0.075]
-        gripper_contact_point_base_at_zero: [-0.034, -0.061735, -0.3685]
+        # [2026-09-10 恢复 fix#8 角色] 右钩爪回到 finger1（右列中正对右立板 4.693
+        #   的杆，作为工作位姿锚点）。finger1 物理端深 -0.090、base [+0.034,...]。
+        #   压贴力地/overshoot 仍按角色生效。
+        gripper_joint: r_three_cyl_finger1_joint
+        gripper_contact_link: r_three_cyl_finger1
+        gripper_contact_point_local: [0.0, 0.0, -0.090]
+        gripper_contact_point_base_at_zero: [0.034, -0.061735, -0.3885]
         gripper_open_position: 0.0
         gripper_grasp_position: 0.010
         # 2026-09-04 AGENT §8.4 fix#3 v2: 同左侧(见 drawer_tools.left 的注释)。

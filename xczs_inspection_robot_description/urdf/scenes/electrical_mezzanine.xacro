@@ -804,8 +804,9 @@
         <!-- 双手抽拉（bimanual drawer 合同；把手几何 2026-09-09 用户目视裁决 =
              b1.STL 原生两条竖向立筋把手 + 前脸受力背衬 handle_bar_backing 力墙，
              外加横杆已全部删除；b1p 恢复真实可按解锁按钮）：
-             左右钩爪（config B = l_two_cyl_finger1 / r_three_cyl_finger2，端深
-             -0.075）自 +X 侧推进，杆端压贴各自竖立筋前脸得力。grasp_point /
+             左右钩爪（现役 = l_two_cyl_finger2 / r_three_cyl_finger1，端深
+             -0.095 / -0.090，2026-09-10 恢复 fix#8 角色）自 +X 侧推进，杆端压贴
+             各自竖立筋前脸得力。grasp_point /
              right_grasp_point = 左/右把手抓取锚（b1 局部，世界 (0.099,4.107/4.693,
              0.952)），正是竖立筋中心（L y0.052..0.068、R y0.638..0.654，
              z 0.072..0.168 的 b1 局部中心 0.060/0.646/0.120），压在立筋前脸
@@ -844,15 +845,16 @@
              button 控制（见本 plugin 内 db1_unlock_button），以其 pressed 状态 +
              b1p_joint 位移为真按下物证；不再有 §4.2 simulated_linkage。 -->
         <unlock_button_id>db1_unlock_button</unlock_button_id>
-        <!-- [2026-09-09 config B 角色修正] 上两 link 是 009 时代 pre-swap 旧钩名：
-             换杆后现役钩 = l_two_cyl_finger1 / r_three_cyl_finger2（端深均 -0.075），
-             插件以两钩杆端距左右 grasp_point <= grasp_contact_threshold 独立实测
-             （simulated_linkage 放行双物证之一）；旧名指向的是支撑杆（距把手 0.068 m
-             必拒）。 -->
-        <unlock_hold_left_link>l_two_cyl_finger1</unlock_hold_left_link>
-        <unlock_hold_left_point>0 0 -0.075</unlock_hold_left_point>
-        <unlock_hold_right_link>r_three_cyl_finger2</unlock_hold_right_link>
-        <unlock_hold_right_point>0 0 -0.075</unlock_hold_right_point>
+        <!-- [2026-09-10 随 adapter 撤销 09-07 翻转同步] 现役钩 = l_two_cyl_finger2
+             (端深 -0.095) / r_three_cyl_finger1 (端深 -0.090) —— 与 adapter
+             drawer_tools.*.gripper_* 同源（2026-09-10 恢复 fix#8 角色）。插件以两钩
+             杆端距左右 grasp_point <= grasp_contact_threshold 独立实测（simulated_
+             linkage 放行双物证之一）；若此处还留着 09-07 对调后的旧钩名，指向的是
+             支撑杆（距把手 0.068 m 必拒）。 -->
+        <unlock_hold_left_link>l_two_cyl_finger2</unlock_hold_left_link>
+        <unlock_hold_left_point>0 0 -0.095</unlock_hold_left_point>
+        <unlock_hold_right_link>r_three_cyl_finger1</unlock_hold_right_link>
+        <unlock_hold_right_point>0 0 -0.090</unlock_hold_right_point>
         <!-- 双臂附着接触门：左右工具尖端距各自把手 ≤ grasp_contact_threshold
              才允许附着（收紧 0.12 → 0.02，拒绝探针悬空假附着）；耦合拖拽期间
              任一侧尖端脱离把手超过 coupling_contact_grace_seconds 即中止
