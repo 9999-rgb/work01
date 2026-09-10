@@ -239,20 +239,58 @@
            换型史：齐平鳍盒（017b f32d6bd）→ 通长拉杆（017c 133c21c+d8bf814）
            → 纯平背衬（017d 2365fad）→ 两段短横杆（未提交，用户目视否决横杆本身）
            → 本次：把手 = 原生竖立筋，外加几何一律不加。
-           保留 handle_bar_backing 仅碰撞受力墙：前缘 x0.099 = 竖立筋前脸同一平面
-           （grasp/support/unlock 点值零改动、插件门语义不变），y 4.060..4.740，
-           z 0.904..1.000——钩爪端面压贴竖立筋/背衬得力 ≥8N 照旧成立；仅碰撞、
-           无显示（承接钩端接触受力，竖立筋仅视觉）。 -->
-      <collision name="handle_bar_backing">
-        <pose>0.064 0.353 0.120 0 0 0</pose>
+           碰撞体见下方 fix#25：不再是通长受力墙，而是与 STL 逐点一致的
+           两条空心立筋（前板+背板），立筋自带的 53mm 通孔在物理中真实存在。 -->
+      <!-- fix#25（2026-09-10 用户裁决「把手后有一大块空隙」取证后重建）：
+           旧 handle_bar_backing 是一块 0.680×0.096×0.010 的**通长受力墙**
+           （局部 x0.059..0.069、y0.013..0.693、z0.072..0.168），把整个把手带
+           连同立筋自带的通孔一起抹成平墙。后果：钩爪在物理里「没有东西可绕」
+           —— 侧面(±y)任何 y 位置、x∈[0.089,0.099] 的横向扫入都被这堵墙挡住，
+           只能正面顶前脸，正是用户反复否掉的形态。
+           b1.STL 射线解算（140 面全解析 + 逐点 raycast）实测真实几何：
+            法兰前板 x0.061..0.069（世界 0.091..0.099，8mm 厚）
+            背板垫板 x0.000..0.008（世界 0.030..0.038，z0.080..0.160）
+            中间空腔 x0.008..0.061（世界 0.038..0.091，53mm 深），
+            沿 ±y 打射线穿过立筋中心**一个面都没有** —— 真正的左右通透孔
+            （53×80mm），即用户截图里那个洞。
+           故拆除通长墙，改为与 STL 逐点一致的两条空心立筋（左右各前板+背板）。
+           前脸面仍 x0.069（世界 0.099）＝ grasp/support/unlock 合同面零改动；
+           通孔在物理中真实存在，钩爪可自外侧(y<4.099)伸入孔内后内收卡住
+           孔内前壁（世界 x0.091 的 -X 向面）再拉开。纯碰撞、无显示。 -->
+      <collision name="handle_riser_l">
+        <pose>0.004 0.060 0.120 0 0 0</pose>
         <geometry>
           <box>
-            <size>0.010 0.680 0.096</size>
+            <size>0.008 0.016 0.080</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="handle_riser_r">
+        <pose>0.004 0.646 0.120 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.008 0.016 0.080</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="handle_flange_l">
+        <pose>0.065 0.060 0.120 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.008 0.016 0.096</size>
+          </box>
+        </geometry>
+      </collision>
+      <collision name="handle_flange_r">
+        <pose>0.065 0.646 0.120 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>0.008 0.016 0.096</size>
           </box>
         </geometry>
       </collision>
       <!-- 外加短横杆已删除（2026-09-09 用户目视裁决）——把手即上方所述两条原生
-           竖向立筋，见 link b1.STL visual 前脸立筋与 handle_bar_backing 背衬。 -->
+           竖向立筋，见 link b1.STL visual 前脸立筋与 fix#25 的空心立筋碰撞体。 -->
       <!-- 圆形机构 b1r（固定装饰）并入抽屉本体 b1。指示灯 b1p 已恢复为独立的
            可下压解锁按钮（link b1p / b1p_anchor / b1p_joint，见 b1 link 之后），
            2026-09-09 用户拍板废弃 2026-09-03 §3「固定指示灯」语义。 -->
@@ -804,9 +842,8 @@
         <!-- 双手抽拉（bimanual drawer 合同；把手几何 2026-09-09 用户目视裁决 =
              b1.STL 原生两条竖向立筋把手 + 前脸受力背衬 handle_bar_backing 力墙，
              外加横杆已全部删除；b1p 恢复真实可按解锁按钮）：
-             左右钩爪（现役 = l_two_cyl_finger2 / r_three_cyl_finger1，端深
-             -0.095 / -0.090，2026-09-10 恢复 fix#8 角色）自 +X 侧推进，杆端压贴
-             各自竖立筋前脸得力。grasp_point /
+             左右钩爪（config B = l_two_cyl_finger1 / r_three_cyl_finger2，端深
+             -0.075）自 +X 侧推进，杆端压贴各自竖立筋前脸得力。grasp_point /
              right_grasp_point = 左/右把手抓取锚（b1 局部，世界 (0.099,4.107/4.693,
              0.952)），正是竖立筋中心（L y0.052..0.068、R y0.638..0.654，
              z 0.072..0.168 的 b1 局部中心 0.060/0.646/0.120），压在立筋前脸
@@ -845,16 +882,15 @@
              button 控制（见本 plugin 内 db1_unlock_button），以其 pressed 状态 +
              b1p_joint 位移为真按下物证；不再有 §4.2 simulated_linkage。 -->
         <unlock_button_id>db1_unlock_button</unlock_button_id>
-        <!-- [2026-09-10 随 adapter 撤销 09-07 翻转同步] 现役钩 = l_two_cyl_finger2
-             (端深 -0.095) / r_three_cyl_finger1 (端深 -0.090) —— 与 adapter
-             drawer_tools.*.gripper_* 同源（2026-09-10 恢复 fix#8 角色）。插件以两钩
-             杆端距左右 grasp_point <= grasp_contact_threshold 独立实测（simulated_
-             linkage 放行双物证之一）；若此处还留着 09-07 对调后的旧钩名，指向的是
-             支撑杆（距把手 0.068 m 必拒）。 -->
-        <unlock_hold_left_link>l_two_cyl_finger2</unlock_hold_left_link>
-        <unlock_hold_left_point>0 0 -0.095</unlock_hold_left_point>
-        <unlock_hold_right_link>r_three_cyl_finger1</unlock_hold_right_link>
-        <unlock_hold_right_point>0 0 -0.090</unlock_hold_right_point>
+        <!-- [2026-09-09 config B 角色修正] 上两 link 是 009 时代 pre-swap 旧钩名：
+             换杆后现役钩 = l_two_cyl_finger1 / r_three_cyl_finger2（端深均 -0.075），
+             插件以两钩杆端距左右 grasp_point <= grasp_contact_threshold 独立实测
+             （simulated_linkage 放行双物证之一）；旧名指向的是支撑杆（距把手 0.068 m
+             必拒）。 -->
+        <unlock_hold_left_link>l_two_cyl_finger1</unlock_hold_left_link>
+        <unlock_hold_left_point>0 0 -0.075</unlock_hold_left_point>
+        <unlock_hold_right_link>r_three_cyl_finger2</unlock_hold_right_link>
+        <unlock_hold_right_point>0 0 -0.075</unlock_hold_right_point>
         <!-- 双臂附着接触门：左右工具尖端距各自把手 ≤ grasp_contact_threshold
              才允许附着（收紧 0.12 → 0.02，拒绝探针悬空假附着）；耦合拖拽期间
              任一侧尖端脱离把手超过 coupling_contact_grace_seconds 即中止

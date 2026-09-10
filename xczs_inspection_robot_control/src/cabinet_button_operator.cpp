@@ -122,6 +122,22 @@ constexpr char kEmbeddedNavigationDisabledMessage[] =
 // 步骤都必须落在这个窗口内，故任何等待上限都要短于本值。
 constexpr double kDwellHoldSeconds = 12.0;
 
+// fix#24 (2026-09-10): 抽屉工作位姿到达的「外让」距离（米）。单一来源：
+// calculate_drawer_bimanual_work_poses 用它生成 clearance 位姿，
+// execute_drawer_visual_backend 用它做第一程靶位。
+// 背景 —— 单程自由空间 RRT 直达工作位姿时，工具在最后 ~0.5 s 横扫柜面：
+// boot13 实测左钩杆被面板几何顶到 q=+0.077 m 并卡死（JTC 报 −0.0768 m 位置
+// 超差、5 s 后 goal_time_tolerance 中止，rod_start 门必败），同刻插件记
+// 「Unsafe pre-grasp movement」（抽屉被推动 0.006 rad）。根因：db1 自身的碰撞
+// 体在租约心跳生效后已从 MoveIt 场景豁免（cabinet_planning_scene 的
+// active-control exemption），规划器对面板/把手全盲，RRT 于是把工具从板内穿
+// 过去，物理接触只发生在 Gazebo 侧。杆在 URDF 里 lower=0 不可回缩，一旦被顶
+// 出就再也回不到 home。
+// 修法（纯控制侧，不动任何模型几何）：把到达拆成两程 —— ①RRT 到「外让位姿」
+// （工作位姿沿逼近法线外移本值），长程段在离柜面足够远处结束；②沿同一条法线
+// 做短程直线 Cartesian 入位，工具与杆端轴向进入面板，不产生横向剪切。
+constexpr double kDrawerArrivalClearanceMeters = 0.15;
+
 class OperationError : public std::runtime_error
 {
 public:
@@ -7058,7 +7074,24 @@ private:
   {
     geometry_msgs::msg::Pose left_work_pose;
     geometry_msgs::msg::Pose right_work_pose;
+    // fix#24: 同一工作位姿沿逼近法线（+approach_normal，即柜体局部 +X）外移
+    // kDrawerArrivalClearanceMeters 的「外让位姿」—— 到达段第一程的靶位。
+    // 姿态与工作位姿逐字相同，只有位置沿法线平移，故第二程只需一条直线。
+    geometry_msgs::msg::Pose left_clearance_pose;
+    geometry_msgs::msg::Pose right_clearance_pose;
   };
+
+  // 把位姿沿给定单位方向平移 d（姿态不动）。fix#24 生成外让位姿用。
+  static geometry_msgs::msg::Pose offset_pose_along(
+    const geometry_msgs::msg::Pose & pose,
+    const tf2::Vector3 & direction, double distance)
+  {
+    geometry_msgs::msg::Pose shifted = pose;
+    shifted.position.x += direction.x() * distance;
+    shifted.position.y += direction.y() * distance;
+    shifted.position.z += direction.z() * distance;
+    return shifted;
+  }
 
   // The grasp pose and the pull hold each tool tip pressed INTO its handle
   // plate by drawer_grasp_press_depth (west of the riser face), so the plugin's
@@ -7094,6 +7127,16 @@ private:
     poses.right_work_pose = calculate_drawer_side_tool_pose(
       control, DrawerSide::RIGHT, position,
       drawer_grasp_contact_offset(control, position));
+    // fix#24: 外让位姿 = 工作位姿沿逼近法线外移 kDrawerArrivalClearanceMeters
+    // （法线与 calculate_drawer_side_tool_pose 用的 outward 同源：柜体局部
+    // approach_normal 经 cabinet 旋转到规划系）。姿态不动。
+    const tf2::Vector3 outward = tf2::quatRotate(
+      resolve_cabinet_transform().getRotation(),
+      control.approach_normal).normalized();
+    poses.left_clearance_pose = offset_pose_along(
+      poses.left_work_pose, outward, kDrawerArrivalClearanceMeters);
+    poses.right_clearance_pose = offset_pose_along(
+      poses.right_work_pose, outward, kDrawerArrivalClearanceMeters);
     return poses;
   }
 
@@ -11406,12 +11449,34 @@ private:
         // 已经从一条正在下沉的构型上开始 —— 画面里即「姿态还没摆好就开始
         // 执行动作」。改为 true: 驻留留到调用方手上, 整个前奏在主动保持的
         // 工作位姿下执行 (12 s 自终止, self_center 每轮修正会重挂)。
+        // fix#24: 到达拆两程 (根因与量测见 kDrawerArrivalClearanceMeters 注释)。
+        // 第一程 = 自由空间 RRT 到外让位姿，长程段在离柜面 kDrawerArrivalClearanceMeters
+        // 处收住，工具不再横扫柜体；第二程 = 沿同一条逼近法线的两点直线
+        // Cartesian 入位，工具与杆端轴向进入面板。
         plan_and_execute_bimanual_poses(
           left_group, right_group, goal_handle,
           drawer_left_tool_.move_group, drawer_right_tool_.move_group,
-          poses.left_work_pose, poses.right_work_pose,
-          {}, {}, operation_executed, "drawer visual work pose",
+          poses.left_clearance_pose, poses.right_clearance_pose,
+          {}, {}, operation_executed, "drawer visual work pose clearance",
           true /* leave_arrival_dwell: 动作在主动保持的工作位姿下开始 */);
+        {
+          const std::vector<geometry_msgs::msg::Pose> left_approach{
+            poses.left_clearance_pose, poses.left_work_pose};
+          const std::vector<geometry_msgs::msg::Pose> right_approach{
+            poses.right_clearance_pose, poses.right_work_pose};
+          std::size_t approach_completed = 0U;
+          RCLCPP_INFO(
+            get_logger(),
+            "Visual drawer '%s': approaching the bimanual work pose along the "
+            "%.0f mm approach normal (two-point Cartesian press-in).",
+            control.id.c_str(), kDrawerArrivalClearanceMeters * 1000.0);
+          execute_bimanual_segmented_cartesian_path(
+            left_group, right_group, goal_handle,
+            left_approach, right_approach, 2U,
+            cartesian_velocity_scale_ * 0.5,
+            cartesian_acceleration_scale_ * 0.5,
+            approach_completed, operation_executed);
+        }
         break;
       } catch (const OperationError & reach_error) {
         const bool retryable =
