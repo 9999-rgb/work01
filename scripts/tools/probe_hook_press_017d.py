@@ -59,12 +59,16 @@ class PressProbe(Node):
         self._lst = tf2_ros.TransformListener(self._buf, self)
 
     def _root(self):
-        # TF 根帧按已见帧列表回退: odom(默认) → map → world
+        # TF 根帧必须优先 map: 柜体/把手合同点 (0.099, 4.107/4.693, 0.952) 定义在
+        # map 下, 且 electrical_mezzanine_frame 在 map 下为单位位姿。用 odom 会
+        # 得到随机器人漂移(且 boot 后可能被重设)的坐标, 事后无法换算 —— 2026-09-10
+        # 实测: 探针 odom 采样 z≈2.24(TF 里工具实际在 0.95), 说明 odom 中途被重设,
+        # 整段记录作废。故 map 优先, 缺失时才退回 world/odom。
         seen = self._buf.all_frames_as_string() or ""
-        for f in ("odom", "map", "world"):
+        for f in ("map", "world", "odom"):
             if f in seen:
                 return f
-        return "odom"
+        return "map"
 
     def sample(self, root):
         out = {}

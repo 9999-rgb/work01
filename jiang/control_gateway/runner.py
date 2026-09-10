@@ -3210,19 +3210,31 @@ class ControlServer:
         tolerance = float(adapter.reset_joint_tolerance)
         # 三电缸手指的零位（0.0）正好是其 prismatic 下关节限位。home 命令若
         # 只发到 0.0，effort 控制器在最后几毫米的闭合力 ∝ 误差 → 手指按
-        # 摩擦死区渐进蠕动（实测 ~0.01 mm/s），几十秒仍差零点几毫米，超出
-        # 容差窗口。向限位下方多发一个 overshoot，让控制器以持续 ~2N 的
-        # 闭合力把手指压死在零位（关节被 Gazebo 限位钳制在 0.0），home
-        # 校验仍以手动默认值为准，因此校验立即通过。旋钮/按钮同用的这三
-        # 根手指在 cabinet 操作时的校准位置就是 0.0，压死零位无副作用。
+        # 摩擦死区渐进蠕动（实测 ~0.01 mm/s），几十秒仍差零点几毫米 —— 在该
+        # 关节 0.003 的标定容差内，故不再需要靠预压去消这个静差。
+        # 下游的 overshoot 只对「阻尼足以停在限位上」的关节生效，见下。
         calibrated_names = {
             name
             for name, _ in (getattr(adapter, "calibration_joint_targets", ()) or ())
         }
+        # 预压（overshoot）只在关节自己的安全指令范围内才允许发出。把命令压到
+        # min_position 以下是拿机械限位当挡块用：只有当该关节的阻尼足以让它
+        # 停在限位上时才成立（三电缸 finger1/finger2，damping 20，实测稳在 0.0，
+        # 预压对它们其实没有任何效果）。低阻尼关节会跟着命令**穿过**限位 ——
+        # r_three_cyl_finger3（damping 2.0）实测被压到 -0.0107，远超它 0.003 的
+        # 标定容差，于是 home 门永远判不合格（抖动式间歇失败：它从 0 缓慢渗到
+        # -0.013 再被限位弹回 0，只有恰好落在容差带里的那段时间才通过）。
+        # 2026-09-10 修：default_position 已贴 min_position 的关节不再预压，
+        # 命令即默认值；其后果只有注释里记录的 ~0.1 mm 级蠕动，远在容差内。
         CLOSE_OVERSHOOT_M = 0.01
+        joints_by_name = {joint.name: joint for joint in adapter.manual_joints}
         command_targets = tuple(
             target - CLOSE_OVERSHOOT_M
-            if name in calibrated_names
+            if (
+                name in calibrated_names
+                and target - CLOSE_OVERSHOOT_M
+                >= joints_by_name[name].min_position
+            )
             else target
             for name, target in zip(names, targets)
         )
@@ -3402,6 +3414,12 @@ class ControlServer:
         # 动作起始姿态门的稳定窗口起点：姿态首次进入容差带的墙钟时刻，
         # 掉出容差带即清零（settle_seconds = 0 时该判断退化为「当次即放行」）。
         posture_band_started: Optional[float] = None
+        # 重试会重置 command_started，于是 elapsed 归零、按 elapsed 算出来的进度
+        # 会回落。TaskManager 的进度契约是单调不减，回落会直接抛
+        # "Task progress must not decrease."，把一次可恢复的 home 重试变成任务
+        # 失败（2026-09-10 实测：右钩 finger3 抖动时重试即触发）。故这里维护一个
+        # 只增不减的下限，重试只影响后续增量，已报出的进度绝不回退。
+        progress_floor = 0.0
         while True:
             # A task-level cancel must be honored during homing instead of
             # only at the timeout: the user asked to stop, and waiting out a
@@ -3531,10 +3549,14 @@ class ControlServer:
             if context is not None and now - last_report_at >= 1.0:
                 elapsed = max(0.0, now - command_started)
                 timeout = float(adapter.reset_joint_timeout_sec)
-                context.progress(
-                    progress_stage,
+                progress_floor = max(
+                    progress_floor,
                     progress_base
                     + progress_span * min(1.0, elapsed / timeout),
+                )
+                context.progress(
+                    progress_stage,
+                    progress_floor,
                     message="Waiting for fresh robot joint-state confirmation.",
                     data={
                         "cabinet": cabinet,

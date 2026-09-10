@@ -9124,12 +9124,16 @@ private:
   // Best-effort return of every rod to its retracted/open home after a failed
   // rod stage or during teardown, so no extended rod is left for the following
   // arm motions.  Never throws — failures are logged and swallowed.
+  //
+  // ``operation_executed`` may be null: the pre-arrival hold uses the same
+  // command purely to make the rod controllers start servoing, which is not a
+  // drawer operation having been carried out.
   template<typename GoalHandleT>
   void best_effort_drawer_rods_home(
     const std::shared_ptr<GoalHandleT> & goal_handle,
     const ButtonSpec & control,
     MoveGroupInterface & move_group,
-    bool * operation_executed)
+    bool * operation_executed = nullptr)
   {
     const auto rods_home_side = [&](const BimanualToolProfile & tool,
       rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::
@@ -9143,7 +9147,9 @@ private:
         send_cylinder_full_joint_goal(
           client, controller_label, goal_handle, move_group,
           tool.calibration_joint_names, home_positions);
-        *operation_executed = true;
+        if (operation_executed != nullptr) {
+          *operation_executed = true;
+        }
       } catch (const std::exception & rod_home_error) {
         RCLCPP_WARN(
           get_logger(),
@@ -9866,7 +9872,11 @@ private:
     // 轴) —— 顶开瞬间全量证据烧进错误消息。
     constexpr double kHookSeatPastFaceAbort = 0.012;  // m: 钩端越前脸平面入腔中止量
     constexpr int kHookSeatPastFaceSamples = 2;       // 连续 2 样(≈0.1 s)才中止
-    const auto hook_geometry = [&](DrawerSide side)
+    // ``rail_position`` is passed in, never re-read here: the front-face plane
+    // slides with the drawer, so sampling it per call makes two sides of the
+    // SAME sample measure against two different planes.  Each call also does
+    // blocking TF lookups, so a re-read can be a full state update apart.
+    const auto hook_geometry = [&](DrawerSide side, double rail_position)
       -> std::optional<std::pair<Eigen::Vector3d, double>> {
       const BimanualToolProfile & tool = drawer_tool_profile(side);
       if (!tool.has_gripper_role) {
@@ -9884,7 +9894,7 @@ private:
         return std::nullopt;
       }
       const double plane_x = drawer_world_rail_point(
-        control, handle, button_snapshot(control).position).x();
+        control, handle, rail_position).x();
       // 越入深度 = 当前前脸平面世界 x − 钩端世界 x; >0 = 钩端已到平面之后(入腔)。
       return std::make_pair(*tip, plane_x - tip->x());
     };
@@ -9898,7 +9908,7 @@ private:
           << control.drawer_axis.z() << ");";
       const auto append_side = [&](DrawerSide side, const std::string & label,
         double measured, double effort) {
-        const auto geo = hook_geometry(side);
+        const auto geo = hook_geometry(side, drawer.position);
         if (!geo.has_value()) {
           oss << " " << label << " hook geo n/a;";
           return;
@@ -9915,9 +9925,14 @@ private:
     int left_past_face_samples = 0;
     int right_past_face_samples = 0;
     const auto check_seat_guardrail = [&]() {
+      // One drawer sample per guard tick, shared by both sides — see the note on
+      // hook_geometry.  Reading it per side let a press that shoves the latched
+      // drawer open inflate the *other* side's "past-face" by the whole travel,
+      // firing the abort on a hook that was merely resting on the face.
+      const double rail_position = button_snapshot(control).position;
       const auto check_side = [&](DrawerSide side, int & consecutive,
         const char * side_label) {
-        const auto geo = hook_geometry(side);
+        const auto geo = hook_geometry(side, rail_position);
         if (!geo.has_value()) {
           consecutive = 0;  // 无几何可判(无把手点/物理不可用): 跳过(零回归)
           return;
@@ -11292,6 +11307,30 @@ private:
         "Drawer '" + control.id + "' is already at the requested rail "
         "position " + std::to_string(q_origin) + " m (visual backend " +
         phase_label + "; no motion was needed).");
+    }
+
+    // ---- 到达前先把杆组命令回 home，让电缸控制器开始托住杆。 ----
+    // 2026-09-10 实测根因：ros2_control 的 JTC 在「已激活但从未收到轨迹」时
+    // 不写 effort —— 两条杆组控制器自 boot 起就是这个状态，杆实际是只有阻尼
+    // 的自由棱柱。于是到达轨迹把工具压近柜体时杆被几何顶出（/xczs/joint_states
+    // 实测钩杆 q 冲到 +0.126，逼近 0.12 上限；支撑杆被压到 -0.089，越过 0
+    // 下限），而门前没有任何电缸指令。到达后才发的回位目标已经晚了：控制器
+    // 要顶着同一接触把杆拉回来，JTC 直接报 state tolerance violation /
+    // goal_time_tolerance 越限中止，rod_start 门 5 s 内必败。
+    // 故在到达之前先发一次 home 目标：目的不是"回位"（此刻杆通常就在 home），
+    // 而是让控制器带着 P/I 增益持续托住杆，整段接近过程都在主动保持中。
+    // 失败不致命（best-effort 吞错），到达后的 rod_start 门仍是最终判据。
+    if (drawer_left_tool_.has_support_role || drawer_left_tool_.has_gripper_role ||
+      drawer_right_tool_.has_support_role || drawer_right_tool_.has_gripper_role)
+    {
+      RCLCPP_INFO(
+        get_logger(),
+        "Visual drawer '%s': holding both rod groups at their stage-'home' "
+        "posture across the arrival motion so the cylinder controllers servo "
+        "them instead of leaving free prismatic joints for the cabinet to push "
+        "out.",
+        control.id.c_str());
+      best_effort_drawer_rods_home(goal_handle, control, *right_group);
     }
 
     // ---- 双臂钉到单工作位姿（杆端贴把手立板），锚定实测轨位。 ----

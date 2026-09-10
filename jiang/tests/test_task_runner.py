@@ -746,9 +746,50 @@ class TaskRunnerTest(unittest.TestCase):
         finger_index = adapter.manual_joint_names.index(
             "r_three_cyl_finger1_joint"
         )
-        # home 对校准手指多发一个 overshoot（-0.01），把手指压死到 0.0 下
-        # 限位，校验仍以默认值 0.0 为准；命令值应体现这个 overshoot。
-        self.assertEqual(-0.01, node.joint_targets[0][finger_index])
+        # 2026-09-10 修：校准手指的零位就是它的 prismatic 下限位，home 命令不得
+        # 压到限位以下。旧实现统一多发一个 -0.01 的 overshoot 去"压死"零位，
+        # 但只有高阻尼关节（finger1/finger2，damping 20）真的停在限位上；低阻尼
+        # 的 r_three_cyl_finger3（damping 2.0）会跟着命令穿过零位到 -0.0107，
+        # 远超它 0.003 的标定容差，home 门因此间歇性永远失败。命令值现在就是
+        # 默认值本身。
+        self.assertEqual(0.0, node.joint_targets[0][finger_index])
+
+    def test_homing_never_commands_a_joint_past_its_declared_limit(self) -> None:
+        """home 命令必须落在适配器声明的安全指令范围内。
+
+        这是 2026-09-10 那次修复的守卫：任何"用限位当挡块"的预压都不得把命令
+        压到 min_position 以下，否则低阻尼关节会穿过限位、把 home 校验踢出容差。
+        """
+        adapter_path = (
+            JIANG_DIR.parent
+            / "xczs_inspection_robot_control"
+            / "config"
+            / "cabinet_robot_adapter.yaml"
+        )
+        server, node = _server()
+        adapter = load_robot_adapter(adapter_path, toolset="A")
+        server._robot_adapter = adapter
+        node.joint_names = adapter.manual_joint_names
+        node.joint_limits = {
+            j.name: (j.min_position, j.max_position)
+            for j in adapter.manual_joints
+        }
+        node.joint_positions = {
+            joint.name: joint.default_position for joint in adapter.manual_joints
+        }
+        # 让每个关节都偏离默认值，逼出一次真实的 home 命令。
+        node.joint_positions["r_three_cyl_finger1_joint"] = 0.01
+        node.joint_state_received_monotonic = time.monotonic()
+
+        server._home_robot_joints(None, "cabinet_a")
+
+        self.assertEqual(1, len(node.joint_targets))
+        for joint, commanded in zip(
+            adapter.manual_joints, node.joint_targets[0]
+        ):
+            with self.subTest(joint=joint.name):
+                self.assertGreaterEqual(commanded, joint.min_position)
+                self.assertLessEqual(commanded, joint.max_position)
 
     def test_homing_accepts_active_tool_at_calibration_tolerance(self) -> None:
         adapter_path = (
