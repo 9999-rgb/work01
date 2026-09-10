@@ -8887,22 +8887,32 @@ private:
   // Rod end (moving-rod link pose + its measured rod-end local offset) to a
   // world drawer target point.  This is the §4.3/§5.3 contact metric; its hard
   // threshold is sealed live at §7.2 stages 4/5.
+  // World position of the moving rod's end, physics truth when available.
+  // Split out of rod_end_distance so callers can log the per-axis miss vector:
+  // the scalar norm alone cannot tell an axial short-fall (hook merely hovering
+  // short of the plate) from a lateral misplacement (hook pressed beside the
+  // handle), and those two need opposite fixes.
+  Eigen::Vector3d rod_end_world(
+    MoveGroupInterface & move_group, const std::string & rod_link,
+    const tf2::Vector3 & rod_end_local)
+  {
+    const auto physics_end = drawer_physics_link_point(rod_link, rod_end_local);
+    if (physics_end.has_value()) {
+      return *physics_end;
+    }
+    const auto state = synchronized_current_robot_state(move_group);
+    const Eigen::Isometry3d & pose = state->getGlobalLinkTransform(rod_link);
+    return pose * Eigen::Vector3d(
+      rod_end_local.x(), rod_end_local.y(), rod_end_local.z());
+  }
+
   double rod_end_distance(
     MoveGroupInterface & move_group, const std::string & rod_link,
     const tf2::Vector3 & rod_end_local, const tf2::Vector3 & world_target)
   {
-    Eigen::Vector3d end;
-    const auto physics_end = drawer_physics_link_point(rod_link, rod_end_local);
-    if (physics_end.has_value()) {
-      end = *physics_end;
-    } else {
-      const auto state = synchronized_current_robot_state(move_group);
-      const Eigen::Isometry3d & pose = state->getGlobalLinkTransform(rod_link);
-      end = pose * Eigen::Vector3d(
-        rod_end_local.x(), rod_end_local.y(), rod_end_local.z());
-    }
-    return (end - Eigen::Vector3d(
-      world_target.x(), world_target.y(), world_target.z())).norm();
+    return (rod_end_world(move_group, rod_link, rod_end_local) -
+           Eigen::Vector3d(
+             world_target.x(), world_target.y(), world_target.z())).norm();
   }
 
   // Execute ONE side's rod stage: send the controller's full-joint goal built
@@ -9182,13 +9192,20 @@ private:
     const std::string & role_label, const std::string & rod_link,
     const tf2::Vector3 & rod_end_local, const tf2::Vector3 & world_target)
   {
-    const double distance = rod_end_distance(
-      move_group, rod_link, rod_end_local, world_target);
+    const Eigen::Vector3d end =
+      rod_end_world(move_group, rod_link, rod_end_local);
+    const Eigen::Vector3d target(
+      world_target.x(), world_target.y(), world_target.z());
+    const Eigen::Vector3d miss = end - target;
+    const double distance = miss.norm();
     RCLCPP_INFO(
       get_logger(),
-      "Drawer '%s' %s rod end (%s) is %.4f m from the drawer %s target.",
+      "Drawer '%s' %s rod end (%s) is %.4f m from the drawer %s target "
+      "(miss dx %.4f dy %.4f dz %.4f; tip %.4f %.4f %.4f; target %.4f %.4f "
+      "%.4f).",
       control.id.c_str(), role_label.c_str(), rod_link.c_str(), distance,
-      role_label.c_str());
+      role_label.c_str(), miss.x(), miss.y(), miss.z(),
+      end.x(), end.y(), end.z(), target.x(), target.y(), target.z());
     return distance;
   }
 
@@ -9876,8 +9893,21 @@ private:
     // slides with the drawer, so sampling it per call makes two sides of the
     // SAME sample measure against two different planes.  Each call also does
     // blocking TF lookups, so a re-read can be a full state update apart.
+    // Every input that fed the past-face decision is carried out of the lambda
+    // so the abort message can print it.  Inferring this gate from the summary
+    // line alone has repeatedly mis-attributed it: ``past-face`` mixes a
+    // world-frame physics tip with a rail point produced by
+    // ``drawer_world_rail_point`` (cabinet transform), and when those two
+    // frames disagree the difference lands entirely in this number.
+    struct HookGeometry {
+      Eigen::Vector3d tip;
+      tf2::Vector3 handle;
+      double handle_x{0.0};
+      double plane_x{0.0};
+      double past_face{0.0};
+    };
     const auto hook_geometry = [&](DrawerSide side, double rail_position)
-      -> std::optional<std::pair<Eigen::Vector3d, double>> {
+      -> std::optional<HookGeometry> {
       const BimanualToolProfile & tool = drawer_tool_profile(side);
       if (!tool.has_gripper_role) {
         return std::nullopt;
@@ -9895,8 +9925,14 @@ private:
       }
       const double plane_x = drawer_world_rail_point(
         control, handle, rail_position).x();
+      HookGeometry geo;
+      geo.tip = *tip;
+      geo.handle = handle;
+      geo.handle_x = handle.x();
+      geo.plane_x = plane_x;
       // 越入深度 = 当前前脸平面世界 x − 钩端世界 x; >0 = 钩端已到平面之后(入腔)。
-      return std::make_pair(*tip, plane_x - tip->x());
+      geo.past_face = plane_x - tip->x();
+      return geo;
     };
     const auto describe_hook_instant = [&](const std::string & reason)
       -> std::string {
@@ -9906,6 +9942,10 @@ private:
           << drawer.position << " m @ " << drawer.velocity << " m/s (axis "
           << control.drawer_axis.x() << "," << control.drawer_axis.y() << ","
           << control.drawer_axis.z() << ");";
+      const tf2::Transform cabinet = resolve_cabinet_transform();
+      oss << " cabinet t(" << cabinet.getOrigin().x() << ","
+          << cabinet.getOrigin().y() << "," << cabinet.getOrigin().z()
+          << ") yaw " << tf2::getYaw(cabinet.getRotation()) << " rad;";
       const auto append_side = [&](DrawerSide side, const std::string & label,
         double measured, double effort) {
         const auto geo = hook_geometry(side, drawer.position);
@@ -9913,9 +9953,11 @@ private:
           oss << " " << label << " hook geo n/a;";
           return;
         }
-        const Eigen::Vector3d & tip = geo->first;
-        oss << " " << label << " hook tip (" << tip.x() << "," << tip.y() << ","
-            << tip.z() << ") m, past-face " << geo->second << " m, rod "
+        oss << " " << label << " hook tip (" << geo->tip.x() << ","
+            << geo->tip.y() << "," << geo->tip.z() << ") m, past-face "
+            << geo->past_face << " m (plane_x " << geo->plane_x
+            << " vs handle_x " << geo->handle_x << ", handle ("
+            << geo->handle.y() << "," << geo->handle.z() << ")), rod "
             << measured << " m @ " << effort << " N;";
       };
       append_side(DrawerSide::LEFT, "left", left_measured, left_effort);
@@ -9937,14 +9979,14 @@ private:
           consecutive = 0;  // 无几何可判(无把手点/物理不可用): 跳过(零回归)
           return;
         }
-        if (geo->second >= kHookSeatPastFaceAbort) {
+        if (geo->past_face >= kHookSeatPastFaceAbort) {
           if (++consecutive >= kHookSeatPastFaceSamples) {
             throw OperationError(
                     PressCabinetButton::Result::EXECUTION_FAILED,
                     describe_hook_instant(
                       std::string(side_label) + " hook rod went over/around the "
                       "face plate: its tip is " +
-                      std::to_string(geo->second) + " m past the front-face "
+                      std::to_string(geo->past_face) + " m past the front-face "
                       "plane (abort >= " +
                       std::to_string(kHookSeatPastFaceAbort) + " m) while the "
                       "drawer is still latched; re-seat the hooks before any "
