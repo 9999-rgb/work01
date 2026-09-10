@@ -5,6 +5,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -939,9 +941,15 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(
-    std::make_shared<
-      xczs_inspection_robot_control::CabinetPlanningScene>());
+  try {
+    rclcpp::spin(
+      std::make_shared<
+        xczs_inspection_robot_control::CabinetPlanningScene>());
+  } catch (const std::exception & error) {
+    std::fprintf(stderr, "Cabinet planning scene failed: %s\n", error.what());
+    rclcpp::shutdown();
+    return EXIT_FAILURE;
+  }
   rclcpp::shutdown();
-  return 0;
+  return EXIT_SUCCESS;
 }

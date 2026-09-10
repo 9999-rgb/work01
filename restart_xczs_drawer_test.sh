@@ -41,7 +41,7 @@ sleep 2
 WORLD_LAUNCH=(
   ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py
   gui:=false gazebo:=true robot_bringup:=false use_sim_time:=true
-  control_gui:=false teleop:=false moveit:=false moveit_rviz:=false
+  moveit:=false moveit_rviz:=false
   nav2:=false nav2_rviz:=false
   world:=/home/live/work01/xczs_inspection_robot_gazebo/worlds/inspection_robot.world
   robot_name:=xczs_inspection_robot

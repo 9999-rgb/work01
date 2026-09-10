@@ -169,6 +169,45 @@ OPERATION_CANCEL_GRACE_SEC = 5.0
 # feedback is reported in its own 0..1 range and must be mapped above this band
 # or a legitimate initial 0.0 feedback sample makes task progress go backward.
 OPERATION_PREFLIGHT_PROGRESS = 0.02
+# 2026-09-10 用户整改「动作开始前，点位和初始姿态都要先到设定位置」：提交
+# operate 之前，任务层先复验两件事 —— ①底盘确实停在本次控件的工位；②机械臂
+# 已回到适配层声明的初始姿态。operator 侧另有一道物理真值到位门（工作位姿
+# 稳定后才开始动作，见 verify_drawer_action_start_gate），两层职责不同：
+# operator 管「动作起点那一刻的物理真值」，任务层管「提交动作之前机器人在哪、
+# 是什么姿态」。
+#
+# 姿态门：在每关节的配置复位容差之外再收紧到本值并保持稳定窗口。原来的
+# reset_joint_tolerance 0.12 rad 是「复位任务」的语义（够松以免在慢仿真下误
+# 报），对「动作起点」太松 —— 0.12 rad 的肩/腕偏差可在杆端放大到数厘米，正是
+# 「姿态还没摆好就开始执行动作」。三根电缸手指不受影响：它们走各自的标定容差
+# （0.006），取 min() 后仍是标定值。
+OPERATION_START_POSTURE_TOLERANCE_RAD = 0.02
+OPERATION_START_POSTURE_STABLE_SEC = 0.5
+# 点位门：容差直接取任务层自己的「导航到站交接」判据，不另立一个更严的数字。
+#
+# 2026-09-10 首跑实测（db1 open，position error 0.182 m > 0.10 m 被拦）：本门
+# 起初自设 0.10 m / 0.10 rad，与任务层的到达语义冲突 —— 任务层导航循环的到站
+# 判据是 NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M(1.0 m) /
+# _YAW_(0.25 rad)「进交接带即算到站」，其后精度由 operator 的 dock_to_staging_
+# pose + verify_staging_pose_before_arm_motion 收敛到 8 mm / 0.070 rad。自设
+# 0.10 m 等于把 operator 正要接管的那段精度在任务层按更严的标准又验一遍，一次
+# **合法**的交接带内到站（0.182 m）被误判成「没停到工位」。
+#
+# 取同一组常量后本门有清晰不变式：**它只会拦下比「已到站」更差的状态**
+# （没导航 / 停到别处 / 交接带内又被挪出带外），绝不会卡住一次合法到站 —— 也就
+# 是它唯一该做的事：提交 operate 前确认底盘没有被挪走，别让整段 operate 白跑。
+OPERATION_START_STATION_POSITION_TOLERANCE_M = (
+    NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M
+)
+OPERATION_START_STATION_YAW_TOLERANCE_RAD = (
+    NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD
+)
+OPERATION_START_STATION_STABLE_SEC = 0.4
+OPERATION_START_STATION_TIMEOUT_SEC = 5.0
+OPERATION_START_STATION_POLL_SEC = 0.10
+# 点位门占用预检进度带的头部，其余留给关节复位（两者合计
+# OPERATION_PREFLIGHT_PROGRESS）。
+OPERATION_START_STATION_PROGRESS_SPAN = 0.005
 TASK_MONITOR_PERIOD_SEC = 0.10
 EXECUTOR_SPIN_PERIOD_SEC = 0.10
 # Must stay looser than the Nav2 goal checker (0.20 m) and no tighter than
@@ -3119,6 +3158,8 @@ class ControlServer:
         progress_stage: str = "homing_robot_joints",
         progress_base: float = 0.0,
         progress_span: float = 1.0,
+        strict_joint_tolerance: Optional[float] = None,
+        settle_seconds: float = 0.0,
     ) -> Dict[str, Any]:
         """Restore the arm and gripper to adapter defaults, then wait for proof.
 
@@ -3129,7 +3170,38 @@ class ControlServer:
         ``context`` is None for scene switches, which run outside task
         progress reporting; the reset task reuses this via
         :meth:`_reset_robot_joints`.
+
+        ``strict_joint_tolerance`` / ``settle_seconds`` tighten this into the
+        *operation start posture gate*: every joint's acceptance tolerance
+        becomes ``min(configured tolerance, strict_joint_tolerance)`` and the
+        posture must additionally hold for ``settle_seconds`` of fresh
+        snapshots before this returns.  The defaults (None / 0.0) keep the
+        historical single-read semantics used by navigation, reset and scene
+        switches.
         """
+        if strict_joint_tolerance is None:
+            strict_tolerance: Optional[float] = None
+        else:
+            strict_tolerance = float(strict_joint_tolerance)
+            if (
+                not math.isfinite(strict_tolerance)
+                or strict_tolerance <= 0.0
+                or strict_tolerance > OPERATION_START_POSTURE_TOLERANCE_RAD
+            ):
+                raise ValueError(
+                    "strict_joint_tolerance must be finite, positive and no "
+                    "looser than OPERATION_START_POSTURE_TOLERANCE_RAD."
+                )
+        settle_seconds = float(settle_seconds)
+        if (
+            not math.isfinite(settle_seconds)
+            or settle_seconds < 0.0
+            or settle_seconds > OPERATION_START_POSTURE_STABLE_SEC
+        ):
+            raise ValueError(
+                "settle_seconds must be finite, non-negative and no longer "
+                "than OPERATION_START_POSTURE_STABLE_SEC."
+            )
         adapter = self._robot_adapter
         names = tuple(joint.name for joint in adapter.manual_joints)
         targets = tuple(
@@ -3158,12 +3230,16 @@ class ControlServer:
         def _joint_tolerance(name: str) -> float:
             configured = getattr(adapter, "reset_tolerance_for_joint", None)
             if not callable(configured):
-                return tolerance
-            try:
-                value = float(configured(name))
-            except (TypeError, ValueError):
-                return tolerance
-            return value if math.isfinite(value) and value > 0.0 else tolerance
+                base = tolerance
+            else:
+                try:
+                    value = float(configured(name))
+                except (TypeError, ValueError):
+                    value = tolerance
+                base = value if math.isfinite(value) and value > 0.0 else tolerance
+            if strict_tolerance is None:
+                return base
+            return min(base, strict_tolerance)
 
         def _within_tolerance(errors: Mapping[str, float]) -> bool:
             return all(
@@ -3185,6 +3261,41 @@ class ControlServer:
             except (KeyError, TypeError, ValueError):
                 return None
 
+        def _fresh(snapshot: Mapping[str, Any]) -> bool:
+            received = snapshot.get("received_monotonic")
+            return isinstance(received, (int, float)) and (
+                time.monotonic() - float(received)
+                <= JOINT_STATE_FRESHNESS_MAX_AGE_SEC
+            )
+
+        def _posture_is_settled() -> bool:
+            """Hold the in-tolerance posture for the settle window.
+
+            动作起始姿态门（2026-09-10）：单次读数可能只是正在下沉/回弹的瞬时
+            切片，所以放行前要求关节状态快照连续保持在容差带内满
+            ``settle_seconds`` 秒。``settle_seconds <= 0`` 时保持旧语义（一次
+            读数即放行）；稳定窗口内一旦掉出容差带或快照变陈旧即判不成立，
+            由调用方继续走「重新复位 + 有界等待」而不是硬等。
+            """
+            if settle_seconds <= 0.0:
+                return True
+            deadline = time.monotonic() + settle_seconds
+            while True:
+                if context is not None:
+                    context.raise_if_canceled()
+                now = time.monotonic()
+                if now >= deadline:
+                    return True
+                time.sleep(min(RESET_JOINT_STATE_POLL_SEC, deadline - now))
+                held_snapshot = self._node.robot_joint_state_snapshot()
+                held_errors = _errors(held_snapshot)
+                if not (
+                    held_errors
+                    and _fresh(held_snapshot)
+                    and _within_tolerance(held_errors)
+                ):
+                    return False
+
         snapshot = self._node.robot_joint_state_snapshot()
         errors = _errors(snapshot)
         received_monotonic = snapshot.get("received_monotonic")
@@ -3195,12 +3306,19 @@ class ControlServer:
         # The fast path must not trust a snapshot that has gone stale: a stalled
         # joint-state broadcaster would otherwise report the arm as already home
         # and let navigation/operation proceed on a frozen backend.
-        if errors and fresh_snapshot and _within_tolerance(errors):
+        if (
+            errors
+            and fresh_snapshot
+            and _within_tolerance(errors)
+            and _posture_is_settled()
+        ):
             return {
                 "status": "already_home",
                 "joint_count": len(names),
                 "max_error_rad": max(errors.values()),
                 "tolerance_rad": tolerance,
+                "strict_tolerance_rad": strict_tolerance,
+                "settled_seconds": settle_seconds,
             }
 
         # The arm trajectory executes under the ROS/sim clock (the commanded
@@ -3281,6 +3399,9 @@ class ControlServer:
         retries_left = HOME_JOINT_END_EFFECTOR_RETRY_LIMIT
         last_snapshot: Mapping[str, Any] = {}
         last_report_at = 0.0
+        # 动作起始姿态门的稳定窗口起点：姿态首次进入容差带的墙钟时刻，
+        # 掉出容差带即清零（settle_seconds = 0 时该判断退化为「当次即放行」）。
+        posture_band_started: Optional[float] = None
         while True:
             # A task-level cancel must be honored during homing instead of
             # only at the timeout: the user asked to stop, and waiting out a
@@ -3297,12 +3418,20 @@ class ControlServer:
                 and float(received_at) >= command_started
                 and _within_tolerance(errors)
             ):
-                return {
-                    "status": "homed",
-                    "joint_count": len(names),
-                    "max_error_rad": max(errors.values()),
-                    "tolerance_rad": tolerance,
-                }
+                now = time.monotonic()
+                if posture_band_started is None:
+                    posture_band_started = now
+                if now - posture_band_started >= settle_seconds:
+                    return {
+                        "status": "homed",
+                        "joint_count": len(names),
+                        "max_error_rad": max(errors.values()),
+                        "tolerance_rad": tolerance,
+                        "strict_tolerance_rad": strict_tolerance,
+                        "settled_seconds": settle_seconds,
+                    }
+            else:
+                posture_band_started = None
 
             now = time.monotonic()
             sim_now = self._joint_ros_time_seconds(snapshot)
@@ -3365,6 +3494,7 @@ class ControlServer:
                     )
                     last_snapshot = {}
                     last_report_at = 0.0
+                    posture_band_started = None
                     continue
                 details: Dict[str, Any] = {
                     "joint_names": list(names),
@@ -3373,6 +3503,8 @@ class ControlServer:
                     "joint_tolerances_rad": {
                         name: _joint_tolerance(name) for name in names
                     },
+                    "strict_tolerance_rad": strict_tolerance,
+                    "settle_seconds": settle_seconds,
                     "timeout_seconds": float(adapter.reset_joint_timeout_sec),
                     "joint_state_available": bool(
                         last_snapshot.get("available")
@@ -3384,8 +3516,14 @@ class ControlServer:
                         for name in names
                     }
                 raise TaskExecutionError(
-                    "Robot joints did not reach their configured defaults "
-                    "before the reset timeout.",
+                    (
+                        "The robot did not hold its configured starting "
+                        "posture within the joint-reset window, so the "
+                        "cabinet action was not started."
+                        if strict_tolerance is not None
+                        else "Robot joints did not reach their configured "
+                        "defaults before the reset timeout."
+                    ),
                     code="robot_joint_reset_timeout",
                     details=details,
                     result={"cabinet": cabinet},
@@ -4981,6 +5119,180 @@ class ControlServer:
             "duration_seconds": elapsed,
         }
 
+    def _confirm_operation_start_station(
+        self,
+        context: Any,
+        cabinet: str,
+        control_id: str,
+        *,
+        progress_base: float,
+        progress_span: float,
+    ) -> Dict[str, Any]:
+        """Prove the base is parked at this control's station before acting.
+
+        2026-09-10 用户整改「动作开始前，点位和初始姿态都要先到设定位置」：
+        operate 任务恒以 ``navigate=False`` 提交（夹具场景禁用了嵌入式导航，
+        底盘由先行的导航任务或人工遥移预置），因此「底盘是否真的停在该控件
+        工位」在提交前没有任何一道复验 —— 而 operator 从工作位姿逼近到真正
+        执行动作要过去数十秒，期间定位修正/底盘漂移都不会再被看见。
+
+        这里用与导航任务同一套工位解析（inventory 规格 + 实时 TF）得到本次
+        控件的期望底盘位姿，再用同一套平面误差度量比对当前定位位姿。判据
+        取自任务层自己的到站交接容差（``NAVIGATION_STATION_HANDOFF_*``，见
+        模块常量注释：本门只拦比「已到站」更差的状态，精度归 operator 的
+        dock + verify 那道 8 mm 门）；连续稳定 ``OPERATION_START_STATION_
+        STABLE_SEC`` 秒才放行，``OPERATION_START_STATION_TIMEOUT_SEC`` 秒内
+        始终不满足则响亮失败，绝不在错误点位上开始动作。节点不提供工位解析
+        （生命周期/测试桩不持有 TF）时跳过，保持既有兼容语义。
+        """
+        station_resolver = getattr(
+            self._node, "navigation_station_from_tf", None
+        )
+        snapshot_provider = getattr(self._node, "navigation_snapshot", None)
+        if not callable(station_resolver) or not callable(snapshot_provider):
+            return {
+                "status": "skipped",
+                "reason": "station_resolver_unavailable",
+            }
+        adapter = self._robot_adapter_for(cabinet)
+        control_station = adapter.control_navigation_station(control_id)
+        try:
+            cabinet_instance = self._inventory.get(cabinet)
+            station_spec = self._inventory.station_spec_for(
+                cabinet,
+                control_station=control_station,
+            )
+            resolved = station_resolver(
+                cabinet,
+                cabinet_instance.frame_id,
+                station_spec,
+            )
+            station = resolved.to_dict()
+        except (InventoryError, ControlRequestError) as error:
+            raise TaskExecutionError(
+                "The configured operation station for "
+                f"{cabinet}/{control_id} could not be resolved: {error}",
+                code="operation_station_unavailable",
+                details={"cabinet": cabinet, "control_id": control_id},
+                result={"cabinet": cabinet, "control_id": control_id},
+            ) from error
+        if (
+            station.get("cabinet") != cabinet
+            or station.get("frame_id") != adapter.navigation_frame
+        ):
+            raise TaskExecutionError(
+                "The configured operation station uses an unexpected cabinet "
+                "or navigation frame.",
+                code="operation_station_unavailable",
+                details={
+                    "expected_cabinet": cabinet,
+                    "actual_cabinet": station.get("cabinet"),
+                    "expected_frame": adapter.navigation_frame,
+                    "actual_frame": station.get("frame_id"),
+                },
+                result={"cabinet": cabinet, "control_id": control_id},
+            )
+
+        deadline = time.monotonic() + OPERATION_START_STATION_TIMEOUT_SEC
+        band_started: Optional[float] = None
+        last_error: Dict[str, float] = {}
+        last_report_at = 0.0
+        while True:
+            context.raise_if_canceled()
+            now = time.monotonic()
+            snapshot = snapshot_provider()
+            pose = (
+                snapshot.get("current_pose")
+                if isinstance(snapshot, Mapping)
+                else None
+            )
+            in_band = False
+            if (
+                isinstance(pose, Mapping)
+                and pose.get("frame_id") == station.get("frame_id")
+            ):
+                try:
+                    last_error = self._planar_navigation_error(pose, station)
+                except (KeyError, TypeError, ValueError):
+                    last_error = {}
+                else:
+                    in_band = (
+                        last_error["position_m"]
+                        <= OPERATION_START_STATION_POSITION_TOLERANCE_M
+                        and last_error["yaw_rad"]
+                        <= OPERATION_START_STATION_YAW_TOLERANCE_RAD
+                    )
+            if in_band:
+                if band_started is None:
+                    band_started = now
+                elif now - band_started >= OPERATION_START_STATION_STABLE_SEC:
+                    logger.info(
+                        "Operation start station confirmed for %s/%s "
+                        "(position error %.4f m, yaw error %.4f rad).",
+                        cabinet,
+                        control_id,
+                        last_error["position_m"],
+                        last_error["yaw_rad"],
+                    )
+                    return {
+                        "status": "verified",
+                        "control_id": control_id,
+                        "station": station,
+                        "station_error": dict(last_error),
+                    }
+            else:
+                band_started = None
+            if now >= deadline:
+                raise TaskExecutionError(
+                    "The robot base is not parked at the configured operation "
+                    f"station for {cabinet}/{control_id} (position error "
+                    f"{last_error.get('position_m')} m vs "
+                    f"{OPERATION_START_STATION_POSITION_TOLERANCE_M} m, yaw "
+                    f"error {last_error.get('yaw_rad')} rad vs "
+                    f"{OPERATION_START_STATION_YAW_TOLERANCE_RAD} rad); the "
+                    "cabinet action was not started.",
+                    code="operation_station_unverified",
+                    details={
+                        "cabinet": cabinet,
+                        "control_id": control_id,
+                        "station": station,
+                        "station_error": dict(last_error),
+                        "position_tolerance_m": (
+                            OPERATION_START_STATION_POSITION_TOLERANCE_M
+                        ),
+                        "yaw_tolerance_rad": (
+                            OPERATION_START_STATION_YAW_TOLERANCE_RAD
+                        ),
+                        "timeout_seconds": (
+                            OPERATION_START_STATION_TIMEOUT_SEC
+                        ),
+                    },
+                    result={
+                        "cabinet": cabinet,
+                        "control_id": control_id,
+                        "station": station,
+                        "station_error": dict(last_error),
+                    },
+                )
+            if now - last_report_at >= 1.0:
+                elapsed = max(0.0, now - (deadline - OPERATION_START_STATION_TIMEOUT_SEC))
+                context.progress(
+                    "confirming_operation_station",
+                    progress_base
+                    + progress_span
+                    * min(
+                        1.0,
+                        elapsed / OPERATION_START_STATION_TIMEOUT_SEC,
+                    ),
+                    message=(
+                        "Waiting for the base to settle at the configured "
+                        "operation station."
+                    ),
+                    data={"cabinet": cabinet, "component": "robot_base"},
+                )
+                last_report_at = now
+            time.sleep(OPERATION_START_STATION_POLL_SEC)
+
     def _execute_operation_task_owned(
         self,
         context: Any,
@@ -5088,11 +5400,26 @@ class ControlServer:
                         "preflight": True,
                     },
                 ) from error
+        # 2026-09-10 用户整改「动作开始前，点位和初始姿态都要先到设定位置」：
+        # 预检带宽拆给两道前置确认 —— 先复验底盘点位，再用收紧的容差 + 稳定
+        # 窗口复验初始姿态；两道都过才提交动作。
+        self._confirm_operation_start_station(
+            context,
+            cabinet,
+            control_id,
+            progress_base=0.0,
+            progress_span=OPERATION_START_STATION_PROGRESS_SPAN,
+        )
         self._home_robot_joints(
             context,
             cabinet,
-            progress_base=0.0,
-            progress_span=OPERATION_PREFLIGHT_PROGRESS,
+            progress_base=OPERATION_START_STATION_PROGRESS_SPAN,
+            progress_span=(
+                OPERATION_PREFLIGHT_PROGRESS
+                - OPERATION_START_STATION_PROGRESS_SPAN
+            ),
+            strict_joint_tolerance=OPERATION_START_POSTURE_TOLERANCE_RAD,
+            settle_seconds=OPERATION_START_POSTURE_STABLE_SEC,
         )
         event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         with self._operation_bindings_lock:

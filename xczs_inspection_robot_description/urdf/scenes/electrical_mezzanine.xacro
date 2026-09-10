@@ -228,26 +228,21 @@
           <diffuse>0.7 0.73 0.78 1</diffuse>
         </material>
       </visual>
-      <!-- 2026-09-09 用户目视裁决：移除把手间横向拉杆（原话「把手之间加了个横杆，
-           去掉那个横杆」）。现状 = 仅保留下元素 handle_bar_backing 前脸受力背衬
-           （collision-only 不可见），017c 拉杆两元素（handle_bar/visual_handle_bar）
-           已删除。
-           背景：b1.STL（SW 原版导出 20260831，与场景逐字节一致）为全扇形退化网格
-           ——140 个三角形全部经由六个 ±1m 单元点 + 单位圆幽灵顶点连接，无真实表面，
-           两前把手接触只能由碰撞几何承接。017b（f32d6bd）加仅显示灰板揭示其原形
-           「齐平前脸 x0.099 的不可见鳍盒」；017c（133c21c + d8bf814，09-09）曾按
-           裁决换型为「背衬墙 + Ø16 横向贯通拉杆」（后上移 +24mm 进叉缝带）——
-           9-09 活验 cap1/cap2 于拉杆带失败（探针证按压期抽屉被推 +8.9mm、R 钩尖
-           停在 x≈0.109；L 叉另有疑似目标簿记误差的深入异常，移杆后单独重验），
-           用户随即目视否决拉杆本身 → 裁决移除，几何退回「钩爪自 +X 侧正面压贴
-           前脸」形态。
-           恢复点：git checkout d8bf814 = 017c 全量（拉杆 + 背衬墙）；git checkout
-           133c21c^ = 017 基线（两块 16mm 齐平鳍盒、无背衬墙）。
-           保留的背衬墙：前缘仍 x0.099（原合同面——grasp/handle/support/unlock
-           点值全部零改动、插件门语义不变），y 4.060..4.740（两端距侧缝 ~21mm
-           不挡支撑入缝），z 0.904..1.000（覆盖两叉全 z 带 0.926..0.978）——
-           叉指端面压贴得力 ≥8N 照旧成立；仅碰撞、无显示；同属 b1 link 无自碰撞。
-           -->
+      <!-- 真实把手 = b1.STL 原生两竖向立筋（2026-09-09 用户目视裁决：删去外加
+           横杆/短横杆，把手就是这两条本来就有的竖立筋）。背景订正：b1.STL（SW
+           原版导出 20260831，与场景逐字节一致）是 140 个真实表面的封闭抽屉盒
+           （非早期注释所记"全扇形退化"）——前脸 x=0.069（= 世界 0.099）处渲染
+           两条 16mm 宽 × 96mm 高竖向立筋，L y 0.052..0.068（世界 4.099..4.115，
+           中心 4.107）、R y 0.638..0.654（世界 4.685..4.701，中心 4.693）、
+           z 0.072..0.168（世界 0.904..1.000，中心 0.952）——中心恰为 grasp 锚点
+           b1 局部 (0.069, 0.060/0.646, 0.120) = 世界 (0.099, 4.107/4.693, 0.952)。
+           换型史：齐平鳍盒（017b f32d6bd）→ 通长拉杆（017c 133c21c+d8bf814）
+           → 纯平背衬（017d 2365fad）→ 两段短横杆（未提交，用户目视否决横杆本身）
+           → 本次：把手 = 原生竖立筋，外加几何一律不加。
+           保留 handle_bar_backing 仅碰撞受力墙：前缘 x0.099 = 竖立筋前脸同一平面
+           （grasp/support/unlock 点值零改动、插件门语义不变），y 4.060..4.740，
+           z 0.904..1.000——钩爪端面压贴竖立筋/背衬得力 ≥8N 照旧成立；仅碰撞、
+           无显示（承接钩端接触受力，竖立筋仅视觉）。 -->
       <collision name="handle_bar_backing">
         <pose>0.064 0.353 0.120 0 0 0</pose>
         <geometry>
@@ -256,8 +251,11 @@
           </box>
         </geometry>
       </collision>
-      <!-- 圆形机构 b1r 并入抽屉本体 b1；指示灯 b1p 随下方 visual_p/collision_p
-           并入 b1（固定装饰，仅显示，与 s2p/s3p 同范式，非按钮、无行程）。 -->
+      <!-- 外加短横杆已删除（2026-09-09 用户目视裁决）——把手即上方所述两条原生
+           竖向立筋，见 link b1.STL visual 前脸立筋与 handle_bar_backing 背衬。 -->
+      <!-- 圆形机构 b1r（固定装饰）并入抽屉本体 b1。指示灯 b1p 已恢复为独立的
+           可下压解锁按钮（link b1p / b1p_anchor / b1p_joint，见 b1 link 之后），
+           2026-09-09 用户拍板废弃 2026-09-03 §3「固定指示灯」语义。 -->
       <visual name="visual_r">
         <pose>0.03 0.16661 0.12017 0 0 0</pose>
         <geometry>
@@ -277,12 +275,37 @@
           </mesh>
         </geometry>
       </collision>
-      <!-- 指示灯 b1p：右把手顶部红色指示帽，固定装饰并入 b1 本体（仅显示）。
-           2026-09-02 曾拆为可下压解锁按钮 b1p_joint，2026-09-03 AGENT §3 撤销该
-           语义——b1p 无行程、不进 operable、不产出解锁物证。世界位姿不变：
-           b1 局部 (0.069,0.638,0.168) = 世界 (0.099,4.685,1.000)。 -->
-      <visual name="visual_p">
-        <pose>0.069 0.638 0.168 0 0 0</pose>
+    </link>
+
+    <!-- b1p：右把手上方红色按钮恢复为「真实可按解锁按钮」（2026-09-09 用户拍板，
+         废弃 2026-09-03 AGENT §3「固定指示灯」语义，恢复 2026-09-02 006 可压结构）。
+         db1 解锁 = 机器人右侧解锁短杆（r_three_cyl_finger3）从 +X 侧把按钮真按入
+         （b1p_joint 位移即物证，plugin 读 Position），simulated_linkage 仿真近似
+         撤除。结构沿用 006 双保险：
+         ① cap 挂同质量小锚 b1p_anchor（0.05kg，固定焊在抽屉 b1 把手位）——cap:
+           parent 惯性比 1:1，避免 80.6kg b1 上 160:1 质量比让 quick solver 解不动
+           prismatic（帽曾 ±0.2m 世界振荡）；
+         ② 碰撞用 box 代理（13×16×5mm）：b1p.STL bbox 顶缘与前脸线接触会让 ODE
+           spawn 产生错误冲量、帽被瞬间打飞 1e9 级联整场（006 实测）；box 整体上移
+           1mm（底 z0.169 > riser 顶缘 0.168）静止零接触，mesh 仅作显示。
+         世界位（关位 q0）：b1 根 (0.03,4.047,0.83187) + b1 局部 (0.069,0.638,0.168)
+         = 世界 (0.099,4.685,0.9999)（前脸面 x0.099 = 按钮外端面，y4.685，z1.000）。
+         行程 0..12mm（cap 厚 13mm，压入 12mm 仍不穿）；轴 -X = 朝柜体内压入，q =
+         帽相对平齐位的压入深度；0.0035 以上判真按入（见 db1_unlock_button 阈值）。
+         b1p 位于 R 竖立筋（z0.072..0.168）顶缘之上、同贴前脸面，无外加横杆。 -->
+    <link name="b1p">
+      <pose>0.099 4.685 0.9999 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-5</ixx>
+          <iyy>1e-5</iyy>
+          <izz>1e-5</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
         <geometry>
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri></mesh>
@@ -292,15 +315,65 @@
           <diffuse>0.85 0.04 0.04 1</diffuse>
         </material>
       </visual>
-      <collision name="collision_p">
-        <pose>0.069 0.638 0.168 0 0 0</pose>
+      <collision name="collision">
+        <pose>-0.0065 0.008 0.0035 0 0 0</pose>
         <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1p.STL</uri>
-          </mesh>
+          <box>
+            <size>0.013 0.016 0.005</size>
+          </box>
         </geometry>
       </collision>
     </link>
+    <!-- b1p_anchor：b1p 的专用承载锚（0.05kg 小球惯性，无视觉/碰撞，纯承载关节），
+         固定焊在 b1 把手位，b1p 再以 pose(0,0,0) 的 prismatic 挂锚。
+         pose 约定（父体 = 可动抽屉 b1，与 006 活验逐字节一致）：子 link 自身
+         <pose> 写「绝对关位」模型系坐标 (0.099,4.685,0.9999) = b1 关位
+         (0.03,4.047,0.83187) ⊕ b1 局部 (0.069,0.638,0.168)，令固定关节约束在
+         关位与子 link 声明位精确一致、spawn 零弹跳；b1 滑动时锚随关节刚性跟随。
+         注意与「631 行夹具约定」的区别：那是子 link 直挂固定 dianqiground 的
+         情形（关节 pose 全零、偏移放子 link <pose>）；可动父体情形必须把 b1
+         局部偏移放进固定关节 <pose>（见 006/3e8838d，活验），两者不可混用。 -->
+    <link name="b1p_anchor">
+      <pose>0.099 4.685 0.9999 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-5</ixx>
+          <iyy>1e-5</iyy>
+          <izz>1e-5</izz>
+        </inertia>
+      </inertial>
+    </link>
+    <joint name="b1p_anchor_joint" type="fixed">
+      <!-- 偏移在固定关节 <pose>（b1 局部 0.069,0.638,0.168），非子 link——见上注。 -->
+      <pose>0.069 0.638 0.168 0 0 0</pose>
+      <parent>b1</parent>
+      <child>b1p_anchor</child>
+    </joint>
+    <joint name="b1p_joint" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>b1p_anchor</parent>
+      <child>b1p</child>
+      <axis>
+        <xyz>-1 0 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.012</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <!-- 摩擦（ODE fMax，N）必须低于按压阈值处的弹簧回弹力（800 N/m × ~1mm
+               = 0.8N），否则松手后帽卡在压入位、pressed 永久为真。0.3N → 复位
+               平衡点 0.375mm，帽真实回弹至平齐。弹簧 800 N/m / 阻尼 30 由插件
+               db1_unlock_button button 控制施加（006 活验参数），gazebo
+               implicitSpringDamper 见文件尾 <gazebo reference="b1p_joint">。 -->
+          <damping>0.1</damping>
+          <friction>0.3</friction>
+        </dynamics>
+      </axis>
+    </joint>
 
     <link name="s3">
       <pose>0.03 5.236 1.385 0 0 0</pose>
@@ -728,56 +801,49 @@
         <detent_hysteresis>0.01</detent_hysteresis>
         <motion_tolerance>0.05</motion_tolerance>
         <reset_position>0.0</reset_position>
-        <!-- 双手抽拉（bimanual drawer 合同；把手几何 2026-09-09 已换型为贯通
-             拉杆 + 前脸受力背衬，下述「立板/把手本体」多为历史措辞、合同点值不变）：
-             左右钩爪（config B = l_two_cyl_finger1 / r_three_cyl_finger2）自正面推进，
-             上叉跨杆顶、下叉穿杆底，端面压贴背衬前缘 x0.099。解锁（2026-09-03
-             AGENT §4.4 修订语义，
-             废止 §3 版浮动区）= 解锁按钮位于右把手本体上：右侧解锁电机
-             （r_three_cyl_finger3_joint）自「右钩住+右支撑入缝」的同一工作位姿
-             独立伸出（不移动整臂），使其真实触点贴到右把手本体按钮接触区；plugin
-             以"finger3 真实触点距按钮区中心 ≤ unlock_distance_threshold 且解锁
-             电机实际伸出 ≥ retracted+floor"双物证放行，不再依赖任何按钮位移。
-             P0 几何冻结（世界 == 夹具局部系，b1 根 (0.030,4.047,0.832)，b1.STL
-             bbox x[-0.530,0.069] y[0,0.706] z[0,0.240] → 本体 y 4.047..4.753）：
-             左立板局部 (0.069,0.060,0.120) = 世界 (0.099,4.107,0.952)；右立板局部
-             (0.069,0.646,0.120) = (0.099,4.693,0.952)。按钮区中心候选 = 右把手
-             本体前缘面中心 b1 局部 (0.069,0.646,0.120)（= 世界 (0.099,4.693,0.952)，
-             与 right_grasp_point 同点；旧 0.085/世界 0.115 前缘外浮动中心已废止
-             ——悬停不构成接触物证）。最终按钮点由终构型反推 + 调试步骤 6/7 live
-             封定后收紧。grasp/unlock 点均位于抽屉子 link b1 局部系（plugin 以
-             control.link WorldPose 叠加，随抽屉同步滑动）。 -->
+        <!-- 双手抽拉（bimanual drawer 合同；把手几何 2026-09-09 用户目视裁决 =
+             b1.STL 原生两条竖向立筋把手 + 前脸受力背衬 handle_bar_backing 力墙，
+             外加横杆已全部删除；b1p 恢复真实可按解锁按钮）：
+             左右钩爪（config B = l_two_cyl_finger1 / r_three_cyl_finger2，端深
+             -0.075）自 +X 侧推进，杆端压贴各自竖立筋前脸得力。grasp_point /
+             right_grasp_point = 左/右把手抓取锚（b1 局部，世界 (0.099,4.107/4.693,
+             0.952)），正是竖立筋中心（L y0.052..0.068、R y0.638..0.654，
+             z 0.072..0.168 的 b1 局部中心 0.060/0.646/0.120），压在立筋前脸
+             x0.099 = 背衬前缘同一平面。
+             解锁（2026-09-09 用户拍板恢复「真实可按按钮」）= b1p 已拆为独立可压
+             红帽（link b1p/b1p_anchor + b1p_joint，0..12mm 朝柜内 -X）。右侧解锁
+             电机（r_three_cyl_finger3_joint）从同一工作位姿独立伸出，真实端面把
+             b1p 按钮真按入（db1_unlock_button pressed 物证，Position ≥0.0035）；
+             plugin 解锁门 = 距离（finger3 真实端点距 b1p 外端面中心 ≤
+             unlock_distance_threshold）+ 按钮真按下（non-sim 物证）+ 左右钩杆端
+             保持（unlock_hold_*，距左右 grasp_point ≤ grasp_contact_threshold）+
+             有效租约会话——不再有任何 simulated_linkage / simulation_acceptance。
+             P0 几何冻结（世界 == 夹具局部系，b1 根 (0.030,4.047,0.83187)）：b1p
+             外端面中心 b1 局部 (0.069,0.646,0.1705) = 世界 (0.099,4.693,1.002)，
+             位于 R 竖立筋顶缘上方（立筋中心 z0.952）。grasp/unlock 点均位于抽屉
+             子 link b1 局部系（plugin 以 control.link WorldPose 叠加，随抽屉同步
+             滑动）。 -->
         <graspable>true</graspable>
         <grasp_point>0.069 0.060 0.120</grasp_point>
         <right_grasp_point>0.069 0.646 0.120</right_grasp_point>
-        <unlock_press_point>0.069 0.646 0.120</unlock_press_point>
-        <unlock_distance_threshold>0.008</unlock_distance_threshold>
-        <!-- 解锁电机物证（AGENT §4.4 修订版）：unlock_press_point 现为右把手本体
-             按钮接触区中心候选（b1 局部，世界 (0.099,4.693,0.952)，旧 0.085 浮动
-             废止）。严格模式 plugin 解锁门 = 请求方右工具解锁接触链接（机器人
-             模型 link）世界位姿距该区中心 ≤ unlock_distance_threshold，且机器人
-             模型上 unlock_motor_joint（右侧解锁短级电缸）实际位置 ≥
-             unlock_retracted_position + unlock_extension_floor（证明真的伸出），
-             且 < unlock_extension_ceiling（防过冲顶死）。 -->
+        <unlock_press_point>0.069 0.646 0.1705</unlock_press_point>
+        <unlock_distance_threshold>0.010</unlock_distance_threshold>
+        <!-- 解锁物证（2026-09-09 恢复真按钮版）：unlock_press_point = b1p 按钮外
+             端面中心（b1 局部，世界 (0.099,4.693,1.002)；old §4.4 0.120/§4.2 sim
+             废止）。plugin 解锁门 = 机器人模型 unlock_motor_joint（右解锁短级电缸
+             r_three_cyl_finger3_joint）实际伸出 ≥ retracted+floor（真行程）+ 该杆
+             真实端点到 unlock_press_point 距离 ≤ unlock_distance_threshold（0.010
+             ——button 外端面随按压内缩，按压 3.5-6mm 时端点仍距静止面中心 ≤6mm
+             故容差取 10mm 覆盖真实压入）+ db1_unlock_button（b1p_joint）Position
+             ≥ press_threshold（真按下物证）。 -->
         <unlock_motor_joint>r_three_cyl_finger3_joint</unlock_motor_joint>
         <unlock_retracted_position>0.0</unlock_retracted_position>
         <unlock_extension_floor>0.001</unlock_extension_floor>
         <unlock_extension_ceiling>0.0254</unlock_extension_ceiling>
-        <!-- 2026-09-06 AGENT 执行方案 §4.2 simulated_linkage（db1 仿真配置唯一启用）：
-             实测（cap5 probe 0.116347 m vs 适配器几何下界 0.11456 m）证明 finger3
-             解锁杆与右把手按钮区中心存在 ≥ 0.114 m 横向偏移，右把手本体无该杆
-             可达的真实备选作用面；§4.1#6 禁止把按钮移到空中追随 finger3 → 选定
-             §4.2 仿真机构近似：模拟"右解锁电缸经未建模传动件驱动右把手闩锁释放"，
-             按钮仍位于右把手、工具可见几何保持原样。放行仍需真实解锁电机行程
-             （pressed，上面同一 joint）+ 左右把手真实保持（下两把钩杆杆端距左右
-             把手抓取点 ≤ grasp_contact_threshold，插件独立实测，同 bimanual attach
-             判据）+ 有效租约会话 + 未附着。放行结论以 simulated_linkage /
-             simulation_acceptance 明确标识，绝不报告为"finger3 真实端点按到按钮"。
-             严格触点模式仍是其余场景的默认。 -->
-        <unlock_simulated_linkage>true</unlock_simulated_linkage>
-        <unlock_linkage_description>right unlock motor drives the right-handle
-             latch release through an unmodelled linkage; finger3 real tip is
-             NOT at the button</unlock_linkage_description>
+        <!-- 解锁按钮控制引用（2026-09-09 恢复）：db1 抽屉解锁门指向 b1p 真按钮的
+             button 控制（见本 plugin 内 db1_unlock_button），以其 pressed 状态 +
+             b1p_joint 位移为真按下物证；不再有 §4.2 simulated_linkage。 -->
+        <unlock_button_id>db1_unlock_button</unlock_button_id>
         <!-- [2026-09-09 config B 角色修正] 上两 link 是 009 时代 pre-swap 旧钩名：
              换杆后现役钩 = l_two_cyl_finger1 / r_three_cyl_finger2（端深均 -0.075），
              插件以两钩杆端距左右 grasp_point <= grasp_contact_threshold 独立实测
@@ -804,9 +870,29 @@
         <grasp_coupling_damping>500</grasp_coupling_damping>
         <grasp_coupling_max_effort>150</grasp_coupling_max_effort>
       </control>
-      <!-- 2026-09-03 AGENT §3：db1_unlock_button（b1p 可压按钮控制）已删除——
-           b1p 恢复为固定指示灯并入 b1 本体，无行程、不进 operable 目录，
-           不产出解锁物证。解锁物证见上方 db1 抽屉 unlock_motor_* 字段。 -->
+      <!-- db1 解锁按钮：b1p_joint 是 b1p 红帽可压行程（0..12mm 朝柜内 -X，轴位移
+           = 相对平齐位的压入深度）。它是 db1 抽屉 <unlock_button_id> 指向的按钮
+           控制，负责施加 800 N/m 回位弹簧（006 活验参数：隐式弹簧阻尼见文件尾
+           <gazebo reference="b1p_joint">）并产出 pressed 物证；本身不可抓取、
+           不参与 operable/任务目录（006 语义）。press_threshold 3.5mm 高于静态
+           摩擦平衡 0.375mm 与任何残余微动——真实按压须把帽按入 ≥3.5mm 才判
+           pressed（杜绝「接近即解锁」）；release_threshold 0.6mm 保证松手回弹
+           （平衡点 0.375mm）后真实释放。 -->
+      <control>
+        <control_id>db1_unlock_button</control_id>
+        <control_type>button</control_type>
+        <joint_name>b1p_joint</joint_name>
+        <joint_state_topic>/xczs/cabinet/electrical_mezzanine/db1_unlock_button/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/electrical_mezzanine/db1_unlock_button/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/electrical_mezzanine/db1_unlock_button/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>30</spring_damping>
+        <press_threshold>0.0035</press_threshold>
+        <release_threshold>0.0006</release_threshold>
+        <reset_position>0.0</reset_position>
+        <graspable>false</graspable>
+      </control>
       <control>
         <control_id>ds3</control_id>
         <control_type>slider</control_type>
@@ -850,4 +936,10 @@
       </control>
     </plugin>
   </model>
+  <!-- b1p_joint：implicit spring damper 开启（006 活验）。弹簧刚度/阻尼由插件
+       db1_unlock_button button 控制经 joint SetParam 施加（800 N/m 回位）。 -->
+  <gazebo reference="b1p_joint">
+    <implicitSpringDamper>true</implicitSpringDamper>
+    <provideFeedback>true</provideFeedback>
+  </gazebo>
 </sdf>

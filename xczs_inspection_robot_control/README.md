@@ -8,8 +8,7 @@
 
 ## 模块架构
 
-- `src/` 9 个可执行节点（CMakeLists.txt 定义，install 到 `lib/xczs_inspection_robot_control`）：
-  - 手动控制：`keyboard_teleop`（节点 `xczs_keyboard_teleop`）、`inspection_robot_gui`（Qt5 GUI）。
+- `src/` 7 个可执行节点（CMakeLists.txt 定义，install 到 `lib/xczs_inspection_robot_control`）：
   - 指令路由：`base_command_router`、`legacy_trajectory_router` 负责手动/导航指令与底层控制器的转发。
   - 柜体操作：`cabinet_button_operator`（MoveIt 驱动的按钮/旋钮操作）、`operation_lease_coordinator`（操作租约互斥）、`cabinet_grasp_aggregator`（grasp 信号汇聚）。
   - 场景支撑：`cabinet_planning_scene`（MoveIt 碰撞对象）、`cabinet_pose_authority`（柜体位姿权威）。
@@ -20,7 +19,7 @@
 ## 功能介绍
 
 - 底盘控制：`base_command_router` 合并手动 `/xczs/manual_cmd_vel` 与导航 `/cmd_vel`，输出 `/xczs/cmd_vel`；用 `/xczs/set_navigation_mode` 服务切换模式（`cabinet_robot_adapter.yaml`）。
-- 关节控制：`keyboard_teleop` / `inspection_robot_gui` 发布 `/xczs/joint_trajectory`；`legacy_trajectory_router` 按组拆到 `/xczs/arm_controller/joint_trajectory`、`/xczs/gripper_controller/joint_trajectory`。
+- 关节控制：手动关节指令（`/xczs/joint_trajectory`）由 `legacy_trajectory_router` 按组拆到 `/xczs/arm_controller/joint_trajectory`、`/xczs/gripper_controller/joint_trajectory`。全栈控制入口是 Web（`jiang/`），控制包不再提供本地键盘/GUI 遥控节点。
 - 柜体自动操作：`cabinet_button_operator` 暴露 `OperateCabinetControl` / `PressCabinetButton` action，发布 `control_catalog` / `active_control`，调 `grasp` 服务；结果以 Gazebo 物理反馈为准，不把「规划成功」当成功。
 - 操作互斥：`operation_lease_coordinator` 通过 `/xczs/operation_lease` 服务（`ManageOperationLease.srv`）分配租约，启动完成前拒绝一切操作；边界规则在 `operation_validation_policy.hpp`。
 - 场景支撑：`cabinet_planning_scene` 按 `cabinet_scene.yaml` 维护碰撞对象；`cabinet_pose_authority` 校验柜体位姿并发布 `pose_valid`；`cabinet_grasp_aggregator` 聚合各末端 grasp 信号到 `/xczs/cabinet/grasp_active`。

@@ -43,6 +43,7 @@ from tf2_ros import TransformListener
 
 from .inventory import NavigationStation
 from .inventory import NavigationStationSpec
+from .operate_error_codes import operate_error_code_name
 from .robot_adapter import ManualJointConfig
 from .velocity_profile import VelocityProfile
 
@@ -1267,10 +1268,14 @@ class RosControlNode(Node):
                     ),
                     503,
                 )
-            return {
-                **self._map_state,
-                "data": list(self._map_state["data"]),
-            }
+            # The map callback replaces ``_map_state`` wholesale and never
+            # mutates the stored list, so the snapshot header can be taken
+            # under the lock while the (potentially 640x640) cell copy runs
+            # outside it.  Copying the cells in place would hold ``_lock``
+            # against every other user for the whole copy.
+            state = dict(self._map_state)
+        state["data"] = list(state["data"])
+        return state
 
     def _cabinet_catalog_coherence_locked(
         self,
@@ -5000,30 +5005,9 @@ class RosControlNode(Node):
 
     @staticmethod
     def _cabinet_error_code_name(error_code: Optional[int]) -> Optional[str]:
-        if error_code is None:
-            return "result_channel_failed"
-        names = {
-            getattr(OperateCabinetControl.Result, "SUCCESS", 0): "success",
-            getattr(OperateCabinetControl.Result, "INVALID_CONTROL", 1): "invalid_control",
-            getattr(OperateCabinetControl.Result, "UNSUPPORTED_COMMAND", 2): "unsupported_command",
-            getattr(OperateCabinetControl.Result, "NOT_READY", 3): "not_ready",
-            getattr(OperateCabinetControl.Result, "NAVIGATION_FAILED", 4): "navigation_failed",
-            getattr(OperateCabinetControl.Result, "PLANNING_FAILED", 5): "planning_failed",
-            getattr(OperateCabinetControl.Result, "EXECUTION_FAILED", 6): "execution_failed",
-            getattr(OperateCabinetControl.Result, "GRASP_FAILED", 7): "grasp_failed",
-            getattr(OperateCabinetControl.Result, "TARGET_NOT_REACHED", 8): "target_not_reached",
-            getattr(OperateCabinetControl.Result, "RELEASE_FAILED", 9): "release_failed",
-            getattr(OperateCabinetControl.Result, "CANCELED", 10): "canceled",
-            getattr(OperateCabinetControl.Result, "INTERNAL_ERROR", 11): "internal_error",
-            getattr(OperateCabinetControl.Result, "INVALID_FORCE", 12): "invalid_force",
-            getattr(OperateCabinetControl.Result, "INSUFFICIENT_FORCE", 13): "insufficient_force",
-            getattr(OperateCabinetControl.Result, "UNREACHABLE", 14): "unreachable",
-            getattr(OperateCabinetControl.Result, "CONTACT_DETECTION_TIMEOUT", 15): "contact_detection_timeout",
-            getattr(OperateCabinetControl.Result, "RESOURCE_BUSY", 16): "resource_busy",
-            getattr(OperateCabinetControl.Result, "LEASE_LOST", 17): "lease_lost",
-            getattr(OperateCabinetControl.Result, "TOOLSET_MISMATCH", 18): "toolset_mismatch",
-        }
-        return names.get(int(error_code), "unknown_error")
+        # Shared with cabinet_client so the two can never disagree on a result
+        # code; see control_gateway.operate_error_codes.
+        return operate_error_code_name(error_code)
 
     @staticmethod
     def _goal_status(status: int, label: str) -> Tuple[str, str]:

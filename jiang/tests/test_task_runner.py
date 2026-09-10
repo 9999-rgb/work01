@@ -1033,6 +1033,215 @@ class TaskRunnerTest(unittest.TestCase):
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
         self.assertEqual("success", task["status"])
 
+    def test_operation_confirms_base_station_before_submission(self) -> None:
+        """点位门：提交 operate 前必须复验底盘停在本次控件工位上。
+
+        2026-09-10 用户整改「动作开始前，点位和初始姿态都要先到设定位置」：
+        operate 恒以 navigate=False 提交，底盘由先行导航/遥移预置，提交前必须
+        在任务层再确认一次定位位姿仍落在工位容差内。
+        """
+        server, node = _server()
+        node.navigation_station_from_tf = (
+            lambda cabinet, _frame, _spec: NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0,
+                y=2.0,
+                z=0.0,
+                yaw=0.5,
+            )
+        )
+        node.state["current_pose"] = {
+            "x": 1.02,
+            "y": 1.99,
+            "yaw": 0.52,
+            "frame_id": "map",
+        }
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        self.assertTrue(client.submit_event.wait(timeout=5.0))
+        client.finish("success")
+        task = server._task_manager.wait(accepted["task_id"], timeout=5.0)
+        self.assertEqual("success", task["status"])
+
+    def test_operation_accepts_a_handoff_band_arrival(self) -> None:
+        """点位门不得拦下「任务层已判到站」的合法交接带到站。
+
+        回归（2026-09-10 首跑实测 db1 open）：本门起初自设 0.10 m，把一次
+        position error 0.182 m 的**合法**到站（任务层导航循环的到站判据是
+        NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 1.0 m，其后精度由
+        operator 的 dock + verify 收敛到 8 mm）误判成「没停到工位」而拒绝执行。
+        这里钉死不变式：只要落在交接带内就必须放行。
+        """
+        server, node = _server()
+        node.navigation_station_from_tf = (
+            lambda cabinet, _frame, _spec: NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0,
+                y=2.0,
+                z=0.0,
+                yaw=0.5,
+            )
+        )
+        # 交接带内但远超旧的 0.10 m：与首跑实测的 0.182 m 同量级。
+        node.state["current_pose"] = {
+            "x": 1.18,
+            "y": 2.00,
+            "yaw": 0.53,
+            "frame_id": "map",
+        }
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        self.assertTrue(client.submit_event.wait(timeout=5.0))
+        client.finish("success")
+        task = server._task_manager.wait(accepted["task_id"], timeout=5.0)
+        self.assertEqual("success", task["status"])
+
+    def test_operation_refuses_to_start_away_from_the_station(self) -> None:
+        """点位门不通过时响亮失败，且绝不向 operator 提交动作。"""
+        server, node = _server()
+        node.navigation_station_from_tf = (
+            lambda cabinet, _frame, _spec: NavigationStation(
+                cabinet=cabinet,
+                frame_id="map",
+                x=1.0,
+                y=2.0,
+                z=0.0,
+                yaw=0.5,
+            )
+        )
+        # 机器人停在别处（导航没跑 / 到达后又被挪走）。
+        node.state["current_pose"] = {
+            "x": 4.0,
+            "y": 4.0,
+            "yaw": 0.0,
+            "frame_id": "map",
+        }
+        client = server._cabinet_clients["cabinet_a"]
+        with patch.object(
+            runner_module, "OPERATION_START_STATION_TIMEOUT_SEC", 0.3
+        ):
+            accepted = server.submit_operation_task(
+                "cabinet_a",
+                "button_1",
+                "press",
+                None,
+                None,
+                5.0,
+            )
+            task = server._task_manager.wait(
+                accepted["task_id"], timeout=5.0
+            )
+        self.assertEqual("failed", task["status"])
+        self.assertEqual(
+            "operation_station_unverified", task["failure_code"]
+        )
+        # 失败回收会重新归位机械臂（允许），但绝不能把动作提交给 operator。
+        self.assertEqual([], client.submissions)
+
+    def test_operation_start_posture_gate_is_tighter_than_reset_tolerance(
+        self,
+    ) -> None:
+        """姿态门：落入复位容差但超出动作起始容差的姿态必须重新摆正。
+
+        旧行为（一次读数 + reset_joint_tolerance 0.12 rad）会直接以
+        「already_home」放行 —— 0.05 rad 的偏差在杆端可以放大到厘米级，正是
+        用户看到的「姿态还没摆好就开始执行动作」。
+        """
+        server, node = _server()
+        server._robot_adapter.reset_joint_tolerance = 0.12
+        node.joint_positions = {
+            name: position + 0.05
+            for name, position in (
+                ("body_arm1", 0.0),
+                ("arm1_arm2", -math.pi / 2.0),
+                ("arm2_arm3", 0.0),
+                ("arm3_arm4", 0.0),
+                ("arm4_arm5", 0.0),
+                ("arm5_end", 0.0),
+                ("end_worklink1", 0.0),
+                ("end_worklink2", 0.0),
+            )
+        }
+        node.joint_state_received_monotonic = time.monotonic()
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        self.assertTrue(client.submit_event.wait(timeout=5.0))
+        self.assertEqual(1, len(node.joint_targets))
+        client.finish("success")
+        task = server._task_manager.wait(accepted["task_id"], timeout=5.0)
+        self.assertEqual("success", task["status"])
+
+    def test_operation_fails_loudly_when_start_posture_never_settles(
+        self,
+    ) -> None:
+        """姿态门不成立时响亮失败，且绝不向 operator 提交动作。"""
+        server, node = _server()
+        # 假适配层的关节没有 group 字段；超时分支要靠 group 判定「只有末端
+        # 关节超差才重发命令」，这里补上（全部记为机械臂关节）。
+        for joint in server._robot_adapter.manual_joints:
+            joint.group = "left_arm"
+
+        def never_moves(
+            positions: list[float],
+            duration_sec: float = 0.5,
+            *,
+            lower_limit_margin: Any = None,
+        ) -> list[float]:
+            # 记录命令但不改变关节读数：模拟「姿态摆不到位」。
+            node.joint_targets.append(list(positions))
+            return list(positions)
+
+        node.joint_positions = {
+            name: 0.0
+            for name in (
+                "body_arm1",
+                "arm1_arm2",
+                "arm2_arm3",
+                "arm3_arm4",
+                "arm4_arm5",
+                "arm5_end",
+                "end_worklink1",
+                "end_worklink2",
+            )
+        }
+        node.set_joint_target = never_moves  # type: ignore[method-assign]
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a",
+            "button_1",
+            "press",
+            None,
+            None,
+            5.0,
+        )
+        task = server._task_manager.wait(accepted["task_id"], timeout=5.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("robot_joint_reset_timeout", task["failure_code"])
+        self.assertEqual([], client.submissions)
+
     def test_operation_requires_idle_navigation_before_acceptance(self) -> None:
         """Operation must reject while Nav2 is still active, mirroring reset.
 

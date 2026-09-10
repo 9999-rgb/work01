@@ -14,8 +14,7 @@ Gazebo、MoveIt、Nav2、ros2_control 与柜体控制节点组装成整套仿真
     （OMPL）、`nav2` navigation（地图按场景选择）。
   - 本地 `Node`：`robot_state_publisher`、`xczs_controller_spawner`、
     `xczs_tool_controller_spawner`、`xczs_base_command_router`、
-    `xczs_legacy_trajectory_router`、`xczs_operation_lease_coordinator`，
-    可选 `xczs_keyboard_teleop` / `xczs_inspection_robot_gui`。
+    `xczs_legacy_trajectory_router`、`xczs_operation_lease_coordinator`。
   - 按 `cabinet_instances.yaml` 逐个布柜体（命名空间 `/xczs/cabinet/<name>`）：
     `xczs_cabinet_pose_authority`、`xczs_cabinet_planning_scene`、
     `xczs_cabinet_button_operator`；另起单实例 `xczs_cabinet_grasp_aggregator`
@@ -36,7 +35,7 @@ Gazebo、MoveIt、Nav2、ros2_control 与柜体控制节点组装成整套仿真
   向 `/xczs/joint_hold_enabled` 发布 `False` 释放 spawn 期关节锁。
 - 关节状态统一走 `adapter_joint_state_topic`（默认 `/xczs/joint_states`，来自
   `cabinet_robot_adapter.yaml`），`robot_state_publisher` 与 MoveIt 均重映射至此。
-- 常用开关：`gazebo/gui/paused/robot_bringup/moveit/nav2/teleop/control_gui/scene/spawn_cabinet`；
+- 常用开关：`gazebo/gui/paused/robot_bringup/moveit/nav2/scene/spawn_cabinet`；
   `robot_bringup=false` 时本地不 spawn、不建控制器，只对接外部栈。
 
 ## 与项目的关系

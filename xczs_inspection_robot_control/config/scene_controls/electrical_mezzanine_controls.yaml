@@ -55,69 +55,67 @@
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
         state_positions: [0.0, 0.3]
-        # 双手抽拉几何合同（2026-09-03 AGENT §4.2-§4.4 修订版；世界 == 夹具局部系，
-        # b1 根 (0.030,4.047,0.832)，面板 x 前缘 0.099，本体 y 4.047..4.753，
-        # 本体 x −0.50..0.099，z 0.832..1.072 —— b1.STL bbox + 子 link pose 实测）：
-        #   钩取点 = 前脸受力背衬合同面中心（2026-09-09 拉杆已按用户目视裁决移除
-        #   ——017c 横向贯通拉杆换型在 9-09 活验 cap1/cap2 失败后被否，见 xacro
-        #   b1 link 注释与 git 恢复点 d8bf814/133c21c^；背衬墙保留、仅碰撞不可见）：
-        #   前缘 x=0.099，y 4.107/4.693，z 0.952。叉指自 +X 侧正面压贴背衬面得力
-        #   （≥8N 合同照旧），钩取带内无任何前凸件介入。
-        #   支撑点（2026-09-03 AGENT §4.3 修订，废止旧「立板下方 z=0.884」语义）=
-        #   柜体左右侧缝候选：左侧缝 = 本体西缘 4.047 与柜西壁 4.022 之间 25mm 槽
-        #   （候选 y 4.039 = 缝中心偏本体 4.5mm），右侧缝 = 本体东缘 4.753 与柜东壁
-        #   4.778 之间 25mm 槽（候选 y 4.761，对称）。z 取把手带 0.952、x 取面板前缘
-        #   0.099 = 支撑杆端在缝口的瞄准点（进入深度沿 −X，工作伸出 0.030 见
-        #   adapter drawer_tools）。x 前缘外与缝内区域静态网格已探明空旷（无遮挡）。
-        #   ★ 候选值须经 Gazebo 低速接触封定缝中心/进入深度/接触法向后才生效
-        #   （AGENT §4.3；dianqiground 仅地面碰撞、柜体无真实碰撞 → 封定后按
-        #   AGENT §7.2 在缝内加不可见局部碰撞代理供接触证据，不改外观）。
-        #   解锁（2026-09-03 AGENT §4.4 修订，废止旧「右把手前缘外 0.016 浮动区」）：
-        #   按钮位于右把手本体上，*p 指示灯无行程不产出物证。unlock_press_point 现
-        #   为「右把手本体按钮接触区」候选中心 = 右钩点合同面中心（前脸背衬前缘，b1 局部
-        #   (0.069,0.646,0.120) = 世界 (0.099,4.693,0.952)，与 right_handle_point
-        #   同点）：finger3 真实触点须实际贴到本体面（区阈值 0.008 + 电机伸出示证）。
-        #   最终按钮点由「右钩爪已钩住 + 右支撑已入缝」终构型反推、live 封定收紧
-        #   （AGENT §4.4 末条；finger3 FK 含父级 finger2 伸出量，见 adapter 注释）。
+        # 双手抽拉几何合同（2026-09-09 用户目视裁决：把手 = b1.STL 原生两条竖向
+        # 立筋，外加横杆/短横杆已删；b1p 恢复真实可按解锁按钮；世界坐标 = b1 关位
+        # q0，b1 根 (0.030,4.047,0.83187)，立筋前脸/面板前缘 x0.099。完整几何
+        # 源/换型史见 xacro b1 link 注释块）。
+        #   钩把手 = 两条原生竖向立筋（16mm 宽 × 96mm 高）：b1 局部 L
+        #   y0.052..0.068 / R y0.638..0.654、z0.072..0.168 = 世界 y 4.099..4.115 /
+        #   4.685..4.701、z 0.904..1.000，前脸贴 x0.099 平面。grasp 锚点（左/右
+        #   handle point）= 立筋中心：world x0.099、y 4.107/4.693、z 0.952 —— 与
+        #   插件 grasp_point/right_grasp_point 同点零改动，钩端压贴立筋前脸得力
+        #   ≥8N 照旧（plugin 附着门 grasp_contact_threshold 0.02 以该锚为基准）。
+        #   支撑点 = 柜体左右侧缝（AGENT §4.3 封定族）：左侧缝 y 4.039、右侧缝
+        #   y 4.761，z 0.952、x 面板前缘 0.099；支撑杆进入深度沿 −X，活体自标定
+        #   support_contact_inset 见 adapter drawer_tools。016 两侧 flank panel
+        #   真实挡停支撑，支撑段不动。
+        #   解锁（2026-09-09 恢复「真实可按按钮」版，废止 §4.2/§4.4 sim/平齐面）：
+        #   b1p 已拆为 b1 上独立可压红帽（b1p_joint，0..12mm 朝柜内 −X，plugin
+        #   db1_unlock_button pressed 物证 Position ≥ 0.0035）；按钮外端面中心
+        #   b1 局部 (0.069,0.646,0.1705) = 世界 unlock_press_point (0.099,4.693,
+        #   1.002)，位于 R 竖立筋顶缘上方（立筋中心 z0.952）。plugin 解锁门 = finger3 端点距
+        #   unlock_press_point ≤ 0.010 + b1p_joint Position ≥ press_threshold +
+        #   左右钩杆端保持 + 有效租约会话；simulated_linkage/simulation_acceptance
+        #   已从插件撤除，绝不仿真放行。
         #   解锁电机驱动：operator 直接向三电缸控制器发全关节 FJT（电机关节 + 其余
         #   手指保持标定位），读回真实电机位置 ∈ [retracted+floor, ceiling) 才调
         #   解锁服务（插件同条件校验），不达标即响亮失败、绝不盲解锁。工具几何/标定
-        #   仍见 electrical_mezzanine_adapter.yaml drawer_tools.right。pressed 与
-        #   其余位置初值占位，由 §7.2 现场封定后收紧。
+        #   仍见 electrical_mezzanine_adapter.yaml drawer_tools.right。
         drawer_axis: [1.0, 0.0, 0.0]
         left_handle_point: [0.099, 4.107, 0.952]
         right_handle_point: [0.099, 4.693, 0.952]
         # 两工具在各自滚转角下，支撑杆列均比夹爪杆列远离把手 0.068m（列间距），
         # 与「把手钩点—侧缝支撑点」横向间距 0.068 匹配；同一工作位姿下钩爪贴
-        # 把手、支撑杆对缝口（AGENT §4.3/§4.5 一姿态多接触门）。
+        # 把手、支撑杆对缝口（一姿态多接触门）。
         left_support_point: [0.099, 4.039, 0.952]
         right_support_point: [0.099, 4.761, 0.952]
-        unlock_press_point: [0.099, 4.693, 0.952]
-        # ---- 2026-09-03 AGENT §3: 解锁电机（右侧三电缸 finger3）契约 ----
-        # unlock_extension_floor/ceiling 与插件 <control> 一致（floor=1mm 即视为
-        # 伸出，ceiling=25.4mm 行程上限不可撞）；pressed 为电机作业目标伸出量，
-        # 由 §7.2 封定（现 8mm 首占位，须满足 retracted+floor ≤ pressed < ceiling）。
+        unlock_press_point: [0.099, 4.693, 1.002]
+        # ---- 解锁电机（右侧三电缸 finger3）契约（与插件 <control> 同源） ----
+        # unlock_extension_floor/ceiling 与插件一致（floor=1mm 即视为伸出，
+        # ceiling=25.4mm 行程上限不可撞）；pressed 为电机作业目标伸出量（现 8mm，
+        # 须满足 retracted+floor ≤ pressed < ceiling；按压须把 b1p 帽按入
+        # ≥3.5mm，见插件 db1_unlock_button press_threshold）。
         unlock_motor_joint: r_three_cyl_finger3_joint
         unlock_retracted_position: 0.0
         unlock_pressed_position: 0.008
         unlock_extension_floor: 0.001
         unlock_extension_ceiling: 0.0254
-        # 抓取/支撑位姿在面板前缘正东 0.005m；抓取时左右探针再向里压入
-        # drawer_grasp_press_depth 2mm 顶住立板（真实接触，非 5cm 悬停）。
+        # 抓取/支撑位姿在面板前缘正东 drawer_grasp_outward_offset 0.005m；抓取时
+        # 左右探针再向里压入 drawer_grasp_press_depth 2mm 压贴前脸（真实接触）。
         # plugin 附着门收紧到 grasp_contact_threshold 0.02，悬空假附着被拒；
         # 耦合拖拽期间 plugin 实时校验尖端仍贴住把手，脱离超 0.5s 即中止。
         drawer_grasp_outward_offset: 0.005
         drawer_grasp_press_depth: 0.002
-        # 解锁按压（2026-09-03 AGENT §4.4 修订版）：finger3 自「右钩住+右支撑入缝」
-        # 的同一工作位姿伸出，不移动整臂。drawer_unlock_approach_offset 为 finger3
-        # 接触点在按钮区东侧的悬停退让初值（旧整臂 approach-dance 已废止，P4 删除
-        # unlock_pose/ready 回退动作，保留该键仅为 007 兼容过渡）；每步伸出后 plugin
-        # 验证「finger3 真实触点距按钮区中心 ≤ drawer_unlock_distance_threshold
-        # 且解锁电机实际伸出 ≥ 场景 unlock_extension_floor」；达标即放行解锁，
-        # 到上限仍不达标即响亮失败，不盲解锁。旧 b1p 帽读回契约（topic/joint/
-        # cap 阈值）与整臂按压 drawer_unlock_press_depth 已整体删除。
+        # 解锁按压：finger3 自「右钩住+右支撑入缝」的同一工作位姿伸出，不移动整臂。
+        # drawer_unlock_approach_offset 为 finger3 接触点在按钮东侧的悬停退让初值
+        # （旧整臂 approach-dance 已废止，保留该键仅为 007 兼容过渡）；每步伸出后
+        # operator 以真实电机关节位置核验达标才调解锁服务；真按入最终物证 = 插件
+        # 读 b1p_joint Position（≥ 0.0035）。finger3 端点距 unlock_press_point
+        # 的距离门与插件 unlock_distance_threshold 同源（0.010，覆盖按钮真实压入
+        # 时外端面的内缩）；到上限仍不达标即响亮失败，不盲解锁。整臂按压
+        # drawer_unlock_press_depth 语义已删除。
         drawer_unlock_approach_offset: 0.04
-        drawer_unlock_distance_threshold: 0.008
+        drawer_unlock_distance_threshold: 0.010
         drawer_sync_tolerance: 0.05
       ds3:
         type: slider

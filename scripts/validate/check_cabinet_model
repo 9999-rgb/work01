@@ -94,6 +94,12 @@ CONTROL_LAUNCH = (
 )
 CONTROL_CMAKE = ROOT / "xczs_inspection_robot_control" / "CMakeLists.txt"
 INTERFACES_CMAKE = ROOT / "xczs_inspection_robot_interfaces" / "CMakeLists.txt"
+
+# 子进程护栏。本校验脚本在启动路径上被同步调用
+# （``jiang/start_xczs_bridge.sh``），xacro 或 gz 一旦挂死就会把整个启动卡住，
+# 因此外部工具调用必须有界返回。
+XACRO_TIMEOUT_SECONDS = 120.0
+SDF_CONVERT_TIMEOUT_SECONDS = 60.0
 PLANAR_STABILIZER = (
     ROOT
     / "xczs_inspection_robot_gazebo"
@@ -452,9 +458,14 @@ def render_xacro(path: Path, *arguments: str) -> str:
             check=True,
             capture_output=True,
             text=True,
+            timeout=XACRO_TIMEOUT_SECONDS,
         )
     except FileNotFoundError:
         fail("xacro is unavailable; source /opt/ros/humble/setup.bash first.")
+    except subprocess.TimeoutExpired:
+        fail(
+            f"xacro timed out after {XACRO_TIMEOUT_SECONDS:.0f}s: {path}"
+        )
     except subprocess.CalledProcessError as error:
         fail(f"xacro failed:\n{error.stderr}")
     return result.stdout
@@ -511,9 +522,15 @@ def convert_urdf_to_sdf(root: ElementTree.Element) -> ElementTree.Element:
                 check=True,
                 capture_output=True,
                 text=True,
+                timeout=SDF_CONVERT_TIMEOUT_SECONDS,
             )
     except FileNotFoundError:
         fail("gz is unavailable; install/source Gazebo Classic first.")
+    except subprocess.TimeoutExpired:
+        fail(
+            "URDF-to-SDF conversion timed out after "
+            f"{SDF_CONVERT_TIMEOUT_SECONDS:.0f}s."
+        )
     except subprocess.CalledProcessError as error:
         fail(f"URDF-to-SDF conversion failed:\n{error.stderr}")
     return ElementTree.fromstring(result.stdout)

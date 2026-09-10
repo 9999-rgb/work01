@@ -56,10 +56,6 @@
   <exec_depend>xczs_inspection_robot_description</exec_depend>
   <exec_depend>xczs_inspection_robot_moveit_config</exec_depend>
   <exec_depend>xczs_inspection_robot_nav2</exec_depend>
-  <!-- Keyboard teleoperation optionally launches xfce4-terminal. Ubuntu
-       Jammy has no rosdep key for it, so start_xczs_bridge.sh checks the
-       executable only when teleop is requested instead of breaking rosdep
-       for every headless/Web deployment. -->
 
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_cmake_pytest</test_depend>

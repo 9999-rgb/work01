@@ -26,6 +26,13 @@
     # 骑缝塌缩根因)。实体测量失败自动保留 latch 原值，零回归。
     physics_anchor_entity: "b1"
     physics_anchor_local_origin: [0.03, 4.047, 0.831870606]
+    # 2026-09-09 cap1 复验败修正: b1 是 db1 抽屉的本体连杆 —— 锚定实体随 db1 的
+    # rail 沿 drawer_axis 滑移。声明锚定抽屉 control id 后, operator 在 db1
+    # operate/close 的 latch 点把实测 rail 位移传给物理锚: 抽屉关位 (rail≈0) 时
+    # AMCL 导航漂移 (map→odom 实测 0.26 m) 不再被旧 50 mm 护栏误拒, 开位 rail
+    # 也精确抵除, 几何始终锚 gazebo 物理真值。空 = 锚定实体刚接于 frame, 旧护栏
+    # 语义 (其余场景零回归)。
+    physics_anchor_rail_control: "db1"
     manual_linear_axis: y
     manual_linear_sign: -1.0
     navigation_velocity_yaw_offset: -1.57079632679

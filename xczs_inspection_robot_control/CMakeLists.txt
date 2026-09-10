@@ -17,7 +17,6 @@ find_package(moveit_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(nav2_msgs REQUIRED)
-find_package(Qt5 REQUIRED COMPONENTS Widgets)
 find_package(rcl REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
@@ -31,8 +30,6 @@ find_package(tf2_ros REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(xczs_inspection_robot_interfaces REQUIRED)
 
-add_executable(keyboard_teleop src/keyboard_teleop.cpp)
-add_executable(inspection_robot_gui src/inspection_robot_gui.cpp)
 add_executable(
   legacy_trajectory_router
   src/legacy_trajectory_router.cpp
@@ -49,25 +46,6 @@ add_executable(
 )
 add_executable(base_command_router src/base_command_router.cpp)
 add_executable(cabinet_grasp_aggregator src/cabinet_grasp_aggregator.cpp)
-
-foreach(target keyboard_teleop inspection_robot_gui)
-  target_compile_features(${target} PUBLIC cxx_std_17)
-  target_include_directories(
-    ${target}
-    PUBLIC
-      "$<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>"
-      "$<INSTALL_INTERFACE:include>"
-  )
-  ament_target_dependencies(
-    ${target}
-    geometry_msgs
-    rclcpp
-    sensor_msgs
-    trajectory_msgs
-  )
-endforeach()
-
-target_link_libraries(inspection_robot_gui Qt5::Widgets)
 
 target_compile_features(legacy_trajectory_router PUBLIC cxx_std_17)
 ament_target_dependencies(
@@ -175,8 +153,6 @@ ament_target_dependencies(cabinet_grasp_aggregator rclcpp std_msgs)
 
 install(
   TARGETS
-    keyboard_teleop
-    inspection_robot_gui
     legacy_trajectory_router
     cabinet_planning_scene
     cabinet_pose_authority

@@ -733,12 +733,12 @@ private:
     // link.  The left handle reuses grasp_point; the right handle and the
     // unlock press point are drawer-only fields.
     ignition::math::Vector3d right_grasp_point{0.0, 0.0, 0.0};
-    // 2026-09-03 AGENT §3: unlock_press_point is the CENTRE of the right-handle
-    // LOGICAL unlock zone (drawer link frame), not a visible button.  Unlock
-    // requires BOTH the unlock-motor contact link (the robot link the request
-    // names) within unlock_distance_threshold of this centre AND the
-    // robot-model unlock_motor_joint actually extended (see
-    // handle_unlock_request).  No button-joint evidence, no b1p displacement.
+    // 2026-09-09: unlock_press_point is the centre of the REAL b1p push-button
+    // outer (+X) face in the drawer link frame (b1-local).  Unlock requires the
+    // unlock-motor contact link (the robot link the request names) within
+    // unlock_distance_threshold of this centre AND the robot-model
+    // unlock_motor_joint actually extended AND — when unlock_button_id is set —
+    // that in-scene button control genuinely pressed (see handle_unlock_request).
     ignition::math::Vector3d unlock_press_point{0.0, 0.0, 0.0};
     double unlock_distance_threshold{0.10};
     // Robot-model joint that is the right-hand unlock motor (e.g.
@@ -750,21 +750,21 @@ private:
     double unlock_extension_floor{0.001};
     // Position above which the motor is bottoming out - unlock is refused.
     double unlock_extension_ceiling{0.0254};
-    // 2026-09-06 AGENT doc §4.2 simulated_linkage (db1 sim config ONLY).  Strict
-    // physical contact stays the DEFAULT; this flag exists only on the db1 sim
-    // control.  It models "the right unlock motor drives the right-handle latch
-    // release through an UNMODELLED linkage": the button stays on the right
-    // handle, the visible rod geometry is unchanged, and finger3's real tip is
-    // NOT required at the button.  Granting still needs the REAL unlock motor
-    // stroke (pressed) plus BOTH handles physically held — the two hook rods
-    // named by unlock_hold_{left,right}_link must keep their real tips within
-    // grasp_contact_threshold of the drawer's left/right handle grasp points —
-    // plus a valid lease session and a drawer that is latched and unattached.
-    bool unlock_simulated_linkage{false};
-    std::string unlock_linkage_description;
+    // 2026-09-09 real-button unlock (replaces the 2026-09-06 AGENT doc §4.2
+    // simulated_linkage approximation; db1 — the only drawer — now presses a
+    // REAL b1p push-button again).  unlock_button_id names another control in
+    // this same scene config — a <control_type>button</control_type> control
+    // whose joint (b1p_joint) is the drawer's physical button cap travel.
+    // handle_unlock_request grants only when that button control is genuinely
+    // pressed (its joint position reached >= its own press_threshold): real
+    // displacement evidence that the right unlock rod pushed the cap in, never
+    // a free-position claim and never a simulated flag.  Empty id = legacy
+    // strict drawer (distance + real motor stroke only, no button evidence).
+    std::string unlock_button_id;
     // Robot-model hook rods (link + link-local tip point) that hold the drawer
-    // handles while the (simulated) latch release happens.  Empty link in a
-    // simulated_linkage control is a startup configuration error (see parse).
+    // handles while the (real) button press / latch release happens.  A drawer
+    // that names an unlock_button_id must name both sides (see parse); empty
+    // links mean the hold gate is skipped (legacy strict).
     std::string unlock_hold_left_link;
     ignition::math::Vector3d unlock_hold_left_point{0.0, 0.0, 0.0};
     std::string unlock_hold_right_link;
@@ -849,15 +849,16 @@ private:
     bool pressed{false};
     bool left_tool_contact{false};
     bool right_tool_contact{false};
-    // 2026-09-06 AGENT doc §4.2: unlock acceptance mode + simulated-linkage
-    // evidence.  unlock_mode is "strict" (default: finger3 real tip inside the
-    // logical zone) or "simulated_linkage" (db1 sim config: real motor stroke +
-    // both handles held; the latch release is driven through an unmodelled
-    // linkage).  simulation_acceptance is true ONLY on a simulated_linkage
-    // grant, so consumers can never report that branch as a real finger3 button
-    // press.  The hold distances are plugin-measured hook-rod tips vs the
-    // drawer handle grasp points (m); NaN when a mode does not measure that
-    // side.
+    // 2026-09-09 unlock acceptance mode.  unlock_mode is "strict" (legacy
+    // drawer with no unlock_button_id: real motor stroke + finger3 real tip
+    // inside the logical zone) or "real_button" (db1: real motor stroke +
+    // finger3 real tip at the b1p button + the referenced in-scene button
+    // control genuinely pressed + both handles held).  simulation_acceptance
+    // is kept for the service contract but is ALWAYS false now — the 2026-09-06
+    // §4.2 simulated_linkage branch is gone, so nothing simulated can ever be
+    // reported as a real press.  The hold distances are plugin-measured
+    // hook-rod tips vs the drawer handle grasp points (m); NaN when a mode
+    // does not measure that side.
     std::string unlock_mode{"strict"};
     bool simulation_acceptance{false};
     double left_hold_distance{std::numeric_limits<double>::quiet_NaN()};
@@ -1257,18 +1258,18 @@ private:
             element, "grasp_contact_threshold", 0.02);
           control.coupling_contact_grace_seconds = optional_double(
             element, "coupling_contact_grace_seconds", 0.5);
-          // 2026-09-06 AGENT doc §4.2 simulated_linkage: parsed only where the
-          // sim config opts in.  Default remains strict physical contact (flag
-          // false, no behaviour change).  When enabled the drawer must ALSO
-          // name the two robot hook rods (link + link-local tip point) that
-          // must keep holding the handles while the simulated latch release
-          // happens; a missing side is a configuration error, never a silent
-          // relaxation.
-          control.unlock_simulated_linkage = optional_bool(
-            element, "unlock_simulated_linkage", false);
-          control.unlock_linkage_description =
+          // 2026-09-09 real-button unlock: the drawer names the in-scene
+          // <button> control whose pressed state is the real press evidence
+          // (<unlock_button_id>, resolved after all controls parse), plus the
+          // two robot hook rods (link + link-local tip point) that must keep
+          // holding the handles while the real button press happens.  A
+          // real-button drawer must name both hold sides; a missing side is a
+          // configuration error, never a silent relaxation.  (Empty
+          // unlock_button_id = legacy strict drawer: distance + real motor
+          // stroke only, no button evidence, hold links unused.)
+          control.unlock_button_id =
             element->Get<std::string>(
-              "unlock_linkage_description", "").first;
+              "unlock_button_id", "").first;
           control.unlock_hold_left_link =
             element->Get<std::string>(
               "unlock_hold_left_link", "").first;
@@ -1281,14 +1282,14 @@ private:
           control.unlock_hold_right_point = parse_vector3(
             element->Get<std::string>(
               "unlock_hold_right_point", "0 0 0").first);
-          if (control.unlock_simulated_linkage &&
+          if (!control.unlock_button_id.empty() &&
             (control.unlock_hold_left_link.empty() ||
              control.unlock_hold_right_link.empty() ||
              !element->HasElement("unlock_hold_left_point") ||
              !element->HasElement("unlock_hold_right_point")))
           {
             throw std::invalid_argument(
-                    "simulated_linkage drawer control must name both "
+                    "real-button drawer control must name both "
                     "<unlock_hold_left_link>/<unlock_hold_right_link> and "
                     "explicit <unlock_hold_left_point>/<unlock_hold_right_point> "
                     "(robot hook-rod links + link-local tip points): " +
@@ -1342,6 +1343,29 @@ private:
       control_indices_.emplace(control.id, controls_.size());
       controls_.push_back(std::move(control));
       element = element->GetNextElement("control");
+    }
+
+    // Cross-check real-button drawer references AFTER all controls are parsed:
+    // control_indices_ fills as controls load, so a drawer parsed before its
+    // button control cannot be validated inline.
+    for (const auto & control : controls_) {
+      if (control.kind == ControlKind::kDrawer &&
+        !control.unlock_button_id.empty())
+      {
+        const auto bit = control_indices_.find(control.unlock_button_id);
+        if (bit == control_indices_.end()) {
+          throw std::invalid_argument(
+                  "Drawer unlock <unlock_button_id> '" +
+                  control.unlock_button_id +
+                  "' was not found among the scene controls: " + control.id);
+        }
+        if (controls_[bit->second].kind != ControlKind::kButton) {
+          throw std::invalid_argument(
+                  "Drawer unlock <unlock_button_id> must reference a <button> "
+                  "control, but '" + control.unlock_button_id +
+                  "' is not a button: " + control.id);
+        }
+      }
     }
 
   }
@@ -2447,6 +2471,22 @@ private:
     grasp_active_publisher_->publish(message);
   }
 
+  // Drop every trace of a playback schedule without touching rail latching or
+  // the idle-hold that keeps an abandoned-open drawer parked.  Shared by the
+  // session-ending paths so a cleared session can never keep driving the joint
+  // from stale (time, q) samples.
+  void clear_playback_schedule(Control & control)
+  {
+    control.playback_active = false;
+    control.playback_paused = false;
+    control.playback_finished = false;
+    control.playback_lease_id.clear();
+    control.playback_samples.clear();
+    control.playback_last_sim = -1.0;
+    control.playback_start_at = 0.0;
+    control.playback_last_cmd_sim = -1.0;
+  }
+
   PhysicsOutcome reset_controls()
   {
     const auto release = release_grasp_constraint();
@@ -2516,6 +2556,12 @@ private:
       if (control->kind == ControlKind::kDrawer) {
         control->drawer_unlocked = false;
         control->drawer_has_opened = false;
+        // A reset cancels any kinematic playback session outright.  Leaving
+        // ``playback_active`` set would let the next physics tick drive the
+        // rail from the stale (time, q) samples and snap the drawer straight
+        // back off the pose this reset just verified, while still reporting
+        // success.
+        clear_playback_schedule(*control);
         // A reset returns the rail to its closed reset pose under ordinary
         // physics; no stale idle-hold may keep braking it at an open rail.
         control->playback_idle_hold = false;
@@ -2739,14 +2785,7 @@ private:
     const bool ended_active_session = control.playback_active;
     const double released_rail = control.joint->Position(0);
     const double released_vel = control.joint->GetVelocity(0);
-    control.playback_active = false;
-    control.playback_paused = false;
-    control.playback_finished = false;
-    control.playback_lease_id.clear();
-    control.playback_samples.clear();
-    control.playback_last_sim = -1.0;
-    control.playback_start_at = 0.0;
-    control.playback_last_cmd_sim = -1.0;
+    clear_playback_schedule(control);
     if (!ended_active_session) {
       control.playback_idle_hold = false;
       return;
@@ -3224,17 +3263,25 @@ private:
         request.right_robot_link, std::numeric_limits<double>::quiet_NaN()};
     }
 
-    const bool sim_linkage = control.unlock_simulated_linkage;
-
-    // 2026-09-03 AGENT §3: unlock_press_point is the centre of the right-handle
-    // LOGICAL unlock zone (drawer link frame), so the distance check tracks the
-    // drawer whether it is open or closed.  STRICT mode (the default) requires
-    // the unlock motor's contact link tip (the robot link the request names)
-    // within unlock_distance_threshold of that centre AND the robot-model
-    // unlock motor joint actually extended (position in
-    // [retracted+floor, ceiling)) — real physical evidence read under the
-    // physics lock, not a free-position claim, and no b1p indicator
-    // displacement is involved.
+    // 2026-09-09 real-button unlock gate (replaces the 2026-09-06 AGENT doc §4.2
+    // simulated_linkage approximation; db1 — the only drawer — no longer
+    // configures it).  unlock_press_point is the centre of the REAL b1p
+    // push-button outer (+X) face in the drawer link frame, so the distance
+    // check tracks the drawer whether it is open or closed.  Granting requires
+    // FOUR independent pieces of real physical evidence, all read under the
+    // physics lock — never a free-position claim and never a simulated flag:
+    //   1. distance   — the unlock-motor contact rod tip (the robot link this
+    //      request names) within unlock_distance_threshold of that centre;
+    //   2. motor      — the robot-model unlock_motor_joint actually extended
+    //      (position in [retracted+floor, ceiling));
+    //   3. button     — when <unlock_button_id> is configured, the referenced
+    //      in-scene <button> control (its joint is the physical b1p cap
+    //      travel) is genuinely pressed, i.e. its own joint position reached
+    //      >= its own press_threshold (real displacement, read here directly);
+    //   4. handle hold — both handles physically held: the two hook-rod tips
+    //      named by unlock_hold_{left,right}_link within
+    //      grasp_contact_threshold of the drawer's left/right handle grasp
+    //      points, measured independently here like a bimanual attach.
     const auto target_pose = control.link->WorldPose();
     const auto unlock_press_world = target_pose.Pos() +
       target_pose.Rot().RotateVector(control.unlock_press_point);
@@ -3259,8 +3306,28 @@ private:
         control.unlock_extension_floor &&
       !motor_over_ceiling;
 
-    if (!sim_linkage && !right_tool_contact) {
-      // STRICT physical contact refusal (default mode) — unchanged behaviour.
+    // Real button evidence (3): resolve the referenced in-scene button control
+    // and read ITS joint position (the b1p cap travel) directly, mirroring the
+    // same press_threshold comparison update_control_state applies to a button
+    // control.  A pressed cap = real displacement; hovering at or against a
+    // stiff cap is not.
+    const bool real_button = !control.unlock_button_id.empty();
+    const Control * button_control = nullptr;
+    if (real_button) {
+      const auto bit = control_indices_.find(control.unlock_button_id);
+      if (bit != control_indices_.end()) {
+        button_control = &controls_[bit->second];
+      }
+    }
+    const double button_position = button_control ?
+      std::max(0.0, button_control->joint->Position(0)) : 0.0;
+    const double button_press_threshold = button_control ?
+      button_control->press_threshold : 0.0;
+    const bool button_pressed = button_control != nullptr &&
+      button_position >= button_press_threshold;
+
+    if (!right_tool_contact) {
+      // Physical contact refusal: the unlock rod tip is not at the button.
       PhysicsOutcome outcome;
       outcome.success = false;
       outcome.message =
@@ -3274,54 +3341,63 @@ private:
       return outcome;
     }
     if (!pressed) {
-      // Both modes require the REAL unlock-motor stroke.
+      // Both real-button and legacy strict require the REAL unlock-motor stroke.
       PhysicsOutcome outcome;
       outcome.success = false;
-      outcome.unlock_mode = sim_linkage ? "simulated_linkage" : "strict";
-      const std::string prefix =
-        sim_linkage ? "simulated_linkage unlock refused: " : "";
+      outcome.unlock_mode = real_button ? "real_button" : "strict";
       if (control.unlock_motor_joint.empty()) {
-        outcome.message = prefix +
+        outcome.message =
           "Drawer unlock has no configured <unlock_motor_joint>: " +
           control.id;
       } else if (!motor_joint) {
-        outcome.message = prefix +
+        outcome.message =
           "Unlock motor joint was not found on the robot model: " +
           control.unlock_motor_joint;
       } else if (motor_over_ceiling) {
-        outcome.message = prefix +
+        outcome.message =
           "unlock motor is over its extension ceiling (position " +
           std::to_string(motor_position) + " m >= ceiling " +
           std::to_string(control.unlock_extension_ceiling) + " m); "
           "unlock refused - the motor must not bottom out.";
       } else {
-        outcome.message = prefix +
+        outcome.message =
           "the unlock motor is not extended (joint position " +
           std::to_string(motor_position) + " m < retracted " +
           std::to_string(control.unlock_retracted_position) + " + floor " +
           std::to_string(control.unlock_extension_floor) + " m).";
       }
       outcome.distance = distance;
-      // In strict mode the tool tip already passed the zone check; in
-      // simulated_linkage mode finger3 is NOT required at the button.
-      outcome.right_tool_contact = !sim_linkage;
+      outcome.right_tool_contact = right_tool_contact;
       outcome.pressed = false;
       return outcome;
     }
+    if (real_button && !button_pressed) {
+      // The rod reached the button zone and its motor extended, but the cap did
+      // not actually travel in past the button's press_threshold — proximity to
+      // a stiff cap is not a press.  Real displacement evidence only.
+      PhysicsOutcome outcome;
+      outcome.success = false;
+      outcome.unlock_mode = "real_button";
+      outcome.message =
+        "real-button unlock refused: the unlock button control '" +
+        control.unlock_button_id + "' is not pressed (its joint position " +
+        std::to_string(button_position) + " m < press_threshold " +
+        std::to_string(button_press_threshold) +
+        " m); the unlock rod must push the cap in past the threshold.";
+      outcome.distance = distance;
+      outcome.right_tool_contact = right_tool_contact;
+      outcome.pressed = true;
+      return outcome;
+    }
 
-    if (sim_linkage) {
-      // simulated_linkage (db1 sim config only): the visible finger3 rod may be
-      // geometrically incapable of reaching the button (the drawer's logical
-      // unlock zone sits on the right-handle plate that the RIGHT HOOK rod
-      // holds, 0.11+ m lateral from finger3's swept path).  This mode models
-      // "the right unlock motor drives the right-handle latch release through
-      // an UNMODELLED linkage": the button stays on the right handle, the tool
-      // geometry is unchanged, and finger3's real tip is NOT claimed at the
-      // button.  Granting still needs BOTH handles physically held — measured
-      // independently here, exactly like a bimanual attach: the two hook-rod
-      // tips named by the control config must be within grasp_contact_threshold
-      // of the drawer's left/right handle grasp points.  Nothing is faked with
-      // SetEntityState and no Web target can unlatch on its own.
+    // Handle-hold evidence (4): a real-button unlock requires BOTH hook-rod tips
+    // physically holding the drawer handles while the latch release happens,
+    // measured independently here exactly like a bimanual attach.  Legacy strict
+    // drawers that configure no hold links skip this gate; db1 configures both
+    // and is refused if either hook is off its handle.
+    if (!control.unlock_hold_left_link.empty() &&
+      !control.unlock_hold_right_link.empty())
+    {
       const auto left_hold_link =
         robot_model->GetLink(control.unlock_hold_left_link);
       const auto right_hold_link =
@@ -3329,9 +3405,9 @@ private:
       if (!left_hold_link || !right_hold_link) {
         PhysicsOutcome outcome;
         outcome.success = false;
-        outcome.unlock_mode = "simulated_linkage";
+        outcome.unlock_mode = real_button ? "real_button" : "strict";
         outcome.message =
-          "simulated_linkage unlock refused: handle-hold robot links "
+          "drawer unlock refused: handle-hold robot links "
           "<unlock_hold_left_link> '" + control.unlock_hold_left_link +
           "' and/or <unlock_hold_right_link> '" +
           control.unlock_hold_right_link + "' were not found on the robot "
@@ -3361,10 +3437,10 @@ private:
       if (!left_handle_held || !right_handle_held) {
         PhysicsOutcome outcome;
         outcome.success = false;
-        outcome.unlock_mode = "simulated_linkage";
+        outcome.unlock_mode = real_button ? "real_button" : "strict";
         outcome.message =
-          "simulated_linkage unlock refused: the drawer handles are not both "
-          "held (left hook rod '" + control.unlock_hold_left_link + "' tip " +
+          "drawer unlock refused: the drawer handles are not both held "
+          "(left hook rod '" + control.unlock_hold_left_link + "' tip " +
           std::to_string(left_hold_distance) + " m from the left handle grasp "
           "point, right hook rod '" + control.unlock_hold_right_link + "' tip " +
           std::to_string(right_hold_distance) + " m from the right handle "
@@ -3383,13 +3459,13 @@ private:
     if (control.drawer_unlocked) {
       PhysicsOutcome outcome;
       outcome.success = true;
-      outcome.message = sim_linkage ?
-        "Drawer is already unlocked (simulated_linkage)." :
+      outcome.message = real_button ?
+        "Drawer is already unlocked (real b1p button)." :
         "Drawer is already unlocked.";
       outcome.distance = distance;
-      outcome.right_tool_contact = !sim_linkage;
+      outcome.right_tool_contact = true;
       outcome.pressed = true;
-      outcome.unlock_mode = sim_linkage ? "simulated_linkage" : "strict";
+      outcome.unlock_mode = real_button ? "real_button" : "strict";
       return outcome;
     }
     control.drawer_unlocked = true;
@@ -3409,58 +3485,61 @@ private:
     outcome.success = true;
     outcome.pressed = true;
     outcome.distance = distance;
-    if (sim_linkage) {
+    if (real_button) {
       // Measure the handle-hold evidence for the acceptance record even though
       // the gates already passed (the request is granted on this branch).
-      const auto left_hold_link =
-        robot_model->GetLink(control.unlock_hold_left_link);
-      const auto right_hold_link =
-        robot_model->GetLink(control.unlock_hold_right_link);
-      if (left_hold_link) {
-        const auto left_hold_world = left_hold_link->WorldPose().Pos() +
-          left_hold_link->WorldPose().Rot().RotateVector(
-            control.unlock_hold_left_point);
-        outcome.left_hold_distance =
-          left_hold_world.Distance(target_pose.Pos() +
-            target_pose.Rot().RotateVector(control.grasp_point));
-        outcome.left_handle_held = std::isfinite(
-          outcome.left_hold_distance) &&
-          outcome.left_hold_distance <= control.grasp_contact_threshold;
+      if (!control.unlock_hold_left_link.empty()) {
+        const auto left_hold_link =
+          robot_model->GetLink(control.unlock_hold_left_link);
+        if (left_hold_link) {
+          const auto left_hold_world = left_hold_link->WorldPose().Pos() +
+            left_hold_link->WorldPose().Rot().RotateVector(
+              control.unlock_hold_left_point);
+          outcome.left_hold_distance =
+            left_hold_world.Distance(target_pose.Pos() +
+              target_pose.Rot().RotateVector(control.grasp_point));
+          outcome.left_handle_held = std::isfinite(
+            outcome.left_hold_distance) &&
+            outcome.left_hold_distance <= control.grasp_contact_threshold;
+        }
       }
-      if (right_hold_link) {
-        const auto right_hold_world = right_hold_link->WorldPose().Pos() +
-          right_hold_link->WorldPose().Rot().RotateVector(
-            control.unlock_hold_right_point);
-        outcome.right_hold_distance =
-          right_hold_world.Distance(target_pose.Pos() +
-            target_pose.Rot().RotateVector(control.right_grasp_point));
-        outcome.right_handle_held = std::isfinite(
-          outcome.right_hold_distance) &&
-          outcome.right_hold_distance <= control.grasp_contact_threshold;
+      if (!control.unlock_hold_right_link.empty()) {
+        const auto right_hold_link =
+          robot_model->GetLink(control.unlock_hold_right_link);
+        if (right_hold_link) {
+          const auto right_hold_world = right_hold_link->WorldPose().Pos() +
+            right_hold_link->WorldPose().Rot().RotateVector(
+              control.unlock_hold_right_point);
+          outcome.right_hold_distance =
+            right_hold_world.Distance(target_pose.Pos() +
+              target_pose.Rot().RotateVector(control.right_grasp_point));
+          outcome.right_handle_held = std::isfinite(
+            outcome.right_hold_distance) &&
+            outcome.right_hold_distance <= control.grasp_contact_threshold;
+        }
       }
-      outcome.unlock_mode = "simulated_linkage";
-      // simulation_acceptance marks an actual simulated-linkage grant so no
-      // consumer can ever report this as "finger3 real tip pressed the button".
-      outcome.simulation_acceptance = true;
-      outcome.right_tool_contact = false;
-      const std::string label =
-        control.unlock_linkage_description.empty() ?
-        "right unlock motor drives the right-handle latch release through an "
-        "unmodelled linkage; finger3 real tip is NOT at the button" :
-        control.unlock_linkage_description;
-      RCLCPP_WARN(
+      outcome.unlock_mode = "real_button";
+      // simulation_acceptance stays false: nothing here is simulated.  A real
+      // button press was measured (cap displacement + motor rod tip both at
+      // the real b1p), so no consumer may ever report this as simulated.
+      outcome.right_tool_contact = true;
+      RCLCPP_INFO(
         ros_node_->get_logger(),
-        "Drawer '%s' rail latch released under AGENT doc §4.2 "
-        "simulated_linkage: unlock motor '%s' REALLY extended to %.6f m "
-        "(simulated) '%s'; finger3 real tip %.6f m from the button zone. Left "
-        "handle hold %.6f m, right handle hold %.6f m (grasp_contact_threshold "
-        "%.4f m).",
+        "Drawer '%s' rail latch released under REAL button press: unlock "
+        "motor '%s' extended to %.6f m, finger3 real tip %.6f m from the b1p "
+        "button zone centre, button control '%s' pressed to %.6f m "
+        "(press_threshold %.4f m). Left handle hold %.6f m, right handle "
+        "hold %.6f m (grasp_contact_threshold %.4f m).",
         control.id.c_str(), control.unlock_motor_joint.c_str(),
-        motor_position, label.c_str(), distance,
+        motor_position, distance, control.unlock_button_id.c_str(),
+        button_position, button_press_threshold,
         outcome.left_hold_distance, outcome.right_hold_distance,
         control.grasp_contact_threshold);
       outcome.message =
-        "Drawer unlocked (simulated_linkage: " + label + "; unlock motor '" +
+        "Drawer unlocked by real b1p button press (button control '" +
+        control.unlock_button_id + "' pressed to " +
+        std::to_string(button_position) + " m >= threshold " +
+        std::to_string(button_press_threshold) + " m; unlock motor '" +
         control.unlock_motor_joint + "' real stroke " +
         std::to_string(motor_position) + " m; left handle hold " +
         std::to_string(outcome.left_hold_distance) + " m, right handle hold " +

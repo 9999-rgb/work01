@@ -31,6 +31,8 @@ from xczs_inspection_robot_interfaces.msg import CabinetControl
 from xczs_inspection_robot_interfaces.msg import CabinetControlCatalog
 from xczs_inspection_robot_interfaces.msg import CabinetControlState
 
+from .operate_error_codes import operate_error_code_name
+
 
 _CABINET_NAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
@@ -1943,33 +1945,11 @@ class CabinetClient(Node):
             return normalized
         return f"{self.interface_namespace}/{topic.lstrip('/')}"
 
-    @classmethod
-    def _error_code_name(cls, code: int) -> str:
-        names = (
-            ("SUCCESS", "success"),
-            ("INVALID_CONTROL", "invalid_control"),
-            ("UNSUPPORTED_COMMAND", "unsupported_command"),
-            ("NOT_READY", "not_ready"),
-            ("NAVIGATION_FAILED", "navigation_failed"),
-            ("PLANNING_FAILED", "planning_failed"),
-            ("EXECUTION_FAILED", "execution_failed"),
-            ("GRASP_FAILED", "grasp_failed"),
-            ("TARGET_NOT_REACHED", "target_not_reached"),
-            ("RELEASE_FAILED", "release_failed"),
-            ("CANCELED", "canceled"),
-            ("INTERNAL_ERROR", "internal_error"),
-            ("INVALID_FORCE", "invalid_force"),
-            ("INSUFFICIENT_FORCE", "insufficient_force"),
-            ("UNREACHABLE", "unreachable"),
-            ("CONTACT_DETECTION_TIMEOUT", "contact_detection_timeout"),
-            ("RESOURCE_BUSY", "resource_busy"),
-            ("LEASE_LOST", "lease_lost"),
-            ("TOOLSET_MISMATCH", "toolset_mismatch"),
-        )
-        for constant, name in names:
-            if getattr(OperateCabinetControl.Result, constant, None) == code:
-                return name
-        return "unknown_error"
+    @staticmethod
+    def _error_code_name(code: int) -> str:
+        # The table is shared with ros_node so the two can never disagree on a
+        # result code; see control_gateway.operate_error_codes.
+        return operate_error_code_name(code)
 
     @classmethod
     def _feedback_phase_name(cls, phase: int) -> str:

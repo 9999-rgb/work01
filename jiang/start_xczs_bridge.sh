@@ -6,7 +6,6 @@
 #   ./run_all.sh                  # 统一 Web 控制（含 Nav2 和控制柜任务）
 #   ./run_all.sh --web            # 兼容写法，与无参数启动相同
 #   ./run_all.sh --with-proxy     # 同时启动 CDR→JSON 代理
-#   ./run_all.sh --keyboard       # 键盘调试控制（不启动 Web 控制服务）
 #   同机隔离启动（端口应避开其他实例）:
 #     ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 BRIDGE_TCP_PORT=17447 \
 #       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=18090 \
@@ -68,7 +67,12 @@ PYTHON_BIN="${PYTHON_BIN:-/usr/bin/python3}"
 # 参数预检。后面的正式解析仍负责设置运行模式。
 for _startup_argument in "$@"; do
     case "$_startup_argument" in
-        --with-proxy|--web|--keyboard) ;;
+        --with-proxy|--web) ;;
+        --keyboard)
+            echo "ERROR: --keyboard 已移除；keyboard_teleop 组件已删除，" >&2
+            echo "       所有控制请使用 Web 入口 ./run_all.sh --web。" >&2
+            exit 1
+            ;;
         -h|--help)
             sed -n '3,15p' "$0" | sed 's/^# *//'
             exit 0
@@ -174,7 +178,6 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --with-proxy) WITH_PROXY="true"; shift ;;
         --web)       CONTROL_MODE="web"; shift ;;
-        --keyboard)  CONTROL_MODE="keyboard"; shift ;;
         -h|--help)
             sed -n '3,15p' "$0" | sed 's/^# *//'
             exit 0
@@ -249,16 +252,6 @@ if [ "$DISPLAY_AVAILABLE" = "true" ] &&
     fi
 fi
 
-if [ "$CONTROL_MODE" = "keyboard" ] &&
-    [ "$DISPLAY_AVAILABLE" = "false" ]; then
-    echo "ERROR: 键盘调试控制需要可连接的 DISPLAY 和终端界面。"
-    exit 1
-fi
-if [ "$CONTROL_MODE" = "keyboard" ] &&
-    ! command -v xfce4-terminal >/dev/null 2>&1; then
-    echo "ERROR: 键盘调试控制的启动前缀依赖 xfce4-terminal，请安装后重试。"
-    exit 1
-fi
 # Web 是统一操作界面，任务导航需要 Nav2；外接完整机器人栈模式由外部
 # 提供相同 Action/Service 合同，本 launch 不重复启动 Nav2。
 if [ "$CONTROL_MODE" = "web" ] && [ "$ROBOT_BRINGUP" = "true" ]; then
@@ -1068,11 +1061,6 @@ if not math.isfinite(value):
     echo "ERROR: SPAWN_Z 必须是有限数字。"
     exit 1
 fi
-if [ "$ROBOT_BRINGUP" = "false" ] && [ "$CONTROL_MODE" = "keyboard" ]; then
-    echo "ERROR: ROBOT_BRINGUP=false 表示外部提供完整机器人栈，内置键盘控制不会启动。"
-    echo "请使用默认 Web 入口，或由外部机器人栈提供自己的手动控制界面。"
-    exit 1
-fi
 
 _require_file() {
     local path="$1"
@@ -1326,12 +1314,15 @@ fi
 # ── 加载 ROS2 环境 ────────────────────────────────────────────────
 source "$ROS2_SETUP"
 source "$WORKSPACE_SETUP"
-# 本工作区的 colcon build base 是 $WORK_DIR/docs/build（历史约定），interfaces
-# 生成的 Python 绑定经 `docs.build.<pkg>...` 反向引用构建树，需要 `docs`
-# 命名空间在 sys.path 上可解析。Python 以脚本路径运行时不会把 cwd 放进
-# sys.path，所以 supervisor / control_server 等非仓库根 cwd 的进程会在
-# `import docs` 处崩溃（Web 预检用 `python3 -` 恰好把 cwd 放上 sys.path 才
-# 幸免）。把工作区根目录加入 PYTHONPATH，让这些进程在任意 cwd 下都能解析。
+# 把工作区根目录加入 PYTHONPATH，让以「非仓库根 cwd」拉起的自有脚本仍能按
+# 仓库根布局解析模块（Python 以脚本路径运行时不会把 cwd 放进 sys.path）。
+#
+# 这条 export 原本是为了支撑 `docs/build` 作为 colcon build base 的历史布局
+# ——那时 interfaces 的 Python 绑定会反向引用 `docs.build.<pkg>`，需要 `docs`
+# 命名空间可解析。该布局已废弃：现行 build base 是仓库根 `build/`，
+# `install/` 中已无 `docs.build` 引用，全仓库也不存在 `import docs`。
+# 因无法逐条证明所有启动路径都不依赖它，这里保留 export 作为兜底，
+# 仅修正注释；确认无依赖后可另行删除。
 export PYTHONPATH="$WORK_DIR${PYTHONPATH:+:$PYTHONPATH}"
 if ! command -v ros2 >/dev/null 2>&1; then
     echo "ERROR: source 环境后仍找不到 ros2 命令。"
@@ -1523,10 +1514,7 @@ echo "════════════════════════�
 echo "  XCZS 巡操机器人仿真系统"
 echo "═══════════════════════════════════════════"
 echo ""
-case "$CONTROL_MODE" in
-    keyboard) MODE_LABEL="键盘遥控" ;;
-    *) MODE_LABEL="浏览器统一控制" ;;
-esac
+MODE_LABEL="浏览器统一控制"
 echo "  模式:       $MODE_LABEL"
 echo "  Gazebo GUI: $GAZEBO_GUI"
 echo "  X Display:  $DISPLAY_STATUS"
@@ -2001,11 +1989,6 @@ fi
 # ── 6. 启动 Gazebo + 机器人 ───────────────────────────────────────
 echo "[6/6] 启动 Gazebo + XCZS 机器人..."
 
-TELEOP_ENABLED="false"
-if [ "$CONTROL_MODE" = "keyboard" ]; then
-    TELEOP_ENABLED="true"
-fi
-
 # This list is owned by the robot child in managed toolset mode.  It contains
 # only settings that stay stable across A/B; the supervisor owns topology,
 # process lifecycle and all spawn switches.  ``{toolset}`` is expanded by the
@@ -2067,8 +2050,6 @@ if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
         "gazebo:=true"
         "robot_bringup:=false"
         "use_sim_time:=$USE_SIM_TIME"
-        "control_gui:=false"
-        "teleop:=false"
         "moveit:=false"
         "moveit_rviz:=false"
         "nav2:=false"
@@ -2122,15 +2103,13 @@ if [ "$TOOLSET_HOTSWAP_ACTIVE" = "true" ]; then
     _wait_for_stable_processes 50
 else
     # Legacy/special-mode path: keep the previous single launch exactly as a
-    # unit.  It covers keyboard use, external robot stacks, no-Gazebo runs and
+    # unit.  It covers external robot stacks, no-Gazebo runs and
     # deployments that explicitly disable XCZS_TOOLSET_HOTSWAP.
     LAUNCH_ARGS=(
         "gui:=$GAZEBO_GUI"
         "gazebo:=$GAZEBO_ENABLED"
         "robot_bringup:=$ROBOT_BRINGUP"
         "use_sim_time:=$USE_SIM_TIME"
-        "control_gui:=false"
-        "teleop:=$TELEOP_ENABLED"
         "moveit:=$MOVEIT_ENABLED"
         "nav2:=$NAV2_ENABLED"
         "nav2_rviz:=false"

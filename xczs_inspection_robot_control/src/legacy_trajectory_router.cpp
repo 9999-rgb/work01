@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -403,9 +405,16 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(
-    std::make_shared<
-      xczs_inspection_robot_control::LegacyTrajectoryRouter>());
+  try {
+    rclcpp::spin(
+      std::make_shared<
+        xczs_inspection_robot_control::LegacyTrajectoryRouter>());
+  } catch (const std::exception & error) {
+    std::fprintf(
+      stderr, "Legacy trajectory router failed: %s\n", error.what());
+    rclcpp::shutdown();
+    return EXIT_FAILURE;
+  }
   rclcpp::shutdown();
-  return 0;
+  return EXIT_SUCCESS;
 }

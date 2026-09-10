@@ -224,11 +224,18 @@ def test_hold_state_is_task_local_and_leaves_no_residue() -> None:
     leave a stale seat reference behind."""
     source_clean = _blank_comments_and_strings(SOURCE_TEXT)
 
-    # The only value-instantiation is the execute_operate drawer-branch local
-    # (struct params below take it by reference).
-    assert source_clean.count("DrawerHookHoldState hook_hold;") == 1
+    # Value-instantiation happens once per action path, always as a plain local
+    # (struct params below take it by reference):
+    #   1. execute_operate 的 drawer 分支（force-coupled / legacy 路径）；
+    #   2. execute_drawer_visual_backend（visual 后端前端：self_center→钩压→
+    #      支撑→解锁→抽拉）。
+    # 两条路径互斥、各自在函数内持有，均不越出单次动作执行。计数在此刻意钉死：
+    # 将来新增第三条路径必须显式改这里，而不是悄悄多一处可能逃逸的持有。
+    assert source_clean.count("DrawerHookHoldState hook_hold;") == 2
     for stash in (
-        "hook_hold_",                      # member-style name
+        # 成员式持有必须连同类型一起匹配：裸的 "hook_hold_" 会误伤无关参数
+        # drawer_hook_hold_seconds_（cap1/2 驻留观察旋钮，与 hold state 无关）。
+        "DrawerHookHoldState hook_hold_",   # member-style name
         "static DrawerHookHoldState",      # function-local static
         "shared_ptr<DrawerHookHoldState>", # heap escape
         "DrawerHookHoldState * hook_hold =",  # second owned pointer

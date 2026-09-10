@@ -506,42 +506,6 @@ class StartupScriptContractTests(unittest.TestCase):
             result.stdout,
         )
 
-    def test_plain_keyboard_mode_does_not_require_zenoh(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
-            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
-            fake_xdpyinfo.write_text(
-                "#!/usr/bin/env bash\nexit 0\n",
-                encoding="utf-8",
-            )
-            fake_xdpyinfo.chmod(0o755)
-            environment = os.environ.copy()
-            environment.update(
-                PATH=f"{tmp}:{environment['PATH']}",
-                DISPLAY=":xczs-test",
-                ZENOH_BRIDGE="/definitely/missing/zenoh-bridge",
-                BRIDGE_TCP_PORT="not-a-port",
-                BRIDGE_REST_PORT="also-not-a-port",
-                XCZS_ZENOH_LAN_ENABLED="not-a-boolean",
-                GAZEBO_ENABLED="false",
-                SPAWN_CABINET="false",
-                XCZS_PREFLIGHT_ONLY="true",
-            )
-            result = subprocess.run(
-                [str(STARTUP), "--keyboard"],
-                text=True,
-                capture_output=True,
-                env=environment,
-                timeout=30,
-                check=False,
-            )
-        self.assertEqual(
-            result.returncode,
-            0,
-            msg=f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}",
-        )
-        self.assertIn("完全跳过（键盘模式无需 Zenoh）", result.stdout)
-        self.assertIn("Zenoh 网络: 未启用", result.stdout)
-
     def test_ipv6_wildcard_uses_ipv6_loopback_for_readiness(self) -> None:
         self.assertIn('::) _READY_HOST="::1"', self.startup_source)
         self.assertNotIn(
@@ -549,7 +513,7 @@ class StartupScriptContractTests(unittest.TestCase):
             self.startup_source,
         )
 
-    def test_keyboard_proxy_still_requires_zenoh(self) -> None:
+    def test_proxy_requires_zenoh_bridge_binary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
             fake_xdpyinfo = Path(tmp) / "xdpyinfo"
             fake_xdpyinfo.write_text(
@@ -565,7 +529,7 @@ class StartupScriptContractTests(unittest.TestCase):
                 XCZS_PREFLIGHT_ONLY="true",
             )
             result = subprocess.run(
-                [str(STARTUP), "--keyboard", "--with-proxy"],
+                [str(STARTUP), "--web", "--with-proxy"],
                 text=True,
                 capture_output=True,
                 env=environment,
@@ -578,35 +542,11 @@ class StartupScriptContractTests(unittest.TestCase):
             result.stdout + result.stderr,
         )
 
-    def test_unreachable_display_is_rejected_for_keyboard_mode(self) -> None:
-        with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
-            fake_xdpyinfo = Path(tmp) / "xdpyinfo"
-            fake_xdpyinfo.write_text(
-                "#!/usr/bin/env bash\nexit 1\n",
-                encoding="utf-8",
-            )
-            fake_xdpyinfo.chmod(0o755)
-            environment = os.environ.copy()
-            environment.update(
-                PATH=f"{tmp}:{environment['PATH']}",
-                DISPLAY=":broken-display",
-                XCZS_PREFLIGHT_ONLY="true",
-            )
-            result = subprocess.run(
-                [str(STARTUP), "--keyboard"],
-                text=True,
-                capture_output=True,
-                env=environment,
-                timeout=10,
-                check=False,
-            )
-        self.assertNotEqual(result.returncode, 0)
-        output = result.stdout + result.stderr
-        self.assertIn("无法连接 DISPLAY=:broken-display", output)
-        self.assertIn("RGB 相机也不会发布图像", output)
-        self.assertIn("需要可连接的 DISPLAY", output)
-
     def test_display_probe_force_kills_a_term_ignoring_process(self) -> None:
+        # Web 模式下不可达的 DISPLAY 只降级（禁用 Gazebo 图形界面并告警），
+        # 不再像已移除的键盘模式那样硬拒绝。这里守护的是探测器本身：
+        # xdpyinfo 忽略 TERM 时必须被 ``timeout --kill-after`` 强杀并尽快返回，
+        # 不能把启动路径挂死。
         with tempfile.TemporaryDirectory(prefix="xczs-display-test-") as tmp:
             fake_xdpyinfo = Path(tmp) / "xdpyinfo"
             fake_xdpyinfo.write_text(
@@ -626,23 +566,37 @@ class StartupScriptContractTests(unittest.TestCase):
                 MOVEIT_ENABLED="false",
                 XCZS_PREFLIGHT_ONLY="true",
             )
-            started = time.monotonic()
-            result = subprocess.run(
-                [str(STARTUP), "--keyboard"],
+            process = subprocess.Popen(
+                [str(STARTUP), "--web"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
                 text=True,
-                capture_output=True,
                 env=environment,
-                timeout=8,
-                check=False,
             )
-            elapsed = time.monotonic() - started
+            started = time.monotonic()
+            elapsed = None
+            warning = None
+            captured: list[str] = []
+            try:
+                assert process.stdout is not None
+                for line in process.stdout:
+                    captured.append(line)
+                    if "DISPLAY=:term-ignoring-display" in line:
+                        elapsed = time.monotonic() - started
+                        warning = line
+                        break
+            finally:
+                process.kill()
+                process.wait(timeout=10)
 
-        self.assertNotEqual(result.returncode, 0)
-        self.assertLess(elapsed, 7.0)
-        self.assertIn(
-            "无法连接 DISPLAY=:term-ignoring-display",
-            result.stdout + result.stderr,
+        output = "".join(captured)
+        self.assertIsNotNone(
+            elapsed,
+            msg=f"DISPLAY 探测告警未出现；输出:\n{output}",
         )
+        self.assertLess(elapsed, 7.0)
+        self.assertIn("无法连接 DISPLAY=:term-ignoring-display", warning)
+        self.assertIn("RGB 相机也不会发布图像", warning)
 
     def test_launcher_only_stops_its_registered_process_groups(self) -> None:
         self.assertNotIn("pkill", self.startup_source)
@@ -1055,7 +1009,7 @@ fi
                 SPAWN_Z="nan",
             )
             result = subprocess.run(
-                [str(STARTUP), "--keyboard"],
+                [str(STARTUP), "--web"],
                 text=True,
                 capture_output=True,
                 env=environment,

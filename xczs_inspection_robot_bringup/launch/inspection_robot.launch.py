@@ -99,8 +99,6 @@ _BOOLEAN_LAUNCH_ARGUMENTS = (
     "robot_bringup",
     "use_sim_time",
     "paused",
-    "teleop",
-    "control_gui",
     "moveit",
     "moveit_rviz",
     "nav2",
@@ -625,8 +623,6 @@ def _configure_robot_adapter(context):
     robot_bringup = _launch_boolean(context, "robot_bringup")
     if not robot_bringup:
         local_only_flags = (
-            "teleop",
-            "control_gui",
             "moveit_rviz",
             "nav2_rviz",
         )
@@ -1351,8 +1347,6 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("robot_bringup", default_value="true"),
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("paused", default_value="false"),
-        DeclareLaunchArgument("teleop", default_value="false"),
-        DeclareLaunchArgument("control_gui", default_value="true"),
         DeclareLaunchArgument("moveit", default_value="true"),
         DeclareLaunchArgument("moveit_rviz", default_value="false"),
         DeclareLaunchArgument("nav2", default_value="false"),
@@ -1636,23 +1630,6 @@ def generate_launch_description() -> LaunchDescription:
         ],
         condition=IfCondition(LaunchConfiguration("robot_bringup")),
     )
-    keyboard = Node(
-        package=CONTROL_PACKAGE,
-        executable="keyboard_teleop",
-        name="xczs_keyboard_teleop",
-        output="screen",
-        prefix="xfce4-terminal --disable-server --execute",
-        parameters=[LaunchConfiguration("robot_control")],
-        condition=IfCondition(LaunchConfiguration("teleop")),
-    )
-    control_gui = Node(
-        package=CONTROL_PACKAGE,
-        executable="inspection_robot_gui",
-        name="xczs_inspection_robot_gui",
-        output="screen",
-        parameters=[LaunchConfiguration("robot_control")],
-        condition=IfCondition(LaunchConfiguration("control_gui")),
-    )
     operation_lease_coordinator = Node(
         package=CONTROL_PACKAGE,
         executable="operation_lease_coordinator",
@@ -1729,8 +1706,6 @@ def generate_launch_description() -> LaunchDescription:
                 success_actions=[
                     base_router,
                     trajectory_router,
-                    keyboard,
-                    control_gui,
                     move_group,
                     nav2,
                 ],

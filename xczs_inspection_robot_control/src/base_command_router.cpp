@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -309,9 +311,15 @@ private:
 int main(int argc, char * argv[])
 {
   rclcpp::init(argc, argv);
-  rclcpp::spin(
-    std::make_shared<
-      xczs_inspection_robot_control::BaseCommandRouter>());
+  try {
+    rclcpp::spin(
+      std::make_shared<
+        xczs_inspection_robot_control::BaseCommandRouter>());
+  } catch (const std::exception & error) {
+    std::fprintf(stderr, "Base command router failed: %s\n", error.what());
+    rclcpp::shutdown();
+    return EXIT_FAILURE;
+  }
   rclcpp::shutdown();
-  return 0;
+  return EXIT_SUCCESS;
 }

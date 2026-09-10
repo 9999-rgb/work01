@@ -1,7 +1,10 @@
 # ROS 2 / colcon generated directories
+# 注意：规则按仓库根锚定（前导 `/`），所以历史遗留的 docs/build 不会被
+# `/build/` 命中，必须单独列出——它曾因此被整棵提交进版本库。
 /build/
 /install/
 /log/
+/docs/build/
 /recordings/
 /xczs_inspection_robot_description/urdf/generated/
 

@@ -13,6 +13,9 @@ from unittest.mock import patch
 
 
 JIANG_DIR = Path(__file__).resolve().parents[1]
+# cabinet_client 以真实包路径加载（见 _load_cabinet_client），其同包导入需要
+# 能解析到 control_gateway 这个包本身。与其它测试模块的写法保持一致。
+sys.path.insert(0, str(JIANG_DIR))
 
 
 class _Logger:
@@ -252,8 +255,13 @@ def _load_cabinet_client() -> types.ModuleType:
         ),
     }
     path = JIANG_DIR / "control_gateway" / "cabinet_client.py"
+    # 以真实包路径命名，模块才拥有 ``__package__``，其 `from .x import y`
+    # 形式的同包导入（如 operate_error_codes）才能解析。此前用
+    # ``_test_cabinet_client_module`` 这种裸名字加载，任何同包导入都会
+    # ImportError。注意这里刻意不把它注册进 sys.modules，因此不会遮蔽
+    # 后续对真实 ``control_gateway.cabinet_client`` 的正常导入。
     specification = importlib.util.spec_from_file_location(
-        "_test_cabinet_client_module",
+        "control_gateway.cabinet_client",
         path,
     )
     assert specification is not None and specification.loader is not None
