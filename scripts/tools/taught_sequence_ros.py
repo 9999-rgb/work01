@@ -528,24 +528,6 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("目标 %.4f 超过轨道上限 %.2f"
                                % (start + distance, RAIL_LIMIT))
 
-        # 起拉前先把双臂沿 +x 退开一段，**放大钩爪与把手立板之间的缝**。
-        # 钩爪是跨在把手两侧的，背后只有约 2.4 mm 缝，而抽屉与手臂是两条独立
-        # 时间线，任何大于该缝的相对错位都会让钩爪插进板里。与其去赌毫秒级对齐
-        # （实测拿不到稳定数字），不如把缝放到十几毫米——有限的错位就落进缝里。
-        # 视觉上钩爪依然"搭在把手上"（160 mm 的工具，十几毫米的缝基本看不出来）；
-        # 退让后抽屉与手同速同向，缝在整个抽拉过程中保持不变。
-        clearance = float(step.get("clearance") or 0.018)
-        if clearance > 0.0:
-            on_progress(0.03, "起拉前退开间隙 %.0f mm" % (clearance * 1000))
-            for side in ARMS:
-                moved, fraction, _tip = self._plan_translate(side, "x", clearance)
-                if fraction < 0.99 or not moved.points:
-                    raise RuntimeError("%s 退让路径完整度仅 %.4f" % (side, fraction))
-                code = self._execute_plan(side, moved, 1.0, 60.0)
-                if code != 0:
-                    raise RuntimeError("%s 退让 error_code=%s" % (side, code))
-                self._tip_settled(ARMS[side]["tip"])
-
         on_progress(0.05, "规划双臂后拉路径")
         plans = {}
         for side in ARMS:
@@ -577,7 +559,7 @@ class TaughtRosWorker(SpinNode):
             # 是给两边**定同一个起跑时刻**：同时下发，并给臂轨迹前置 `lead` 秒的
             # 保持点（该值是实测出的启动延迟差，允许微调）。
             # 注意 lead 必须在**启动线程之前**算好——run_arm 闭包立刻要用它。
-            lead = float(step.get("lead") or 0.4)
+            lead = float(step.get("lead") or 0.0)
             on_progress(0.28, "起跑对齐：臂前置保持 %.2f s，与抽屉同刻起跑" % lead)
             results: Dict[str, Any] = {}
 
