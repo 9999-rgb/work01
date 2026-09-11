@@ -50,9 +50,9 @@ sequences:
         pose: db1_teach_node001_raise30.yaml
       - type: pull_drawer
         control: db1
-        distance: 0.07
         duration: 6.0
         lead: 0.3
+        target: 0.07
     closed:
       display_name: db1 抽拉柜 关闭（教学动作）
       steps:
@@ -60,8 +60,8 @@ sequences:
         pose: db1_opened.yaml
       - type: pull_drawer
         control: db1
-        distance: -0.07
         duration: 6.0
         lead: 0.3
+        target: 0.0
       - type: retract_rods
       - type: go_home

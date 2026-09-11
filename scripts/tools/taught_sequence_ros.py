@@ -80,6 +80,9 @@ ROD_LIMITS = {"default": (0.0, 0.12),
               "r_three_cyl_finger3_joint": (0.0, 0.0254),
               "l_rocker_rotor_joint": (0.0, 0.0254)}
 RETREAT_TOLERANCE = 0.001
+# 退杆守卫的**硬**上限：超过它才中止，<= 它只警告。物理杆偶有 1~2mm 顶滞，
+# 按 1mm 判死会让整套动作白跑（实测闭合因此反复失败）。
+ROD_RETREAT_HARD_LIMIT = 0.004
 
 
 def _clamp_rod(joint: str, value: float) -> float:
@@ -350,8 +353,14 @@ class TaughtRosWorker(SpinNode):
         stuck = [j for j in sorted(rod_joints)
                  if abs(self._measured(j) - 0.0) > RETREAT_TOLERANCE]
         if stuck:
-            raise RuntimeError("电缸没退到位（多半是顶住了），已中止且未动机械臂: %s"
-                               % ", ".join(stuck))
+            worst = max(abs(self._measured(j)) for j in stuck)
+            if worst > ROD_RETREAT_HARD_LIMIT:
+                raise RuntimeError(
+                    "电缸没退到位（顶住 %.2f mm），已中止且未动机械臂: %s"
+                    % (worst * 1000, ", ".join(stuck)))
+            print("注意：%s 未完全收到 0（最大 %.2f mm，在 %.0f mm 硬限内）——继续。"
+                  % (", ".join(stuck), worst * 1000,
+                     ROD_RETREAT_HARD_LIMIT * 1000), flush=True)
 
         self._check_cancel()
         on_progress(0.4, "双臂到位")
@@ -620,8 +629,8 @@ class TaughtRosWorker(SpinNode):
     def step_pull_drawer(self, step: Mapping[str, Any],
                          on_progress: Callable) -> None:
         control = str(step["control"])
-        distance = float(step["distance"])
         duration = float(step["duration"])
+        distance = float(step.get("distance") or 0.0)
         topic = "/xczs/cabinet/%s/%s/state" % (self._cabinet, control)
         self.create_subscription(CabinetControlState, topic,
                                  self._state_cb(control), 10)
@@ -629,8 +638,16 @@ class TaughtRosWorker(SpinNode):
         # 坑③：关到位时轨道位置实测是负的微小值，而下限是 0 → 必须钳进限位，
         # 否则插件按 `q < lower` 直接拒收。
         start = max(0.0, min(RAIL_LIMIT, self._controls[control].position))
-        if start + distance > RAIL_LIMIT:
-            raise RuntimeError("目标 %.4f 超过轨道上限 %.2f"
+        # **支持绝对目标位**（给 target 就按"当前位置 → target"算位移）。
+        # 只用相对距离会在异常后累积：实测闭合失败一次、抽屉停在 0.07，
+        # 下一次 open 又加 0.07 变成 0.14，越开越大。绝对目标天然不会。
+        if step.get("target") is not None:
+            target = max(0.0, min(RAIL_LIMIT, float(step["target"])))
+            distance = target - start
+            print("绝对目标位 %.4f m，当前 %.4f → 位移 %+.4f m"
+                  % (target, start, distance), flush=True)
+        if start + distance > RAIL_LIMIT + 1e-9 or start + distance < -1e-9:
+            raise RuntimeError("目标 %.4f m 超出轨道 [0, %.2f]"
                                % (start + distance, RAIL_LIMIT))
 
         on_progress(0.05, "规划双臂后拉路径")
