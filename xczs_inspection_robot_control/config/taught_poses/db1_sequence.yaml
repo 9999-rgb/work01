@@ -52,6 +52,7 @@ sequences:
         control: db1
         distance: 0.25
         duration: 6.0
+        lead: 0.3
     closed:
       display_name: db1 抽拉柜 关闭（教学动作）
       steps:
@@ -61,5 +62,6 @@ sequences:
         control: db1
         distance: -0.25
         duration: 6.0
+        lead: 0.3
       - type: retract_rods
       - type: go_home

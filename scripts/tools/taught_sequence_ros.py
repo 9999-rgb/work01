@@ -559,7 +559,7 @@ class TaughtRosWorker(SpinNode):
             # 是给两边**定同一个起跑时刻**：同时下发，并给臂轨迹前置 `lead` 秒的
             # 保持点（该值是实测出的启动延迟差，允许微调）。
             # 注意 lead 必须在**启动线程之前**算好——run_arm 闭包立刻要用它。
-            lead = float(step.get("lead") or 0.0)
+            lead = float(step.get("lead") or 0.3)
             on_progress(0.28, "起跑对齐：臂前置保持 %.2f s，与抽屉同刻起跑" % lead)
             results: Dict[str, Any] = {}
 
@@ -585,7 +585,7 @@ class TaughtRosWorker(SpinNode):
 
             on_progress(0.3, "启动抽屉轨道播放")
             self._start_playback(playback, lease_id, control, start,
-                                 distance, duration)
+                                 distance, duration, lead=lead)
             for thread in threads:
                 thread.join(timeout=max(180.0, duration * 6))
             for side in plans:
@@ -693,13 +693,26 @@ class TaughtRosWorker(SpinNode):
             pass
 
     def _start_playback(self, client, lease_id, control, start, distance,
-                        duration) -> None:
+                        duration, lead: float = 0.0) -> None:
         trajectory = JointTrajectory()
         trajectory.joint_names = [control]
-        # 坑②：header.stamp 必须为 0（立即执行）。插件用**节点墙钟**判定，
-        # 填仿真时间会被算成"过去 17 亿秒"而拒收。
-        trajectory.header.stamp.sec = 0
-        trajectory.header.stamp.nanosec = 0
+        # header.stamp 契约（插件侧）：0 = 立即开始；**未来值 = 停住等到那一刻
+        # 才开始**（插件源码 AGENT T3 段：a future stamp parks the drawer until
+        # its start time is reached）。判定用的是**节点墙钟**，不是 world SimTime
+        # ——所以这里必须用 time.time() 的墙钟基准，填仿真时间会被算成"过去
+        # 17 亿秒"而拒收（本会话踩过）。
+        #
+        # 起跑对齐就靠这个：臂的目标要走 action 受理才起步，抽屉的播放要等插件
+        # 处理——两条独立时间线。给抽屉钉一个"预计双臂真正起步的时刻"，两边
+        # 同刻开跑，钩爪与把手在全过程中保持固定相对关系（001 位姿里那 2.4 mm
+        # 的缝因此不会被磨掉）。
+        if lead > 0.0:
+            target = time.time() + lead
+            trajectory.header.stamp.sec = int(target)
+            trajectory.header.stamp.nanosec = int((target % 1.0) * 1e9)
+        else:
+            trajectory.header.stamp.sec = 0
+            trajectory.header.stamp.nanosec = 0
         for elapsed, value in ((0.0, start), (duration, start + distance)):
             point = JointTrajectoryPoint()
             point.positions = [value]
