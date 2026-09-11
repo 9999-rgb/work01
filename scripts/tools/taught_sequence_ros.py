@@ -243,8 +243,12 @@ class TaughtRosWorker(SpinNode):
         return response.solution.joint_trajectory, response.fraction, (sx, sy, sz)
 
     def _execute_plan(self, side: str, solution, scale: float,
-                      timeout: float) -> int:
-        """把 MoveIt 算出的臂轨迹裁到本臂 7 关节，时间轴缩放后下发控制器。"""
+                      timeout: float, lead: float = 0.0) -> int:
+        """把 MoveIt 算出的臂轨迹裁到本臂 7 关节，时间轴缩放后下发控制器。
+
+        ``lead`` > 0 时前置一段**保持点**（t=0 与 t=lead 同一位置），让本臂晚
+        ``lead`` 秒起步——用于与抽屉播放对齐起跑时刻（见 step_pull_drawer）。
+        """
         cfg = ARMS[side]
         wanted = cfg["joints"]
         index = {name: i for i, name in enumerate(solution.joint_names)}
@@ -253,12 +257,18 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("%s 轨迹缺少关节 %s" % (side, missing))
         trajectory = JointTrajectory()
         trajectory.joint_names = list(wanted)
+        if lead > 0.0 and solution.points:
+            hold = JointTrajectoryPoint()
+            hold.positions = [solution.points[0].positions[index[j]]
+                              for j in wanted]
+            hold.time_from_start = Duration(seconds=0.0).to_msg()
+            trajectory.points.append(hold)
         for point in solution.points:
             new_point = JointTrajectoryPoint()
             new_point.positions = [point.positions[index[j]] for j in wanted]
             total = (point.time_from_start.sec
                      + point.time_from_start.nanosec * 1e-9) * max(1.0, scale)
-            new_point.time_from_start = Duration(seconds=total).to_msg()
+            new_point.time_from_start = Duration(seconds=total + lead).to_msg()
             trajectory.points.append(new_point)
         return self._send_trajectory(side, trajectory, timeout)
 
@@ -518,6 +528,24 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("目标 %.4f 超过轨道上限 %.2f"
                                % (start + distance, RAIL_LIMIT))
 
+        # 起拉前先把双臂沿 +x 退开一段，**放大钩爪与把手立板之间的缝**。
+        # 钩爪是跨在把手两侧的，背后只有约 2.4 mm 缝，而抽屉与手臂是两条独立
+        # 时间线，任何大于该缝的相对错位都会让钩爪插进板里。与其去赌毫秒级对齐
+        # （实测拿不到稳定数字），不如把缝放到十几毫米——有限的错位就落进缝里。
+        # 视觉上钩爪依然"搭在把手上"（160 mm 的工具，十几毫米的缝基本看不出来）；
+        # 退让后抽屉与手同速同向，缝在整个抽拉过程中保持不变。
+        clearance = float(step.get("clearance") or 0.018)
+        if clearance > 0.0:
+            on_progress(0.03, "起拉前退开间隙 %.0f mm" % (clearance * 1000))
+            for side in ARMS:
+                moved, fraction, _tip = self._plan_translate(side, "x", clearance)
+                if fraction < 0.99 or not moved.points:
+                    raise RuntimeError("%s 退让路径完整度仅 %.4f" % (side, fraction))
+                code = self._execute_plan(side, moved, 1.0, 60.0)
+                if code != 0:
+                    raise RuntimeError("%s 退让 error_code=%s" % (side, code))
+                self._tip_settled(ARMS[side]["tip"])
+
         on_progress(0.05, "规划双臂后拉路径")
         plans = {}
         for side in ARMS:
@@ -542,12 +570,22 @@ class TaughtRosWorker(SpinNode):
             # 若串行执行（左 6 s 再右 6 s），抽屉 6 s 就走完而臂要 12 s——
             # 全程错位，钩爪（跨在把手两侧）会被抽屉拖着穿过把手，实测表现为
             # "抽拉过程中不断穿模"。各起一个线程，与抽屉共用同一条时间线。
+            # **起跑对齐**：两份运动各有自己的启动延迟（臂的目标要走 action
+            # 受理，抽屉的播放要等插件处理），先后发的两种做法只会把误差从一边
+            # 挪到另一边——实测"先抽屉后臂"抽屉领先、"等臂动再放抽屉"手臂领先
+            # 16.6 mm（≈0.4 s，恒定，足以让跨在把手两侧的钩爪插进去）。正确做法
+            # 是给两边**定同一个起跑时刻**：同时下发，并给臂轨迹前置 `lead` 秒的
+            # 保持点（该值是实测出的启动延迟差，允许微调）。
+            # 注意 lead 必须在**启动线程之前**算好——run_arm 闭包立刻要用它。
+            lead = float(step.get("lead") or 0.4)
+            on_progress(0.28, "起跑对齐：臂前置保持 %.2f s，与抽屉同刻起跑" % lead)
             results: Dict[str, Any] = {}
 
             def run_arm(side_name, arm_solution):
                 try:
                     results[side_name] = self._execute_plan(
-                        side_name, arm_solution, scale, max(120.0, duration * 4))
+                        side_name, arm_solution, scale,
+                        max(120.0, duration * 4), lead=lead)
                 except Exception as error:  # noqa: BLE001
                     results[side_name] = error
 
@@ -562,12 +600,7 @@ class TaughtRosWorker(SpinNode):
                 thread.start()
                 threads.append(thread)
 
-            # **先让双臂真正动起来，再启动抽屉播放**。
-            # 原实现是"先发抽屉、再发臂"：抽屉的播放立刻开始，而臂的目标还要
-            # 走 action 受理（实测 0.5~1 s）才开始动——于是抽屉先跑、手后跟，
-            # 全程错位（现场看到的就是"柜子抽出来跟手臂缩回去不同步"，而且这个
-            # 错位本身就造成穿模）。这里改成等臂末端真的动了再放抽屉。
-            self._wait_for_arms_moving(plans, timeout=8.0)
+
             on_progress(0.3, "启动抽屉轨道播放")
             self._start_playback(playback, lease_id, control, start,
                                  distance, duration)
