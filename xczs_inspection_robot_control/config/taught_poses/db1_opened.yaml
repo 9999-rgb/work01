@@ -1,0 +1,159 @@
+# 机器人标定位姿（capture_robot_pose.py 抓取）
+label: db1 抽拉柜【拉出后】位姿：= 001 位姿沿世界 +x 平移 0.25 m。闭合动作必须从这里起步（不能先回 001——那时抽屉箱体正占着 0.099→0.349，工具会扫穿箱体）
+captured_wall_time: 2026-09-11T16:18:36+0800
+world_frame: odom
+joints:
+  l_arm_0_joint: -0.979145
+  l_arm_1_joint: -2.246611
+  l_arm_3_joint: -1.932802
+  l_arm_4_joint: -0.823451
+  l_arm_5_joint: -0.018107
+  r_arm_0_joint: 1.128893
+  r_arm_1_joint: -1.838646
+  l_arm_2_joint: -1.266022
+  r_arm_2_joint: -2.038638
+  r_wheel_1_joint: 0.564358
+  r_wheel_0_joint: 0.97516
+  l_wheel_0_joint: -1.411535
+  l_two_cyl_finger1_joint: 0.018719
+  l_wheel_1_joint: -0.908794
+  l_two_cyl_finger2_joint: 0.082954
+  r_three_cyl_finger1_joint: 0.081971
+  r_arm_3_joint: 1.989007
+  l_arm_6_joint: -1.448225
+  r_three_cyl_finger3_joint: 4.2e-05
+  r_arm_5_joint: -2.829544
+  r_three_cyl_finger2_joint: 0.018449
+  r_arm_6_joint: -1.443855
+  r_arm_4_joint: 1.095535
+joint_efforts:
+  l_arm_0_joint: 0.0
+  l_arm_1_joint: 0.0
+  l_arm_3_joint: 0.0
+  l_arm_4_joint: 0.0
+  l_arm_5_joint: 0.0
+  r_arm_0_joint: 0.0
+  r_arm_1_joint: 0.0
+  l_arm_2_joint: 0.0
+  r_arm_2_joint: 0.0
+  r_wheel_1_joint: 0.0
+  r_wheel_0_joint: 0.0
+  l_wheel_0_joint: 0.0
+  l_two_cyl_finger1_joint: 0.0
+  l_wheel_1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: 0.0
+  l_arm_6_joint: 0.0
+  r_three_cyl_finger3_joint: 0.0
+  r_arm_5_joint: 0.0
+  r_three_cyl_finger2_joint: 0.0
+  r_arm_6_joint: 0.0
+  r_arm_4_joint: 0.0
+frames:
+  body:
+    position:
+    - 1.199
+    - 4.388
+    - 0.584638
+    orientation_xyzw:
+    - 0.0
+    - 0.0
+    - -0.707107
+    - 0.707107
+  l_arm_6:
+    position:
+    - 0.919719
+    - 4.075098
+    - 0.979434
+    orientation_xyzw:
+    - 0.499873
+    - -0.499984
+    - -0.490749
+    - 0.509223
+  r_arm_6:
+    position:
+    - 0.919292
+    - 4.72449
+    - 0.986108
+    orientation_xyzw:
+    - 0.512755
+    - 0.49287
+    - 0.497296
+    - 0.496848
+  l_two_cyl_base:
+    position:
+    - 0.721426
+    - 4.067459
+    - 0.979665
+    orientation_xyzw:
+    - 0.490749
+    - 0.509223
+    - 0.499873
+    - 0.499984
+  r_three_cyl_base:
+    position:
+    - 0.721021
+    - 4.732321
+    - 0.988506
+    orientation_xyzw:
+    - 0.512755
+    - 0.49287
+    - 0.497296
+    - 0.496848
+  l_two_cyl_finger1:
+    position:
+    - 0.408638
+    - 4.094567
+    - 0.917398
+    orientation_xyzw:
+    - 0.490749
+    - 0.509223
+    - 0.499873
+    - 0.499984
+  l_two_cyl_finger2:
+    position:
+    - 0.345663
+    - 4.025411
+    - 0.91868
+    orientation_xyzw:
+    - 0.490749
+    - 0.509223
+    - 0.499873
+    - 0.499984
+  r_three_cyl_finger1:
+    position:
+    - 0.340615
+    - 4.77492
+    - 0.931918
+    orientation_xyzw:
+    - 0.512755
+    - 0.49287
+    - 0.497296
+    - 0.496848
+  r_three_cyl_finger2:
+    position:
+    - 0.40779
+    - 4.705623
+    - 0.929743
+    orientation_xyzw:
+    - 0.512755
+    - 0.49287
+    - 0.497296
+    - 0.496848
+  r_three_cyl_finger3:
+    position:
+    - 0.356002
+    - 4.692966
+    - 1.012091
+    orientation_xyzw:
+    - 0.512755
+    - 0.49287
+    - 0.497296
+    - 0.496848
+controls:
+  db1:
+    state_id: closed
+    position: 0.000781
+    effort: -0.3889
+    in_motion: false

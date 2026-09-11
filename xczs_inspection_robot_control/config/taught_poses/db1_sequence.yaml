@@ -40,11 +40,7 @@ sequences:
       display_name: db1 抽拉柜 关闭（教学动作）
       steps:
       - type: restore_pose
-        pose: db1_teach_node001_raise30.yaml
-      - type: translate_tool
-        axis: x
-        distance: 0.25
-        duration: 4.0
+        pose: db1_opened.yaml
       - type: pull_drawer
         control: db1
         distance: -0.25
