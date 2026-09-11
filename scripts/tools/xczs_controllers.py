@@ -90,8 +90,11 @@ class SpinNode(Node):
 
     def __init__(self, name, num_threads=4, **kwargs):
         super().__init__(name, **kwargs)
+        # executor 必须显式带上**节点自己的 context**：默认构造会用全局
+        # context，而 Web 任务层用的是私有 context（未初始化）——那样会在
+        # GuardCondition 里炸成 `AttributeError: __enter__`。
         self._spin_executor = rclpy.executors.MultiThreadedExecutor(
-            num_threads=num_threads)
+            num_threads=num_threads, context=self.context)
         self._spin_executor.add_node(self)
         self._spin_thread = threading.Thread(
             target=self._spin_executor.spin, daemon=True)
