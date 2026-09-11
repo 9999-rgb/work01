@@ -290,7 +290,15 @@ class TaughtSequenceRunner:
                            result={"traceback": detail[-2000:]})
         finally:
             if node is not None:
-                try:
-                    node.shutdown()
-                except Exception:  # noqa: BLE001
-                    pass
+                # 若序列以"冻结抽屉"收尾（HOLD），节点**不能关**：它持有播放
+                # 租约并在后台续租，一关租约就到期、看门狗回收、抽屉弹回档位。
+                # 这是已知的取舍——代价是每个 such 任务会留下一个常驻节点；
+                # 正解是另起一个小的常驻 holder 节点，见该处 TODO。
+                if getattr(node, "_hold_active", False):
+                    print("保留教学序列节点以维持抽屉冻结（HOLD 需持续持有租约）",
+                          flush=True)
+                else:
+                    try:
+                        node.shutdown()
+                    except Exception:  # noqa: BLE001
+                        pass

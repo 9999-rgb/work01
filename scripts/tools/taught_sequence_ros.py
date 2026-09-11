@@ -601,8 +601,11 @@ class TaughtRosWorker(SpinNode):
                         % (start, self._controls[control].position))
         finally:
             self._stop_playback(playback, lease_id)
-            self.stop_renewing()
-            self._release_lease(lease_id)
+            # HOLD 生效后**不能停续租、也不能释放租约**：租约一到期，插件的
+            # 60s 闲置看门狗就回收播放会话，抽屉随即被闩锁/弹簧拉回档位
+            # （实测 3cm 会自己合上）。所以把续租线程与租约都留着，由调用方
+            # 决定何时收尾。
+            self._hold_active = True
 
     def _wait_for_arms_moving(self, plans, timeout: float = 8.0,
                               epsilon: float = 0.0015) -> bool:
@@ -740,9 +743,20 @@ class TaughtRosWorker(SpinNode):
                                  duration, response.position), flush=True)
             raise RuntimeError("抽屉播放被拒: %s" % response.message)
 
-    def _stop_playback(self, client, lease_id) -> None:
+    def _stop_playback(self, client, lease_id, hold: bool = True) -> None:
+        """结束播放。
+
+        **默认发 HOLD 而不是 RELEASE**：RELEASE 会把抽屉交回插件的默认控制，
+        闩锁/弹簧随即把它拉回最近的档位——实测拉出 3cm 时抽屉"开了又自己合上"
+        （0.3m 是它的开档位，3cm 离 0 档太近）。HOLD 则把抽屉**冻在当前位置**
+        （srv 定义：HOLD freezes the drawer at the current playback position）。
+
+        代价：HOLD 期间必须一直持有播放租约，否则 60s 闲置看门狗会回收、抽屉
+        照样弹回。所以持有时长由 hold_seconds 控制，期间后台线程持续续租。
+        """
         request = SetCabinetPlayback.Request()
-        request.command = SetCabinetPlayback.Request.COMMAND_RELEASE
+        request.command = (SetCabinetPlayback.Request.COMMAND_HOLD if hold
+                           else SetCabinetPlayback.Request.COMMAND_RELEASE)
         request.control_id = getattr(self, "_playback_control", "")
         request.operation_lease_id = lease_id
         try:
