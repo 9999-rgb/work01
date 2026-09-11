@@ -39,7 +39,8 @@ TAUGHT_POSES_DIR = (
     WORKSPACE / "xczs_inspection_robot_control" / "config" / "taught_poses"
 )
 DEFAULT_SEQUENCE_FILE = TAUGHT_POSES_DIR / "db1_sequence.yaml"
-SUPPORTED_STEPS = ("preposition_base", "restore_pose", "pull_drawer")
+SUPPORTED_STEPS = ("preposition_base", "restore_pose", "pull_drawer",
+                    "retract_rods", "go_home", "translate_tool")
 SUPPORTED_SCHEMA = 1
 
 

@@ -56,6 +56,11 @@ ADAPTER = (
     WORKSPACE / "xczs_inspection_robot_control" / "config" / "scene_controls"
     / "electrical_mezzanine_adapter.yaml"
 )
+# 机器人"初始姿势"的权威来源：机器人启动时的姿态就是这份文件定义的。
+INITIAL_POSITIONS = (
+    WORKSPACE / "xczs_inspection_robot_description" / "config"
+    / "initial_positions.yaml"
+)
 CARTESIAN_SERVICE = "/compute_cartesian_path"
 LEASE_SERVICE = "/xczs/operation_lease"
 OWNER_ID = "taught_sequence"
@@ -342,6 +347,93 @@ class TaughtRosWorker(SpinNode):
             self._send(self._rod_clients[side], cfg["joints"], targets, 3.0)
         self._settled(sorted(rod_joints))
         on_progress(1.0, "已还原教学位姿 %s" % pose_path.name)
+
+    # ------------------------------------------------- 步骤 3b 末端整体平移
+    def step_translate_tool(self, step: Mapping[str, Any],
+                            on_progress: Callable) -> None:
+        """双臂一起沿某个世界轴平移一段（姿态不变）。
+
+        用途：闭合时抽屉已开着、把手在 +0.25 m 处，而 001 位姿的手在 0 处——
+        先把手平移到把手上，再执行推回，视觉上就是"手搭上把手往里推"。
+        """
+        axis = str(step["axis"])
+        distance = float(step["distance"])
+        if axis not in ("x", "y", "z"):
+            raise RuntimeError("translate_tool 的 axis 只能是 x/y/z，收到 %r" % axis)
+        duration = float(step.get("duration") or 0.0)
+        on_progress(0.05, "末端沿世界 %s 平移 %+.3f m" % (axis, distance))
+        plans = {}
+        for side in ARMS:
+            solution, fraction, tip = self._plan_translate(side, axis, distance)
+            if fraction < 0.99 or not solution.points:
+                raise RuntimeError("%s 平移路径完整度仅 %.4f" % (side, fraction))
+            plans[side] = solution
+        scale = 1.0
+        if duration > 0.0:
+            plan_time = max(
+                (p.time_from_start.sec + p.time_from_start.nanosec * 1e-9)
+                for solution in plans.values() for p in solution.points)
+            scale = max(1.0, duration / plan_time) if plan_time > 0 else 1.0
+        for index, (side, solution) in enumerate(plans.items()):
+            self._check_cancel()
+            on_progress(0.1 + 0.85 * index / float(len(plans)),
+                        "平移（%s）" % side)
+            code = self._execute_plan(side, solution, scale,
+                                      max(120.0, duration * 4 or 120.0))
+            if code != 0:
+                raise RuntimeError("%s 控制器 error_code=%s" % (side, code))
+        for side in ARMS:
+            self._tip_settled(ARMS[side]["tip"])
+        on_progress(1.0, "末端平移完成")
+
+    # ------------------------------------------------------- 步骤 4 收回电缸杆
+    def step_retract_rods(self, step: Mapping[str, Any],
+                          on_progress: Callable) -> None:
+        """把所有电缸杆收到 0。动臂之前必须先把杆收回，顺序不能反。"""
+        on_progress(0.1, "收回全部电缸杆")
+        rod_joints = {j for cfg in ROD_SIDES.values() for j in cfg["joints"]}
+        for side, cfg in ROD_SIDES.items():
+            values = {j: 0.0 for j in cfg["joints"]}
+            if all(abs(values[j] - self._measured(j)) < 1e-6
+                   for j in cfg["joints"]):
+                continue
+            self._send(self._rod_clients[side], cfg["joints"], values, 3.0)
+        self._settled(sorted(rod_joints))
+        stuck = [j for j in sorted(rod_joints)
+                 if abs(self._measured(j)) > RETREAT_TOLERANCE]
+        if stuck:
+            raise RuntimeError("有电缸没收到位（多半是顶住了）: %s"
+                               % ", ".join(stuck))
+        on_progress(1.0, "电缸杆已全部收回")
+
+    # ------------------------------------------------- 步骤 5 机械臂回初始姿势
+    def step_go_home(self, step: Mapping[str, Any],
+                     on_progress: Callable) -> None:
+        """双臂回到 URDF 的初始位姿（``initial_positions.yaml``）。
+
+        机器人刚启动时的姿态就是这个文件定义的，所以"回初始姿势"用它最权威，
+        不需要另外抓一份存档。
+        """
+        with INITIAL_POSITIONS.open("r", encoding="utf-8") as handle:
+            payload = yaml.safe_load(handle)
+        targets = payload["initial_positions"]
+        if not isinstance(targets, Mapping) or not targets:
+            raise RuntimeError("%s 里没有 initial_positions" % INITIAL_POSITIONS)
+        on_progress(0.1, "机械臂回到初始姿势")
+        for side, cfg in ARMS.items():
+            joints = [j for j in cfg["joints"] if j in targets]
+            missing = [j for j in cfg["joints"] if j not in targets]
+            if missing:
+                raise RuntimeError("初始位姿缺少 %s 的关节: %s"
+                                   % (side, ", ".join(missing)))
+            if all(abs(float(targets[j]) - self._measured(j)) < 1e-6
+                   for j in joints):
+                continue
+            self._send(self._arm_clients[side], joints,
+                       {j: float(targets[j]) for j in joints}, 5.0)
+        self._settled([j for cfg in ARMS.values() for j in cfg["joints"]],
+                      timeout=20.0)
+        on_progress(1.0, "机械臂已回到初始姿势")
 
     # ------------------------------------------------------------- 步骤 3 联动抽拉
     def step_pull_drawer(self, step: Mapping[str, Any],

@@ -1,40 +1,53 @@
-# db1 抽拉柜「打开」的教学动作序列（声明式）
+# db1 抽拉柜「打开 / 关闭」的教学动作序列（声明式）
 #
-# 背景：原来 db1 的开抽屉动作是**编译进 C++ cabinet_button_operator 的分段状态机**
-# （self_center → hook → support → unlock → 播放抽拉）。2026-09-11 用户现场逐步
-# 教学出一套更可控的动作（见 db1_teach_node001_raise30.yaml 的调整链），并要求
-# 用它替换掉 Web 上原来那套不成熟的操控。
-#
-# 本文件把那套教学动作写成**声明式步骤**，由 jiang/control_gateway/taught_sequence.py
-# 执行。以后现场再教新动作，只要：存一个 taught_poses/*.yaml + 在这里写几行，
-# **不用改代码、不用重编**。
+# 背景：原来 db1 的动作是**编译进 C++ cabinet_button_operator 的分段状态机**，
+# 无法配置。2026-09-11 用户现场逐步教学出这套动作，并要求用它替换掉 Web 上
+# 原来那套不成熟的操控。
 #
 # 步骤类型（type）：
-#   preposition_base  —— 把底盘送到该控件的作业工位（走 scripts/tools/preposition_base.py
-#                        的那套：读场景适配 YAML 的 navigation_station）
-#   restore_pose      —— 按 taught_poses/*.yaml 下发臂 + 全部电缸杆关节角
-#                        （先退杆到 0 → 动臂 → 伸杆到目标；杆目标钳进行程）
-#   pull_drawer       —— 联动抽拉：抽屉轨道按时间表被运动学驱动，同时双臂沿世界 +x
-#                        平移同样距离、时间轴缩放对齐（视觉合唱，非真实拖拽）
+#   preposition_base  送底盘到该控件的作业工位（读适配器的 navigation_station）
+#   restore_pose      按 taught_poses/*.yaml 下发臂 + 全部电缸杆（先退杆 → 动臂
+#                     → 伸杆；杆目标钳进行程）
+#   pull_drawer       联动抽拉：抽屉轨道按时间表被运动学驱动，同时双臂沿世界 x
+#                     平移同样距离、时间轴缩放对齐（视觉合唱，非真实拖拽）。
+#                     **distance 为负即反向（推回）**
+#   retract_rods      所有电缸杆收到 0（动臂之前必须先做，否则杆会被刮坏）
+#   go_home           双臂回到 URDF 初始位姿（xczs_inspection_robot_description/
+#                     config/initial_positions.yaml，即机器人启动时的姿态）
 #
-# 契约：所有 step 的字段都必须显式给出，缺一个就在加载时报错（不做默认值兜底），
+# 契约：每个 step 的字段必须显式给出，缺一个在加载时报错（不做默认值兜底），
 # 免得现场改坏了却静默跑到一半。
+#
+# ⚠️ YAML 同一个 mapping 里不能出现重复键（后一个会静默覆盖前一个）——两个命令
+#    必须并列在同一个 control 键下。
 schema_version: 1
-
-# 哪些 (控件, 命令) 用本序列。runner 按这个表分派；没有条目的控件维持原路径。
 sequences:
   db1:
     open:
-      display_name: "db1 抽拉柜 打开（教学动作）"
+      display_name: db1 抽拉柜 打开（教学动作）
       steps:
-        - type: preposition_base
-          control: db1
-          # cabinet 留空 = 用序列运行时的 cabinet 名
-          cabinet: ""
-          toolset: A
-        - type: restore_pose
-          pose: db1_teach_node001_raise30.yaml
-        - type: pull_drawer
-          control: db1
-          distance: 0.25          # 抽出距离（m），轨道上限 0.38
-          duration: 6.0           # 动作时长（s），两边同长
+      - type: preposition_base
+        control: db1
+        cabinet: ''
+        toolset: A
+      - type: restore_pose
+        pose: db1_teach_node001_raise30.yaml
+      - type: pull_drawer
+        control: db1
+        distance: 0.25
+        duration: 6.0
+    closed:
+      display_name: db1 抽拉柜 关闭（教学动作）
+      steps:
+      - type: restore_pose
+        pose: db1_teach_node001_raise30.yaml
+      - type: translate_tool
+        axis: x
+        distance: 0.25
+        duration: 4.0
+      - type: pull_drawer
+        control: db1
+        distance: -0.25
+        duration: 6.0
+      - type: retract_rods
+      - type: go_home
