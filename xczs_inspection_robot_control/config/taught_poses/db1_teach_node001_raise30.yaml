@@ -1,0 +1,160 @@
+# 机器人标定位姿（capture_robot_pose.py 抓取）
+label: db1 教学节点001【定版·启动位姿】(2026-09-11，用户确认为最完美启动位姿)：物理修复(position接口/臂阻尼) + 左工具摆平(杆向垂直偏+0.02°)
+  + 左臂外移10mm + 平行后移16mm 收缝 + 左臂上抬15mm。钩爪跨在把手立板两侧(背后缝2.4/2.8mm，板厚内0顶点)、零穿模、零抖动(≤0.02mm)、杆位全在行程内、抽屉未动
+captured_wall_time: 2026-09-11T14:32:08+0800
+world_frame: odom
+joints:
+  l_arm_0_joint: -1.323821
+  l_arm_1_joint: -2.053153
+  l_arm_3_joint: -1.116172
+  l_arm_4_joint: -1.10915
+  l_arm_5_joint: -0.189268
+  r_arm_0_joint: 1.315369
+  r_arm_1_joint: -1.80832
+  l_arm_2_joint: -1.622547
+  r_arm_2_joint: -1.828601
+  r_wheel_1_joint: 37.444977
+  r_wheel_0_joint: 37.930153
+  l_wheel_0_joint: -38.136861
+  l_two_cyl_finger1_joint: 0.018722
+  l_wheel_1_joint: -37.860014
+  l_two_cyl_finger2_joint: 0.002957
+  r_three_cyl_finger1_joint: 0.001978
+  r_arm_3_joint: 1.172342
+  l_arm_6_joint: -0.895586
+  r_three_cyl_finger3_joint: 2.6e-05
+  r_arm_5_joint: -2.788143
+  r_three_cyl_finger2_joint: 0.018481
+  r_arm_6_joint: -2.158917
+  r_arm_4_joint: 1.437549
+joint_efforts:
+  l_arm_0_joint: 0.0
+  l_arm_1_joint: 0.0
+  l_arm_3_joint: 0.0
+  l_arm_4_joint: 0.0
+  l_arm_5_joint: 0.0
+  r_arm_0_joint: 0.0
+  r_arm_1_joint: 0.0
+  l_arm_2_joint: 0.0
+  r_arm_2_joint: 0.0
+  r_wheel_1_joint: 0.0
+  r_wheel_0_joint: 0.0
+  l_wheel_0_joint: 0.0
+  l_two_cyl_finger1_joint: 0.0
+  l_wheel_1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: 0.0
+  l_arm_6_joint: 0.0
+  r_three_cyl_finger3_joint: 0.0
+  r_arm_5_joint: 0.0
+  r_three_cyl_finger2_joint: 0.0
+  r_arm_6_joint: 0.0
+  r_arm_4_joint: 0.0
+frames:
+  body:
+    position:
+    - 1.199
+    - 4.388
+    - 0.584672
+    orientation_xyzw:
+    - 0.0
+    - 0.0
+    - -0.707107
+    - 0.707107
+  l_arm_6:
+    position:
+    - 0.66972
+    - 4.075098
+    - 0.979465
+    orientation_xyzw:
+    - 0.499879
+    - -0.49983
+    - -0.4908
+    - 0.509319
+  r_arm_6:
+    position:
+    - 0.6693
+    - 4.724478
+    - 0.986134
+    orientation_xyzw:
+    - 0.513028
+    - 0.492853
+    - 0.497017
+    - 0.496862
+  l_two_cyl_base:
+    position:
+    - 0.471429
+    - 4.067418
+    - 0.979754
+    orientation_xyzw:
+    - 0.4908
+    - 0.509319
+    - 0.499879
+    - 0.49983
+  r_three_cyl_base:
+    position:
+    - 0.471035
+    - 4.732424
+    - 0.988636
+    orientation_xyzw:
+    - 0.513028
+    - 0.492853
+    - 0.497017
+    - 0.496862
+  l_two_cyl_finger1:
+    position:
+    - 0.15863
+    - 4.094471
+    - 0.917583
+    orientation_xyzw:
+    - 0.4908
+    - 0.509319
+    - 0.499879
+    - 0.49983
+  l_two_cyl_finger2:
+    position:
+    - 0.175637
+    - 4.026787
+    - 0.91883
+    orientation_xyzw:
+    - 0.4908
+    - 0.509319
+    - 0.499879
+    - 0.49983
+  r_three_cyl_finger1:
+    position:
+    - 0.170598
+    - 4.773651
+    - 0.931272
+    orientation_xyzw:
+    - 0.513028
+    - 0.492853
+    - 0.497017
+    - 0.496862
+  r_three_cyl_finger2:
+    position:
+    - 0.15772
+    - 4.705907
+    - 0.930038
+    orientation_xyzw:
+    - 0.513028
+    - 0.492853
+    - 0.497017
+    - 0.496862
+  r_three_cyl_finger3:
+    position:
+    - 0.105997
+    - 4.693279
+    - 1.012413
+    orientation_xyzw:
+    - 0.513028
+    - 0.492853
+    - 0.497017
+    - 0.496862
+controls:
+  db1:
+    state_id: closed
+    position: -2.1e-05
+    effort: 0.6736
+    in_motion: false

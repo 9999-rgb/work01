@@ -926,6 +926,18 @@ public:
     visual_pull_speed_ = positive_parameter("visual_pull_speed", 0.08);
     visual_pull_timeout_ = positive_parameter(
       "visual_pull_timeout", 90.0);
+    // 2026-09-10 用户现场观察:visual 后端阶段驻留调试开关。visual_stop_after_stage
+    // 命中 "self_center"/"work_pose"/"hook"/"support"/"unlock" 时，该阶段完成后原地
+    // 保持不动（不下发任何新指令，双臂与电缸维持最后指令位），时长由
+    // visual_stop_hold_seconds 决定：> 0 = 保持 N 秒后继续正常流程；0 = 一直保持到
+    // 目标被取消或租约丢失，供 GUI 逐帧查看工作位姿。空串（默认）= 关闭，行为与
+    // 历史完全一致。与 debug_stage_cap 同约定：每次执行时重新读取，现场用
+    // ros2 param set 即可改下一次任务的行为，无需重启 operator。
+    declare_parameter<std::string>("visual_stop_after_stage", "");
+    if (declare_parameter<double>("visual_stop_hold_seconds", 0.0) < 0.0) {
+      throw std::invalid_argument(
+              "Parameter 'visual_stop_hold_seconds' must be >= 0.");
+    }
     const auto & parameter_overrides =
       get_node_parameters_interface()->get_parameter_overrides();
     const bool navigation_yaw_offset_overridden =
@@ -4887,6 +4899,21 @@ private:
         // 悬停把手外侧、全部电缸收拢、抽屉未解锁仍闩定关闭。收尾只做退让
         // 收起，不触发任何电缸（未解锁，显式复闩恒无害）。
         if (!closing && debug_stage_cap == 1) {
+          // 2026-09-10 用户现场观察:cap1 同 cap2 —— 到达工作位姿后可驻留 N 秒
+          // (drawer_hook_hold_seconds>0),期间保持工作位姿、全部电缸收拢不动,
+          // 供 GUI 逐帧查看工作位姿后再进入收尾(退让收起)。默认 0 不驻留,
+          // 行为与历史一致。驻留可被取消/租约丢失打断(与 cap2 同一语义)。
+          const double work_pose_hold_seconds =
+            get_parameter("drawer_hook_hold_seconds").as_double();
+          if (work_pose_hold_seconds > 0.0) {
+            publish_operate_feedback(
+              goal_handle,
+              OperateCabinetControl::Feedback::GRASPING,
+              0.30F, target_position,
+              "Holding both arms at the single drawer work pose with every "
+              "rod actuator retracted, for visual inspection.");
+            interruptible_hold(goal_handle, work_pose_hold_seconds);
+          }
           finish_capped_drawer_stage(
             goal_handle, *control, drawer_left_move_group, move_group, 1,
             "both arms reached the single drawer work pose with all rod "
@@ -11557,6 +11584,44 @@ private:
     // 播放 pull 前只回位支撑/解锁电缸(右 finger3 是右支撑 finger2 的串联子级,
     // 随右支撑一并回位), 钩爪保持闭合贯穿整个播放 pull —— 底盘 1:1 跟随抽屉,
     // 钩尖与把手同速前移、不拖杆(§6.1: 钩/解锁保持贯穿 PULL, 收尾才回位)。
+    // 2026-09-10 用户现场观察:visual 后端阶段驻留调试开关(参数见构造函数注释)。
+    // 命中阶段名后原地保持不动 —— 期间不下发任何新指令, 双臂与各电缸维持最后
+    // 指令位; 保持时长 0 = 一直保持到目标取消/租约丢失, > 0 = N 秒后继续正常
+    // 流程。默认空串 = 关闭, 不进入本 lambda 的任何分支。
+    const auto stop_after_visual_stage_if_requested =
+      [&](const std::string & stage) {
+        // 现场用 ros2 param set 改这一次任务的行为: 与 debug_stage_cap /
+        // drawer_hook_hold_seconds 同约定, 执行时重新读取, 不吃构造期缓存。
+        const std::string configured =
+          get_parameter("visual_stop_after_stage").as_string();
+        std::string requested = configured;
+        if (requested == "work_pose") {
+          requested = "self_center";
+        }
+        if (requested.empty() || requested != stage) {
+          return;
+        }
+        const double configured_hold_seconds =
+          get_parameter("visual_stop_hold_seconds").as_double();
+        const bool indefinite = configured_hold_seconds <= 0.0;
+        constexpr double kIndefiniteStageHoldSeconds = 86400.0;
+        const double hold_seconds = indefinite ?
+          kIndefiniteStageHoldSeconds : configured_hold_seconds;
+        publish_operate_feedback(
+          goal_handle,
+          OperateCabinetControl::Feedback::GRASPING,
+          0.30F, target_position,
+          "Visual backend debug hold: stage '" + stage +
+          "' reached; holding both arms and every rod actuator in place" +
+          (indefinite ? std::string(" until the task is stopped.") :
+            " for " + std::to_string(configured_hold_seconds) + " s."));
+        RCLCPP_INFO(
+          get_logger(),
+          "Visual drawer '%s' debug hold after stage '%s' (%.1f s%s).",
+          control.id.c_str(), stage.c_str(), hold_seconds,
+          indefinite ? ", indefinite until canceled" : "");
+        interruptible_hold(goal_handle, hold_seconds);
+      };
     if (!closing) {
       result->diagnostic_stage = "self_center";
       publish_operate_feedback(
@@ -11574,6 +11639,7 @@ private:
           drawer_left_tool_.move_group, drawer_right_tool_.move_group,
           button_snapshot(control).position, poses, operation_executed,
           "drawer visual work pose");
+        stop_after_visual_stage_if_requested("self_center");
         result->diagnostic_stage = "hook";
         publish_operate_feedback(
           goal_handle,
@@ -11583,6 +11649,7 @@ private:
           "plates (inner-side claws engage).");
         drive_drawer_hook_stage(
           goal_handle, control, *right_group, operation_executed, &hook_hold);
+        stop_after_visual_stage_if_requested("hook");
         result->diagnostic_stage = "support";
         publish_operate_feedback(
           goal_handle,
@@ -11592,6 +11659,7 @@ private:
           "seams while the hook claws keep holding the handle plates.");
         drive_drawer_support_stage(
           goal_handle, control, *right_group, hook_hold, operation_executed);
+        stop_after_visual_stage_if_requested("support");
         result->diagnostic_stage = "unlock";
         publish_operate_feedback(
           goal_handle,
@@ -11603,6 +11671,7 @@ private:
         drive_unlock_motor(
           goal_handle, control, *right_group, control.unlock_pressed_position,
           "extend", operation_executed);
+        stop_after_visual_stage_if_requested("unlock");
         try {
           set_drawer_unlock(goal_handle, control, true, true);
           RCLCPP_INFO(

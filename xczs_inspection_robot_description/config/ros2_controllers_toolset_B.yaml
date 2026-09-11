@@ -102,10 +102,9 @@
       - r_rotbtn_jaw1_joint
       - r_rotbtn_jaw2_joint
     command_interfaces:
-      # Keep the existing JointTrajectory API while driving both jaws through
-      # effort/PID.  Direct position writes on a Gazebo Classic SliderJoint
-      # emit an ODE warning every physics tick and can grow server logs to GB.
-      - effort
+      # 2026-09-11 由 effort 改为 position（同 Set A 的 three/two_cylinder）：
+      # effort 接口下 JTC 轨迹结束后不再写命令，关节失去位置伺服、随臂漂移。
+      - position
     state_interfaces:
       - position
       - velocity
@@ -149,7 +148,9 @@
     joints:
       - l_rocker_rotor_joint
     command_interfaces:
-      - effort
+      # 2026-09-11 由 effort 改为 position（同 three_cylinder_controller）：
+      # effort 接口下 JTC 轨迹结束后不再写命令，杆失去位置伺服、随臂漂移。
+      - position
     state_interfaces:
       - position
       - velocity

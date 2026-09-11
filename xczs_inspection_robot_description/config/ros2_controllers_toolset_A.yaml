@@ -103,10 +103,13 @@
       - r_three_cyl_finger2_joint
       - r_three_cyl_finger3_joint
     command_interfaces:
-      # Keep position goals at the public JointTrajectory boundary. The JTC
-      # maps its tracking error to effort, avoiding Gazebo Classic's
-      # prismatic SetPosition Anchor spam while preserving real motion.
-      - effort
+      # 2026-09-11 由 effort 改为 position，与臂关节一致。
+      # 原 effort 方案下 JTC 轨迹结束后不再写命令，杆失去位置伺服、随臂漂移
+      # （实测前伸 20mm 漂 7~12mm），累计后被顶到限位外锁死。改 position 后
+      # 由 Gazebo 持续位置伺服，杆不再自己跑。
+      # 注：下面的 gains 块对 position 接口不再生效（仅 effort 接口使用），
+      # 保留是为了记录当年的整定依据。
+      - position
     state_interfaces:
       - position
       - velocity
@@ -164,7 +167,9 @@
       - l_two_cyl_finger1_joint
       - l_two_cyl_finger2_joint
     command_interfaces:
-      - effort
+      # 2026-09-11 由 effort 改为 position（同 three_cylinder_controller）：
+      # effort 接口下 JTC 轨迹结束后不再写命令，杆失去位置伺服、随臂漂移。
+      - position
     state_interfaces:
       - position
       - velocity

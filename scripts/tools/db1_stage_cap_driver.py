@@ -230,7 +230,9 @@ def main():
     parser.add_argument("--keep-cap", action="store_true",
                         help="leave debug_stage_cap set after the run")
     parser.add_argument("--hold-sec", type=float, default=0.0,
-                        help="cap2 hook-engaged dwell seconds before teardown "
+                        help="cap1/cap2 dwell seconds before teardown: cap1 "
+                             "holds the single work pose with every rod "
+                             "retracted, cap2 holds the engaged hooks "
                              "(0 = off, zero-regression)")
     args = parser.parse_args()
 

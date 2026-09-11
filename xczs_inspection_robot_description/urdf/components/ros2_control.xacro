@@ -74,28 +74,29 @@
            are absent from the URDF. Set A is three-cylinder(右) + two-cylinder(左);
            Set B is rotate-button(右) + rocker(左). -->
       <xacro:if value="${'$(arg toolset)'.upper() == 'A'}">
-        <!-- Gazebo Classic's ODE backend emits one Anchor warning per physics
-             step when a prismatic joint is driven through SetPosition.  Keep
-             the public JointTrajectory position contract, but let the mature
-             JTC effort/PID path drive these five sliders with SetForce.
-             This avoids multi-gigabyte Gazebo server logs without changing a
-             mesh, material, link, joint origin, or operator-facing API. -->
-        <xacro:xczs_effort_controlled_joint joint_name="r_three_cyl_finger1_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="r_three_cyl_finger2_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="r_three_cyl_finger3_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="l_two_cyl_finger1_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="l_two_cyl_finger2_joint" />
+        <!-- 2026-09-11 改为 position 命令接口（原为 effort/PID）。
+             原方案是为了躲开 Gazebo Classic ODE 在 prismatic SetPosition 下
+             每个物理步刷一条 Anchor 警告的日志洪水；但 effort 接口有个致命
+             副作用：JointTrajectoryController 在轨迹结束后**不再写新命令**，
+             最后那个 effort 值一直挂着 —— 杆等于处在恒定力下、没有任何位置
+             伺服，机械臂一运动就把杆带走（实测前伸 20mm 漂 7~12mm、内收 40mm
+             漂 50mm，累计后杆被顶到限位外并锁死，双向都驱不动）。
+             臂关节本来就用 position 接口、从不漂，所以五根杆统一改成 position，
+             与臂同路径；Anchor 日志另行在启动侧抑制。 -->
+        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger1_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger2_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_three_cyl_finger3_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger1_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="l_two_cyl_finger2_joint" />
       </xacro:if>
       <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
-        <!-- The rotate-button jaws are also prismatic.  Use the same
-             effort/PID route as Set A so selecting Set B cannot reintroduce
-             Gazebo Classic's SliderJoint Anchor log flood.  Keeping the
-             rotary joints on this route lets each public tool group remain a
-             single JointTrajectoryController. -->
-        <xacro:xczs_effort_controlled_joint joint_name="r_rotbtn_rotate_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
-        <xacro:xczs_effort_controlled_joint joint_name="l_rocker_rotor_joint" />
+        <!-- 同 Set A：统一走 position，避免 effort 接口"轨迹结束即失去位置
+             伺服"导致的杆位漂移；旋转关节本来就是 revolute，position 控制
+             与臂一致。 -->
+        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_rotate_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw1_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="r_rotbtn_jaw2_joint" />
+        <xacro:xczs_position_controlled_joint joint_name="l_rocker_rotor_joint" />
       </xacro:if>
 
       <!-- The planar Gazebo plugin moves the base. ros2_control only exposes
