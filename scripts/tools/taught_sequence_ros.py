@@ -348,6 +348,72 @@ class TaughtRosWorker(SpinNode):
         self._settled(sorted(rod_joints))
         on_progress(1.0, "已还原教学位姿 %s" % pose_path.name)
 
+    # ------------------------------------------------- 步骤 3a 电缸杆伸缩
+    def _rod_contract(self):
+        """从场景适配 YAML 的 drawer_tools 段读"角色→关节名"（跨层合同）。
+
+        与现场工具 nudge_rod_stroke.py 同一份来源、同一套约定，不在这里另立一份。
+        """
+        if getattr(self, "_rod_contract_cache", None) is None:
+            with ADAPTER.open("r", encoding="utf-8") as handle:
+                adapter = yaml.safe_load(handle)
+
+            def find(node):
+                if isinstance(node, dict):
+                    if "drawer_tools" in node:
+                        return node["drawer_tools"]
+                    for value in node.values():
+                        found = find(value)
+                        if found:
+                            return found
+                return None
+
+            tools = find(adapter)
+            if not tools:
+                raise RuntimeError("%s 里找不到 drawer_tools" % ADAPTER)
+            contract = {}
+            for side in ROD_SIDES:
+                contract[side] = {}
+                for role in ("gripper", "support"):
+                    joint = tools[side].get("%s_joint" % role)
+                    if not joint:
+                        raise RuntimeError("drawer_tools.%s 缺 %s_joint"
+                                           % (side, role))
+                    contract[side][role] = joint
+            self._rod_contract_cache = contract
+        return self._rod_contract_cache
+
+    def step_rod_stroke(self, step: Mapping[str, Any],
+                        on_progress: Callable) -> None:
+        """按角色伸缩电缸杆。``distance`` 为正=伸出、为负=缩回（米）。
+
+        现场教学里的"钩爪前伸/收缩卡住"就是这一步。同侧其余杆保持实测值不动。
+        """
+        role = str(step["role"])
+        if role not in ("gripper", "support"):
+            raise RuntimeError("rod_stroke 的 role 只能是 gripper/support，收到 %r"
+                               % role)
+        distance = float(step["distance"])
+        contract = self._rod_contract()
+        sides = ROD_SIDES.keys() if step.get("side", "both") == "both" \
+            else [str(step["side"])]
+        duration = float(step.get("duration") or 3.0)
+        on_progress(0.1, "电缸 %s %+.4f m" % (role, distance))
+        for side in sides:
+            joint = contract[side][role]
+            cfg = ROD_SIDES[side]
+            current = self._measured(joint)
+            low, high = ROD_LIMITS.get(joint, ROD_LIMITS["default"])
+            target = max(low, min(high, current + distance))
+            values = {j: self._measured(j) for j in cfg["joints"]}
+            values[joint] = target
+            code = self._send(self._rod_clients[side], cfg["joints"], values,
+                              duration)
+            if code != 0:
+                raise RuntimeError("%s 电缸控制器 error_code=%s" % (side, code))
+        self._settled([contract[s][role] for s in sides])
+        on_progress(1.0, "电缸 %s 完成" % role)
+
     # ------------------------------------------------- 步骤 3b 末端整体平移
     def step_translate_tool(self, step: Mapping[str, Any],
                             on_progress: Callable) -> None:
