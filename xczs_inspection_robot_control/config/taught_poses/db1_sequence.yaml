@@ -50,7 +50,7 @@ sequences:
         pose: db1_teach_node001_raise30.yaml
       - type: pull_drawer
         control: db1
-        distance: 0.25
+        distance: 0.03
         duration: 6.0
         lead: 0.3
     closed:
@@ -60,7 +60,7 @@ sequences:
         pose: db1_opened.yaml
       - type: pull_drawer
         control: db1
-        distance: -0.25
+        distance: -0.03
         duration: 6.0
         lead: 0.3
       - type: retract_rods
