@@ -165,7 +165,7 @@ class TaughtRosWorker(SpinNode):
         goal.goal_time_tolerance.sec = 5
         future = client.send_goal_async(goal)
         deadline = time.monotonic() + 15.0
-        while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+        while self.context.ok() and not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
         handle = future.result() if future.done() else None
         if handle is None or not handle.accepted:
@@ -180,7 +180,7 @@ class TaughtRosWorker(SpinNode):
                    ["%.5f" % float(targets[j]) for j in joints], float(duration)))
         result_future = handle.get_result_async()
         deadline = time.monotonic() + max(40.0, duration * 6.0)
-        while rclpy.ok() and not result_future.done() and \
+        while self.context.ok() and not result_future.done() and \
                 time.monotonic() < deadline:
             time.sleep(0.05)
         if not result_future.done():
@@ -192,7 +192,7 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("%s 不可用" % what)
         future = client.call_async(request)
         deadline = time.monotonic() + timeout
-        while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+        while self.context.ok() and not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
         if not future.done():
             raise RuntimeError("%s 未在 %.0fs 内回复" % (what, timeout))
@@ -266,14 +266,14 @@ class TaughtRosWorker(SpinNode):
         goal.goal_time_tolerance.sec = 5
         future = client.send_goal_async(goal)
         deadline = time.monotonic() + 15.0
-        while rclpy.ok() and not future.done() and time.monotonic() < deadline:
+        while self.context.ok() and not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
         handle = future.result() if future.done() else None
         if handle is None or not handle.accepted:
             raise RuntimeError("%s 拒绝了轨迹" % side)
         result_future = handle.get_result_async()
         deadline = time.monotonic() + timeout
-        while rclpy.ok() and not result_future.done() and \
+        while self.context.ok() and not result_future.done() and \
                 time.monotonic() < deadline:
             time.sleep(0.05)
         if not result_future.done():
