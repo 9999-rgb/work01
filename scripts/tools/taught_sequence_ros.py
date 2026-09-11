@@ -714,8 +714,13 @@ class TaughtRosWorker(SpinNode):
             trajectory.header.stamp.sec = 0
             trajectory.header.stamp.nanosec = 0
         for elapsed, value in ((0.0, start), (duration, start + distance)):
+            # **终点也必须钳进限位**：关到位时 start 常是 0.24999977 这类值，
+            # start + distance(−0.25) 会算出 −2.3e-07 这种极小的负数，而关节
+            # 下限是 0 → 插件按 `q < lower` 直接拒收。2026-09-11 闭合任务反复
+            # 失败就是这个：只钳了起点没钳终点，报错文案又是四条规则共用的，
+            # 光看"被拒"根本看不出是负了 2e-07。
             point = JointTrajectoryPoint()
-            point.positions = [value]
+            point.positions = [max(0.0, min(RAIL_LIMIT, value))]
             point.time_from_start = Duration(seconds=elapsed).to_msg()
             trajectory.points.append(point)
         request = SetCabinetPlayback.Request()
