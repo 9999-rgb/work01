@@ -470,10 +470,8 @@ class TaughtRosWorker(SpinNode):
         lease_id = self._acquire_lease()
         self._start_renewing(lease_id)
         try:
-            on_progress(0.15, "启动抽屉轨道播放")
+            on_progress(0.15, "启动双臂后拉")
             self._playback_control = control
-            self._start_playback(playback, lease_id, control, start,
-                                 distance, duration)
             # **两条臂必须并发**：抽屉的时间表是时长 duration 的一条线，
             # 若串行执行（左 6 s 再右 6 s），抽屉 6 s 就走完而臂要 12 s——
             # 全程错位，钩爪（跨在把手两侧）会被抽屉拖着穿过把手，实测表现为
@@ -497,6 +495,16 @@ class TaughtRosWorker(SpinNode):
                                           daemon=True)
                 thread.start()
                 threads.append(thread)
+
+            # **先让双臂真正动起来，再启动抽屉播放**。
+            # 原实现是"先发抽屉、再发臂"：抽屉的播放立刻开始，而臂的目标还要
+            # 走 action 受理（实测 0.5~1 s）才开始动——于是抽屉先跑、手后跟，
+            # 全程错位（现场看到的就是"柜子抽出来跟手臂缩回去不同步"，而且这个
+            # 错位本身就造成穿模）。这里改成等臂末端真的动了再放抽屉。
+            self._wait_for_arms_moving(plans, timeout=8.0)
+            on_progress(0.3, "启动抽屉轨道播放")
+            self._start_playback(playback, lease_id, control, start,
+                                 distance, duration)
             for thread in threads:
                 thread.join(timeout=max(180.0, duration * 6))
             for side in plans:
@@ -514,6 +522,36 @@ class TaughtRosWorker(SpinNode):
             self._stop_playback(playback, lease_id)
             self.stop_renewing()
             self._release_lease(lease_id)
+
+    def _wait_for_arms_moving(self, plans, timeout: float = 8.0,
+                              epsilon: float = 0.0015) -> bool:
+        """等双臂末端真的开始移动（或超时）。
+
+        用于把抽屉播放的启动时刻对齐到臂的起步——不等的话抽屉会先跑 0.5~1 s，
+        全程与手错位。
+        """
+        baseline = {}
+        for side in plans:
+            try:
+                baseline[side], _ = self._tip_pose(ARMS[side]["tip"])
+            except RuntimeError:
+                baseline[side] = None
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            moved = False
+            for side, origin in baseline.items():
+                if origin is None:
+                    continue
+                try:
+                    now, _ = self._tip_pose(ARMS[side]["tip"], timeout=0.5)
+                except RuntimeError:
+                    continue
+                if max(abs(now[i] - origin[i]) for i in range(3)) >= epsilon:
+                    moved = True
+            if moved:
+                return True
+            time.sleep(0.05)
+        return False
 
     def _tip_settled(self, tip: str, timeout: float = 15.0,
                      tolerance: float = 0.0002, window: float = 0.4) -> bool:
@@ -593,6 +631,14 @@ class TaughtRosWorker(SpinNode):
         request.trajectory = trajectory
         response = self._call(client, request, 15.0, "playback")
         if not response.success:
+            # 插件的报错文案是四条规则共用的，光看"被拒"定位不到是哪一条。
+            # 把下发的原始样本与插件返回的位置一并抛出。
+            print("播放被拒诊断：command=%s control=%s 样本=%s 时长=%.3f "
+                  "返回位置=%s" % (request.command, control,
+                                 [(round(p.time_from_start.sec
+                                         + p.time_from_start.nanosec * 1e-9, 3),
+                                   p.positions[0]) for p in trajectory.points],
+                                 duration, response.position), flush=True)
             raise RuntimeError("抽屉播放被拒: %s" % response.message)
 
     def _stop_playback(self, client, lease_id) -> None:
