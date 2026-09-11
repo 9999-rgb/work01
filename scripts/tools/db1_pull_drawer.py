@@ -26,6 +26,7 @@ import argparse
 import sys
 import threading
 import time
+from typing import Any, Dict
 from pathlib import Path
 
 import rclpy
@@ -210,11 +211,34 @@ class DrawerPuller(ToolTranslateNudge):
         self.start_renew(lease_id)
         try:
             self.start_playback(lease_id, start, distance, duration)
+            # **两条臂必须并发**：抽屉的时间表是时长 duration 的一条线。若串行
+            # 执行（左 duration 再右 duration），抽屉走完时臂才走一半，全程
+            # 错位——钩爪跨在把手两侧，会被抽屉拖着穿过把手（实测表现为抽拉
+            # 过程中不断穿模）。各起一个线程，与抽屉共用同一条时间线。
+            outcomes: Dict[str, Any] = {}
+
+            def run_arm(side_name, arm_solution):
+                try:
+                    outcomes[side_name] = self.execute(
+                        side_name, arm_solution, slowdown,
+                        max(timeout, duration * 4))
+                except Exception as error:  # noqa: BLE001
+                    outcomes[side_name] = error
+
+            threads = []
             for side, (solution, _tip) in plans.items():
                 print("执行 %-5s ..." % side)
-                result = self.execute(side, solution, slowdown,
-                                      max(timeout, duration * 4))
-                print("%-5s 控制器 error_code=%s" % (side, result.error_code))
+                thread = threading.Thread(target=run_arm, args=(side, solution),
+                                          name="pull-%s" % side, daemon=True)
+                thread.start()
+                threads.append(thread)
+            for thread in threads:
+                thread.join(timeout=max(180.0, duration * 6))
+            for side in plans:
+                outcome = outcomes.get(side)
+                if isinstance(outcome, Exception):
+                    raise RuntimeError("%s 执行失败: %s" % (side, outcome))
+                print("%-5s 控制器 error_code=%s" % (side, outcome.error_code))
             for side in ARMS:
                 if not self._tip_settled(ARMS[side]["tip"], timeout=15.0):
                     print("警告: %s 末端 15 s 内未静止" % side)

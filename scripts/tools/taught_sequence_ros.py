@@ -474,14 +474,37 @@ class TaughtRosWorker(SpinNode):
             self._playback_control = control
             self._start_playback(playback, lease_id, control, start,
                                  distance, duration)
+            # **两条臂必须并发**：抽屉的时间表是时长 duration 的一条线，
+            # 若串行执行（左 6 s 再右 6 s），抽屉 6 s 就走完而臂要 12 s——
+            # 全程错位，钩爪（跨在把手两侧）会被抽屉拖着穿过把手，实测表现为
+            # "抽拉过程中不断穿模"。各起一个线程，与抽屉共用同一条时间线。
+            results: Dict[str, Any] = {}
+
+            def run_arm(side_name, arm_solution):
+                try:
+                    results[side_name] = self._execute_plan(
+                        side_name, arm_solution, scale, max(120.0, duration * 4))
+                except Exception as error:  # noqa: BLE001
+                    results[side_name] = error
+
+            threads = []
             for index, (side, (solution, _tip)) in enumerate(plans.items()):
                 self._check_cancel()
                 on_progress(0.25 + 0.6 * index / float(len(plans)),
                             "双臂后拉（%s）" % side)
-                code = self._execute_plan(side, solution, scale,
-                                          max(120.0, duration * 4))
-                if code != 0:
-                    raise RuntimeError("%s 控制器 error_code=%s" % (side, code))
+                thread = threading.Thread(target=run_arm, args=(side, solution),
+                                          name="taught-pull-%s" % side,
+                                          daemon=True)
+                thread.start()
+                threads.append(thread)
+            for thread in threads:
+                thread.join(timeout=max(180.0, duration * 6))
+            for side in plans:
+                outcome = results.get(side)
+                if isinstance(outcome, Exception):
+                    raise RuntimeError("%s 后拉失败: %s" % (side, outcome))
+                if outcome != 0:
+                    raise RuntimeError("%s 控制器 error_code=%s" % (side, outcome))
             for side in ARMS:
                 self._tip_settled(ARMS[side]["tip"])
             time.sleep(1.0)
