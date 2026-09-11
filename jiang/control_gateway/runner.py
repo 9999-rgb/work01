@@ -595,6 +595,12 @@ class ControlServer:
             str,
             "queue.Queue[Dict[str, Any]]",
         ] = {}
+        # 教学动作序列：配置缓存 + 每个 cabinet 当前在跑的 runner（用于取消）
+        # + 事件代数号（监视线程按 generation 过滤过期事件）。
+        self._taught_sequences: Optional[Dict[str, Any]] = None
+        self._taught_runners: Dict[str, Any] = {}
+        self._taught_generation = 0
+        self._taught_generation_lock = threading.Lock()
         self._cabinet_clients: Dict[str, CabinetClient] = {}
         toolset_status_provider = getattr(
             self._node,
@@ -5315,6 +5321,106 @@ class ControlServer:
                 last_report_at = now
             time.sleep(OPERATION_START_STATION_POLL_SEC)
 
+    def _submit_taught_or_action(
+        self,
+        client: "CabinetClient",
+        cabinet: str,
+        control_id: str,
+        command: str,
+        target_state: Optional[str],
+        target_position: Optional[float],
+        force: Optional[float],
+        event_queue: "queue.Queue[Dict[str, Any]]",
+        context: Any,
+    ) -> Dict[str, Any]:
+        """把一次操作性请求分派给「教学序列」或原来的 cabinet action。
+
+        教学序列是**配置驱动**的：``taught_poses/db1_sequence.yaml`` 里按
+        ``(控件, 命令)`` 登记了才命中；没登记的组合（含 db1 的其它命令、以及
+        其它全部控件）走原路径，行为与历史完全一致。
+
+        两条路径返回**同形**的 submission 字典（至少含 ``generation``），
+        所以后面那段监视线程、超时、取消、SSE 推进一行都不用改。
+        """
+        runner = self._taught_runners
+        sequence = None
+        try:
+            sequences = self._taught_sequences
+            if sequences is None:
+                from .taught_sequence import load_sequences
+
+                sequences = load_sequences()
+                self._taught_sequences = sequences
+            from .taught_sequence import find_sequence as find_taught_sequence
+            sequence = find_taught_sequence(
+                sequences, control_id, command, target_state
+            )
+        except Exception as error:  # noqa: BLE001
+            # 配置坏了不能让整个控件不可用：记一条日志，退回原路径。
+            self._node.get_logger().error(
+                f"Taught sequence config unusable, falling back to the "
+                f"cabinet action: {error}"
+            )
+
+        if sequence is None:
+            # See the navigation equivalent earlier in this file: the
+            # cancellation check and action submission are one admission step.
+            with self._task_interlock_scope():
+                context.raise_if_canceled()
+                return client.submit_operation(
+                    control_id,
+                    command,
+                    target_state=target_state,
+                    target_position=target_position,
+                    force=force,
+                    navigate=False,
+                )
+
+        from .taught_sequence import TaughtSequenceRunner
+
+        generation = self._next_taught_generation()
+        worked = TaughtSequenceRunner(
+            cabinet=cabinet,
+            control_id=control_id,
+            command=command,
+            target_state=target_state,
+            steps=sequence["steps"],
+            emit=event_queue.put,
+            generation=generation,
+            display_name=sequence.get("display_name", ""),
+            # Web 进程用私有 rclpy Context，节点必须建在同一个上。
+            context=self._context,
+        )
+        runner[cabinet] = worked
+        self._node.get_logger().info(
+            f"Taught sequence '{sequence.get('display_name')}' selected for "
+            f"{cabinet}/{control_id} {command} {target_state or ''}".strip()
+        )
+        worked.start()
+        # status 只接受 {accepted, failed, canceled}（见调用点校验）——教学序列
+        # 是异步启动的，"已受理"对调用方才是正确语义；后续进展一律走事件。
+        return {
+            "status": "accepted",
+            "cabinet": cabinet,
+            "control_id": control_id,
+            "command": command,
+            "target_state": target_state,
+            "target_position": target_position,
+            "generation": generation,
+            "execution_backend": "taught",
+        }
+
+    def _next_taught_generation(self) -> int:
+        with self._taught_generation_lock:
+            self._taught_generation += 1
+            return self._taught_generation
+
+    def _cancel_taught(self, cabinet: str) -> None:
+        """取消该 cabinet 上正在跑的教学序列（没有则无操作）。"""
+        worked = self._taught_runners.pop(cabinet, None)
+        if worked is not None:
+            worked.cancel()
+
     def _execute_operation_task_owned(
         self,
         context: Any,
@@ -5489,18 +5595,20 @@ class ControlServer:
 
         try:
             try:
-                # See the navigation equivalent above.  This makes the
-                # cancellation check and action submission one admission step.
-                with self._task_interlock_scope():
-                    context.raise_if_canceled()
-                    submission = client.submit_operation(
-                        control_id,
-                        command,
-                        target_state=target_state,
-                        target_position=target_position,
-                        force=force,
-                        navigate=False,
-                    )
+                # 教学动作序列优先：登记过的 (控件, 命令) 走声明式步骤（现场逐步
+                # 教出来的动作，配置在 taught_poses/db1_sequence.yaml）；未登记的
+                # 一律维持原 cabinet action 路径。两条路都返回同形的 submission。
+                submission = self._submit_taught_or_action(
+                    client,
+                    cabinet,
+                    control_id,
+                    command,
+                    target_state,
+                    target_position,
+                    force,
+                    event_queue,
+                    context,
+                )
             except (CabinetClientError, ControlRequestError) as error:
                 failure_reason = str(
                     getattr(error, "failure_reason", None) or str(error)
@@ -5641,6 +5749,9 @@ class ControlServer:
                         # As with navigation, retain global exclusivity until
                         # the cabinet action itself reports a terminal event.
                         pass
+                    # 教学序列后端不走 cabinet action，取消要单独传给它，
+                    # 否则超时/停机时它的工作线程会继续跑完动作。
+                    self._cancel_taught(cabinet)
                     last_timeout_cancel_at = now
                 try:
                     event = event_queue.get(timeout=TASK_MONITOR_PERIOD_SEC)
@@ -5886,6 +5997,7 @@ class ControlServer:
                 client.cancel()
             except Exception:  # noqa: BLE001
                 pass
+            self._cancel_taught(cabinet)
             # Belt-and-suspenders: if an unexpected exception escapes while the
             # slot is still retained, release it so a bug cannot strand the
             # globally-exclusive task slot (409 forever). Idempotent.
