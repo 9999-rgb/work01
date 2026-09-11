@@ -18,6 +18,7 @@ ROS 细节集中在这里，两边职责清楚。
 """
 from __future__ import annotations
 
+import json
 import math
 import subprocess
 import sys
@@ -55,6 +56,12 @@ TAUGHT_POSES_DIR = (
 ADAPTER = (
     WORKSPACE / "xczs_inspection_robot_control" / "config" / "scene_controls"
     / "electrical_mezzanine_adapter.yaml"
+)
+# 解锁点的几何在 controls（按控件给），杆端坐标在 adapter（按工具给）——
+# 两份都是跨层合同，各从各自的地方读，不混。
+CONTROLS = (
+    WORKSPACE / "xczs_inspection_robot_control" / "config" / "scene_controls"
+    / "electrical_mezzanine_controls.yaml"
 )
 # 机器人"初始姿势"的权威来源：机器人启动时的姿态就是这份文件定义的。
 INITIAL_POSITIONS = (
@@ -111,6 +118,7 @@ class TaughtRosWorker(SpinNode):
             for side, cfg in ROD_SIDES.items()
         }
         self._playback_cli: Optional[Any] = None
+        self._current_lease_id: Optional[str] = None
         self._renew_stop: Optional[threading.Event] = None
         self._renew_thread: Optional[threading.Thread] = None
 
@@ -369,13 +377,23 @@ class TaughtRosWorker(SpinNode):
                 adapter = yaml.safe_load(handle)
 
             def find(node):
-                if isinstance(node, dict):
-                    if "drawer_tools" in node:
-                        return node["drawer_tools"]
-                    for value in node.values():
-                        found = find(value)
-                        if found:
-                            return found
+                # 同上：适配器 YAML 有锚点，可能自引用，必须环安全。
+                seen = set()
+                stack = [node]
+                while stack:
+                    current = stack.pop()
+                    if isinstance(current, dict):
+                        if id(current) in seen:
+                            continue
+                        seen.add(id(current))
+                        if "drawer_tools" in current:
+                            return current["drawer_tools"]
+                        stack.extend(current.values())
+                    elif isinstance(current, list):
+                        if id(current) in seen:
+                            continue
+                        seen.add(id(current))
+                        stack.extend(current)
                 return None
 
             tools = find(adapter)
@@ -384,11 +402,10 @@ class TaughtRosWorker(SpinNode):
             contract = {}
             for side in ROD_SIDES:
                 contract[side] = {}
-                for role in ("gripper", "support"):
+                for role in ("gripper", "support", "unlock"):
                     joint = tools[side].get("%s_joint" % role)
                     if not joint:
-                        raise RuntimeError("drawer_tools.%s 缺 %s_joint"
-                                           % (side, role))
+                        continue      # unlock 只有右臂有，左侧缺是正常的
                     contract[side][role] = joint
             self._rod_contract_cache = contract
         return self._rod_contract_cache
@@ -400,9 +417,9 @@ class TaughtRosWorker(SpinNode):
         现场教学里的"钩爪前伸/收缩卡住"就是这一步。同侧其余杆保持实测值不动。
         """
         role = str(step["role"])
-        if role not in ("gripper", "support"):
-            raise RuntimeError("rod_stroke 的 role 只能是 gripper/support，收到 %r"
-                               % role)
+        if role not in ("gripper", "support", "unlock"):
+            raise RuntimeError(
+                "rod_stroke 的 role 只能是 gripper/support/unlock，收到 %r" % role)
         distance = float(step["distance"])
         contract = self._rod_contract()
         sides = ROD_SIDES.keys() if step.get("side", "both") == "both" \
@@ -410,7 +427,10 @@ class TaughtRosWorker(SpinNode):
         duration = float(step.get("duration") or 3.0)
         on_progress(0.1, "电缸 %s %+.4f m" % (role, distance))
         for side in sides:
-            joint = contract[side][role]
+            # 某些角色只有单侧有（unlock 只有右臂），缺的一侧跳过而不是报错。
+            joint = contract.get(side, {}).get(role)
+            if not joint:
+                continue
             cfg = ROD_SIDES[side]
             current = self._measured(joint)
             low, high = ROD_LIMITS.get(joint, ROD_LIMITS["default"])
@@ -421,8 +441,93 @@ class TaughtRosWorker(SpinNode):
                               duration)
             if code != 0:
                 raise RuntimeError("%s 电缸控制器 error_code=%s" % (side, code))
-        self._settled([contract[s][role] for s in sides])
+        done = [contract[s][role] for s in sides if contract.get(s, {}).get(role)]
+        if not done:
+            raise RuntimeError("role=%s 在所有侧都没有对应关节" % role)
+        self._settled(done)
         on_progress(1.0, "电缸 %s 完成" % role)
+
+    # ------------------------------------------------- 步骤 3c 释放轨道闩锁
+    def step_unlock(self, step: Mapping[str, Any],
+                    on_progress: Callable) -> None:
+        """释放抽屉的轨道闩锁（SetCabinetUnlock）。
+
+        **为什么必须有这一步**：插件里闩住的抽屉会被弹簧**一直压在关闭档位**
+        （源码：*While a drawer is latched (locked) it is parked at the closed
+        detent*）。不释放闩锁，抽拉只是在跟弹簧较劲——播放一结束就被拉回 0，
+        实测"开了又自己合上"。释放后抽屉才停在播放交给它的位置。
+
+        服务要求（缺一即拒）：解锁电缸的真实杆端要落在解锁逻辑区容差内、且该
+        电缸实测伸出量在工作区间内——所以调用前必须先把它伸出去（见序列里
+        rod_stroke role=unlock 那一步）。这里的杆端坐标与解锁点全部从跨层合同
+        读（适配器 drawer_tools 的 unlock_* 与 controls 的 unlock_press_point），
+        不在这里另立一份。
+        """
+        from xczs_inspection_robot_interfaces.srv import SetCabinetUnlock
+        control = str(step.get("control") or self._control_id)
+        lease_id = self.ensure_lease()
+
+        with ADAPTER.open("r", encoding="utf-8") as handle:
+            adapter = yaml.safe_load(handle)
+
+        def find(node, key):
+            # 适配器 YAML 用了锚点/别名，safe_load 出来可能是**自引用**结构，
+            # 朴素递归会 maximum recursion depth exceeded。带访问集做环安全。
+            seen = set()
+            stack = [node]
+            while stack:
+                current = stack.pop()
+                if isinstance(current, dict):
+                    if id(current) in seen:
+                        continue
+                    seen.add(id(current))
+                    if key in current:
+                        return current[key]
+                    stack.extend(current.values())
+                elif isinstance(current, list):
+                    if id(current) in seen:
+                        continue
+                    seen.add(id(current))
+                    stack.extend(current)
+            return None
+
+        tools = find(adapter, "drawer_tools") or {}
+        right = tools.get("right") or {}
+        link = right.get("unlock_joint")
+        point = right.get("unlock_contact_point_local")
+        if link and link.endswith("_joint"):
+            link = link[: -len("_joint")]
+        with CONTROLS.open("r", encoding="utf-8") as handle:
+            controls_doc = yaml.safe_load(handle)
+        press = find(controls_doc, "unlock_press_point")
+        if not (link and point and press):
+            raise RuntimeError(
+                "解锁合同不全：unlock_joint=%r contact=%r press_point=%r"
+                % (link, point, press))
+
+        on_progress(0.2, "释放轨道闩锁（解锁电缸杆端需在解锁区内）")
+        request = SetCabinetUnlock.Request()
+        request.control_id = control
+        request.operation_lease_id = lease_id
+        request.robot_model = "xczs_inspection_robot"
+        request.right_robot_link = str(link)
+        request.right_robot_grasp_point.x = float(point[0])
+        request.right_robot_grasp_point.y = float(point[1])
+        request.right_robot_grasp_point.z = float(point[2])
+        request.unlock_press_point.x = float(press[0])
+        request.unlock_press_point.y = float(press[1])
+        request.unlock_press_point.z = float(press[2])
+        request.unlock = True
+
+        client = self.create_client(
+            SetCabinetUnlock, "/xczs/cabinet/%s/unlock" % self._cabinet)
+        response = self._call(client, request, 15.0, "unlock")
+        print("解锁结果: success=%s mode=%s pressed=%s contact=%s msg=%s"
+              % (response.success, response.unlock_mode, response.pressed,
+                 response.right_tool_contact, response.message), flush=True)
+        if not response.success:
+            raise RuntimeError("释放轨道闩锁被拒: %s" % response.message)
+        on_progress(1.0, "轨道闩锁已释放")
 
     # ------------------------------------------------- 步骤 3b 末端整体平移
     def step_translate_tool(self, step: Mapping[str, Any],
@@ -543,8 +648,7 @@ class TaughtRosWorker(SpinNode):
         playback = self.create_client(
             SetCabinetPlayback, "/xczs/cabinet/%s/playback" % self._cabinet)
         self._playback_cli = playback
-        lease_id = self._acquire_lease()
-        self._start_renewing(lease_id)
+        lease_id = self.ensure_lease()
         try:
             on_progress(0.15, "启动双臂后拉")
             self._playback_control = control
@@ -583,6 +687,7 @@ class TaughtRosWorker(SpinNode):
                 threads.append(thread)
 
 
+            self.release_previous_hold(playback)
             on_progress(0.3, "启动抽屉轨道播放")
             self._start_playback(playback, lease_id, control, start,
                                  distance, duration, lead=lead)
@@ -605,7 +710,8 @@ class TaughtRosWorker(SpinNode):
             # 60s 闲置看门狗就回收播放会话，抽屉随即被闩锁/弹簧拉回档位
             # （实测 3cm 会自己合上）。所以把续租线程与租约都留着，由调用方
             # 决定何时收尾。
-            self._hold_active = True
+            self.stop_renewing()
+            self._release_lease(lease_id)
 
     def _wait_for_arms_moving(self, plans, timeout: float = 8.0,
                               epsilon: float = 0.0015) -> bool:
@@ -637,6 +743,44 @@ class TaughtRosWorker(SpinNode):
             time.sleep(0.05)
         return False
 
+    # ------------------------------------------------- 冻结抽屉的持有租约
+    def _hold_record(self) -> Path:
+        return Path("/tmp/xczs_taught_hold_%s.json" % self._cabinet)
+
+    def release_previous_hold(self, client) -> None:
+        """开工前释放上一次任务留下的"冻结抽屉"。
+
+        HOLD 是由**那一次任务**的租约持有的，而插件规则是"被别的租约持有的
+        播放会被拒"。所以新任务（例如闭合）在启动播放前，必须先拿回并释放
+        上一份持有——否则闭合永远被拒。持有租约随冻结一起落在 /tmp 的小文件里。
+        """
+        record = self._hold_record()
+        if not record.is_file():
+            return
+        try:
+            data = json.loads(record.read_text())
+            request = SetCabinetPlayback.Request()
+            request.command = SetCabinetPlayback.Request.COMMAND_RELEASE
+            request.control_id = str(data.get("control") or "")
+            request.operation_lease_id = str(data.get("lease_id") or "")
+            self._call(client, request, 10.0, "playback")
+            print("已释放上一次的抽屉冻结（租约 %s）"
+                  % request.operation_lease_id, flush=True)
+        except Exception as error:  # noqa: BLE001
+            print("释放上一次冻结失败（继续尝试启动）: %s" % error, flush=True)
+        finally:
+            try:
+                record.unlink()
+            except OSError:
+                pass
+
+    def remember_hold(self, lease_id: str, control: str) -> None:
+        try:
+            self._hold_record().write_text(
+                json.dumps({"lease_id": lease_id, "control": control}))
+        except OSError as error:  # noqa: BLE001
+            print("记录冻结租约失败: %s" % error, flush=True)
+
     def _tip_settled(self, tip: str, timeout: float = 15.0,
                      tolerance: float = 0.0002, window: float = 0.4) -> bool:
         deadline = time.monotonic() + timeout
@@ -649,6 +793,18 @@ class TaughtRosWorker(SpinNode):
         return False
 
     # ------------------------------------------------------------- 租约 / 播放
+    def ensure_lease(self) -> str:
+        """按需申请操作租约（解锁与抽拉都用它，谁先用到谁申请）。
+
+        租约必须在**整条序列**内有效：unlock 服务与 playback 服务都要求
+        operation_lease_id 有效，而解锁步骤排在抽拉之前，所以不能等到
+        pull_drawer 才申请。
+        """
+        if self._current_lease_id:
+            return self._current_lease_id
+        lease_id = self._acquire_lease()
+        return lease_id
+
     def _acquire_lease(self) -> str:
         request = ManageOperationLease.Request()
         request.command = ManageOperationLease.Request.ACQUIRE
@@ -743,7 +899,7 @@ class TaughtRosWorker(SpinNode):
                                  duration, response.position), flush=True)
             raise RuntimeError("抽屉播放被拒: %s" % response.message)
 
-    def _stop_playback(self, client, lease_id, hold: bool = True) -> None:
+    def _stop_playback(self, client, lease_id, hold: bool = False) -> None:
         """结束播放。
 
         **默认发 HOLD 而不是 RELEASE**：RELEASE 会把抽屉交回插件的默认控制，
@@ -755,8 +911,7 @@ class TaughtRosWorker(SpinNode):
         照样弹回。所以持有时长由 hold_seconds 控制，期间后台线程持续续租。
         """
         request = SetCabinetPlayback.Request()
-        request.command = (SetCabinetPlayback.Request.COMMAND_HOLD if hold
-                           else SetCabinetPlayback.Request.COMMAND_RELEASE)
+        request.command = SetCabinetPlayback.Request.COMMAND_RELEASE
         request.control_id = getattr(self, "_playback_control", "")
         request.operation_lease_id = lease_id
         try:

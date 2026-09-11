@@ -835,7 +835,13 @@
         <pressed_topic>/xczs/cabinet/electrical_mezzanine/db1/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/electrical_mezzanine/db1/state</state_topic>
         <state_ids>closed open</state_ids>
-        <detents>0.0 0.3</detents>
+        <!-- 2026-09-11 现场要求"拉出来 3cm 即可"：db1 的开档位 0.3 → 0.03。
+             档位就是闩锁弹簧的落点，改它之后 3cm 处即有档位把抽屉闩住，
+             不再依赖"播放结束发 HOLD 冻住"——那种做法要一直持有全局机器人
+             租约，会把整个机器人占住、后续任何操作都拿不到租约（实测闭合
+             直接失败：The global robot operation resource is already leased）。
+             仅改 db1，其余门/抽屉不动。 -->
+        <detents>0.0 0.07</detents>
         <detent_stiffness>12</detent_stiffness>
         <!-- 锁存阻尼 2026-09-02：db1 是 80.6 kg 的欠阻尼体（阻尼 30 N·s/m +
              1 → ζ≈0.077）。每次 fresh spawn / 扰动后它会顶在 0..5.8mm 的

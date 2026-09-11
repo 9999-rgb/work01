@@ -41,7 +41,7 @@ TAUGHT_POSES_DIR = (
 DEFAULT_SEQUENCE_FILE = TAUGHT_POSES_DIR / "db1_sequence.yaml"
 SUPPORTED_STEPS = ("preposition_base", "restore_pose", "pull_drawer",
                     "retract_rods", "go_home", "translate_tool",
-                    "rod_stroke")
+                    "rod_stroke", "unlock")
 SUPPORTED_SCHEMA = 1
 
 

@@ -1,31 +1,32 @@
 # 机器人标定位姿（capture_robot_pose.py 抓取）
-label: db1 抽拉柜【拉出后】位姿 = 001 位姿沿世界 +x 平移 0.03 m（2026-09-11 拉出量改为 3cm 后重抓）。闭合必须从这里起步。
-captured_wall_time: 2026-09-11T17:21:00+0800
+label: db1【拉出后】位姿 = 001 + 0.07 m。开度取 7cm 是因为插件判据：释放时位置 <= 档位0 + motion_tolerance(0.05)
+  就回闩到关位，3cm 必然被拉回；>5cm 才 idle-hold 停在原地。
+captured_wall_time: 2026-09-11T19:15:54+0800
 world_frame: odom
 joints:
-  l_arm_0_joint: -1.26703
-  l_arm_1_joint: -2.078625
-  l_arm_3_joint: -1.243717
-  l_arm_4_joint: -1.084184
-  l_arm_5_joint: -0.162119
-  r_arm_0_joint: 1.266169
-  r_arm_1_joint: -1.800495
-  l_arm_2_joint: -1.588928
-  r_arm_2_joint: -1.851895
-  r_wheel_1_joint: 0.941186
-  r_wheel_0_joint: 1.353491
-  l_wheel_0_joint: -1.552867
-  l_two_cyl_finger1_joint: 0.018504
-  l_wheel_1_joint: -1.279907
-  l_two_cyl_finger2_joint: 0.082489
-  r_three_cyl_finger1_joint: 0.084188
-  r_arm_3_joint: 1.310238
-  l_arm_6_joint: -0.973165
-  r_three_cyl_finger3_joint: -0.000325
-  r_arm_5_joint: -2.777291
-  r_three_cyl_finger2_joint: 0.019979
-  r_arm_6_joint: -2.05837
-  r_arm_4_joint: 1.394266
+  l_arm_0_joint: -1.194992
+  l_arm_1_joint: -2.110514
+  l_arm_3_joint: -1.402934
+  l_arm_4_joint: -1.033814
+  l_arm_5_joint: -0.136904
+  r_arm_0_joint: 1.220034
+  r_arm_1_joint: -1.800367
+  l_arm_2_joint: -1.540383
+  r_arm_2_joint: -1.887519
+  r_wheel_1_joint: -0.383897
+  r_wheel_0_joint: 0.100744
+  l_wheel_0_joint: -0.317332
+  l_two_cyl_finger1_joint: 0.018719
+  l_wheel_1_joint: -0.039547
+  l_two_cyl_finger2_joint: 0.082954
+  r_three_cyl_finger1_joint: 0.081971
+  r_arm_3_joint: 1.454704
+  l_arm_6_joint: -1.067282
+  r_three_cyl_finger3_joint: 4.2e-05
+  r_arm_5_joint: -2.781506
+  r_three_cyl_finger2_joint: 0.018449
+  r_arm_6_joint: -1.951256
+  r_arm_4_joint: 1.356383
 joint_efforts:
   l_arm_0_joint: 0.0
   l_arm_1_joint: 0.0
@@ -55,7 +56,7 @@ frames:
     position:
     - 1.199
     - 4.388
-    - 0.584621
+    - 0.584674
     orientation_xyzw:
     - 0.0
     - 0.0
@@ -63,97 +64,97 @@ frames:
     - 0.707107
   l_arm_6:
     position:
-    - 0.699159
-    - 4.074636
-    - 0.979334
+    - 0.739726
+    - 4.075151
+    - 0.97949
     orientation_xyzw:
-    - 0.499733
-    - -0.500189
-    - -0.491812
-    - 0.508132
+    - 0.499751
+    - -0.499917
+    - -0.490871
+    - 0.509291
   r_arm_6:
     position:
-    - 0.699203
-    - 4.727177
-    - 0.986028
+    - 0.739292
+    - 4.724487
+    - 0.986146
     orientation_xyzw:
-    - 0.516394
-    - 0.489222
-    - 0.495101
-    - 0.498873
+    - 0.512799
+    - 0.492814
+    - 0.497317
+    - 0.496837
   l_two_cyl_base:
     position:
-    - 0.500847
-    - 4.067492
-    - 0.979532
+    - 0.541433
+    - 4.067534
+    - 0.979796
     orientation_xyzw:
-    - 0.491812
-    - 0.508132
-    - 0.499733
-    - 0.500189
+    - 0.490871
+    - 0.509291
+    - 0.499751
+    - 0.499917
   r_three_cyl_base:
     position:
-    - 0.501036
-    - 4.737285
-    - 0.988502
+    - 0.541022
+    - 4.732332
+    - 0.98854
     orientation_xyzw:
-    - 0.516394
-    - 0.489222
-    - 0.495101
-    - 0.498873
+    - 0.512799
+    - 0.492814
+    - 0.497317
+    - 0.496837
   l_two_cyl_finger1:
     position:
-    - 0.188238
-    - 4.095496
-    - 0.917284
+    - 0.228625
+    - 4.094678
+    - 0.917647
     orientation_xyzw:
-    - 0.491812
-    - 0.508132
-    - 0.499733
-    - 0.500189
+    - 0.490871
+    - 0.509291
+    - 0.499751
+    - 0.499917
   l_two_cyl_finger2:
     position:
-    - 0.125056
-    - 4.026495
-    - 0.918434
+    - 0.165642
+    - 4.025529
+    - 0.918953
     orientation_xyzw:
-    - 0.491812
-    - 0.508132
-    - 0.499733
-    - 0.500189
+    - 0.490871
+    - 0.509291
+    - 0.499751
+    - 0.499917
   r_three_cyl_finger1:
     position:
-    - 0.121085
-    - 4.784436
-    - 0.932144
+    - 0.16062
+    - 4.774964
+    - 0.93195
     orientation_xyzw:
-    - 0.516394
-    - 0.489222
-    - 0.495101
-    - 0.498873
+    - 0.512799
+    - 0.492814
+    - 0.497317
+    - 0.496837
   r_three_cyl_finger2:
     position:
-    - 0.187502
-    - 4.714375
-    - 0.929743
+    - 0.22779
+    - 4.705663
+    - 0.929767
     orientation_xyzw:
-    - 0.516394
-    - 0.489222
-    - 0.495101
-    - 0.498873
+    - 0.512799
+    - 0.492814
+    - 0.497317
+    - 0.496837
   r_three_cyl_finger3:
     position:
-    - 0.135615
-    - 4.702067
-    - 1.012066
+    - 0.175999
+    - 4.692999
+    - 1.012112
     orientation_xyzw:
-    - 0.516394
-    - 0.489222
-    - 0.495101
-    - 0.498873
+    - 0.512799
+    - 0.492814
+    - 0.497317
+    - 0.496837
 controls:
   db1:
-    state_id: open
-    position: 0.250015
-    effort: 0.0
+    state_id: closed
+    position: 0.000817
+    effort: -0.3779
     in_motion: false
