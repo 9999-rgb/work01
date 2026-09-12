@@ -551,7 +551,39 @@ class TaughtRosWorker(SpinNode):
         if axis not in ("x", "y", "z"):
             raise RuntimeError("translate_tool 的 axis 只能是 x/y/z，收到 %r" % axis)
         duration = float(step.get("duration") or 0.0)
-        on_progress(0.05, "末端沿世界 %s 平移 %+.3f m" % (axis, distance))
+        # **分段平移**：大位移（实测 ds2/ds3 需要上抬 0.57m）一步算不出完整
+        # 直线路径（完整度只有 0.72），而拆成 <= `chunk` 的小段后每段都能算满
+        # （0.99+）。所以先按 chunk 切段、逐段规划执行，任一段不满即如实报错。
+        chunk = abs(float(step.get("chunk") or 0.10))
+        segments = []
+        remaining = distance
+        while abs(remaining) > 1e-9:
+            this = max(-chunk, min(chunk, remaining))
+            segments.append(this)
+            remaining -= this
+        on_progress(0.05, "末端沿世界 %s 平移 %+.3f m（分 %d 段）"
+                    % (axis, distance, len(segments)))
+        for index, seg in enumerate(segments):
+            self._check_cancel()
+            plans = {}
+            for side in ARMS:
+                solution, fraction, tip = self._plan_translate(side, axis, seg)
+                if fraction < 0.99 or not solution.points:
+                    raise RuntimeError(
+                        "%s 平移第 %d/%d 段（%+.3f m）路径完整度仅 %.4f"
+                        % (side, index + 1, len(segments), seg, fraction))
+                plans[side] = solution
+            for side, solution in plans.items():
+                code = self._execute_plan(side, solution, 1.0, 90.0)
+                if code != 0:
+                    raise RuntimeError("%s 平移 error_code=%s" % (side, code))
+            for side in ARMS:
+                self._tip_settled(ARMS[side]["tip"])
+            on_progress(0.05 + 0.9 * (index + 1) / float(len(segments)),
+                        "平移 %d/%d 段完成" % (index + 1, len(segments)))
+        on_progress(1.0, "末端平移完成")
+        return
+
         plans = {}
         for side in ARMS:
             solution, fraction, tip = self._plan_translate(side, axis, distance)

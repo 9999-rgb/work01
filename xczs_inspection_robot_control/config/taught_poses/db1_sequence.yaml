@@ -65,3 +65,172 @@ sequences:
         target: 0.0
       - type: retract_rods
       - type: go_home
+  dm1:
+    open:
+      display_name: dm1 抽拉柜 打开（教学动作·复用 001 + z 修正）
+      steps:
+      - type: preposition_base
+        control: dm1
+        cabinet: ''
+        toolset: A
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 3.0
+      - type: rod_stroke
+        role: gripper
+        distance: 0.01875
+        duration: 3.0
+      - type: rod_stroke
+        role: support
+        distance: 0.08
+        duration: 4.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 4.0
+      - type: restore_pose
+        pose: db1_teach_node001_raise30.yaml
+      - type: translate_tool
+        axis: z
+        distance: 0.0756
+        duration: 3.0
+      - type: pull_drawer
+        control: db1
+        duration: 6.0
+        lead: 0.3
+        target: 0.07
+    closed:
+      display_name: dm1 抽拉柜 关闭（教学动作）
+      steps:
+      - type: restore_pose
+        pose: db1_opened.yaml
+      - type: translate_tool
+        axis: z
+        distance: 0.0756
+        duration: 3.0
+      - type: pull_drawer
+        control: db1
+        duration: 6.0
+        lead: 0.3
+        target: 0.0
+      - type: retract_rods
+      - type: go_home
+  ds2:
+    open:
+      display_name: ds2 抽拉柜 打开（复用 001 + y/z 修正）
+      steps:
+      - type: preposition_base
+        control: ds2
+        cabinet: ''
+        toolset: A
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 3.0
+      - type: rod_stroke
+        role: gripper
+        distance: 0.01875
+        duration: 3.0
+      - type: rod_stroke
+        role: support
+        distance: 0.08
+        duration: 4.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 4.0
+      - type: restore_pose
+        pose: db1_teach_node001_raise30.yaml
+      - type: translate_tool
+        axis: y
+        distance: 0.2
+        duration: 3.0
+      - type: translate_tool
+        axis: z
+        distance: 0.5717
+        duration: 3.0
+      - type: pull_drawer
+        control: db1
+        duration: 6.0
+        lead: 0.3
+        target: 0.07
+    closed:
+      display_name: ds2 抽拉柜 关闭（复用 001 + y/z 修正）
+      steps:
+      - type: restore_pose
+        pose: db1_opened.yaml
+      - type: translate_tool
+        axis: y
+        distance: 0.2
+        duration: 3.0
+      - type: translate_tool
+        axis: z
+        distance: 0.5717
+        duration: 3.0
+      - type: pull_drawer
+        control: db1
+        duration: 6.0
+        lead: 0.3
+        target: 0.0
+      - type: retract_rods
+      - type: go_home
+  ds3:
+    open:
+      display_name: ds3 抽拉柜 打开（复用 001 + y/z 修正）
+      steps:
+      - type: preposition_base
+        control: ds3
+        cabinet: ''
+        toolset: A
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 3.0
+      - type: rod_stroke
+        role: gripper
+        distance: 0.01875
+        duration: 3.0
+      - type: rod_stroke
+        role: support
+        distance: 0.08
+        duration: 4.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 4.0
+      - type: restore_pose
+        pose: db1_teach_node001_raise30.yaml
+      - type: translate_tool
+        axis: y
+        distance: 0.2
+        duration: 3.0
+      - type: translate_tool
+        axis: z
+        distance: 0.5657
+        duration: 3.0
+      - type: pull_drawer
+        control: db1
+        duration: 6.0
+        lead: 0.3
+        target: 0.07
+    closed:
+      display_name: ds3 抽拉柜 关闭（复用 001 + y/z 修正）
+      steps:
+      - type: restore_pose
+        pose: db1_opened.yaml
+      - type: translate_tool
+        axis: y
+        distance: 0.2
+        duration: 3.0
+      - type: translate_tool
+        axis: z
+        distance: 0.5657
+        duration: 3.0
+      - type: pull_drawer
+        control: db1
+        duration: 6.0
+        lead: 0.3
+        target: 0.0
+      - type: retract_rods
+      - type: go_home
