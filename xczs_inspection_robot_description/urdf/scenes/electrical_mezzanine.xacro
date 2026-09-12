@@ -977,7 +977,7 @@
         <pressed_topic>/xczs/cabinet/electrical_mezzanine/dm1/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/electrical_mezzanine/dm1/state</state_topic>
         <state_ids>closed open</state_ids>
-        <detents>0.0 0.3</detents>
+        <detents>0.0 0.25</detents>
         <detent_stiffness>12</detent_stiffness>
         <spring_damping>1</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>

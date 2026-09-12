@@ -142,7 +142,7 @@
         max_position: 0.38
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
-        state_positions: [0.0, 0.3]
+        state_positions: [0.0, 0.25]
 
     # 类型默认值（按钮逐项覆盖 axis/approach/limits）。
     button_defaults:
