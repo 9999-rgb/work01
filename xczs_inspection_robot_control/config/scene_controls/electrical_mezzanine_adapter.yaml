@@ -157,6 +157,8 @@
     move_group_namespace: /
     planning_time: 10.0
     planning_attempts: 10
+    # 2026-09-14 试过 0.60（想把预检归位提速），实测总时长无变化
+    # （43s vs 41s，在噪声内），已回退——预检的 ~30s 不在这个系数上。
     planning_velocity_scale: 0.30
     planning_acceleration_scale: 0.30
     goal_position_tolerance: 0.005

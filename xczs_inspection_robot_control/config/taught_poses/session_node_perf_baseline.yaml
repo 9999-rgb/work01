@@ -1,0 +1,159 @@
+# 机器人标定位姿（capture_robot_pose.py 抓取）
+label: 性能基线节点（2026-09-14）：四扇抽拉柜全部跑通后的状态。git=d970c3d（开41s/合44s，其中序列约12s、框架预检约30s）。优化预检前存档，便于回退对比。
+captured_wall_time: 2026-09-14T09:57:27+0800
+world_frame: odom
+joints:
+  l_arm_0_joint: -1.0e-06
+  l_arm_1_joint: -1.4
+  l_arm_3_joint: -0.3
+  l_arm_4_joint: 1.0e-06
+  l_arm_5_joint: 0.7
+  r_arm_0_joint: 2.0e-06
+  r_arm_1_joint: -1.6
+  l_arm_2_joint: -1.0e-06
+  r_arm_2_joint: -0.4
+  r_wheel_1_joint: 0.070727
+  r_wheel_0_joint: 0.481298
+  l_wheel_0_joint: -0.684554
+  l_two_cyl_finger1_joint: 1.7e-05
+  l_wheel_1_joint: -0.410801
+  l_two_cyl_finger2_joint: 1.8e-05
+  r_three_cyl_finger1_joint: 2.3e-05
+  r_arm_3_joint: -0.0
+  l_arm_6_joint: -0.85
+  r_three_cyl_finger3_joint: -1.0e-06
+  r_arm_5_joint: 0.8
+  r_three_cyl_finger2_joint: 2.2e-05
+  r_arm_6_joint: 0.1
+  r_arm_4_joint: -1.0e-06
+joint_efforts:
+  l_arm_0_joint: 0.0
+  l_arm_1_joint: 0.0
+  l_arm_3_joint: 0.0
+  l_arm_4_joint: 0.0
+  l_arm_5_joint: 0.0
+  r_arm_0_joint: 0.0
+  r_arm_1_joint: 0.0
+  l_arm_2_joint: 0.0
+  r_arm_2_joint: 0.0
+  r_wheel_1_joint: 0.0
+  r_wheel_0_joint: 0.0
+  l_wheel_0_joint: 0.0
+  l_two_cyl_finger1_joint: 0.0
+  l_wheel_1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: 0.0
+  l_arm_6_joint: 0.0
+  r_three_cyl_finger3_joint: 0.0
+  r_arm_5_joint: 0.0
+  r_three_cyl_finger2_joint: 0.0
+  r_arm_6_joint: 0.0
+  r_arm_4_joint: 0.0
+frames:
+  body:
+    position:
+    - 1.199
+    - 5.2
+    - 0.584511
+    orientation_xyzw:
+    - 0.0
+    - 0.0
+    - -0.707107
+    - 0.707107
+  l_arm_6:
+    position:
+    - 1.195457
+    - 4.64032
+    - 1.872978
+    orientation_xyzw:
+    - -0.098392
+    - -0.461129
+    - 0.536059
+    - 0.700228
+  r_arm_6:
+    position:
+    - 1.194272
+    - 5.719244
+    - 1.880152
+    orientation_xyzw:
+    - 0.779986
+    - -0.49711
+    - 0.342384
+    - 0.165157
+  l_two_cyl_base:
+    position:
+    - 1.046337
+    - 4.572979
+    - 1.98526
+    orientation_xyzw:
+    - -0.536059
+    - 0.700228
+    - -0.098392
+    - 0.461129
+  r_three_cyl_base:
+    position:
+    - 1.121968
+    - 5.835247
+    - 2.024007
+    orientation_xyzw:
+    - 0.779986
+    - -0.49711
+    - 0.342384
+    - 0.165157
+  l_two_cyl_finger1:
+    position:
+    - 0.866569
+    - 4.414645
+    - 2.168924
+    orientation_xyzw:
+    - -0.536059
+    - 0.700228
+    - -0.098392
+    - 0.461129
+  l_two_cyl_finger2:
+    position:
+    - 0.866568
+    - 4.471864
+    - 2.205665
+    orientation_xyzw:
+    - -0.536059
+    - 0.700228
+    - -0.098392
+    - 0.461129
+  r_three_cyl_finger1:
+    position:
+    - 1.075623
+    - 6.019111
+    - 2.265106
+    orientation_xyzw:
+    - 0.779986
+    - -0.49711
+    - 0.342384
+    - 0.165157
+  r_three_cyl_finger2:
+    position:
+    - 1.059024
+    - 6.061162
+    - 2.214066
+    orientation_xyzw:
+    - 0.779986
+    - -0.49711
+    - 0.342384
+    - 0.165157
+  r_three_cyl_finger3:
+    position:
+    - 0.963503
+    - 6.06348
+    - 2.236192
+    orientation_xyzw:
+    - 0.779986
+    - -0.49711
+    - 0.342384
+    - 0.165157
+controls:
+  db1:
+    state_id: closed
+    position: 0.000779
+    effort: -0.3897
+    in_motion: false
