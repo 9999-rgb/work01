@@ -1,0 +1,159 @@
+# 由 001 复制（db1 的举起位姿即 001）
+label: db1 举起位姿 = 001 本身（db1 与 001 同高，Δz=0；供统一序列使用）
+captured_wall_time: 2026-09-11T14:38:20+0800
+world_frame: odom
+joints:
+  l_arm_0_joint: -1.323821
+  l_arm_1_joint: -2.053153
+  l_arm_3_joint: -1.116172
+  l_arm_4_joint: -1.10915
+  l_arm_5_joint: -0.189268
+  r_arm_0_joint: 1.315369
+  r_arm_1_joint: -1.80832
+  l_arm_2_joint: -1.622547
+  r_arm_2_joint: -1.828601
+  r_wheel_1_joint: 39.123324
+  r_wheel_0_joint: 39.611954
+  l_wheel_0_joint: -39.803664
+  l_two_cyl_finger1_joint: 0.018719
+  l_wheel_1_joint: -39.527471
+  l_two_cyl_finger2_joint: 0.082954
+  r_three_cyl_finger1_joint: 0.081971
+  r_arm_3_joint: 1.172342
+  l_arm_6_joint: -0.895586
+  r_three_cyl_finger3_joint: 4.2e-05
+  r_arm_5_joint: -2.788143
+  r_three_cyl_finger2_joint: 0.018449
+  r_arm_6_joint: -2.158917
+  r_arm_4_joint: 1.437549
+joint_efforts:
+  l_arm_0_joint: 0.0
+  l_arm_1_joint: 0.0
+  l_arm_3_joint: 0.0
+  l_arm_4_joint: 0.0
+  l_arm_5_joint: 0.0
+  r_arm_0_joint: 0.0
+  r_arm_1_joint: 0.0
+  l_arm_2_joint: 0.0
+  r_arm_2_joint: 0.0
+  r_wheel_1_joint: 0.0
+  r_wheel_0_joint: 0.0
+  l_wheel_0_joint: 0.0
+  l_two_cyl_finger1_joint: 0.0
+  l_wheel_1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: 0.0
+  l_arm_6_joint: 0.0
+  r_three_cyl_finger3_joint: 0.0
+  r_arm_5_joint: 0.0
+  r_three_cyl_finger2_joint: 0.0
+  r_arm_6_joint: 0.0
+  r_arm_4_joint: 0.0
+frames:
+  body:
+    position:
+    - 1.199
+    - 4.388
+    - 0.584672
+    orientation_xyzw:
+    - 0.0
+    - 0.0
+    - -0.707107
+    - 0.707107
+  l_arm_6:
+    position:
+    - 0.669722
+    - 4.075102
+    - 0.979464
+    orientation_xyzw:
+    - 0.499876
+    - -0.499833
+    - -0.490802
+    - 0.509317
+  r_arm_6:
+    position:
+    - 0.669301
+    - 4.724477
+    - 0.986133
+    orientation_xyzw:
+    - 0.513027
+    - 0.492854
+    - 0.497018
+    - 0.496862
+  l_two_cyl_base:
+    position:
+    - 0.471431
+    - 4.067425
+    - 0.979753
+    orientation_xyzw:
+    - 0.490802
+    - 0.509317
+    - 0.499876
+    - 0.499833
+  r_three_cyl_base:
+    position:
+    - 0.471035
+    - 4.732423
+    - 0.988635
+    orientation_xyzw:
+    - 0.513027
+    - 0.492854
+    - 0.497018
+    - 0.496862
+  l_two_cyl_finger1:
+    position:
+    - 0.158623
+    - 4.094481
+    - 0.917582
+    orientation_xyzw:
+    - 0.490802
+    - 0.509317
+    - 0.499876
+    - 0.499833
+  l_two_cyl_finger2:
+    position:
+    - 0.095657
+    - 4.025312
+    - 0.918875
+    orientation_xyzw:
+    - 0.490802
+    - 0.509317
+    - 0.499876
+    - 0.499833
+  r_three_cyl_finger1:
+    position:
+    - 0.090625
+    - 4.77524
+    - 0.932247
+    orientation_xyzw:
+    - 0.513027
+    - 0.492854
+    - 0.497018
+    - 0.496862
+  r_three_cyl_finger2:
+    position:
+    - 0.157757
+    - 4.705905
+    - 0.930037
+    orientation_xyzw:
+    - 0.513027
+    - 0.492854
+    - 0.497018
+    - 0.496862
+  r_three_cyl_finger3:
+    position:
+    - 0.106006
+    - 4.693277
+    - 1.012412
+    orientation_xyzw:
+    - 0.513027
+    - 0.492854
+    - 0.497018
+    - 0.496862
+controls:
+  db1:
+    state_id: closed
+    position: -2.1e-05
+    effort: 0.6735
+    in_motion: false

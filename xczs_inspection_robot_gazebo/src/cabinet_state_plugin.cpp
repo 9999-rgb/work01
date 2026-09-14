@@ -2893,9 +2893,16 @@ private:
         std::numeric_limits<double>::quiet_NaN()};
     }
     Control & control = controls_[it->second];
-    if (control.kind != ControlKind::kDrawer) {
+    // 2026-09-14：放开到 kSlider。播放机制本身对**任何滑动关节**都通用
+    // （都是 prismatic rail + 运动学驱动），原来只放 kDrawer，于是同一套
+    // 视觉合唱流程对 dm1/ds2/ds3（slider 型）一律被拒：
+    //   "Control 'dm1' is not a drawer and does not accept visual playback."
+    // 现场要求这几扇也走同一套教学流程，故放开门槛；外观零改动。
+    if (control.kind != ControlKind::kDrawer &&
+      control.kind != ControlKind::kSlider)
+    {
       return {false, "Control '" + request.control_id +
-        "' is not a drawer and does not accept visual playback.",
+        "' is not a drawer/slider and does not accept visual playback.",
         std::numeric_limits<double>::quiet_NaN()};
     }
     if (request.operation_lease_id.empty()) {

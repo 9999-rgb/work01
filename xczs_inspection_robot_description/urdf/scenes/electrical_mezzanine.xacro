@@ -797,7 +797,7 @@
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
-        <motion_tolerance>0.05</motion_tolerance>
+        <motion_tolerance>0.02</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 正面抽拉：把手/指示灯为固定装饰（用户确认"只是指示灯"），操作改为
              grasp 固定关节附着面板前脸 + 沿滑动轴线性拖拽（operator
@@ -821,13 +821,19 @@
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
-        <motion_tolerance>0.05</motion_tolerance>
+        <motion_tolerance>0.02</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 正面抽拉（grasp 固定关节 + 线性拖拽），grasp_point = s2 前脸中心。 -->
         <graspable>true</graspable>
         <grasp_point>0.069 0.145 0.13</grasp_point>
       </control>
-      <control>
+      <!-- 2026-09-14 现场要求"所有抽拉柜只拉出 3cm"：把 motion_tolerance 由 0.05
+             收到 0.02。插件的回闩判据是 `位置 <= detents.front() + motion_tolerance`，
+             0.05 时 3cm 落在回闩侧、开了就自己合上；收到 0.02 后 3cm > 阈值即走
+             idle-hold 停住。**detents 本身不动**——它是 push-push 释放位置的推算
+             基准，改它会触发插件 "Slider release re-engage position must lie
+             strictly below" 校验失败并连累 db1。 -->
+        <control>
         <control_id>db1</control_id>
         <control_type>drawer</control_type>
         <joint_name>db1</joint_name>
@@ -841,7 +847,7 @@
              租约，会把整个机器人占住、后续任何操作都拿不到租约（实测闭合
              直接失败：The global robot operation resource is already leased）。
              仅改 db1，其余门/抽屉不动。 -->
-        <detents>0.0 0.07</detents>
+        <detents>0.0 0.3</detents>
         <detent_stiffness>12</detent_stiffness>
         <!-- 锁存阻尼 2026-09-02：db1 是 80.6 kg 的欠阻尼体（阻尼 30 N·s/m +
              1 → ζ≈0.077）。每次 fresh spawn / 扰动后它会顶在 0..5.8mm 的
@@ -855,7 +861,7 @@
              未解锁释放后 detent 弹簧侧变为过阻尼（无振荡、更稳地停在卡位）。 -->
         <spring_damping>370</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
-        <motion_tolerance>0.05</motion_tolerance>
+        <motion_tolerance>0.02</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 双手抽拉（bimanual drawer 合同；把手几何 2026-09-09 用户目视裁决 =
              b1.STL 原生两条竖向立筋把手 + 前脸受力背衬 handle_bar_backing 力墙，
@@ -963,7 +969,7 @@
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
-        <motion_tolerance>0.05</motion_tolerance>
+        <motion_tolerance>0.02</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 正面抽拉（grasp 固定关节 + 线性拖拽），grasp_point = s3 前脸中心。 -->
         <graspable>true</graspable>
@@ -983,7 +989,7 @@
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
         <slider_release_reengage_position>0.13</slider_release_reengage_position>
-        <motion_tolerance>0.05</motion_tolerance>
+        <motion_tolerance>0.02</motion_tolerance>
         <reset_position>0.0</reset_position>
         <!-- 正面抽拉（grasp 固定关节 + 线性拖拽），grasp_point = m1 前脸中心
              （m 型面板 bbox y∈[0,0.706] z∈[0,0.12]）。 -->
