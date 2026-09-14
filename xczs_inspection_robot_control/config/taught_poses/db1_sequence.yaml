@@ -33,28 +33,26 @@ sequences:
       - type: translate_tool
         axis: y
         distance: 0.04
-        duration: 3.0
+        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
-        duration: 3.0
+        duration: 1.0
       - type: rod_stroke
         role: support
         distance: 0.08
-        duration: 4.0
+        duration: 1.0
       - type: translate_tool
         axis: y
         distance: -0.04
-        duration: 4.0
-      - type: restore_pose
-        pose: db1_teach_node001_raise30.yaml
+        duration: 1.2
       - type: restore_pose
         pose: db1_raised.yaml
       - type: pull_drawer
         control: db1
         target: 0.03
         assume_start: 0.0
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
     closed:
       display_name: db1 抽拉柜 关闭（教学动作）
@@ -65,7 +63,7 @@ sequences:
         control: db1
         target: 0.0
         assume_start: 0.03
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
       - type: retract_rods
       - type: go_home
@@ -80,28 +78,26 @@ sequences:
       - type: translate_tool
         axis: y
         distance: 0.04
-        duration: 3.0
+        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
-        duration: 3.0
+        duration: 1.0
       - type: rod_stroke
         role: support
         distance: 0.08
-        duration: 4.0
+        duration: 1.0
       - type: translate_tool
         axis: y
         distance: -0.04
-        duration: 4.0
-      - type: restore_pose
-        pose: db1_teach_node001_raise30.yaml
+        duration: 1.2
       - type: restore_pose
         pose: dm1_raised.yaml
       - type: pull_drawer
         control: dm1
         target: 0.03
         assume_start: 0.0
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
     closed:
       display_name: dm1 抽拉柜 关闭（教学动作）
@@ -112,7 +108,7 @@ sequences:
         control: dm1
         target: 0.0
         assume_start: 0.03
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
       - type: retract_rods
       - type: go_home
@@ -127,28 +123,26 @@ sequences:
       - type: translate_tool
         axis: y
         distance: 0.04
-        duration: 3.0
+        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
-        duration: 3.0
+        duration: 1.0
       - type: rod_stroke
         role: support
         distance: 0.08
-        duration: 4.0
+        duration: 1.0
       - type: translate_tool
         axis: y
         distance: -0.04
-        duration: 4.0
-      - type: restore_pose
-        pose: db1_teach_node001_raise30.yaml
+        duration: 1.2
       - type: restore_pose
         pose: ds2_raised.yaml
       - type: pull_drawer
         control: ds2
         target: 0.03
         assume_start: 0.0
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
     closed:
       display_name: ds2 抽拉柜 关闭（教学动作）
@@ -159,7 +153,7 @@ sequences:
         control: ds2
         target: 0.0
         assume_start: 0.03
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
       - type: retract_rods
       - type: go_home
@@ -174,28 +168,26 @@ sequences:
       - type: translate_tool
         axis: y
         distance: 0.04
-        duration: 3.0
+        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
-        duration: 3.0
+        duration: 1.0
       - type: rod_stroke
         role: support
         distance: 0.08
-        duration: 4.0
+        duration: 1.0
       - type: translate_tool
         axis: y
         distance: -0.04
-        duration: 4.0
-      - type: restore_pose
-        pose: db1_teach_node001_raise30.yaml
+        duration: 1.2
       - type: restore_pose
         pose: ds3_raised.yaml
       - type: pull_drawer
         control: ds3
         target: 0.03
         assume_start: 0.0
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
     closed:
       display_name: ds3 抽拉柜 关闭（教学动作）
@@ -206,7 +198,7 @@ sequences:
         control: ds3
         target: 0.0
         assume_start: 0.03
-        duration: 6.0
+        duration: 3.0
         lead: 0.3
       - type: retract_rods
       - type: go_home

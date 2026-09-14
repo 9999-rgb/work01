@@ -164,8 +164,8 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("关节 %s 不在 %s 里" % (joint, JOINT_STATES_TOPIC))
         return float(self._joint_state.position[names.index(joint)])
 
-    def _settled(self, joints: List[str], timeout: float = 15.0,
-                 tolerance: float = 0.0002, window: float = 0.5) -> bool:
+    def _settled(self, joints: List[str], timeout: float = 12.0,
+                 tolerance: float = 0.0002, window: float = 0.15) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             first = {j: self._measured(j) for j in joints}
@@ -357,7 +357,7 @@ class TaughtRosWorker(SpinNode):
             if all(abs(values[j] - self._measured(j)) < 1e-6
                    for j in cfg["joints"]):
                 continue
-            self._send(self._rod_clients[side], cfg["joints"], values, 3.0)
+            self._send(self._rod_clients[side], cfg["joints"], values, 1.2)
         self._settled(sorted(rod_joints))
         stuck = [j for j in sorted(rod_joints)
                  if abs(self._measured(j) - 0.0) > RETREAT_TOLERANCE]
@@ -374,8 +374,8 @@ class TaughtRosWorker(SpinNode):
         self._check_cancel()
         on_progress(0.4, "双臂到位")
         for side, cfg in ARMS.items():
-            self._send(self._arm_clients[side], cfg["joints"], targets, 5.0)
-        self._settled(sorted(arm_joints), timeout=20.0)
+            self._send(self._arm_clients[side], cfg["joints"], targets, 2.0)
+        self._settled(sorted(arm_joints), timeout=12.0)
 
         self._check_cancel()
         on_progress(0.8, "电缸伸到目标值")
@@ -628,7 +628,7 @@ class TaughtRosWorker(SpinNode):
             if all(abs(values[j] - self._measured(j)) < 1e-6
                    for j in cfg["joints"]):
                 continue
-            self._send(self._rod_clients[side], cfg["joints"], values, 3.0)
+            self._send(self._rod_clients[side], cfg["joints"], values, 1.2)
         self._settled(sorted(rod_joints))
         stuck = [j for j in sorted(rod_joints)
                  if abs(self._measured(j)) > RETREAT_TOLERANCE]
@@ -661,9 +661,9 @@ class TaughtRosWorker(SpinNode):
                    for j in joints):
                 continue
             self._send(self._arm_clients[side], joints,
-                       {j: float(targets[j]) for j in joints}, 5.0)
+                       {j: float(targets[j]) for j in joints}, 2.0)
         self._settled([j for cfg in ARMS.values() for j in cfg["joints"]],
-                      timeout=20.0)
+                      timeout=12.0)
         on_progress(1.0, "机械臂已回到初始姿势")
 
     # ------------------------------------------------------------- 步骤 3 联动抽拉
@@ -862,8 +862,8 @@ class TaughtRosWorker(SpinNode):
         except OSError as error:  # noqa: BLE001
             print("记录冻结租约失败: %s" % error, flush=True)
 
-    def _tip_settled(self, tip: str, timeout: float = 15.0,
-                     tolerance: float = 0.0002, window: float = 0.4) -> bool:
+    def _tip_settled(self, tip: str, timeout: float = 12.0,
+                     tolerance: float = 0.0002, window: float = 0.15) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             first, _ = self._tip_pose(tip)
