@@ -149,6 +149,19 @@ class TaughtRosWorker(SpinNode):
         wait_for(lambda: self._cartesian_cli.service_is_ready()
                  or self._cartesian_cli.wait_for_service(timeout_sec=1.0),
                  timeout, CARTESIAN_SERVICE)
+        # 播放服务的**发现在实测里占 ~9s**（它出现在"双臂后拉"那一段的等待里）。
+        # 提前在这里建客户端、发起发现，让它与前面十几秒的动作重叠，而不是等到
+        # 最后一刻才等。控制 id 未知时按 db1 兜底——真实 id 在 pull 步骤里再建。
+        self._warm_playback_service("db1")
+
+    def _warm_playback_service(self, control: str) -> None:
+        try:
+            client = self.create_client(
+                SetCabinetPlayback, "/xczs/cabinet/%s/playback" % self._cabinet)
+            self._playback_warm = client      # 保住强引用，别被 GC
+            client.wait_for_service(timeout_sec=0.1)
+        except Exception:  # noqa: BLE001
+            pass
 
     def shutdown(self) -> None:
         self.stop_renewing()
@@ -240,7 +253,8 @@ class TaughtRosWorker(SpinNode):
         raise RuntimeError("TF %s→%s 不可用: %s" % (WORLD_FRAME, tip, last))
 
     def _plan_translate(self, side: str, axis: str, distance: float,
-                        max_step: float = 0.005, timeout: float = 60.0):
+                        max_step: float = 0.02, timeout: float = 60.0,
+                        avoid_collisions: bool = True):
         cfg = ARMS[side]
         (sx, sy, sz), quat = self._tip_pose(cfg["tip"])
         target = Pose()
@@ -257,7 +271,7 @@ class TaughtRosWorker(SpinNode):
         request.waypoints = [target]
         request.max_step = max_step
         request.jump_threshold = 0.0
-        request.avoid_collisions = True
+        request.avoid_collisions = avoid_collisions
         response = self._call(self._cartesian_cli, request, timeout,
                               CARTESIAN_SERVICE)
         return response.solution.joint_trajectory, response.fraction, (sx, sy, sz)
@@ -685,12 +699,15 @@ class TaughtRosWorker(SpinNode):
         # /joint_states 也不发）。所以只等一小会儿，读不到就用步骤里的
         # `assume_start`（默认 0，即"抽屉在关位"）——开抽屉场景天然成立；
         # 关抽屉场景由序列显式给 assume_start: 0.25。这样不依赖插件是否发布。
-        try:
-            wait_for(lambda: control in self._rails
-                     or control in self._controls, 6.0, joint_topic)
-        except RuntimeError:
-            print("注意：%s 的位置话题读不到，使用 assume_start=%.4f"
-                  % (control, float(step.get("assume_start") or 0.0)), flush=True)
+        # **给了 assume_start 就完全不等位置话题**。非 db1 的控件不发布位置话题，
+        # 等它必然白等 6 秒（实测这一段占了整轮的 9.5s 里的大头）。序列里每步都
+        # 显式给了 assume_start（开=0、合=0.03），本来就以它为准。
+        if step.get("assume_start") is None:
+            try:
+                wait_for(lambda: control in self._rails
+                         or control in self._controls, 1.5, joint_topic)
+            except RuntimeError:
+                print("注意：%s 的位置话题读不到，按 0 起算" % control, flush=True)
         # 坑③：关到位时轨道位置实测是负的微小值，而下限是 0 → 必须钳进限位，
         # 否则插件按 `q < lower` 直接拒收。
         raw = self._rails.get(control)
@@ -714,7 +731,11 @@ class TaughtRosWorker(SpinNode):
         on_progress(0.05, "规划双臂后拉路径")
         plans = {}
         for side in ARMS:
-            solution, fraction, tip = self._plan_translate(side, "x", distance)
+            # 步长 0.02：抽拉是 3cm 直线，粗插补足够。
+            # 注：也试过关掉 avoid_collisions（以为碰撞检查是这段 ~9.5s 的开销），
+            # **实测无变化**，且那会降低安全性，故保留碰撞检查。
+            solution, fraction, tip = self._plan_translate(
+                side, "x", distance, max_step=0.02)
             if fraction < 0.99 or not solution.points:
                 raise RuntimeError("%s 后拉路径完整度仅 %.4f" % (side, fraction))
             plans[side] = (solution, tip)
@@ -723,7 +744,9 @@ class TaughtRosWorker(SpinNode):
             for solution, _tip in plans.values() for p in solution.points)
         scale = max(1.0, duration / plan_time) if plan_time > 0 else 1.0
 
-        playback = self.create_client(
+        # 复用预热好的客户端（见 wait_ready），不再新建——新建要重新发现，
+        # 实测那一次发现要等好几秒。
+        playback = getattr(self, "_playback_warm", None) or self.create_client(
             SetCabinetPlayback, "/xczs/cabinet/%s/playback" % self._cabinet)
         self._playback_cli = playback
         lease_id = self.ensure_lease()
