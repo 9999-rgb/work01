@@ -99,23 +99,66 @@ class PoseDeriver(SpinNode):
         request.ik_request.pose_stamped.pose.orientation.z = quat[2]
         request.ik_request.pose_stamped.pose.orientation.w = quat[3]
         request.ik_request.avoid_collisions = True
-        # seed：用参考位姿的关节角，尽量落在同一构型分支
-        seed_state = JointState()
-        seed_state.name = list(seed.keys())
-        seed_state.position = [float(v) for v in seed.values()]
-        request.ik_request.robot_state.joint_state = seed_state
         request.ik_request.timeout = Duration(seconds=2.0).to_msg()
-        future = self._ik_cli.call_async(request)
-        deadline = time.monotonic() + 20.0
-        while self.context.ok() and not future.done() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        if not future.done():
-            raise RuntimeError("IK 未在 20s 内返回")
-        response = future.result()
-        if response.error_code.val != 1:
-            raise RuntimeError("IK 失败，error_code=%s" % response.error_code.val)
-        solved = response.solution.joint_state
-        return {n: float(p) for n, p in zip(solved.name, solved.position)}
+        # **先带种子解、失败再不带种子重试**。带种子（参考位姿的臂角）会收敛到
+        # 参考构型的邻域——把手抬高很多时那条构型够不着，于是白报 NO_IK_SOLUTION；
+        # 不带种子则让 MoveIt 自己探索（会试到"举起来"的另一种构型），这正是
+        # 够高抽屉所需要的。本会话先因未做这一步而误判 ds2/ds3"物理不可达"。
+        # **绕世界 x（工具进给轴）扫一圈滚转角**：够高/够低的抽屉时，手臂需要
+        # 换构型，而换构型会改变工具的滚转；把姿态钉死在参考值上会一律无解。
+        # 钩爪"跨在立板两侧"只要求滚转**大致**对上（立板有 96mm 高、爪 z 带
+        # 66mm），所以允许 ±180° 内扫，取第一个能解出的。
+        import math
+        rolls = [0.0]
+        for deg in (10, -10, 20, -20, 30, -30, 45, -45, 60, -60, 90, -90,
+                    120, -120, 150, -150, 180):
+            rolls.append(math.radians(deg))
+        attempts = []
+        for roll in rolls:
+            q = list(quat)
+            if abs(roll) > 1e-9:
+                # 在世界系绕 x 轴旋转 roll 后，再复合到原姿态上
+                cx, sx = math.cos(roll / 2.0), math.sin(roll / 2.0)
+                rx = (cx, sx, 0.0, 0.0)
+                x0, y0, z0, w0 = quat
+                x1, y1, z1, w1 = rx
+                q = [w1 * x0 + x1 * w0 + y1 * z0 - z1 * y0,
+                     w1 * y0 - x1 * z0 + y1 * w0 + z1 * x0,
+                     w1 * z0 + x1 * y0 - y1 * x0 + z1 * w0,
+                     w1 * w0 - x1 * x0 - y1 * y0 - z1 * z0]
+            # 姿态必须**和这次尝试配对存起来**。先前写成"构造列表时就改
+            # request 的 orientation"，结果所有尝试用的都是最后一个滚转角的
+            # 姿态，白扫一圈。
+            if seed:
+                seed_state = JointState()
+                seed_state.name = list(seed.keys())
+                seed_state.position = [float(v) for v in seed.values()]
+                attempts.append(
+                    ("滚转%+.0f°带种子" % math.degrees(roll), seed_state, q))
+            attempts.append(
+                ("滚转%+.0f°无种子" % math.degrees(roll), None, q))
+        last_code = None
+        for label, seed_state, q in attempts:
+            pose = request.ik_request.pose_stamped.pose
+            pose.orientation.x, pose.orientation.y = q[0], q[1]
+            pose.orientation.z, pose.orientation.w = q[2], q[3]
+            request.ik_request.robot_state.joint_state = seed_state \
+                if seed_state is not None else JointState()
+            future = self._ik_cli.call_async(request)
+            deadline = time.monotonic() + 20.0
+            while self.context.ok() and not future.done() and \
+                    time.monotonic() < deadline:
+                time.sleep(0.02)
+            if not future.done():
+                raise RuntimeError("IK 未在 20s 内返回")
+            response = future.result()
+            last_code = response.error_code.val
+            if response.error_code.val == 1:
+                print("      IK 成功（%s）" % label)
+                solved = response.solution.joint_state
+                return {n: float(p) for n, p in zip(solved.name, solved.position)}
+            print("      IK 失败（%s, code=%s）" % (label, response.error_code.val))
+        raise RuntimeError("IK 无解，最后一次 error_code=%s" % last_code)
 
 
 def main():
@@ -140,9 +183,13 @@ def main():
         for side, cfg in ARMS.items():
             tip = cfg["tip"]
             position, quat = node.tip_pose(tip)
-            # 参考存档里的 tip 位姿（存档时抓的），用它算"平移后应该在哪"
-            ref_pos = reference["frames"][tip]["position"]
-            target = (ref_pos[0] + args.dx, ref_pos[1] + args.dy, ref_pos[2] + args.dz)
+            # **目标 = 当前实测位姿 + 偏移**（不是"存档里的绝对位置 + 偏移"）。
+            # 存档是**在别的工位**抓的，它的绝对坐标与本工位无关；拿它当目标会
+            # 把目标点扔到机器人够不着的地方，IK 一律 NO_IK_SOLUTION——本会话
+            # 正是这样误判了 ds2/ds3"物理不可达"。参考存档在这里只用来取
+            # 电缸杆的值（杆相对工具基座固定），以及作 seed。
+            target = (position[0] + args.dx, position[1] + args.dy,
+                      position[2] + args.dz)
             print("%-6s tip %-8s 实测 (%+.4f %+.4f %+.4f) → 目标 (%+.4f %+.4f %+.4f)"
                   % (side, tip, position[0], position[1], position[2],
                      target[0], target[1], target[2]))

@@ -105,6 +105,8 @@ class TaughtRosWorker(SpinNode):
         self._joint_state = None
         self._rail = None
         self._controls: Dict[str, Any] = {}
+        # 轨道位置：优先取 joint_states（每控件都有），state 话题只 db1 有
+        self._rails: Dict[str, float] = {}
         self.create_subscription(JointState, JOINT_STATES_TOPIC,
                                  self._on_joint_state, best_effort_qos())
         self._tf_buffer = tf2_ros.Buffer()
@@ -128,6 +130,13 @@ class TaughtRosWorker(SpinNode):
     # ------------------------------------------------------------------ infra
     def _on_joint_state(self, msg):
         self._joint_state = msg
+
+    def _rail_cb(self, control_id):
+        """从 <ns>/<control>/joint_states 取该抽屉的轨道位置（第一个关节）。"""
+        def callback(msg):
+            if msg.position:
+                self._rails[control_id] = float(msg.position[0])
+        return callback
 
     def _state_cb(self, control_id):
         def callback(msg):
@@ -663,13 +672,33 @@ class TaughtRosWorker(SpinNode):
         control = str(step["control"])
         duration = float(step["duration"])
         distance = float(step.get("distance") or 0.0)
-        topic = "/xczs/cabinet/%s/%s/state" % (self._cabinet, control)
-        self.create_subscription(CabinetControlState, topic,
+        # 轨道位置优先从**插件每个控件都发的 <ns>/<control>/joint_states** 读。
+        # 只有 db1 有 `/state` 话题（实测 ds2/dm1 的 state 话题根本不存在），
+        # 之前一律等它、于是非 db1 的抽屉全卡在最后一步"等状态超时"。
+        joint_topic = "/xczs/cabinet/%s/%s/joint_states" % (self._cabinet, control)
+        state_topic = "/xczs/cabinet/%s/%s/state" % (self._cabinet, control)
+        self.create_subscription(JointState, joint_topic,
+                                 self._rail_cb(control), 10)
+        self.create_subscription(CabinetControlState, state_topic,
                                  self._state_cb(control), 10)
-        wait_for(lambda: control in self._controls, 15.0, topic)
+        # 位置话题**不是每个控件都有**（实测只有 db1 有 /state；ds2/dm1 连
+        # /joint_states 也不发）。所以只等一小会儿，读不到就用步骤里的
+        # `assume_start`（默认 0，即"抽屉在关位"）——开抽屉场景天然成立；
+        # 关抽屉场景由序列显式给 assume_start: 0.25。这样不依赖插件是否发布。
+        try:
+            wait_for(lambda: control in self._rails
+                     or control in self._controls, 6.0, joint_topic)
+        except RuntimeError:
+            print("注意：%s 的位置话题读不到，使用 assume_start=%.4f"
+                  % (control, float(step.get("assume_start") or 0.0)), flush=True)
         # 坑③：关到位时轨道位置实测是负的微小值，而下限是 0 → 必须钳进限位，
         # 否则插件按 `q < lower` 直接拒收。
-        start = max(0.0, min(RAIL_LIMIT, self._controls[control].position))
+        raw = self._rails.get(control)
+        if raw is None and control in self._controls:
+            raw = self._controls[control].position
+        if raw is None:
+            raw = float(step.get("assume_start") or 0.0)
+        start = max(0.0, min(RAIL_LIMIT, float(raw)))
         # **支持绝对目标位**（给 target 就按"当前位置 → target"算位移）。
         # 只用相对距离会在异常后累积：实测闭合失败一次、抽屉停在 0.07，
         # 下一次 open 又加 0.07 变成 0.14，越开越大。绝对目标天然不会。
@@ -751,8 +780,11 @@ class TaughtRosWorker(SpinNode):
             for side in ARMS:
                 self._tip_settled(ARMS[side]["tip"])
             time.sleep(1.0)
+            final = self._rails.get(control)
+            if final is None and control in self._controls:
+                final = self._controls[control].position
             on_progress(1.0, "抽屉轨道 %.4f → %.4f m"
-                        % (start, self._controls[control].position))
+                        % (start, float(final) if final is not None else start))
         finally:
             self._stop_playback(playback, lease_id)
             # HOLD 生效后**不能停续租、也不能释放租约**：租约一到期，插件的

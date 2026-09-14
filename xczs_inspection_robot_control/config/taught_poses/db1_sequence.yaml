@@ -53,6 +53,7 @@ sequences:
         duration: 6.0
         lead: 0.3
         target: 0.07
+        assume_start: 0.0
     closed:
       display_name: db1 抽拉柜 关闭（教学动作）
       steps:
@@ -63,6 +64,7 @@ sequences:
         duration: 6.0
         lead: 0.3
         target: 0.0
+        assume_start: 0.07
       - type: retract_rods
       - type: go_home
   dm1:
@@ -94,12 +96,14 @@ sequences:
       - type: translate_tool
         axis: z
         distance: 0.0756
-        duration: 3.0
+        duration: 5.0
+        chunk: 0.02
       - type: pull_drawer
         control: dm1
         duration: 6.0
         lead: 0.3
         target: 0.25
+        assume_start: 0.0
     closed:
       display_name: dm1 抽拉柜 关闭（复用 001 + z 修正）
       steps:
@@ -108,11 +112,62 @@ sequences:
       - type: translate_tool
         axis: z
         distance: 0.0756
-        duration: 3.0
+        duration: 5.0
+        chunk: 0.02
       - type: pull_drawer
         control: dm1
         duration: 6.0
         lead: 0.3
         target: 0.0
+        assume_start: 0.25
+      - type: retract_rods
+      - type: go_home
+  ds2:
+    open:
+      display_name: ds2 抽拉柜 打开（001 + IK 举起位姿）
+      steps:
+      - type: preposition_base
+        control: ds2
+        cabinet: ''
+        toolset: A
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 3.0
+      - type: rod_stroke
+        role: gripper
+        distance: 0.01875
+        duration: 3.0
+      - type: rod_stroke
+        role: support
+        distance: 0.08
+        duration: 4.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 4.0
+      - type: restore_pose
+        pose: db1_teach_node001_raise30.yaml
+      - type: restore_pose
+        pose: ds2_raised.yaml
+      - type: pull_drawer
+        control: ds2
+        duration: 6.0
+        lead: 0.3
+        target: 0.25
+        assume_start: 0.0
+    closed:
+      display_name: ds2 抽拉柜 关闭（001 + IK 举起位姿）
+      steps:
+      - type: restore_pose
+        pose: db1_opened.yaml
+      - type: restore_pose
+        pose: ds2_raised.yaml
+      - type: pull_drawer
+        control: ds2
+        duration: 6.0
+        lead: 0.3
+        target: 0.0
+        assume_start: 0.25
       - type: retract_rods
       - type: go_home

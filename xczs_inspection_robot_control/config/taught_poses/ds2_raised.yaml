@@ -1,0 +1,56 @@
+# 由 derive_taught_pose.py 自动生成（IK 求得，非人工教学）
+label: ds2 举起位姿（001 + Δz0.57，IK 求得）
+captured_wall_time: 2026-09-13T13:04:30+0800
+world_frame: odom
+derived_from: xczs_inspection_robot_control/config/taught_poses/db1_teach_node001_raise30.yaml
+offset:
+  dx: 0.0
+  dy: 0.0
+  dz: 0.5717
+joints:
+  l_arm_0_joint: -0.6675851639877208
+  l_arm_1_joint: -1.954476381439372
+  l_arm_2_joint: -1.713688210815053
+  l_arm_3_joint: -0.5375104786356258
+  l_arm_4_joint: -1.2744574286375816
+  l_arm_5_joint: -0.26777838360249806
+  l_arm_6_joint: 0.35761931865595564
+  r_arm_0_joint: 0.6466333849606957
+  r_arm_1_joint: -1.8129550187871388
+  r_arm_2_joint: -1.7876904854978388
+  r_arm_3_joint: 0.5784360933492216
+  r_arm_4_joint: 1.644042234374116
+  r_arm_5_joint: -2.808578496768321
+  r_arm_6_joint: 2.818276098510291
+  l_two_cyl_finger1_joint: 0.018719
+  l_two_cyl_finger2_joint: 0.082954
+  r_three_cyl_finger1_joint: 0.081971
+  r_three_cyl_finger2_joint: 0.018449
+  r_three_cyl_finger3_joint: 4.2e-05
+joint_efforts:
+  l_arm_0_joint: 0.0
+  l_arm_1_joint: 0.0
+  l_arm_2_joint: 0.0
+  l_arm_3_joint: 0.0
+  l_arm_4_joint: 0.0
+  l_arm_5_joint: 0.0
+  l_arm_6_joint: 0.0
+  r_arm_0_joint: 0.0
+  r_arm_1_joint: 0.0
+  r_arm_2_joint: 0.0
+  r_arm_3_joint: 0.0
+  r_arm_4_joint: 0.0
+  r_arm_5_joint: 0.0
+  r_arm_6_joint: 0.0
+  l_two_cyl_finger1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_three_cyl_finger2_joint: 0.0
+  r_three_cyl_finger3_joint: 0.0
+frames: {}
+controls:
+  db1:
+    state_id: closed
+    position: -2.1e-05
+    effort: 0.6735
+    in_motion: false
