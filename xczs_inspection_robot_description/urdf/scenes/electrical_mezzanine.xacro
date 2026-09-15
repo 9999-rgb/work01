@@ -792,7 +792,7 @@
         <state_topic>/xczs/cabinet/electrical_mezzanine/ds1/state</state_topic>
         <state_ids>closed open</state_ids>
         <detents>0.0 0.3</detents>
-        <detent_stiffness>12</detent_stiffness>
+        <detent_stiffness>500</detent_stiffness>
         <spring_damping>1</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
@@ -816,7 +816,7 @@
         <state_topic>/xczs/cabinet/electrical_mezzanine/ds2/state</state_topic>
         <state_ids>closed open</state_ids>
         <detents>0.0 0.3</detents>
-        <detent_stiffness>12</detent_stiffness>
+        <detent_stiffness>500</detent_stiffness>
         <spring_damping>1</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
@@ -964,7 +964,7 @@
         <state_topic>/xczs/cabinet/electrical_mezzanine/ds3/state</state_topic>
         <state_ids>closed open</state_ids>
         <detents>0.0 0.3</detents>
-        <detent_stiffness>12</detent_stiffness>
+        <detent_stiffness>500</detent_stiffness>
         <spring_damping>1</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>
@@ -984,7 +984,7 @@
         <state_topic>/xczs/cabinet/electrical_mezzanine/dm1/state</state_topic>
         <state_ids>closed open</state_ids>
         <detents>0.0 0.3</detents>
-        <detent_stiffness>12</detent_stiffness>
+        <detent_stiffness>500</detent_stiffness>
         <spring_damping>1</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.34</slider_release_position>

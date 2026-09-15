@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""通过 Web 逐旋钮验证相邻档位往返，记录终态证据和旁路控件扰动。"""
+import argparse
+import json
+from pathlib import Path
+import time
+import urllib.request
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--api', default='http://127.0.0.1:8090')
+    parser.add_argument('--controls', nargs='+', default=[f'fr{i}_knob' for i in ('135', '2222', '4332', '12452', '20422', '25452')])
+    parser.add_argument('--states', nargs='+', default=['center', 'right', 'center', 'left'])
+    parser.add_argument('--no-navigate', action='store_true')
+    parser.add_argument('--timeout', type=float, default=360)
+    parser.add_argument('--output', required=True)
+    args = parser.parse_args()
+    evidence = []
+
+    def request(path, payload=None):
+        req = urllib.request.Request(args.api + path, data=None if payload is None else json.dumps(payload).encode(), headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            return json.load(response)
+
+    def snapshot():
+        return {c['control_id']: c for c in request('/cabinets/generator_plant/controls')['controls']}
+
+    def task(path, payload):
+        accepted = request(path, payload)
+        task_id = accepted['task_id']
+        print('TASK', task_id, payload, flush=True)
+        deadline = time.monotonic() + args.timeout
+        last = None
+        while time.monotonic() < deadline:
+            status = request(f'/task/{task_id}/status')
+            stage = (status.get('status'), status.get('stage'), status.get('message'))
+            if stage != last:
+                print(stage, flush=True)
+                last = stage
+            if status.get('status') in ('success', 'failed', 'canceled', 'cancelled', 'error'):
+                evidence.append(status)
+                Path(args.output).write_text(json.dumps(evidence, ensure_ascii=False, indent=2))
+                if status['status'] != 'success':
+                    raise RuntimeError(json.dumps(status, ensure_ascii=False))
+                return status
+            time.sleep(1)
+        request(f'/task/{task_id}/cancel', {})
+        raise TimeoutError(f'{task_id}: 已请求取消超时任务，必须检查恢复状态')
+
+    for control in args.controls:
+        if not args.no_navigate:
+            task('/task/navigate', {'cabinet': 'generator_plant', 'control_id': control})
+        for target in args.states:
+            before = snapshot()
+            if before[control]['current_state'] == target:
+                continue
+            result = task('/task/operate', {'cabinet': 'generator_plant', 'control_id': control, 'command': 'set_state', 'target_state': target})
+            physical = result.get('result', {})
+            required = ('physical_outcome_confirmed', 'final_state_verified', 'transport_succeeded', 'recovery_succeeded', 'grasp_released')
+            if any(physical.get(key) is not True for key in required):
+                raise RuntimeError(f'{control}: 缺少终态物理证据: {physical}')
+            after = snapshot()
+            expected = before[control]['state_positions'][before[control]['state_ids'].index(target)]
+            if after[control]['current_state'] != target or abs(after[control]['current_position'] - expected) > .04:
+                raise RuntimeError(f'{control}: 实测角度或档位不匹配')
+            changed = [name for name in before if name != control and (abs(after[name]['current_position'] - before[name]['current_position']) > .005 or after[name]['transition_sequence'] != before[name]['transition_sequence'])]
+            if changed:
+                raise RuntimeError(f'旁路控件变化超过 5 mm/rad: {changed}')
+            print('VERIFIED', control, target, after[control]['current_position'], flush=True)
+    print('PASS: Web round trips; inspect synchronized contact audit separately', flush=True)
+
+
+if __name__ == '__main__':
+    main()

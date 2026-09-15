@@ -19,7 +19,7 @@
     controls:
       ds1:
         type: slider
-        display_name: "ds1 抽屉"
+        display_name: "ds1 抽拉柜"
         joint_name: ds1
         local_position: [0.099, 4.581, 2.06]
         axis: [1.0, 0.0, 0.0]
@@ -32,7 +32,7 @@
         state_positions: [0.0, 0.03]
       ds2:
         type: slider
-        display_name: "ds2 抽屉"
+        display_name: "ds2 抽拉柜"
         joint_name: ds2
         local_position: [0.099, 4.219, 1.52]
         axis: [1.0, 0.0, 0.0]
@@ -119,7 +119,7 @@
         drawer_sync_tolerance: 0.05
       ds3:
         type: slider
-        display_name: "ds3 抽屉"
+        display_name: "ds3 抽拉柜"
         joint_name: ds3
         local_position: [0.099, 5.381, 1.515]
         axis: [1.0, 0.0, 0.0]
@@ -132,7 +132,7 @@
         state_positions: [0.0, 0.03]
       dm1:
         type: slider
-        display_name: "dm1 抽屉"
+        display_name: "dm1 抽拉柜"
         joint_name: dm1
         local_position: [0.099, 5.2, 0.955]
         axis: [1.0, 0.0, 0.0]

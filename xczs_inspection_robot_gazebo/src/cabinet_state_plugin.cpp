@@ -4,6 +4,9 @@
 #include <gazebo/common/Events.hh>
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/physics/Collision.hh>
+#include <gazebo/physics/Contact.hh>
+#include <gazebo/physics/ContactManager.hh>
+#include <gazebo/physics/PhysicsEngine.hh>
 #include <gazebo/physics/Joint.hh>
 #include <gazebo/physics/Link.hh>
 #include <gazebo/physics/Model.hh>
@@ -298,6 +301,7 @@ public:
     active_control_subscription_.reset();
     operation_heartbeat_subscription_.reset();
     update_connection_.reset();
+    contact_update_connection_.reset();
     fail_requests(
       pending_requests, "Cabinet state plugin is shutting down.");
 
@@ -351,6 +355,29 @@ public:
       if (grasp_distance_threshold_ <= 0.0) {
         throw std::invalid_argument(
                 "Cabinet grasp_distance_threshold must be positive.");
+      }
+      if (sdf->HasElement("grasp_contact_links")) {
+        grasp_contact_links_ = parse_words(sdf->Get<std::string>("grasp_contact_links"));
+        if (grasp_contact_links_.size() != 2U) {
+          throw std::invalid_argument("Grasp contact sensing requires two jaw links.");
+        }
+        // Keep ODE contacts available to the physics-thread attach gate even
+        // without a GUI contact subscriber. Enabled only by calibrated scenes.
+        world_->Physics()->GetContactManager()->SetNeverDropContacts(true);
+      }
+      if (sdf->HasElement("grasp_joint")) {
+        auto element = sdf->GetElement("grasp_joint");
+        while (element) {
+          GraspJointRequirement requirement;
+          requirement.name = element->Get<std::string>("name");
+          requirement.position = optional_double(element, "position", 0.0);
+          requirement.tolerance = optional_double(element, "tolerance", 0.0005);
+          if (requirement.name.empty() || requirement.tolerance <= 0.0) {
+            throw std::invalid_argument("Invalid cabinet grasp_joint requirement.");
+          }
+          grasp_joint_requirements_.push_back(requirement);
+          element = element->GetNextElement("grasp_joint");
+        }
       }
       operation_watchdog_timeout_ = optional_double(
         sdf, "operation_watchdog_timeout", 2.0);
@@ -643,6 +670,15 @@ public:
         ServiceCallbackLease lease(callback_lifetime);
         owner->on_update();
       });
+    if (!grasp_contact_links_.empty()) {
+      contact_update_connection_ = gazebo::event::Events::ConnectWorldUpdateEnd(
+        [callback_lifetime]() {
+          auto * owner = acquire_service_callback(callback_lifetime);
+          if (!owner) {return;}
+          ServiceCallbackLease lease(callback_lifetime);
+          owner->record_grasp_contacts();
+        });
+    }
     if (drawer_controls_present_) {
       RCLCPP_INFO(
         ros_node_->get_logger(),
@@ -691,6 +727,7 @@ private:
     std::string joint_name;
     gazebo::physics::JointPtr joint;
     gazebo::physics::LinkPtr link;
+    std::string grasp_contact_target;
     std::string joint_state_topic;
     std::string pressed_topic;
     std::string state_topic;
@@ -1003,6 +1040,12 @@ private:
       control.motion_tolerance = optional_double(
         element, "motion_tolerance", 0.025);
       control.graspable = optional_bool(element, "graspable", false);
+      if (element->HasElement("grasp_contact_target")) {
+        control.grasp_contact_target = element->Get<std::string>("grasp_contact_target");
+        if (!model_->GetLink(control.grasp_contact_target) || grasp_contact_links_.empty()) {
+          throw std::invalid_argument("Invalid physical grasp contact target: " + control.id);
+        }
+      }
       if (element->HasElement("grasp_point")) {
         control.grasp_point = parse_vector3(
           element->Get<std::string>("grasp_point"));
@@ -1370,6 +1413,65 @@ private:
 
   }
 
+  // Called on the physics thread before servicing an attach request. Require
+  // both actual jaw/target contact pairs, not just a near link origin.
+  bool physical_knob_contact_is_valid(
+    const Control & control, const gazebo::physics::ModelPtr & robot_model) const
+  {
+    if (control.grasp_contact_target.empty()) {return true;}
+    if (!robot_model) {return false;}
+    const auto target = model_->GetLink(control.grasp_contact_target);
+    if (!target) {return false;}
+    const double now = world_->SimTime().Double();
+    for (const auto & name : grasp_contact_links_) {
+      const auto jaw = robot_model->GetLink(name);
+      if (!jaw) {return false;}
+      const auto found = grasp_contacts_.find(target->GetScopedName() + ":" + jaw->GetScopedName());
+      if (found == grasp_contacts_.end() || now < found->second.first ||
+        now - found->second.first > 0.2 || found->second.second > 0.001)
+      {
+        RCLCPP_ERROR(ros_node_->get_logger(),
+          "Knob contact invalid: %s -> %s, age %.6f s, depth %.6f m.",
+          name.c_str(), control.grasp_contact_target.c_str(),
+          found == grasp_contacts_.end() ? -1.0 : now - found->second.first,
+          found == grasp_contacts_.end() ? -1.0 : found->second.second);
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void record_grasp_contacts()
+  {
+    std::lock_guard<std::mutex> physics_lock(physics_callback_mutex_);
+    if (shutting_down_.load() || grasp_contact_links_.empty()) {return;}
+    auto * manager = world_->Physics()->GetContactManager();
+    const double now = world_->SimTime().Double();
+    for (unsigned int i = 0; i < manager->GetContactCount(); ++i) {
+      const auto * contact = manager->GetContact(i);
+      if (!contact || !contact->collision1 || !contact->collision2 || contact->count <= 0) {
+        continue;
+      }
+      const auto a = contact->collision1->GetLink();
+      const auto b = contact->collision2->GetLink();
+      if (!a || !b) {continue;}
+      const auto target = a->GetModel() == model_ ? a : b;
+      const auto jaw = a->GetModel() == model_ ? b : a;
+      if (target->GetModel() != model_ || jaw->GetModel() == model_ ||
+        std::find(grasp_contact_links_.begin(), grasp_contact_links_.end(),
+        jaw->GetName()) == grasp_contact_links_.end())
+      {
+        continue;
+      }
+      double depth = 0.0;
+      for (int j = 0; j < contact->count; ++j) {
+        depth = std::max(depth, contact->depths[j]);
+      }
+      grasp_contacts_[target->GetScopedName() + ":" + jaw->GetScopedName()] =
+        std::make_pair(now, depth);
+    }
+  }
+
   void on_update()
   {
     std::lock_guard<std::mutex> physics_lock(physics_callback_mutex_);
@@ -1461,6 +1563,18 @@ private:
       }
       const bool control_is_being_grasped = grasp_is_active() &&
         active_grasp_control_ == control.id;
+      if (control_is_being_grasped && !control.grasp_contact_target.empty() &&
+        !physical_knob_contact_is_valid(control,
+        active_robot_link_ptr_ ? active_robot_link_ptr_->GetModel() : nullptr))
+      {
+        const auto lost_lease_id = active_grasp_lease_id_;
+        RCLCPP_ERROR(ros_node_->get_logger(),
+          "Knob '%s' stopped: bilateral contact lost or penetration exceeded 1 mm.",
+          control.id.c_str());
+        release_grasp_constraint();
+        publish_operation_fault(lost_lease_id);
+        continue;
+      }
       record_pregrasp_disturbance(
         control, raw_position, velocity, control_is_being_grasped);
       double target = 0.0;
@@ -3736,6 +3850,15 @@ private:
     // the operator's press depth).  A single-side clamp would rack the drawer
     // under the pull torque, so the attach is rejected unless BOTH distances
     // pass, and the per-side contact flags are reported to the caller.
+    for (const auto & requirement : grasp_joint_requirements_) {
+      const auto joint = robot_model->GetJoint(requirement.name);
+      if (!joint || !std::isfinite(joint->Position(0)) ||
+        std::abs(joint->Position(0) - requirement.position) > requirement.tolerance)
+      {
+        return {false, "Grasp rejected: unclosed or uncalibrated robot joint " +
+          requirement.name, std::numeric_limits<double>::quiet_NaN()};
+      }
+    }
     const auto target_pose = control.link->WorldPose();
     const auto left_handle_world = target_pose.Pos() +
       target_pose.Rot().RotateVector(control.grasp_point);
@@ -4033,6 +4156,30 @@ private:
       return {false,
         "Robot grasp point is outside the cabinet grasp distance threshold.",
         distance};
+    }
+    if (!control.grasp_contact_target.empty()) {
+      const auto target = model_->GetLink(control.grasp_contact_target);
+      const double now = world_->SimTime().Double();
+      for (const auto & name : grasp_contact_links_) {
+        const auto jaw = robot_model->GetLink(name);
+        const auto key = target->GetScopedName() + ":" +
+          (jaw ? jaw->GetScopedName() : name);
+        const auto found = grasp_contacts_.find(key);
+        if (found == grasp_contacts_.end() || now - found->second.first > 0.2 ||
+          now < found->second.first || found->second.second > 0.001)
+        {
+          return {false, "Physical jaw contact missing or penetration exceeds 1 mm: " +
+            name + " -> " + control.grasp_contact_target +
+            " (contact pairs=" + std::to_string(grasp_contacts_.size()) +
+            ", age=" + (found == grasp_contacts_.end() ? std::string("missing") :
+            std::to_string(now - found->second.first)) +
+            ", depth=" + (found == grasp_contacts_.end() ? std::string("missing") :
+            std::to_string(found->second.second)) + ")", distance};
+        }
+        RCLCPP_INFO(ros_node_->get_logger(),
+          "Verified physical knob contact %s -> %s (depth %.6f m).",
+          name.c_str(), control.grasp_contact_target.c_str(), found->second.second);
+      }
     }
     auto grasp_axis_world = control.joint->GlobalAxis(0);
     if (control.grasp_coupling_stiffness > 0.0 &&
@@ -4372,6 +4519,7 @@ private:
   gazebo::physics::ModelPtr model_;
   gazebo::physics::WorldPtr world_;
   gazebo::event::ConnectionPtr update_connection_;
+  gazebo::event::ConnectionPtr contact_update_connection_;
   rclcpp::Node::SharedPtr ros_node_;
   rclcpp::executors::MultiThreadedExecutor::SharedPtr executor_;
   std::unique_ptr<std::thread> spin_thread_;
@@ -4402,6 +4550,15 @@ private:
   std::string operation_fault_topic_;
   double publish_period_{0.05};
   double last_publish_time_{0.0};
+  struct GraspJointRequirement
+  {
+    std::string name;
+    double position{0.0};
+    double tolerance{0.0005};
+  };
+  std::vector<GraspJointRequirement> grasp_joint_requirements_;
+  std::vector<std::string> grasp_contact_links_;
+  std::unordered_map<std::string, std::pair<double, double>> grasp_contacts_;
   double grasp_distance_threshold_{0.12};
   double operation_watchdog_timeout_{2.0};
   std::shared_ptr<ServiceCallbackLifetime> callback_lifetime_;

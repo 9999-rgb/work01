@@ -44,8 +44,13 @@ scenes:
       file: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.xacro
       pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
     nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map_generator_plant.yaml
-    # 出生点取按钮排（y=4.81）正南通道 (x=-16, y=2)，机头朝 +Y（yaw=π/2）
-    # 正对按钮台；check_scene_config 已验证带朝向 footprint 全落 FREE 格。
-    # 地板无柜体走廊，绕行带置空。
+    # 2026-09-14 用户最终裁决：出生点放在**柜体的另一侧（背面）**。
+    # 面板在世界 x≈-13.187、y≈4.811，柜体实体墙带占 y∈[3.97, 4.82]、高至
+    # z=2.26；南北两侧都是空走廊。原来放在正面（y=3.2）时机器人紧贴隔舱、
+    # 开局就被两侧隔板夹住，故改到背面正对同一点：x 不变（正对 fr135），
+    # y = 4.811 + 1.6 ≈ 6.4，机头朝 -Y 正对柜体。
+    # check_scene_config 验证带朝向 footprint 全落 FREE 格。
     navigation_keepout: null
-    robot_spawn: {x: -16.0, y: 2.0, z: 0.515, yaw: 1.5707963267948966}
+    # yaw=0 与 fr135_knob 的作业站位朝向一致（outward[0,+1,0] + base_yaw_offset π/2
+    # = 侧身站位、右肩朝柜体，是南侧工位的镜像）。出生点 = 工位，开机即可作业。
+    robot_spawn: {x: -13.1867, y: 6.2113, z: 0.515, yaw: 0.0}

@@ -709,6 +709,35 @@ public:
               "Parameter 'toolset' must be 'A' or 'B'.");
     }
     load_tool_profiles();
+    // Optional full-controller targets for a physically closing knob gripper.
+    // Empty keeps existing adapters unchanged; only calibrated scenes enable it.
+    knob_gripper_joints_ = declare_parameter<std::vector<std::string>>(
+      "knob_gripper.joint_names", std::vector<std::string>{});
+    knob_gripper_open_ = declare_parameter<std::vector<double>>(
+      "knob_gripper.open_positions", std::vector<double>{});
+    knob_gripper_closed_ = declare_parameter<std::vector<double>>(
+      "knob_gripper.closed_positions", std::vector<double>{});
+    knob_gripper_tolerances_ = declare_parameter<std::vector<double>>(
+      "knob_gripper.tolerances", std::vector<double>{});
+    const std::unordered_set<std::string> gripper_joint_set(
+      knob_gripper_joints_.begin(), knob_gripper_joints_.end());
+    if (knob_gripper_joints_.size() != knob_gripper_tolerances_.size() ||
+      !std::all_of(knob_gripper_tolerances_.begin(), knob_gripper_tolerances_.end(),
+        [](double v) {return std::isfinite(v) && v > 0.0;}) ||
+      knob_gripper_joints_.size() != knob_gripper_open_.size() ||
+      knob_gripper_joints_.size() != knob_gripper_closed_.size() ||
+      gripper_joint_set.size() != knob_gripper_joints_.size() ||
+      gripper_joint_set.count("") != 0U ||
+      !std::all_of(knob_gripper_open_.begin(), knob_gripper_open_.end(),
+        [](double v) {return std::isfinite(v);}) ||
+      !std::all_of(knob_gripper_closed_.begin(), knob_gripper_closed_.end(),
+        [](double v) {return std::isfinite(v);}))
+    {
+      throw std::invalid_argument("Invalid knob_gripper joint targets.");
+    }
+    knob_gripper_fjt_client_ = rclcpp_action::create_client<
+      control_msgs::action::FollowJointTrajectory>(
+      this, controller_namespace_ + "/rotate_button_controller/follow_joint_trajectory");
     tool_tip_calibration_joint_tolerance_ = positive_parameter(
       "tool_tip_calibration_joint_tolerance", 0.001);
     tool_calibration_settle_timeout_ = positive_parameter(
@@ -5511,6 +5540,9 @@ private:
         result->physical_outcome_confirmed = true;
         result->final_state_verified = true;
       } else {
+        result->diagnostic_stage = "gripper_open";
+        drive_knob_gripper(goal_handle, *move_group, *control, false,
+          &result->operation_executed);
         result->diagnostic_stage = "ready";
         publish_operate_feedback(
           goal_handle,
@@ -5593,7 +5625,9 @@ private:
           goal_handle,
           OperateCabinetControl::Feedback::GRASPING,
           0.52F, target_position,
-          "Attaching the probe at the verified near-distance grasp point.");
+          "Closing the gripper at the verified physical grasp point.");
+        drive_knob_gripper(goal_handle, *move_group, *control, true,
+          &result->operation_executed);
         set_control_grasp(goal_handle, control->id, true);
         grasp_attached = true;
         // Let the transient grasp-active notification reach the planar
@@ -5740,6 +5774,8 @@ private:
           set_control_grasp(goal_handle, control->id, false);
           grasp_attached = false;
           result->grasp_released = true;
+          drive_knob_gripper(goal_handle, *move_group, *control, false,
+            &result->operation_executed);
           released_at = std::chrono::steady_clock::now();
           result->diagnostic_stage = "retreat";
           publish_operate_feedback(
@@ -8111,6 +8147,168 @@ private:
     return rotary_release_position(
       initial_position, target_position, release_fraction,
       target_tolerance_);
+  }
+
+  // Arm planning uses the open jaw geometry. Close only at the verified grasp
+  // pose, and reopen before any retreat, including cancellation recovery.
+  void drive_knob_gripper(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    MoveGroupInterface & move_group, const ButtonSpec & control,
+    bool close, bool * operation_executed, bool recovery = false)
+  {
+    if (control.control_type !=
+      xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB ||
+      knob_gripper_joints_.empty())
+    {
+      return;
+    }
+    const auto fail = [close](const std::string & message) {
+        throw GenericOperationError(close ? OperateCabinetControl::Result::GRASP_FAILED :
+          OperateCabinetControl::Result::RELEASE_FAILED, message);
+      };
+    const auto check_stop = [&]() {
+        if (recovery) {check_safety_transport_stop(goal_handle);}
+        else {check_cancel(goal_handle);}
+      };
+    check_stop();
+    const auto state = synchronized_current_robot_state(move_group);
+    const auto & desired = close ? knob_gripper_closed_ : knob_gripper_open_;
+    auto target = *state;
+    std::vector<bool> prismatic(desired.size(), false);
+    for (std::size_t i = 0; i < desired.size(); ++i) {
+      target.setVariablePosition(knob_gripper_joints_[i], desired[i]);
+      prismatic[i] = target.getRobotModel()->getJointModel(knob_gripper_joints_[i])->
+        getType() == moveit::core::JointModel::PRISMATIC;
+    }
+    if (!target.satisfiesBounds()) {fail("Knob gripper target exceeds joint limits.");}
+    auto tolerances = knob_gripper_tolerances_;
+    if (!close) {
+      for (std::size_t i = 0; i < tolerances.size(); ++i) {
+        if (prismatic[i]) {tolerances[i] = std::min(tolerances[i], 0.0002);}
+      }
+    }
+    const auto deadline = std::chrono::steady_clock::now() + 45s;
+    while (!knob_gripper_fjt_client_->wait_for_action_server(50ms)) {
+      check_stop();
+      if (std::chrono::steady_clock::now() >= deadline) {
+        fail("Knob gripper controller is unavailable.");
+      }
+    }
+    const auto measured_positions = [&]() {
+        std::vector<double> measured(desired.size());
+        for (std::size_t i = 0; i < desired.size(); ++i) {
+          if (!cached_real_joint_position(knob_gripper_joints_[i], measured[i]) ||
+            !std::isfinite(measured[i]))
+          {
+            fail("Knob gripper joint readback failed: " + knob_gripper_joints_[i]);
+          }
+        }
+        return measured;
+      };
+    const auto send_positions = [&](const std::vector<double> & positions, double seconds) {
+        check_stop();
+        auto goal = control_msgs::action::FollowJointTrajectory::Goal();
+        goal.trajectory.joint_names = knob_gripper_joints_;
+        trajectory_msgs::msg::JointTrajectoryPoint point;
+        point.positions = positions;
+        point.velocities.assign(positions.size(), 0.0);
+        point.accelerations.assign(positions.size(), 0.0);
+        point.time_from_start = rclcpp::Duration::from_seconds(seconds);
+        goal.trajectory.points.push_back(point);
+        goal.goal_time_tolerance = rclcpp::Duration::from_seconds(3.0);
+        for (std::size_t i = 0; i < desired.size(); ++i) {
+          control_msgs::msg::JointTolerance tolerance;
+          tolerance.name = knob_gripper_joints_[i];
+          tolerance.position = tolerances[i];
+          goal.goal_tolerance.push_back(tolerance);
+        }
+        if (operation_executed) {*operation_executed = true;}
+        auto abandoned = std::make_shared<std::atomic<bool>>(false);
+        auto client = knob_gripper_fjt_client_;
+        rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SendGoalOptions options;
+        options.goal_response_callback = [client, abandoned](const auto & accepted) {
+            if (accepted && abandoned->load()) {
+              try {client->async_cancel_goal(accepted);} catch (const std::exception &) {}
+            }
+          };
+        auto sent = client->async_send_goal(goal, options);
+        try {
+          while (sent.wait_for(50ms) != std::future_status::ready) {
+            check_stop();
+            if (std::chrono::steady_clock::now() >= deadline) {
+              fail("Knob gripper goal acceptance timed out.");
+            }
+          }
+        } catch (...) {
+          abandoned->store(true);
+          if (sent.wait_for(0ms) == std::future_status::ready) {
+            const auto accepted = sent.get();
+            if (accepted) {
+              try {client->async_cancel_goal(accepted);} catch (const std::exception &) {}
+            }
+          }
+          throw;
+        }
+        const auto accepted = sent.get();
+        if (!accepted) {fail("Knob gripper goal was rejected.");}
+        auto future = client->async_get_result(accepted);
+        try {
+          while (future.wait_for(50ms) != std::future_status::ready) {
+            check_stop();
+            if (std::chrono::steady_clock::now() >= deadline) {
+              fail("Knob gripper trajectory timed out.");
+            }
+          }
+          check_stop();
+          const auto result = future.get();
+          if (result.code != rclcpp_action::ResultCode::SUCCEEDED || !result.result ||
+            result.result->error_code !=
+            control_msgs::action::FollowJointTrajectory::Result::SUCCESSFUL)
+          {
+            fail("Knob gripper did not reach its calibrated target.");
+          }
+        } catch (...) {
+          try {client->async_cancel_goal(accepted);} catch (const std::exception &) {}
+          throw;
+        }
+      };
+    if (close) {
+      // The position backend reasserts its target each physics tick. A fixed
+      // closed target therefore pushes a stopped jaw through the plate before
+      // ODE corrects it. Advance from MEASURED positions in <=0.15 mm steps;
+      // each jaw independently stops at its actual contact surface.
+      constexpr double step = 0.00015;
+      double travel = 0.0;
+      for (std::size_t i = 0; i < desired.size(); ++i) {
+        if (prismatic[i]) {travel = std::max(travel, std::abs(desired[i] - knob_gripper_open_[i]));}
+      }
+      const auto steps = static_cast<std::size_t>(std::ceil(travel / step)) + 2U;
+      if (steps > 100U) {fail("Knob gripper calibrated travel exceeds the bounded close budget.");}
+      for (std::size_t n = 0; n < steps; ++n) {
+        const auto measured = measured_positions();
+        auto next = desired;
+        for (std::size_t i = 0; i < desired.size(); ++i) {
+          if (prismatic[i]) {next[i] = std::min(desired[i], measured[i] + step);}
+        }
+        send_positions(next, 0.2);
+      }
+      const auto measured = measured_positions();
+      auto hold = desired;
+      for (std::size_t i = 0; i < desired.size(); ++i) {
+        if (prismatic[i]) {hold[i] = std::min(desired[i], measured[i] + 0.0002);}
+      }
+      send_positions(hold, 0.5);
+    } else {
+      send_positions(desired, 4.0);
+    }
+    const auto measured = measured_positions();
+    for (std::size_t i = 0; i < desired.size(); ++i) {
+      if (std::abs(measured[i] - desired[i]) > tolerances[i]) {
+        fail("Knob gripper joint readback outside tolerance: " + knob_gripper_joints_[i]);
+      }
+    }
+    RCLCPP_INFO(get_logger(), "Knob '%s' jaws verified %s.",
+      control.id.c_str(), close ? "closed" : "open");
   }
 
   template<typename GoalHandleT>
@@ -12008,11 +12206,25 @@ private:
         if (status ==
           PregraspStabilitySampleStatus::REFERENCE_CHANGED)
         {
+          // 2026-09-15 取证诊断：报错里带上判定用的全部输入，便于定位是哪一项
+          // 触发（此前只报"被扰动"，无法区分 state_id 不匹配与位置超差）。
           throw GenericOperationError(
                   OperateCabinetControl::Result::NOT_READY,
                   "Control '" + reference.control->id +
                   "' changed from its initial state or position before "
-                  "grasp; the operation was stopped.");
+                  "grasp; the operation was stopped. [diag ref_state='" +
+                  reference.state_id + "' live_state='" + state.state_id +
+                  "' state_match=" + (state.state_id == reference.state_id ?
+                  "yes" : "NO") +
+                  " ref_pos=" + std::to_string(reference.position) +
+                  " live_pos=" + std::to_string(state.position) +
+                  " |Δ|=" + std::to_string(
+                    std::abs(state.position - reference.position)) +
+                  " pos_tol=" + std::to_string(target_tolerance_) +
+                  " in_motion=" + (state.in_motion ? "yes" : "no") +
+                  " vel=" + std::to_string(state.velocity) +
+                  " vel_tol=" + std::to_string(stable_velocity_tolerance_) +
+                  "]");
         }
         if (status != PregraspStabilitySampleStatus::STABLE) {
           all_stable = false;
@@ -12404,7 +12616,7 @@ private:
   {
     const bool physical_recovery_required = physical_recovery_is_required(
       result->operation_executed, should_attempt_retreat, grasp_attached);
-    const bool motion_recovery_allowed =
+    bool motion_recovery_allowed =
       physical_recovery_required && !operation_lease_lost_.load();
     if (!physical_recovery_required) {
       RCLCPP_INFO(
@@ -12539,6 +12751,17 @@ private:
     {
       result->operation_executed = true;
       release_control_grasp_noexcept(control->id);
+    }
+    if (motion_recovery_allowed && control && move_group) {
+      try {
+        drive_knob_gripper(goal_handle, *move_group, *control, false,
+          &result->operation_executed, true);
+      } catch (const std::exception & error) {
+        // Moving an arm with an unverified closed jaw can drag the fixture.
+        motion_recovery_allowed = false;
+        result->message += std::string(" Gripper recovery failed: ") + error.what();
+        RCLCPP_ERROR(get_logger(), "%s", result->message.c_str());
+      }
     }
     if (motion_recovery_allowed && control && should_attempt_retreat &&
       move_group && rclcpp::ok())
@@ -18041,6 +18264,12 @@ private:
   tf2::Vector3 tool_tip_position_{0.0, 0.0, 0.0};
   std::vector<std::string> tool_tip_calibration_joint_names_;
   std::vector<double> tool_tip_calibration_joint_positions_;
+  std::vector<std::string> knob_gripper_joints_;
+  std::vector<double> knob_gripper_open_;
+  std::vector<double> knob_gripper_closed_;
+  std::vector<double> knob_gripper_tolerances_;
+  rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr
+    knob_gripper_fjt_client_;
   double tool_tip_calibration_joint_tolerance_{0.001};
   double tool_calibration_settle_timeout_{6.0};
   std::unordered_map<std::uint8_t, ToolProfile> tool_profiles_;

@@ -168,6 +168,14 @@ def main():
     parser.add_argument("--dx", type=float, default=0.0)
     parser.add_argument("--dy", type=float, default=0.0)
     parser.add_argument("--dz", type=float, default=0.0)
+    # 逐侧附加偏移（在 dx/dy/dz 之上）；用于把两套工具各自向中间收，
+    # 见主循环里 2026-09-15 的注释。左臂写 dy_left、右臂写 dy_right。
+    parser.add_argument("--dx-left", type=float, default=0.0)
+    parser.add_argument("--dy-left", type=float, default=0.0)
+    parser.add_argument("--dz-left", type=float, default=0.0)
+    parser.add_argument("--dx-right", type=float, default=0.0)
+    parser.add_argument("--dy-right", type=float, default=0.0)
+    parser.add_argument("--dz-right", type=float, default=0.0)
     parser.add_argument("--label", default="")
     args = parser.parse_args()
 
@@ -188,8 +196,15 @@ def main():
             # 把目标点扔到机器人够不着的地方，IK 一律 NO_IK_SOLUTION——本会话
             # 正是这样误判了 ds2/ds3"物理不可达"。参考存档在这里只用来取
             # 电缸杆的值（杆相对工具基座固定），以及作 seed。
-            target = (position[0] + args.dx, position[1] + args.dy,
-                      position[2] + args.dz)
+            # 2026-09-15 逐侧横移：把一套教学位姿推广到另一扇抽屉时，除了整扇
+            # 的平移（dx/dy/dz），常常还需要把**两套工具各自向中间收**——
+            # ds2/dm1/ds3 的面板只有 0.29m 宽，而 db1 的把手立筋在 ±0.293m，
+            # 直接沿用会让一套工具落在面板下方、另一套落在上方，两边都碰不到
+            # 面板（实测左 y3.86-3.93 / 右 y4.52-4.61，面板 y4.074-4.364）。
+            # dy_left/dy_right 默认 0 = 沿用旧行为（双臂统一加 args.dy）。
+            target = (position[0] + args.dx + (args.dx_left if side == "left" else args.dx_right),
+                      position[1] + args.dy + (args.dy_left if side == "left" else args.dy_right),
+                      position[2] + args.dz + (args.dz_left if side == "left" else args.dz_right))
             print("%-6s tip %-8s 实测 (%+.4f %+.4f %+.4f) → 目标 (%+.4f %+.4f %+.4f)"
                   % (side, tip, position[0], position[1], position[2],
                      target[0], target[1], target[2]))

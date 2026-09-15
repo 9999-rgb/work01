@@ -26,12 +26,16 @@
     base_output_topic: /xczs/cmd_vel
     joint_trajectory_topic: /xczs/joint_trajectory
     joint_state_topic: /xczs/joint_states
-    # 夹具场景重置基座位姿 = 场景 robot_spawn（按钮排正南通道，机头朝 +Y）；
+    # 夹具场景重置基座位姿 = 场景 robot_spawn（控制柜正面，机头朝 +Y）；
     # 不能沿用柜体场景的 (0,0)（该点在发电机层东墙/地图边界内，导航会被拒）。
+    # 2026-09-14 同步：场景出生点已按用户要求由 (-16, 2) 改为 (-13.187, 3.2)
+    # （见 scenes.yaml 的 generator_plant.robot_spawn 及其资产副本），本处
+    # reset_base_pose 原先没跟着改，会让 /task/reset 把机器人送回旧点。
+    # 约定与 electrical_mezzanine_adapter 一致：两处的 x/y/yaw 必须同值。
     reset_base_pose:
       frame_id: map
-      x: -16.0
-      y: 2.0
+      x: -13.187
+      y: 3.2
       yaw: 1.5707963267948966
     reset_joint_tolerance: 0.12
     reset_joint_timeout_sec: 15.0
@@ -121,7 +125,7 @@
     planning_attempts: 10
     planning_velocity_scale: 0.30
     planning_acceleration_scale: 0.30
-    goal_position_tolerance: 0.005
+    goal_position_tolerance: 0.0005
     goal_orientation_tolerance: 0.01
     goal_joint_tolerance: 0.001
     allow_replanning: true
@@ -134,6 +138,11 @@
     # 标定关节闭合位有 ODE 接触静差（实测 ~4mm），0.003 贴边界会误报校准
     # 失败；放宽到 0.006 覆盖静差。对抓取影响可忽略（附着容差 0.12m）。
     tool_tip_calibration_joint_tolerance: 0.006
+    knob_gripper:
+      joint_names: [r_rotbtn_rotate_joint, r_rotbtn_jaw1_joint, r_rotbtn_jaw2_joint]
+      open_positions: [0.0, 0.0, 0.0]
+      closed_positions: [0.0, 0.0015, 0.0015]
+      tolerances: [0.01, 0.0017, 0.0017]
     tool_profiles:
       button:
         move_group: right_arm
@@ -151,7 +160,9 @@
         grasp_link: r_rotbtn_rotate
         transport_named_target: home
         tool_axis_orientation: toward_control
-        tool_tip_position: [-0.0613, -0.006, 0.1885]
+        # 夹持点在旋转盘局部 z=38 mm；旧 16 mm 落在钳口根部。
+        tool_tip_position: [-0.06128, -0.006, 0.2105]
+        grasp_point_position: [0.0, 0.0, 0.038]
       # 夹具场景暂无 switch/door，但 operator 要求 button 非空时四档
       # tool_profiles 全声明；沿用共享柜体的同工具集 profile。
       switch:
@@ -199,10 +210,18 @@
     # bwo=0 的 body_yaw=180° 下按钮位于右臂 0.98m 斜对角，超出关节限位）。
     # standoff 0.914 沿用柜体；local_anchor z 取 0（贴地），Nav2/精停只消费 x/y/yaw。
     controls:
+      # 2026-09-14 用户裁决修正：工位方向原先全错。
+      # `approach_normal`（12 个控件全是 [0,-1,0]）是**工具逼近控件的方向**，
+      # 因此机器人站位应在控件的 +Y（北）侧；而 `outward_axis` 是**从控件指向
+      # 机器人站位**的方向，本应是 approach_normal 的反向。原值 [0,-1,0] 与
+      # approach_normal 同向，把机器人放到了南侧——那里隔着柜体实体墙带
+      # （y∈[3.97,4.82]，高 2.26m），机械臂必须穿过墙带去够控件，且规划场景
+      # 里没有这堵墙，MoveIt 就直着规划过去 → 一直穿模。故 12 个控件统一改为
+      # [0,+1,0]（北侧）。
       fr135_button:
         navigation_station:
           local_anchor: [-13.1867, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
           # standoff 1.4：prepress 目标位于右臂可达域内部（live /plan_kinematic_path 0.042s 成功）。
           # 原 0.914 下右臂 r_arm_4=+3.001 距 3.14 限位仅 0.14rad，OMPL 目标盒采样
           # （位置 ±5mm 且朝向 ±0.01rad 组合）越限 → "Unable to sample any valid states"。
@@ -212,7 +231,7 @@
       fr2222_button:
         navigation_station:
           local_anchor: [-13.787, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
           # 沿用 fr135 验证过的停靠几何：body_yaw=270°（bwo=π/2）下右臂肩部
           # 在按钮正南 ~0.56m，prepress 目标在右臂可达域内（bwo=0 时按钮在
           # 0.98m 斜对角，OMPL 目标盒采样越限）。
@@ -222,81 +241,272 @@
       fr4332_button:
         navigation_station:
           local_anchor: [-15.457, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fr12452_button:
         navigation_station:
           local_anchor: [-21.997, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fr20422_button:
         navigation_station:
           local_anchor: [-30.1, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fr25452_button:
         navigation_station:
           local_anchor: [-35.01, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
-      # 旋钮本阶段仅状态展示，工位仅为 Web/规划验证提供几何参考。
       fr135_knob:
         navigation_station:
           local_anchor: [-13.1867, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.4
+          base_yaw_offset: 1.5707963267948966
           frame_id: map
+        # 2026-09-14 作业面改北侧后：tool_rotation_from_outward 在南北两侧给出的基准
+        # 姿态相差一个绕工具轴的自转，而下面这些值是按**南侧**标定的 → 北侧钳口歪着咬
+        # 旋钮 → 实测第二次旋转起失控。北侧暂全部归零，待北侧专用标定。
+        # 索引 = source*3+target（left=0 center=1 right=2）。
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        # 夹持可见方板的两侧；夹持点位于板厚中部（相对旋钮轴心向外 4 mm）。
+        # 与末端局部 z=38 mm 标定配套，钳口在板厚方向重叠 7 mm。
+        grasp_outward_offset: 0.004
+        # 夹持完成整段旋转弧后释放，随后验证实际档位与恢复结果。
+        detent_release_fraction: 1.0
+        # box_5 原始语义：七轴冗余臂对同一夹具位姿存在多组 IK，此命名种子已
+        # 逐段验证过 ready→pregrasp→50mm 接近→17 点旋转弧；r_arm_0 取负号是
+        # 为了避开 center→right 弧末段的自碰撞。⚠️ 该种子与 box_5 的工位几何
+        # 绑定（其 local_anchor 经过 /compute_ik 横向对齐扫描），本场景工位不同，
+        # 仅作起点；运行时仍按实时 TF 重求 IK。
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.221067
+            - 1.158552
+            - -1.448952
+            - -1.806018
+            - 1.998380
+            - 0.014786
+            - -1.656403
       fr2222_knob:
         navigation_station:
           local_anchor: [-13.787, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.4
+          base_yaw_offset: 1.5707963267948966
           frame_id: map
+        # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
+        grasp_outward_offset: 0.004
+        detent_release_fraction: 1.0
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.221067
+            - 1.158552
+            - -1.448952
+            - -1.806018
+            - 1.998380
+            - 0.014786
+            - -1.656403
       fr4332_knob:
         navigation_station:
           local_anchor: [-15.457, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.4
+          base_yaw_offset: 1.5707963267948966
           frame_id: map
+        # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
+        grasp_outward_offset: 0.004
+        detent_release_fraction: 1.0
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.221067
+            - 1.158552
+            - -1.448952
+            - -1.806018
+            - 1.998380
+            - 0.014786
+            - -1.656403
       fr12452_knob:
         navigation_station:
           local_anchor: [-21.997, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.4
+          base_yaw_offset: 1.5707963267948966
           frame_id: map
+        # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
+        grasp_outward_offset: 0.004
+        detent_release_fraction: 1.0
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.221067
+            - 1.158552
+            - -1.448952
+            - -1.806018
+            - 1.998380
+            - 0.014786
+            - -1.656403
       fr20422_knob:
         navigation_station:
           local_anchor: [-30.1, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.4
+          base_yaw_offset: 1.5707963267948966
           frame_id: map
+        # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
+        grasp_outward_offset: 0.004
+        detent_release_fraction: 1.0
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.221067
+            - 1.158552
+            - -1.448952
+            - -1.806018
+            - 1.998380
+            - 0.014786
+            - -1.656403
       fr25452_knob:
         navigation_station:
           local_anchor: [-35.01, 4.8113, 0.0]
-          outward_axis: [0.0, -1.0, 0.0]
-          standoff: 0.914
-          base_yaw_offset: 0.0
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.4
+          base_yaw_offset: 1.5707963267948966
           frame_id: map
-    # 物理执行能力正向清单（B2：六组按钮全部通过端到端按压验收）。
-    # 旋钮：fr135 处于 toolset B 旋转夹爪可行性 live 评估中（旋钮体仅 5×14×5 mm，
-    # 自按钮板 -Y 面凸出 ~7mm，需验证夹爪基座不与板面碰撞且能耦合旋钮转动轴）；
-    # 若验收通过则扩列其余五组，否则回退为状态展示。未列入的控制一律只做
-    # 实时规划验证，绝不写入夹具状态。
+        # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
+        grasp_outward_offset: 0.004
+        detent_release_fraction: 1.0
+        tool_roll_offsets:
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+          - 0.0
+        ready_joint_seed:
+          joint_names:
+            - r_arm_0_joint
+            - r_arm_1_joint
+            - r_arm_2_joint
+            - r_arm_3_joint
+            - r_arm_4_joint
+            - r_arm_5_joint
+            - r_arm_6_joint
+          positions:
+            - -1.221067
+            - 1.158552
+            - -1.448952
+            - -1.806018
+            - 1.998380
+            - 0.014786
+            - -1.656403
+    # 发电机层执行清单；六组旋钮共用套装 B 方板夹持标定。
     operable_control_ids:
       - fr135_button
+      - fr2222_knob
+      - fr4332_knob
+      - fr12452_knob
+      - fr20422_knob
+      - fr25452_knob
       - fr2222_button
       - fr4332_button
       - fr12452_button
@@ -304,10 +514,8 @@
       - fr25452_button
       - fr135_knob
     inoperable_control_reason: >-
-      发电机层旋钮 fr135…fr25452 为状态展示控制（旋钮体仅 5×14×5 mm，按钮板
-      覆盖其 -Y 面，旋转夹爪基座需验证能否在不碰板面的前提下夹持耦合）。
-      fr135_knob 在 toolset B 下做可行性评估，其余旋钮未列入可操作清单。
-      未列入控件仅保留状态显示和实时规划验证，不会执行抓取或写入夹具状态。
+      该控件未列入发电机层可操作清单，仅保留状态显示和实时规划验证。
+      六组旋钮使用套装 B，实际操作必须通过双侧夹持接触校验。
     toolset_mismatch_reason: >-
       当前工具套装未挂载该控件所需的操作工具（套装 A：三电缸/两电缸；
       套装 B：旋转按钮/摇杆）。控件仍保留状态显示；错套装请求会在导航和

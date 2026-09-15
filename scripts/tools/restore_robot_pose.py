@@ -39,6 +39,11 @@ from xczs_controllers import (  # noqa: E402
 
 # 退杆判据：差 1 mm 以上就认为没退到位。电缸是 0.12 m 行程，1 mm 已远大于噪声。
 RETREAT_TOLERANCE = 0.001
+# 2026-09-15：上面那 1 mm 只做**警告**线，真正中止用下面这个硬上限。
+# 实测物理杆常停在 1.0~1.5 mm（软限位残差），1 mm 判死会让还原/驻留反复白跑；
+# 与 taught_sequence_ros.py 的 ROD_RETREAT_HARD_LIMIT 同一口径（那里早就放宽了，
+# 本工具漏同步）。
+RETREAT_HARD_LIMIT = 0.004
 
 # 电缸关节的物理行程（URDF <limit>）。下发前必须把存档值钳进来：
 # 2026-09-11 实测，早期 effort 接口留下的存档里有**越限的负值**（支撑杆 −13.8mm），
@@ -209,9 +214,12 @@ class PoseRestorer(SpinNode):
             for joint, actual, wanted in stuck:
                 print("   !! %s 没退到位: 目标 %.5f 实测 %.5f（差 %+.2f mm）"
                       % (joint, wanted, actual, (actual - wanted) * 1000.0))
-            if stuck:
+            hard = [(j, a, w) for j, a, w in stuck
+                    if abs(a - w) > RETREAT_HARD_LIMIT]
+            if hard:
                 raise RuntimeError(
                     "电缸没退到位（多半是顶住了），已中止，**未动机械臂**")
+            # 软限位残差（<= 4mm）：只警告，继续动臂——与教学序列同一口径。
 
         # ② 双臂到位。
         for action, joints in plan:

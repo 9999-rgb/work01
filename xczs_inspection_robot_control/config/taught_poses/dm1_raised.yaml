@@ -1,27 +1,27 @@
 # 由 derive_taught_pose.py 自动生成（IK 求得，非人工教学）
-label: dm1 举起位姿（001 + IK，Δz 0.0756）
-captured_wall_time: 2026-09-14T08:38:02+0800
+label: dm1 举起位姿（001+IK：Δz0.0031，对准把手立筋）
+captured_wall_time: 2026-09-15T11:26:49+0800
 world_frame: odom
 derived_from: xczs_inspection_robot_control/config/taught_poses/db1_teach_node001_raise30.yaml
 offset:
   dx: 0.0
   dy: 0.0
-  dz: 0.0756
+  dz: 0.0031
 joints:
-  l_arm_0_joint: -1.129561829361429
-  l_arm_1_joint: -2.064787182422139
-  l_arm_2_joint: -1.5827383431404882
-  l_arm_3_joint: -1.2216042510230023
-  l_arm_4_joint: -1.0988469063774127
-  l_arm_5_joint: -0.1805473239404073
-  l_arm_6_joint: -0.8147770133788745
-  r_arm_0_joint: 1.137381883289583
-  r_arm_1_joint: -1.7957290540961488
-  r_arm_2_joint: -1.8601210666383976
-  r_arm_3_joint: 1.2671908879616818
-  r_arm_4_joint: 1.4294808414216336
-  r_arm_5_joint: -2.7746642509527026
-  r_arm_6_joint: -2.2379818284903488
+  l_arm_0_joint: -1.314724358854115
+  l_arm_1_joint: -2.05566172873203
+  l_arm_2_joint: -1.620587209835322
+  l_arm_3_joint: -1.1249193754801443
+  l_arm_4_joint: -1.1087411367647833
+  l_arm_5_joint: -0.1884380289236812
+  l_arm_6_joint: -0.895880966630759
+  r_arm_0_joint: 1.3077421543027254
+  r_arm_1_joint: -1.8077577361307902
+  r_arm_2_joint: -1.830076147582844
+  r_arm_3_joint: 1.177259409573798
+  r_arm_4_joint: 1.4370629206376446
+  r_arm_5_joint: -2.787980470771179
+  r_arm_6_joint: -2.1599755221872954
   l_two_cyl_finger1_joint: 0.018719
   l_two_cyl_finger2_joint: 0.082954
   r_three_cyl_finger1_joint: 0.081971

@@ -59,13 +59,30 @@
           </box>
         </geometry>
       </collision>
+      <!-- 柜体代理按 STL 平面分段；北面 y=4.7733，保留中间通道。 -->
       <collision name="collision_4">
-        <pose>-30.012 4.25 1.13 0 0 0</pose>
-        <geometry>
-          <box>
-            <size>8.5 2 2.261</size>
-          </box>
-        </geometry>
+        <pose>-31.407 4.3733 1.131 0 0 0</pose>
+        <geometry><box><size>11.2 0.8 2.26</size></box></geometry>
+      </collision>
+      <collision name="cabinet_row_east">
+        <pose>-18.7937 4.3733 1.131 0 0 0</pose>
+        <geometry><box><size>12.0 0.8 2.26</size></box></geometry>
+      </collision>
+      <collision name="cabinet_rear_west">
+        <pose>-29.807 3.7733 1.131 0 0 0</pose>
+        <geometry><box><size>8.0 0.4 2.26</size></box></geometry>
+      </collision>
+      <collision name="collision_5">
+        <pose>-18.397 4.4115 1.23 0 0 0</pose>
+        <geometry><box><size>0.05 0.9 2.06</size></box></geometry>
+      </collision>
+      <collision name="collision_6">
+        <pose>-22.397 4.4115 1.23 0 0 0</pose>
+        <geometry><box><size>0.05 0.9 2.06</size></box></geometry>
+      </collision>
+      <collision name="collision_7">
+        <pose>-14.397 4.4115 1.23 0 0 0</pose>
+        <geometry><box><size>0.05 0.9 2.06</size></box></geometry>
       </collision>
     </link>
     <link name="r1352">
@@ -82,21 +99,20 @@
           <izz>1e-05</izz>
         </inertia>
       </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
-        <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1352.STL</uri></mesh>
-        </geometry>
-        <material>
-          <ambient>0.02 0.02 0.025 1</ambient>
-          <diffuse>0.02 0.02 0.025 1</diffuse>
-        </material>
-      </visual>
+      <!-- 2026-09-15 用户裁决：去掉旋钮轴的 visual —— 他要的是「末端直接旋转整个
+           旋钮（这块方板）」，而不是让中间那根 Ø5mm 小圆柱露出来。
+           注意：r1352 这个 link 及其 <collision> **保留**（不渲染），
+              · 方板 r1351 是它的 prismatic 子件，所以轴一转、整块方板跟着转 —— 正是
+                「旋转整个旋钮」；视觉上已无小圆柱。
+              · collision 保留 = 工具夹持面（北侧作业靠它凸出才咬得住，见 collision 注释）。
+           若连 collision 一起删，软件耦合仍在，但物理夹持面消失、北侧实测需重验。 -->
+
       <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+        <!-- 与上面的 visual 同步：平移 +4mm、Y 缩放 1.6（见该 link 的注释）。 -->
+        <pose>0 0.004 0 0 0 0</pose>
         <geometry>
           <mesh>
+            <scale>1 1.6 1</scale>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1352.STL</uri>
           </mesh>
         </geometry>
@@ -122,9 +138,20 @@
           <mesh>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r1351.STL</uri></mesh>
         </geometry>
+        <!-- 发电机层着色约定（2026-09-14 用户要求「能操控的东西上颜色」）——
+             只改 <material>，几何/惯性/碰撞一律不动。
+             可视主体是六块 34.6mm 方板（r*51，操控对象），每块一色便于逐一指认：
+               fr135_button   r1351  红   0.85 0.05 0.05
+               fr2222_button  r2221  橙   1.00 0.45 0.05
+               fr4332_button  r4331  黄   0.95 0.85 0.10
+               fr12452_button r12451 绿   0.10 0.70 0.20
+               fr20422_button r20421 青   0.10 0.72 0.92
+               fr25452_button r25451 紫   0.55 0.25 0.85
+             原先无意义的红/绿交替已废止。小圆柱（r*52，Ø5mm 旋钮轴）在正常视距下
+             不可见，维持近黑不动，唯一例外见 r1352 的注释。 -->
         <material>
-          <ambient>0.85 0.04 0.04 1</ambient>
-          <diffuse>0.85 0.04 0.04 1</diffuse>
+          <ambient>0.85 0.05 0.05 1</ambient>
+          <diffuse>0.85 0.05 0.05 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -154,21 +181,13 @@
           <izz>1e-05</izz>
         </inertia>
       </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
-        <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2222.STL</uri></mesh>
-        </geometry>
-        <material>
-          <ambient>0.02 0.02 0.025 1</ambient>
-          <diffuse>0.02 0.02 0.025 1</diffuse>
-        </material>
-      </visual>
+      <!-- 2026-09-15 同 r1352：按用户裁决去掉旋钮轴的 visual（他要「末端直接旋转整块旋钮」）。
+           该 link 与其 <collision> 保留（不渲染）——方板是它的子件，轴转则整块方板转。 -->
       <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+        <pose>0 0.004 0 0 0 0</pose>
         <geometry>
           <mesh>
+            <scale>1 1.6 1</scale>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2222.STL</uri>
           </mesh>
         </geometry>
@@ -195,8 +214,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r2221.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.04 0.65 0.12 1</ambient>
-          <diffuse>0.04 0.65 0.12 1</diffuse>
+          <ambient>1.00 0.45 0.05 1</ambient>
+          <diffuse>1.00 0.45 0.05 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -226,21 +245,13 @@
           <izz>1e-05</izz>
         </inertia>
       </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
-        <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4332.STL</uri></mesh>
-        </geometry>
-        <material>
-          <ambient>0.02 0.02 0.025 1</ambient>
-          <diffuse>0.02 0.02 0.025 1</diffuse>
-        </material>
-      </visual>
+      <!-- 2026-09-15 同 r1352：按用户裁决去掉旋钮轴的 visual（他要「末端直接旋转整块旋钮」）。
+           该 link 与其 <collision> 保留（不渲染）——方板是它的子件，轴转则整块方板转。 -->
       <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+        <pose>0 0.004 0 0 0 0</pose>
         <geometry>
           <mesh>
+            <scale>1 1.6 1</scale>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4332.STL</uri>
           </mesh>
         </geometry>
@@ -267,8 +278,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r4331.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.85 0.04 0.04 1</ambient>
-          <diffuse>0.85 0.04 0.04 1</diffuse>
+          <ambient>0.95 0.85 0.10 1</ambient>
+          <diffuse>0.95 0.85 0.10 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -298,21 +309,13 @@
           <izz>1e-05</izz>
         </inertia>
       </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
-        <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12452.STL</uri></mesh>
-        </geometry>
-        <material>
-          <ambient>0.02 0.02 0.025 1</ambient>
-          <diffuse>0.02 0.02 0.025 1</diffuse>
-        </material>
-      </visual>
+      <!-- 2026-09-15 同 r1352：按用户裁决去掉旋钮轴的 visual（他要「末端直接旋转整块旋钮」）。
+           该 link 与其 <collision> 保留（不渲染）——方板是它的子件，轴转则整块方板转。 -->
       <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+        <pose>0 0.004 0 0 0 0</pose>
         <geometry>
           <mesh>
+            <scale>1 1.6 1</scale>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12452.STL</uri>
           </mesh>
         </geometry>
@@ -339,8 +342,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r12451.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.04 0.65 0.12 1</ambient>
-          <diffuse>0.04 0.65 0.12 1</diffuse>
+          <ambient>0.10 0.70 0.20 1</ambient>
+          <diffuse>0.10 0.70 0.20 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -370,21 +373,13 @@
           <izz>1e-05</izz>
         </inertia>
       </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
-        <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20422.STL</uri></mesh>
-        </geometry>
-        <material>
-          <ambient>0.02 0.02 0.025 1</ambient>
-          <diffuse>0.02 0.02 0.025 1</diffuse>
-        </material>
-      </visual>
+      <!-- 2026-09-15 同 r1352：按用户裁决去掉旋钮轴的 visual（他要「末端直接旋转整块旋钮」）。
+           该 link 与其 <collision> 保留（不渲染）——方板是它的子件，轴转则整块方板转。 -->
       <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+        <pose>0 0.004 0 0 0 0</pose>
         <geometry>
           <mesh>
+            <scale>1 1.6 1</scale>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20422.STL</uri>
           </mesh>
         </geometry>
@@ -411,8 +406,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r20421.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.85 0.04 0.04 1</ambient>
-          <diffuse>0.85 0.04 0.04 1</diffuse>
+          <ambient>0.10 0.72 0.92 1</ambient>
+          <diffuse>0.10 0.72 0.92 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -442,21 +437,13 @@
           <izz>1e-05</izz>
         </inertia>
       </inertial>
-      <visual name="visual">
-        <pose>0 0 0 0 0 0</pose>
-        <geometry>
-          <mesh>
-            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25452.STL</uri></mesh>
-        </geometry>
-        <material>
-          <ambient>0.02 0.02 0.025 1</ambient>
-          <diffuse>0.02 0.02 0.025 1</diffuse>
-        </material>
-      </visual>
+      <!-- 2026-09-15 同 r1352：按用户裁决去掉旋钮轴的 visual（他要「末端直接旋转整块旋钮」）。
+           该 link 与其 <collision> 保留（不渲染）——方板是它的子件，轴转则整块方板转。 -->
       <collision name="collision">
-        <pose>0 0 0 0 0 0</pose>
+        <pose>0 0.004 0 0 0 0</pose>
         <geometry>
           <mesh>
+            <scale>1 1.6 1</scale>
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25452.STL</uri>
           </mesh>
         </geometry>
@@ -483,8 +470,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/r25451.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.04 0.65 0.12 1</ambient>
-          <diffuse>0.04 0.65 0.12 1</diffuse>
+          <ambient>0.55 0.25 0.85 1</ambient>
+          <diffuse>0.55 0.25 0.85 1</diffuse>
         </material>
       </visual>
             <collision name="collision">
@@ -518,9 +505,13 @@
         </limit>
         <dynamics>
           <damping>0.1</damping>
-          <friction>1</friction>
+          <friction>0.02</friction>
         </dynamics>
       </axis>
+      <!-- 小惯量旋钮使用 ODE 内置隐式阻尼，避免显式轴阻尼的步进振荡。 -->
+      <physics>
+        <ode><implicit_spring_damper>true</implicit_spring_damper></ode>
+      </physics>
     </joint>
     <joint name="r1352_1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
@@ -554,9 +545,13 @@
         </limit>
         <dynamics>
           <damping>0.1</damping>
-          <friction>1</friction>
+          <friction>0.02</friction>
         </dynamics>
       </axis>
+      <!-- 小惯量旋钮使用 ODE 内置隐式阻尼，避免显式轴阻尼的步进振荡。 -->
+      <physics>
+        <ode><implicit_spring_damper>true</implicit_spring_damper></ode>
+      </physics>
     </joint>
     <joint name="r2222_1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
@@ -590,9 +585,13 @@
         </limit>
         <dynamics>
           <damping>0.1</damping>
-          <friction>1</friction>
+          <friction>0.02</friction>
         </dynamics>
       </axis>
+      <!-- 小惯量旋钮使用 ODE 内置隐式阻尼，避免显式轴阻尼的步进振荡。 -->
+      <physics>
+        <ode><implicit_spring_damper>true</implicit_spring_damper></ode>
+      </physics>
     </joint>
     <joint name="r4332_1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
@@ -626,9 +625,13 @@
         </limit>
         <dynamics>
           <damping>0.1</damping>
-          <friction>1</friction>
+          <friction>0.02</friction>
         </dynamics>
       </axis>
+      <!-- 小惯量旋钮使用 ODE 内置隐式阻尼，避免显式轴阻尼的步进振荡。 -->
+      <physics>
+        <ode><implicit_spring_damper>true</implicit_spring_damper></ode>
+      </physics>
     </joint>
     <joint name="r12452_1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
@@ -662,9 +665,13 @@
         </limit>
         <dynamics>
           <damping>0.1</damping>
-          <friction>1</friction>
+          <friction>0.02</friction>
         </dynamics>
       </axis>
+      <!-- 小惯量旋钮使用 ODE 内置隐式阻尼，避免显式轴阻尼的步进振荡。 -->
+      <physics>
+        <ode><implicit_spring_damper>true</implicit_spring_damper></ode>
+      </physics>
     </joint>
     <joint name="r20422_1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
@@ -698,9 +705,13 @@
         </limit>
         <dynamics>
           <damping>0.1</damping>
-          <friction>1</friction>
+          <friction>0.02</friction>
         </dynamics>
       </axis>
+      <!-- 小惯量旋钮使用 ODE 内置隐式阻尼，避免显式轴阻尼的步进振荡。 -->
+      <physics>
+        <ode><implicit_spring_damper>true</implicit_spring_damper></ode>
+      </physics>
     </joint>
     <joint name="r25452_1" type="prismatic">
       <pose>0 0 0 0 0 0</pose>
@@ -731,7 +742,12 @@
       <active_control_topic>/xczs/cabinet/generator_plant/active_control</active_control_topic>
       <operation_heartbeat_topic>/xczs/cabinet/generator_plant/operation_heartbeat</operation_heartbeat_topic>
       <operation_fault_topic>/xczs/cabinet/generator_plant/operation_fault</operation_fault_topic>
-      <grasp_distance_threshold>0.12</grasp_distance_threshold>
+      <grasp_distance_threshold>0.003</grasp_distance_threshold>
+      <!-- 夹爪闭合与实体业务点同时通过后才允许建立旋转耦合。 -->
+      <grasp_contact_links>r_rotbtn_jaw1 r_rotbtn_jaw2</grasp_contact_links>
+      <grasp_joint><name>r_rotbtn_rotate_joint</name><position>0</position><tolerance>0.01</tolerance></grasp_joint>
+      <grasp_joint><name>r_rotbtn_jaw1_joint</name><position>0.0015</position><tolerance>0.0017</tolerance></grasp_joint>
+      <grasp_joint><name>r_rotbtn_jaw2_joint</name><position>0.0015</position><tolerance>0.0017</tolerance></grasp_joint>
       <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
       <control>
         <control_id>fr135_button</control_id>
@@ -825,6 +841,7 @@
       </control>
       <control>
         <control_id>fr135_knob</control_id>
+        <grasp_contact_target>r1351</grasp_contact_target>
         <control_type>knob</control_type>
         <joint_name>fr135</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr135_knob/joint_states</joint_state_topic>
@@ -836,9 +853,14 @@
         <spring_damping>0.08</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
+        <!-- 夹持方板后通过有界力矩跟随，不直接写旋钮位置。
+             旋钮总转动惯量约 2e-5 kg m²，仿真步长 2 ms；过大的显式
+             弹簧/阻尼会产生数值振荡。采用 5 Nm/rad、0.005 Nms/rad，
+             配合 0.02 Nm 轴摩擦，静态滞后约 0.004 rad。
+             双侧实际接触与最大 1 mm 压入量在整个旋转期间持续校验。 -->
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
-        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
              的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
@@ -846,10 +868,11 @@
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
-        <grasp_point>0 0 0</grasp_point>
+        <grasp_point>0 0.004 0</grasp_point>
       </control>
       <control>
         <control_id>fr2222_knob</control_id>
+        <grasp_contact_target>r2221</grasp_contact_target>
         <control_type>knob</control_type>
         <joint_name>fr2222</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr2222_knob/joint_states</joint_state_topic>
@@ -863,7 +886,7 @@
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
-        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
              的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
@@ -871,10 +894,11 @@
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
-        <grasp_point>0 0 0</grasp_point>
+        <grasp_point>0 0.004 0</grasp_point>
       </control>
       <control>
         <control_id>fr4332_knob</control_id>
+        <grasp_contact_target>r4331</grasp_contact_target>
         <control_type>knob</control_type>
         <joint_name>fr4332</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr4332_knob/joint_states</joint_state_topic>
@@ -888,7 +912,7 @@
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
-        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
              的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
@@ -896,10 +920,11 @@
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
-        <grasp_point>0 0 0</grasp_point>
+        <grasp_point>0 0.004 0</grasp_point>
       </control>
       <control>
         <control_id>fr12452_knob</control_id>
+        <grasp_contact_target>r12451</grasp_contact_target>
         <control_type>knob</control_type>
         <joint_name>fr12452</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr12452_knob/joint_states</joint_state_topic>
@@ -913,7 +938,7 @@
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
-        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
              的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
@@ -921,10 +946,11 @@
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
-        <grasp_point>0 0 0</grasp_point>
+        <grasp_point>0 0.004 0</grasp_point>
       </control>
       <control>
         <control_id>fr20422_knob</control_id>
+        <grasp_contact_target>r20421</grasp_contact_target>
         <control_type>knob</control_type>
         <joint_name>fr20422</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr20422_knob/joint_states</joint_state_topic>
@@ -938,7 +964,7 @@
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
-        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
              的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
@@ -946,10 +972,11 @@
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
-        <grasp_point>0 0 0</grasp_point>
+        <grasp_point>0 0.004 0</grasp_point>
       </control>
       <control>
         <control_id>fr25452_knob</control_id>
+        <grasp_contact_target>r25451</grasp_contact_target>
         <control_type>knob</control_type>
         <joint_name>fr25452</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr25452_knob/joint_states</joint_state_topic>
@@ -963,7 +990,7 @@
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
-        <grasp_coupling_max_effort>6</grasp_coupling_max_effort>
+        <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
              的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
@@ -971,7 +998,7 @@
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
         <graspable>true</graspable>
-        <grasp_point>0 0 0</grasp_point>
+        <grasp_point>0 0.004 0</grasp_point>
       </control>
     </plugin>
   </model>

@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""只读验证发电机旋钮的柜体净空、夹持范围及 Gazebo/MoveIt 一致性。
+
+不替代实机/仿真验收；默认读取当前工作树，不读取生成目录。
+"""
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+import numpy as np
+import yaml
+
+ROOT = Path(__file__).resolve().parents[2]
+CONFIG = ROOT / 'xczs_inspection_robot_control/config/scene_controls'
+DESCRIPTION = ROOT / 'xczs_inspection_robot_description'
+
+
+def vertices(path):
+    data = np.fromfile(path, offset=84, dtype=np.dtype([
+        ('normal', '<f4', 3), ('vertices', '<f4', (3, 3)), ('attribute', '<u2')]))
+    return data['vertices'].reshape(-1, 3).astype(float)
+
+
+def main():
+    controls = yaml.safe_load((CONFIG / 'generator_plant_controls.yaml').read_text())['/**']['ros__parameters']['controls']
+    adapter = yaml.safe_load((CONFIG / 'generator_plant_adapter.yaml').read_text())['/**/xczs_cabinet_button_operator']['ros__parameters']
+    scene = yaml.safe_load((CONFIG / 'generator_plant_scene.yaml').read_text())['/**/xczs_cabinet_planning_scene']['ros__parameters']
+    model = ET.parse(DESCRIPTION / 'urdf/scenes/generator_plant.xacro').getroot().find('model')
+    boxes = []
+    for collision in model.find("link[@name='fadianground']").findall('collision'):
+        center = np.fromstring(collision.findtext('pose'), sep=' ')[:3]
+        size = np.fromstring(collision.findtext('geometry/box/size'), sep=' ')
+        boxes.append((collision.get('name'), center, size))
+    # Compare geometries rather than old collision IDs, whose numbering differs.
+    planned = [(np.array(p['position']), np.array(p['size'])) for p in scene['frame_parts'].values()]
+    errors = []
+    for name, center, size in boxes:
+        if not any(np.allclose(center, c) and np.allclose(size, s) for c, s in planned):
+            errors.append(f'{name}: Gazebo 碰撞盒缺少相同 MoveIt 代理')
+    tip_z = adapter['tool_profiles']['knob']['tool_tip_position'][2]
+    tool = ET.parse(DESCRIPTION / 'urdf/components/tools.xacro').getroot()
+    macro = next(m for m in tool if m.get('name') == 'xczs_rotate_button')
+    rotor = macro.find("joint[@name='${prefix}_rotbtn_rotate_joint']")
+    rotor_z = float(rotor.find('origin').get('xyz').split()[2])
+    jaw_extents = []
+    for i in (1, 2):
+        joint = macro.find(f"joint[@name='${{prefix}}_rotbtn_jaw{i}_joint']")
+        origin = np.fromstring(joint.find('origin').get('xyz'), sep=' ')
+        mesh = vertices(DESCRIPTION / f'meshes/tools/rotate_button/endlink{i}.STL') + origin
+        jaw_extents.append(mesh[:, 2].max())
+    plugin = model.find("plugin[@name='xczs_generator_plant_state']")
+    if plugin is None:
+        plugin = next(p for p in model.findall('plugin') if p.find('grasp_distance_threshold') is not None)
+    if float(plugin.findtext('grasp_distance_threshold')) > .003:
+        errors.append('抓取距离门槛大于 3 mm')
+    if len(plugin.findall('grasp_joint')) != 3:
+        errors.append('缺少旋转盘及双钳口抓取前校验')
+    for control_id, control in controls.items():
+        if control['type'] != 'knob':
+            continue
+        pivot = np.array(control['pivot_position'])
+        tuning = adapter['controls'][control_id]
+        if control_id not in scene['control_ids']:
+            errors.append(f'{control_id}: 未建立规划碰撞')
+        if not np.allclose(control['approach_normal'], tuning['navigation_station']['outward_axis']):
+            errors.append(f'{control_id}: 逼近与停靠方向不一致')
+        for name, center, size in boxes:
+            if np.all(np.abs(pivot-center) < size/2):
+                errors.append(f'{control_id}: 旋钮轴心在 {name} 内部')
+        # 新模型直接夹持方板；指端可进入板厚范围，但不得进入固定柜体。
+        tip_y = tuning['grasp_outward_offset'] + tip_z - rotor_z - max(jaw_extents)
+        target = next(c for c in plugin.findall('control') if c.findtext('control_id') == control_id)
+        plate = model.find("link[@name='%s']" % target.findtext('grasp_contact_target'))
+        plate_pose = np.fromstring(plate.findtext('pose'), sep=' ')[:3]
+        col = plate.find('collision')
+        center = plate_pose + np.fromstring(col.findtext('pose'), sep=' ')[:3]
+        size = np.fromstring(col.findtext('geometry/box/size'), sep=' ')
+        axial_overlap = center[1] + size[1]/2 - (pivot[1] + tip_y)
+        if axial_overlap < .002:
+            errors.append(f'{control_id}: 钳口与方板厚度方向交叠小于 2 mm')
+        open_gap = .036
+        targets = adapter['knob_gripper']['closed_positions']
+        closed_gap = open_gap - targets[1] - targets[2]
+        if not closed_gap < size[0] < open_gap:
+            errors.append(f'{control_id}: 方板宽度不在夹爪开合范围内')
+        cabinet_gap = pivot[1] + tip_y - 4.7733
+        if cabinet_gap < .01:
+            errors.append(f'{control_id}: 指端到柜体北面余量小于 10 mm')
+        print(f'{control_id}: plate overlap = {axial_overlap*1000:.3f} mm; cabinet gap = {cabinet_gap*1000:.3f} mm')
+    if errors:
+        for error in errors:
+            print('FAIL:', error)
+        return 1
+    print('PASS: six knob geometry contracts (live contact validation still required)')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

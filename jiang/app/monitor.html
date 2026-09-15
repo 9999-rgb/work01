@@ -3448,12 +3448,19 @@ const cabinetLegacyPhaseLabels = {
   retracting: '撤回机械臂',
   verifying_release: '验证按钮释放'
 };
+// 类型 4（协议里叫 slider）与 5（drawer）在电气夹层**物理上都是抽拉柜**：
+// 五个关节全是 prismatic / 轴 +X / 行程 0~0.38，外形与动作一致。两者只是
+// 执行分支不同——5 对应 C++ operator 的「双手+闩锁+解锁按钮」流（只有 db1 有
+// 解锁机构），4 对应「正面抓取拖拽」流；而 Web 侧两者现在都走教学序列，
+// 该区分已不影响执行。所以显示名统一叫「抽拉柜」，不再叫「滑门」。
+// 注：type 4 全仓库只被电气夹层这四个控件使用（其余场景 slider 计数为 0），
+// 所以改这里的标签不会误伤别的场景。
 const cabinetControlTypeLabels = {
   0: '按钮',
   1: '旋钮',
   2: '总开关',
   3: '柜门',
-  4: '滑门',
+  4: '抽拉柜',
   5: '抽拉柜'
 };
 const cabinetControlTypeOrder = [0, 1, 2, 3, 4, 5];
@@ -4527,13 +4534,25 @@ function applyCabinetControls(payload) {
     : '';
   if (!cabinetCatalogCoherent) cabinetCatalogReceived = false;
   if (oldSignature !== newSignature) {
-    const groups = cabinetControlTypeOrder.map(controlType => {
-      const controls = cabinetControls.filter(control => (
-        Number(control.control_type) === controlType
-      ));
-      if (!controls.length) return null;
+    // 按**显示标签**分组，不按协议类型：电气夹层的 slider(4) 与 drawer(5) 物理上
+    // 都是抽拉柜、显示名相同，按类型分会得到两个同名分组（"抽拉柜 (4)" 与
+    // "抽拉柜 (1)"）。按标签合并后是一个干净的 "抽拉柜 (5)"。
+    // 遍历顺序仍按 cabinetControlTypeOrder，保证同类控件聚在一起。
+    const bucketByLabel = new Map();
+    cabinetControlTypeOrder.forEach(controlType => {
+      const label = cabinetControlTypeLabels[controlType] ?? String(controlType);
+      cabinetControls
+        .filter(control => Number(control.control_type) === controlType)
+        .forEach(control => {
+          if (!bucketByLabel.has(label)) bucketByLabel.set(label, []);
+          bucketByLabel.get(label).push(control);
+        });
+    });
+    const groups = [];
+    bucketByLabel.forEach((controls, label) => {
+      if (!controls.length) return;
       const group = document.createElement('optgroup');
-      group.label = `${cabinetControlTypeLabels[controlType]} (${controls.length})`;
+      group.label = `${label} (${controls.length})`;
       controls.forEach(control => {
         const option = document.createElement('option');
         option.value = control.control_id;
@@ -4546,8 +4565,8 @@ function applyCabinetControls(payload) {
               : `${control.display_name}（需实时规划验证）`;
         group.appendChild(option);
       });
-      return group;
-    }).filter(Boolean);
+      groups.push(group);
+    });
     if (groups.length) {
       cabinetTarget.replaceChildren(...groups);
     } else {
@@ -4655,24 +4674,40 @@ function renderCabinetTarget() {
       : '低于触发下限也会实际执行，并返回“力度不足”。';
   }
   if (canSetState && stateIds.length) {
-    stateIds.forEach((stateId, index) => {
+    // A multi-detent knob (control_type 1) may only move ONE detent per
+    // operation -- the physical transition guard rejects anything further and
+    // the control is left untouched.  The old list offered every detent, so a
+    // previously picked target survived catalog refreshes (it outranks the
+    // "next adjacent detent" default below) and the operator could end up
+    // submitting e.g. left -> right, which the guard always rejects.  Offer
+    // only the physically reachable neighbours for such controls.
+    const currentDetentIndex = stateIds.indexOf(control.current_state);
+    const adjacentOnly = Number(control.control_type) === 1
+      && stateIds.length > 2
+      && currentDetentIndex >= 0;
+    const offeredIndices = adjacentOnly
+      ? [currentDetentIndex - 1, currentDetentIndex + 1]
+          .filter(index => index >= 0 && index < stateIds.length)
+      : stateIds.map((_, index) => index);
+    offeredIndices.forEach(index => {
       const option = document.createElement('option');
-      option.value = stateId;
-      option.textContent = stateLabelsForControl[index] || stateId;
+      option.value = stateIds[index];
+      option.textContent = stateLabelsForControl[index] || stateIds[index];
       stateSelect.appendChild(option);
     });
     const stateIsAvailable = stateId => Array.from(stateSelect.options).some(
       option => option.value === stateId
     );
     // For a newly selected articulated control, choose the next calibrated
-    // detent instead of its current detent.  A user-selected value is always
-    // retained across live catalog/state refreshes.
+    // detent instead of its current detent.  A user-selected value is retained
+    // across live catalog/state refreshes, but only while it is still one of
+    // the offered options -- see ``offeredIndices`` above.
     const nextState = adjacentCabinetStateId(control);
     const preferredState = [
       previousStateSelection,
       nextState,
       control.current_state,
-      stateIds[0]
+      stateIds[offeredIndices[0]]
     ].find(stateIsAvailable);
     if (preferredState) stateSelect.value = preferredState;
     stateField.hidden = false;

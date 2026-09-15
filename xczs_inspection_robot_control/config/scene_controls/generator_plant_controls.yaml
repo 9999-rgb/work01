@@ -30,7 +30,7 @@
         parent_control_id: fr135_knob
         local_position: [-13.1867, 4.8113, 0.691314593]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.01
         spring_stiffness: 800.0
@@ -46,7 +46,7 @@
         parent_control_id: fr2222_knob
         local_position: [-13.787, 4.8113, 0.83131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.01
         spring_stiffness: 800.0
@@ -62,7 +62,7 @@
         parent_control_id: fr4332_knob
         local_position: [-15.457, 4.8113, 0.69131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.01
         spring_stiffness: 800.0
@@ -78,7 +78,7 @@
         parent_control_id: fr12452_knob
         local_position: [-21.997, 4.8113, 0.55131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.01
         spring_stiffness: 800.0
@@ -94,7 +94,7 @@
         parent_control_id: fr20422_knob
         local_position: [-30.1, 4.8113, 0.55131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.01
         spring_stiffness: 800.0
@@ -110,7 +110,7 @@
         parent_control_id: fr25452_knob
         local_position: [-35.01, 4.8113, 0.551314593]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.01
         spring_stiffness: 800.0
@@ -120,10 +120,22 @@
         state_labels: ["释放", "按下"]
         state_positions: [0.0, 0.006]
 
+      # 2026-09-14 用户裁决：机器人**在柜体北侧**作业。`approach_normal` 的语义是
+      # 「机器人从哪一侧来」，原值 [0,-1,0] 表示从南侧来，与作业面不符 ——
+      # operator 会据此把 prepress 预备位姿（grasp + 12~32mm 沿该法向）算到
+      # **南边**，等于算进柜体内部，MoveIt 规划必败（实测 0/3，报
+      # "could not plan to the prepress pose"）。12 个控件统一翻为 [0,+1,0]。
       # ---- 发电机旋钮（六组，revolute 轴(0,1,0) 0→0.8 rad）----
-      # 旋钮体 r*52 为 5×14×5 mm 小方块，夹具面板/按钮板承担主要外形。
-      # 本阶段旋钮仅作状态展示（graspable=false，不入 operable_control_ids），
-      # 几何取关节原点，档位按 0→0.8 三等分；B2 如需旋钮可操作再单独标定抓点。
+      # 旋钮体 r*52 为 Ø5×14 mm 圆柱（2026-09-14 更正：此前误记为「5×14×5
+      # 小方块」；STL 实测是圆柱，自按钮板前脸 -Y 凸出 7 mm），夹具面板/按钮板
+      # 承担主要外形。档位按 0→0.8 三等分。
+      # 2026-09-14 用户令「用套装 B 旋转旋钮」：fr135_knob 升为可操作，已在
+      # adapter 的 operable_control_ids 内并补齐标定项（见 generator_plant_adapter.yaml
+      # 的 fr135_knob 块）。其余五组仍仅状态展示。
+      # 注意 local_position 与 pivot_position 相同是**正确的**：本场景旋钮的
+      # 可夹持特征（圆柱）以关节轴为中心，叶片中心即关节原点；共享柜体
+      # box_5_knob 的 local_position 有偏移是因为那是 11×65 mm 叶片。
+      # 场景 xacro 的 <graspable> 已是 true（旧注释曾写 false，已过期）。
       fr135_knob:
         type: knob
         display_name: "fr135 旋钮"
@@ -131,7 +143,7 @@
         pivot_position: [-13.1867, 4.8113, 0.691314593]
         local_position: [-13.1867, 4.8113, 0.691314593]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
         state_ids: ["left", "center", "right"]
@@ -144,7 +156,7 @@
         pivot_position: [-13.787, 4.8113, 0.83131]
         local_position: [-13.787, 4.8113, 0.83131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
         state_ids: ["left", "center", "right"]
@@ -157,7 +169,7 @@
         pivot_position: [-15.457, 4.8113, 0.69131]
         local_position: [-15.457, 4.8113, 0.69131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
         state_ids: ["left", "center", "right"]
@@ -170,7 +182,7 @@
         pivot_position: [-21.997, 4.8113, 0.55131]
         local_position: [-21.997, 4.8113, 0.55131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
         state_ids: ["left", "center", "right"]
@@ -183,7 +195,7 @@
         pivot_position: [-30.1, 4.8113, 0.55131]
         local_position: [-30.1, 4.8113, 0.55131]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
         state_ids: ["left", "center", "right"]
@@ -196,7 +208,7 @@
         pivot_position: [-35.01, 4.8113, 0.551314593]
         local_position: [-35.01, 4.8113, 0.551314593]
         axis: [0.0, 1.0, 0.0]
-        approach_normal: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
         state_ids: ["left", "center", "right"]
@@ -228,8 +240,14 @@
     cabinet_frame: generator_plant_frame
     grasp_outward_offset: 0.020
     state_timeout: 1.0
-    target_tolerance: 0.035
-    stable_velocity_tolerance: 0.03
+    # 2026-09-14：0.035 比旋钮的天然死区（实测 0.056 rad，靠重力+干摩擦停住）
+    # 还紧，导致接近段只要蹭到旋钮一点点就判 "changed ... before grasp" 中止。
+    # 放宽到 0.05：仍在死区内（不会把真位移当没动），档位间距 0.4 有足够余量。
+    target_tolerance: 0.05
+    # 2026-09-14：0.03 太紧 —— 旋钮靠重力+干摩擦停在死区里，工具接近时的轻微扰动
+    # 会让它抖到 0.2 rad/s（位置误差仅 0.009 rad，远在扰动门内），却被判"被扰动"而中止。
+    # 放宽到 0.3：仍能识别真实推动（真推是量级更大的持续运动）。
+    stable_velocity_tolerance: 0.3
     stable_state_duration: 0.30
     grasp_attach_settle_duration: 0.15
     grasp_release_settle_duration: 0.30

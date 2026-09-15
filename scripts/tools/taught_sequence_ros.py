@@ -253,6 +253,11 @@ class TaughtRosWorker(SpinNode):
         raise RuntimeError("TF %s→%s 不可用: %s" % (WORLD_FRAME, tip, last))
 
     def _plan_translate(self, side: str, axis: str, distance: float,
+                        # 2026-09-15 实测更正：这里必须保持 0.02。曾按 a48843b 提交
+                        # 信息（自称"提速无收益"）把它退回 0.005，结果 db1 教学序列
+                        # 直接失败——right 平移 +0.040m 路径完整度仅 0.75（插补变细
+                        # → 碰撞检查变密 → 半途判定碰撞而停）。0.02 是这套序列能规划
+                        # 通过的必要条件，不是可调的性能参数。**勿再回退。**
                         max_step: float = 0.02, timeout: float = 60.0,
                         avoid_collisions: bool = True):
         cfg = ARMS[side]

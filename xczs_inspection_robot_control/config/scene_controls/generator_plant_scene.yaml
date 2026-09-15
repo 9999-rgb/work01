@@ -9,10 +9,8 @@
     pose_valid_topic: pose_valid
     operation_watchdog_timeout: 2.0
 
-    # 规划场景只给六组按钮建碰撞圆柱：旋钮体 r*52 仅 5×14×5 mm 且被按钮板
-    # 覆盖，若按目录给旋钮建圆柱，按压路径会与按钮处的旋钮圆柱碰撞。旋钮
-    # 不建碰撞 → 按压到 0.008（指尖局部 y=0.008 已越过旋钮背面 y=0.007）
-    # 全程规划净空。operator 仍从 controls 目录读到全部 12 个控制做状态展示。
+    # 所有旋钮均建真实尺寸的碰撞代理；只在该控件活动期间移除目标旋钮，
+    # 邻近按钮板和柜体始终保留，以允许夹持接触并阻止穿板。
     control_ids:
       - fr135_button
       - fr2222_button
@@ -21,12 +19,19 @@
       - fr20422_button
       - fr25452_button
 
+      - fr135_knob
+      - fr2222_knob
+      - fr4332_knob
+      - fr12452_knob
+      - fr20422_knob
+      - fr25452_knob
+
     # Web inventory 的默认导航工位（fr135 按钮正南 1.4 m；与 adapter 一致，
     # 保证 prepress 目标落在右臂可达域内、OMPL 目标盒采样可行）。
     navigation_station:
       frame_id: map
       local_anchor: [-13.1867, 4.8113, 0.0]
-      outward_axis: [0.0, -1.0, 0.0]
+      outward_axis: [0.0, 1.0, 0.0]
       standoff: 1.4
       base_yaw_offset: 1.5707963267948966
 
@@ -46,6 +51,8 @@
       - collision_5
       - collision_6
       - collision_7
+      - cabinet_row_east
+      - cabinet_rear_west
     frame_parts:
       collision_0:
         size: [40.012, 26.4, 0.2]
@@ -60,8 +67,8 @@
         size: [39.5, 1.5, 2.5]
         position: [-19.512, 0.5, 1.25]
       collision_4:
-        size: [8.5, 2.0, 2.261]
-        position: [-30.012, 4.25, 1.13]
+        size: [11.2, 0.8, 2.26]
+        position: [-31.407, 4.3733, 1.131]
       collision_5:
         size: [0.05, 0.9, 2.06]
         position: [-18.397, 4.4115, 1.23]
@@ -72,11 +79,20 @@
         size: [0.05, 0.9, 2.06]
         position: [-14.397, 4.4115, 1.23]
 
+      cabinet_row_east:
+        size: [12.0, 0.8, 2.26]
+        position: [-18.7937, 4.3733, 1.131]
+      cabinet_rear_west:
+        size: [8.0, 0.4, 2.26]
+        position: [-29.807, 3.7733, 1.131]
+
     control_collision:
+      # 方板同时是按钮和旋钮子件；旋转时作为目标接触体，柜体/邻件继续避障。
+      grasp_parent_contact: true
       # 按钮板 34.6×34.6×8 mm（局部 y∈[0,0.008]，受压面在 y=0）；圆柱高 0.014
       # 中心偏 0.004 覆盖行程，半径 0.026 包住方形四角（半宽 0.0173√2≈0.0245）。
       button_size: [0.014, 0.026]
       button_center_offset: 0.004
-      # 旋钮不建碰撞（见 control_ids 说明），仅声明默认值占位。
-      knob_size: [0.002, 0.005]
-      knob_center_offset: 0.0
+      # 旋钮 mesh 沿 Y 缩放 1.6、平移 4 mm 后的实体范围。
+      knob_size: [0.0224, 0.0025]
+      knob_center_offset: 0.004

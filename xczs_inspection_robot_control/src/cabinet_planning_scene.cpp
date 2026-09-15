@@ -57,6 +57,7 @@ struct ControlCollision
   tf2::Vector3 center;
   tf2::Vector3 axis;
   bool rotary{false};
+  std::string contact_parent;
 };
 
 geometry_msgs::msg::Pose to_pose(const tf2::Transform & transform)
@@ -437,7 +438,7 @@ private:
       }
       const auto prefix = "controls." + id + ".";
       const auto type = required_string_parameter(prefix + "type", "");
-      const auto parent = type == "switch" ?
+      const auto parent = (type == "switch" || type == "button") ?
         declare_parameter<std::string>(prefix + "parent_control_id", "") :
         std::string{};
       control_profiles_.push_back({id, type, parent});
@@ -478,6 +479,8 @@ private:
           vector3_parameter(prefix + "position", {})});
     }
 
+    grasp_parent_contact_ = declare_parameter<bool>(
+      "control_collision.grasp_parent_contact", false);
     if (has_control_type("button")) {
       std::tie(button_collision_height_, button_collision_radius_) =
         cylinder_size_parameter("control_collision.button_size", {});
@@ -582,7 +585,8 @@ private:
       const double offset = rotary ?
         knob_collision_center_offset_ : button_collision_center_offset_;
       control_collisions_.push_back(
-        {profile.id, reference + axis * offset, axis, rotary});
+        {profile.id, reference + axis * offset, axis, rotary,
+          grasp_parent_contact_ ? profile.parent_control_id : std::string{}});
     }
   }
 
@@ -807,7 +811,9 @@ private:
       (has_switch() ? 1U : 0U) + 1U);
     objects.push_back(make_frame(model));
     for (const auto & control : control_collisions_) {
-      if (active_control == control.id) {
+      if (active_control == control.id ||
+        (!active_control.empty() && control.contact_parent == active_control))
+      {
         if (published_active_control != active_control) {
           objects.push_back(make_control(model, control, true));
         }
@@ -916,6 +922,7 @@ private:
   std::vector<BoxPart> frame_parts_;
   std::vector<SceneControlProfile> control_profiles_;
   std::vector<ControlCollision> control_collisions_;
+  bool grasp_parent_contact_{false};
   double button_collision_height_{0.0};
   double button_collision_radius_{0.0};
   double button_collision_center_offset_{0.0};
