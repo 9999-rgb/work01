@@ -145,6 +145,28 @@ public:
       create_publisher<moveit_msgs::msg::PlanningScene>(
       "/planning_scene", rclcpp::QoS(1).reliable().transient_local());
 
+    const auto manipulation_transform_topic = declare_parameter<std::string>(
+      "manipulation_transform_topic", "");
+    if (!manipulation_transform_topic.empty()) {
+      manipulation_transform_subscription_ =
+        create_subscription<geometry_msgs::msg::TransformStamped>(
+        manipulation_transform_topic, rclcpp::QoS(1).reliable(),
+        [this](const geometry_msgs::msg::TransformStamped::SharedPtr message) {
+          if (message->header.frame_id != frame_id_ ||
+            message->child_frame_id != cabinet_frame_) {return;}
+          const auto & t = message->transform.translation;
+          const auto & q = message->transform.rotation;
+          if (!std::isfinite(t.x) || !std::isfinite(t.y) || !std::isfinite(t.z) ||
+            !std::isfinite(q.x) || !std::isfinite(q.y) || !std::isfinite(q.z) ||
+            !std::isfinite(q.w) ||
+            std::abs(q.x*q.x + q.y*q.y + q.z*q.z + q.w*q.w - 1.0) > 0.01)
+          {return;}
+          std::lock_guard<std::mutex> lock(state_mutex_);
+          tf2::fromMsg(message->transform, manipulation_transform_);
+          manipulation_transform_received_at_ = std::chrono::steady_clock::now();
+        });
+    }
+
     active_control_subscription_ = create_subscription<std_msgs::msg::String>(
       "active_control",
       rclcpp::QoS(1).reliable().transient_local(),
@@ -777,11 +799,23 @@ private:
     std::uint64_t revision = 0U;
     {
       std::lock_guard<std::mutex> lock(state_mutex_);
+      const bool have_manipulation_transform =
+        !active_control_id_.empty() && operation_heartbeat_received_ &&
+        manipulation_transform_received_at_ != std::chrono::steady_clock::time_point{} &&
+        std::chrono::duration<double>(std::chrono::steady_clock::now() -
+        manipulation_transform_received_at_).count() <= operation_watchdog_timeout_;
+      if (have_manipulation_transform &&
+        (!model_transform_received_ || transform_changed(model_transform_, manipulation_transform_)))
+      {
+        model_transform_ = manipulation_transform_;
+        model_transform_received_ = true;
+        ++scene_revision_;
+      }
       // Collision objects and task geometry must use one latched cabinet pose
       // for the whole live manipulation.  A transient active-control sample
       // without a volatile heartbeat is stale after a process restart and
       // must neither freeze TF nor remove a collision object.
-      if (observed_model_available &&
+      if (!have_manipulation_transform && observed_model_available &&
         (!model_transform_received_ ||
         ((active_control_id_.empty() || !operation_heartbeat_received_) &&
         transform_changed(model_transform_, observed_model))))
@@ -904,6 +938,10 @@ private:
   std::chrono::steady_clock::time_point operation_monitor_started_at_{};
   std::unordered_set<std::string> expired_operation_lease_ids_;
   std::deque<std::string> expired_operation_lease_history_;
+  rclcpp::Subscription<geometry_msgs::msg::TransformStamped>::SharedPtr
+    manipulation_transform_subscription_;
+  tf2::Transform manipulation_transform_{tf2::Transform::getIdentity()};
+  std::chrono::steady_clock::time_point manipulation_transform_received_at_{};
   tf2::Transform model_transform_{tf2::Transform::getIdentity()};
   double door_position_{0.0};
   double switch_position_{0.0};

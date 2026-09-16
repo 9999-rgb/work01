@@ -7,6 +7,16 @@
     # 使 operator 的 map 系目标整体偏低。详见 electrical_mezzanine_adapter.yaml。
     planning_frame: odom
     pose_parent_frame: map
+    # 柜体固定于 map；定位修正不应被误判成柜体移动。
+    cabinet_verify_frame: map
+    manipulation_transform_topic: manipulation_transform
+    # 复用现有 Gazebo 物理锚定，防止导航后的 AMCL 偏差进入夹持坐标。
+    # 锚点必须刚接且与柜体系同向；经 body 转换，不能假设 world 等于 odom。
+    physics_anchor_reference_frame: body
+    # 地板原点距操作区约 14–35 m，定位偏航会放大为原点平移；固定地板允许校正。
+    physics_anchor_max_shift: 2.0
+    physics_anchor_entity: fadianground
+    physics_anchor_local_origin: [0.0, 0.0, 0.0]
     manual_linear_axis: y
     manual_linear_sign: -1.0
     navigation_velocity_yaw_offset: -1.57079632679

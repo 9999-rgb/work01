@@ -841,6 +841,14 @@ public:
     // 保持既有 latch 行为（真机/无夹具实体场景零回归）。
     physics_anchor_entity_ = declare_parameter<std::string>(
       "physics_anchor_entity", "");
+    physics_anchor_reference_frame_ = declare_parameter<std::string>(
+      "physics_anchor_reference_frame", "");
+    const auto manipulation_transform_topic = declare_parameter<std::string>(
+      "manipulation_transform_topic", "");
+    if (!manipulation_transform_topic.empty()) {
+      manipulation_transform_publisher_ = create_publisher<geometry_msgs::msg::TransformStamped>(
+        manipulation_transform_topic, rclcpp::QoS(1).reliable());
+    }
     // 实体位移护栏阈值 (见 apply_physics_anchor_to_latch): 刚接夹具物理锚定的
     // 原点修正只可能是落地/AMCL 噪声 (实测 0-10 mm); 超过即认为锚定实体滑离声
     // 明位姿 (抽屉开位), 拒绝覆写。
@@ -3519,6 +3527,17 @@ private:
       // authorize a new physical grasp.
       message.data = lease_id;
       operation_heartbeat_publisher_->publish(message);
+      if (manipulation_transform_publisher_) {
+        std::lock_guard<std::mutex> lock(cabinet_transform_mutex_);
+        if (cabinet_transform_latched_) {
+          geometry_msgs::msg::TransformStamped pose;
+          pose.header.stamp = now();
+          pose.header.frame_id = planning_frame_;
+          pose.child_frame_id = cabinet_frame_;
+          pose.transform = tf2::toMsg(latched_cabinet_transform_);
+          manipulation_transform_publisher_->publish(pose);
+        }
+      }
     } catch (const std::exception & error) {
       mark_operation_lease_lost_for_exact_lease(
         std::string("Failed to publish the cabinet operation heartbeat: ") +
@@ -6288,7 +6307,7 @@ private:
   // 系真值 —— 不经任何信念/落地链。rails/工作位姿 = 修正后 odom→cabinet ⊗
   // 局部坐标, 精确落在物理板面中心。仅当配置了实体且实体测量成功时修正; 否则
   // 保留 latch 原值 (真机无 /get_entity_state 或非夹具场景零回归)。
-  std::optional<tf2::Vector3> measure_physics_anchor_entity_origin()
+  std::optional<tf2::Transform> measure_physics_anchor_entity_origin()
   {
     if (drawer_entity_client_ == nullptr || physics_anchor_entity_.empty()) {
       return std::nullopt;
@@ -6309,6 +6328,9 @@ private:
     }
     auto request = std::make_shared<gazebo_msgs::srv::GetEntityState::Request>();
     request->name = physics_anchor_entity_;
+    if (!physics_anchor_reference_frame_.empty()) {
+      request->reference_frame = robot_model_name_ + "::" + physics_anchor_reference_frame_;
+    }
     auto future = drawer_entity_client_->async_send_request(request);
     if (future.wait_for(2s) != std::future_status::ready) {
       if (!physics_anchor_measure_warned_) {
@@ -6343,7 +6365,23 @@ private:
       return std::nullopt;
     }
     drawer_entity_measure_available_ = true;
-    return tf2::Vector3(p.x, p.y, p.z);
+    tf2::Transform measured;
+    tf2::fromMsg(pose, measured);
+    if (!physics_anchor_reference_frame_.empty()) {
+      // Gazebo world and odom need not coincide. Query relative to the same
+      // physical robot link represented in TF, then express it in planning.
+      try {
+        tf2::Transform planning_from_robot;
+        tf2::fromMsg(transform_buffer_->lookupTransform(
+          planning_frame_, physics_anchor_reference_frame_, tf2::TimePointZero,
+          tf2::durationFromSec(0.5)).transform, planning_from_robot);
+        measured = planning_from_robot * measured;
+      } catch (const tf2::TransformException & error) {
+        RCLCPP_WARN(get_logger(), "Physics anchor frame conversion failed: %s", error.what());
+        return std::nullopt;
+      }
+    }
+    return measured;
   }
 
   // 把物理锚定原点覆写到待锁存的 odom→cabinet（保持其旋转不变）。
@@ -6362,6 +6400,10 @@ private:
     }
     const auto measured = measure_physics_anchor_entity_origin();
     if (!measured.has_value()) {
+      if (!physics_anchor_reference_frame_.empty()) {
+        throw OperationError(PressCabinetButton::Result::NOT_READY,
+          "Required robot-relative cabinet anchor measurement is unavailable.");
+      }
       return false;
     }
     // 抽屉 rail 修正仅当锚定实体就是被操作抽屉本体时生效 (id 精确匹配, 避免
@@ -6374,9 +6416,12 @@ private:
     if (rail_applies) {
       anchor_local_origin += anchored_drawer->drawer_axis * rail_position;
     }
-    const tf2::Vector3 corrected_origin = *measured -
-      tf2::quatRotate(
-        cabinet_to_planning.getRotation(), anchor_local_origin);
+    // In robot-relative mode the configured anchor is a fixed link whose
+    // axes coincide with the cabinet axes (the generator floor link).
+    const auto corrected_rotation = physics_anchor_reference_frame_.empty() ?
+      cabinet_to_planning.getRotation() : measured->getRotation();
+    const tf2::Vector3 corrected_origin = measured->getOrigin() -
+      tf2::quatRotate(corrected_rotation, anchor_local_origin);
     const tf2::Vector3 previous_origin = cabinet_to_planning.getOrigin();
     const double shift = corrected_origin.distance(previous_origin);
     // 2026-09-06 实体位移护栏 (db1 visual close 根因): 物理锚定的前提是锚定
@@ -6401,6 +6446,10 @@ private:
     // → 采纳纠正 (正是把 operator 几何改锚 gazebo 真值链的意义); rail 不适用
     // (刚接实体 / 非锚定抽屉) 才保留旧护栏语义。
     if (shift > physics_anchor_max_shift_ && !rail_applies) {
+      if (!physics_anchor_reference_frame_.empty()) {
+        throw OperationError(PressCabinetButton::Result::NOT_READY,
+          "Robot-relative cabinet anchor correction exceeds its configured bound.");
+      }
       RCLCPP_WARN(
         get_logger(),
         "Cabinet physics-anchor measurement for entity '%s' implies a %.1f mm "
@@ -6414,6 +6463,7 @@ private:
       return false;
     }
     cabinet_to_planning.setOrigin(corrected_origin);
+    cabinet_to_planning.setRotation(corrected_rotation);
     if (rail_applies && shift > physics_anchor_max_shift_) {
       RCLCPP_WARN(
         get_logger(),
@@ -18288,6 +18338,9 @@ private:
   // 物理锚定配置（fix#cap2）：夹具几何真值实体名 + 其 cabinet 系声明局部原点。
   // 见构造器注释与 apply_physics_anchor_to_latch。
   std::string physics_anchor_entity_;
+  std::string physics_anchor_reference_frame_;
+  rclcpp::Publisher<geometry_msgs::msg::TransformStamped>::SharedPtr
+    manipulation_transform_publisher_;
   tf2::Vector3 physics_anchor_local_origin_{0.0, 0.0, 0.0};
   bool physics_anchor_configured_{false};
   // 物理锚定实体位移护栏阈值 (m): 修正超此即认为锚定实体滑离声明位姿。
