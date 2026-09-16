@@ -738,6 +738,42 @@ public:
     knob_gripper_fjt_client_ = rclcpp_action::create_client<
       control_msgs::action::FollowJointTrajectory>(
       this, controller_namespace_ + "/rotate_button_controller/follow_joint_trajectory");
+    if (!knob_gripper_joints_.empty()) {
+      knob_gripper_hold_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+        controller_namespace_ + "/rotate_button_controller/joint_trajectory", 1);
+      knob_gripper_hold_timer_ = create_wall_timer(100ms, [this]() {
+          std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
+          if (!knob_gripper_hold_active_) {return;}
+          if (shutdown_requested_.load() || !operation_lease_held_.load() ||
+            operation_lease_lost_.load())
+          {
+            knob_gripper_hold_active_ = false;
+            return;
+          }
+          trajectory_msgs::msg::JointTrajectory command;
+          command.joint_names = knob_gripper_joints_;
+          trajectory_msgs::msg::JointTrajectoryPoint point;
+          point.positions = knob_gripper_closed_;
+          point.velocities.assign(point.positions.size(), 0.0);
+          point.time_from_start = rclcpp::Duration::from_seconds(0.1);
+          for (std::size_t j = 0; j < point.positions.size(); ++j) {
+            if (!knob_gripper_hold_prismatic_[j]) {continue;}
+            double measured = 0.0;
+            if (!cached_real_joint_position(knob_gripper_joints_[j], measured) ||
+              !std::isfinite(measured))
+            {
+              knob_gripper_hold_active_ = false;
+              return;
+            }
+            // Follow each physical contact independently. A fixed close
+            // position either loses contact or pushes the moving plate.
+            point.positions[j] = std::clamp(measured + 0.00015,
+              knob_gripper_open_[j], knob_gripper_closed_[j]);
+          }
+          command.points.push_back(point);
+          knob_gripper_hold_pub_->publish(command);
+        });
+    }
     tool_tip_calibration_joint_tolerance_ = positive_parameter(
       "tool_tip_calibration_joint_tolerance", 0.001);
     tool_calibration_settle_timeout_ = positive_parameter(
@@ -1360,6 +1396,8 @@ public:
   ~CabinetButtonOperator() override
   {
     shutdown_requested_.store(true);
+    stop_knob_gripper_hold();
+    if (knob_gripper_hold_timer_) {knob_gripper_hold_timer_->cancel();}
     stop_active_motion();
     cancel_active_navigation();
     {
@@ -8151,6 +8189,12 @@ private:
 
   // Arm planning uses the open jaw geometry. Close only at the verified grasp
   // pose, and reopen before any retreat, including cancellation recovery.
+  void stop_knob_gripper_hold()
+  {
+    std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
+    knob_gripper_hold_active_ = false;
+  }
+
   void drive_knob_gripper(
     const std::shared_ptr<OperateGoalHandle> & goal_handle,
     MoveGroupInterface & move_group, const ButtonSpec & control,
@@ -8162,6 +8206,7 @@ private:
     {
       return;
     }
+    stop_knob_gripper_hold();
     const auto fail = [close](const std::string & message) {
         throw GenericOperationError(close ? OperateCabinetControl::Result::GRASP_FAILED :
           OperateCabinetControl::Result::RELEASE_FAILED, message);
@@ -8307,6 +8352,11 @@ private:
         fail("Knob gripper joint readback outside tolerance: " + knob_gripper_joints_[i]);
       }
     }
+    if (close) {
+      std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
+      knob_gripper_hold_prismatic_ = prismatic;
+      knob_gripper_hold_active_ = true;
+    }
     RCLCPP_INFO(get_logger(), "Knob '%s' jaws verified %s.",
       control.id.c_str(), close ? "closed" : "open");
   }
@@ -8317,6 +8367,7 @@ private:
     const std::string & control_id,
     bool attach)
   {
+    if (!attach) {stop_knob_gripper_hold();}
     const auto service_deadline = std::chrono::steady_clock::now() +
       std::chrono::duration<double>(system_wait_timeout_);
     while (!grasp_client_->wait_for_service(50ms)) {
@@ -12614,6 +12665,7 @@ private:
     const std::shared_ptr<OperateGoalHandle> & goal_handle =
       std::shared_ptr<OperateGoalHandle>()) noexcept
   {
+    stop_knob_gripper_hold();
     const bool physical_recovery_required = physical_recovery_is_required(
       result->operation_executed, should_attempt_retreat, grasp_attached);
     bool motion_recovery_allowed =
@@ -18264,6 +18316,11 @@ private:
   tf2::Vector3 tool_tip_position_{0.0, 0.0, 0.0};
   std::vector<std::string> tool_tip_calibration_joint_names_;
   std::vector<double> tool_tip_calibration_joint_positions_;
+  std::mutex knob_gripper_hold_mutex_;
+  bool knob_gripper_hold_active_{false};
+  std::vector<bool> knob_gripper_hold_prismatic_;
+  rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr knob_gripper_hold_pub_;
+  rclcpp::TimerBase::SharedPtr knob_gripper_hold_timer_;
   std::vector<std::string> knob_gripper_joints_;
   std::vector<double> knob_gripper_open_;
   std::vector<double> knob_gripper_closed_;

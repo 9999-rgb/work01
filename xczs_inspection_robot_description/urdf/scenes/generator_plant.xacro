@@ -746,8 +746,8 @@
       <!-- 夹爪闭合与实体业务点同时通过后才允许建立旋转耦合。 -->
       <grasp_contact_links>r_rotbtn_jaw1 r_rotbtn_jaw2</grasp_contact_links>
       <grasp_joint><name>r_rotbtn_rotate_joint</name><position>0</position><tolerance>0.01</tolerance></grasp_joint>
-      <grasp_joint><name>r_rotbtn_jaw1_joint</name><position>0.0015</position><tolerance>0.0017</tolerance></grasp_joint>
-      <grasp_joint><name>r_rotbtn_jaw2_joint</name><position>0.0015</position><tolerance>0.0017</tolerance></grasp_joint>
+      <grasp_joint><name>r_rotbtn_jaw1_joint</name><position>0.003</position><tolerance>0.0032</tolerance></grasp_joint>
+      <grasp_joint><name>r_rotbtn_jaw2_joint</name><position>0.003</position><tolerance>0.0032</tolerance></grasp_joint>
       <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
       <control>
         <control_id>fr135_button</control_id>

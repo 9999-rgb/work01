@@ -138,11 +138,13 @@
     # 标定关节闭合位有 ODE 接触静差（实测 ~4mm），0.003 贴边界会误报校准
     # 失败；放宽到 0.006 覆盖静差。对抓取影响可忽略（附着容差 0.12m）。
     tool_tip_calibration_joint_tolerance: 0.006
+    # 闭合值是分步跟随的行程上限；实际位置由方板接触决定。
+    # 双侧实接触和 1 mm 压入保护独立于关节读回容差。
     knob_gripper:
       joint_names: [r_rotbtn_rotate_joint, r_rotbtn_jaw1_joint, r_rotbtn_jaw2_joint]
       open_positions: [0.0, 0.0, 0.0]
-      closed_positions: [0.0, 0.0015, 0.0015]
-      tolerances: [0.01, 0.0017, 0.0017]
+      closed_positions: [0.0, 0.003, 0.003]
+      tolerances: [0.01, 0.0032, 0.0032]
     tool_profiles:
       button:
         move_group: right_arm
@@ -161,7 +163,9 @@
         transport_named_target: home
         tool_axis_orientation: toward_control
         # 夹持点在旋转盘局部 z=38 mm；旧 16 mm 落在钳口根部。
-        tool_tip_position: [-0.06128, -0.006, 0.2105]
+        # 负载姿态实测存在约 0.6 mm 的横向跟踪偏差；在规划标定点补偿。
+        # 物理抓取验证仍使用下方旋转盘真实几何中心，不移动碰撞体。
+        tool_tip_position: [-0.06128, -0.0066, 0.2105]
         grasp_point_position: [0.0, 0.0, 0.038]
       # 夹具场景暂无 switch/door，但 operator 要求 button 非空时四档
       # tool_profiles 全声明；沿用共享柜体的同工具集 profile。
