@@ -522,11 +522,18 @@
         </geometry>
         <material name="safety_orange" />
       </visual>
-      <collision>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink1.STL" />
-        </geometry>
+      <!-- 分段保守包络：底座、连接臂、夹持端；保留可见网格，避免螺孔三角面接触尖峰。 -->
+      <collision name="jaw_proxy_0">
+        <origin xyz="-0.003 0.012 -0.0095" rpy="0 0 0" />
+        <geometry><box size="0.0115 0.025 0.005" /></geometry>
+      </collision>
+      <collision name="jaw_proxy_1">
+        <origin xyz="-0.002 0.0255 0.0075" rpy="0 0 0" />
+        <geometry><box size="0.0055 0.009 0.015" /></geometry>
+      </collision>
+      <collision name="jaw_proxy_2">
+        <origin xyz="-0.01 0.02575 0.02" rpy="0 0 0" />
+        <geometry><box size="0.02 0.0085 0.01" /></geometry>
       </collision>
     </link>
     <joint name="${prefix}_rotbtn_jaw1_joint" type="prismatic">
@@ -558,11 +565,18 @@
         </geometry>
         <material name="safety_orange" />
       </visual>
-      <collision>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <mesh filename="package://xczs_inspection_robot_description/meshes/tools/rotate_button/endlink2.STL" />
-        </geometry>
+      <!-- 分段保守包络：底座、连接臂、夹持端；保留可见网格，避免螺孔三角面接触尖峰。 -->
+      <collision name="jaw_proxy_0">
+        <origin xyz="0.003 -0.012 -0.0095" rpy="0 0 0" />
+        <geometry><box size="0.0115 0.025 0.005" /></geometry>
+      </collision>
+      <collision name="jaw_proxy_1">
+        <origin xyz="0.002 -0.0255 0.0075" rpy="0 0 0" />
+        <geometry><box size="0.0055 0.009 0.015" /></geometry>
+      </collision>
+      <collision name="jaw_proxy_2">
+        <origin xyz="0.01 -0.02575 0.02" rpy="0 0 0" />
+        <geometry><box size="0.02 0.0085 0.01" /></geometry>
       </collision>
     </link>
     <joint name="${prefix}_rotbtn_jaw2_joint" type="prismatic">

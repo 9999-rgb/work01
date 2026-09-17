@@ -1416,7 +1416,7 @@ private:
   // Called on the physics thread before servicing an attach request. Require
   // both actual jaw/target contact pairs, not just a near link origin.
   bool physical_knob_contact_is_valid(
-    const Control & control, const gazebo::physics::ModelPtr & robot_model) const
+    const Control & control, const gazebo::physics::ModelPtr & robot_model)
   {
     if (control.grasp_contact_target.empty()) {return true;}
     if (!robot_model) {return false;}
@@ -1426,9 +1426,21 @@ private:
     for (const auto & name : grasp_contact_links_) {
       const auto jaw = robot_model->GetLink(name);
       if (!jaw) {return false;}
-      const auto found = grasp_contacts_.find(target->GetScopedName() + ":" + jaw->GetScopedName());
+      const auto key = target->GetScopedName() + ":" + jaw->GetScopedName();
+      const auto found = grasp_contacts_.find(key);
+      bool sustained_penetration = false;
+      if (found != grasp_contacts_.end() && found->second.second > 0.001) {
+        const auto inserted = grasp_contact_excess_since_.emplace(key, now);
+        sustained_penetration = now - inserted.first->second >= 0.01;
+      } else {
+        grasp_contact_excess_since_.erase(key);
+      }
+      // ODE reports pre-correction contact depths. Reject sustained >1 mm
+      // overlap after 10 ms, and any >2 mm spike immediately.
+
       if (found == grasp_contacts_.end() || now < found->second.first ||
-        now - found->second.first > 0.2 || found->second.second > 0.001)
+        now - found->second.first > 0.2 || found->second.second > 0.002 ||
+        sustained_penetration)
       {
         RCLCPP_ERROR(ros_node_->get_logger(),
           "Knob contact invalid: %s -> %s, age %.6f s, depth %.6f m.",
@@ -1569,7 +1581,7 @@ private:
       {
         const auto lost_lease_id = active_grasp_lease_id_;
         RCLCPP_ERROR(ros_node_->get_logger(),
-          "Knob '%s' stopped: bilateral contact lost or penetration exceeded 1 mm.",
+          "Knob '%s' stopped: bilateral contact lost or penetration exceeded its depth/time limits.",
           control.id.c_str());
         release_grasp_constraint();
         publish_operation_fault(lost_lease_id);
@@ -4417,6 +4429,7 @@ private:
   // and the shared active-grasp bookkeeping at any instant.
   PhysicsOutcome release_grasp_constraint()
   {
+    grasp_contact_excess_since_.clear();
     const auto single = release_single_grasp_constraint();
     const auto bimanual = release_bimanual_grasp_constraint();
     if (!single.success && !bimanual.success) {
@@ -4559,6 +4572,7 @@ private:
   std::vector<GraspJointRequirement> grasp_joint_requirements_;
   std::vector<std::string> grasp_contact_links_;
   std::unordered_map<std::string, std::pair<double, double>> grasp_contacts_;
+  std::unordered_map<std::string, double> grasp_contact_excess_since_;
   double grasp_distance_threshold_{0.12};
   double operation_watchdog_timeout_{2.0};
   std::shared_ptr<ServiceCallbackLifetime> callback_lifetime_;

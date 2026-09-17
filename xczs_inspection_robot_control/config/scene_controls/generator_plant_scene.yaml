@@ -7,6 +7,7 @@
     collision_object_prefix: ""
     require_pose_valid: true
     pose_valid_topic: pose_valid
+    manipulation_transform_topic: manipulation_transform
     operation_watchdog_timeout: 2.0
 
     # 所有旋钮均建真实尺寸的碰撞代理；只在该控件活动期间移除目标旋钮，

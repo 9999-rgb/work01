@@ -66,7 +66,9 @@ def main():
         name = link.get('name')
         if not (name.startswith('r_rotbtn') or name.startswith('r_arm_')):
             continue
-        for col in link.findall('collision'):
+        # 钳口使用原可见网格审计外观穿模；物理代理接触深度由插件独立校验。
+        geometry_tag = 'visual' if name in ('r_rotbtn_jaw1', 'r_rotbtn_jaw2') else 'collision'
+        for col in link.findall(geometry_tag):
             m = col.find('geometry/mesh')
             if m is None:
                 continue

@@ -850,14 +850,14 @@
         <state_ids>left center right</state_ids>
         <detents>0.0 0.4 0.8</detents>
         <detent_stiffness>0.6</detent_stiffness>
-        <spring_damping>0.08</spring_damping>
+        <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
         <!-- 夹持方板后通过有界力矩跟随，不直接写旋钮位置。
              旋钮总转动惯量约 2e-5 kg m²，仿真步长 2 ms；过大的显式
              弹簧/阻尼会产生数值振荡。采用 5 Nm/rad、0.005 Nms/rad，
              配合 0.02 Nm 轴摩擦，静态滞后约 0.004 rad。
-             双侧实际接触与最大 1 mm 压入量在整个旋转期间持续校验。 -->
+             旋转期间校验双侧接触；压入超过 1 mm 持续 10 ms 或瞬时超过 2 mm 则停止。 -->
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
         <grasp_coupling_damping>0.005</grasp_coupling_damping>
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
@@ -881,7 +881,7 @@
         <state_ids>left center right</state_ids>
         <detents>0.0 0.4 0.8</detents>
         <detent_stiffness>0.6</detent_stiffness>
-        <spring_damping>0.08</spring_damping>
+        <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
@@ -907,7 +907,7 @@
         <state_ids>left center right</state_ids>
         <detents>0.0 0.4 0.8</detents>
         <detent_stiffness>0.6</detent_stiffness>
-        <spring_damping>0.08</spring_damping>
+        <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
@@ -933,7 +933,7 @@
         <state_ids>left center right</state_ids>
         <detents>0.0 0.4 0.8</detents>
         <detent_stiffness>0.6</detent_stiffness>
-        <spring_damping>0.08</spring_damping>
+        <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
@@ -959,7 +959,7 @@
         <state_ids>left center right</state_ids>
         <detents>0.0 0.4 0.8</detents>
         <detent_stiffness>0.6</detent_stiffness>
-        <spring_damping>0.08</spring_damping>
+        <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
@@ -985,7 +985,7 @@
         <state_ids>left center right</state_ids>
         <detents>0.0 0.4 0.8</detents>
         <detent_stiffness>0.6</detent_stiffness>
-        <spring_damping>0.08</spring_damping>
+        <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
         <grasp_damping>0</grasp_damping>
         <grasp_coupling_stiffness>5</grasp_coupling_stiffness>
