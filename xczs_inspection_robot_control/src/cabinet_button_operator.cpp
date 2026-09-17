@@ -420,6 +420,7 @@ struct ButtonSpec
   std::uint8_t supported_commands{0};
   bool requires_grasp{false};
   double grasp_outward_offset{0.0};
+  double rotary_retreat_distance{0.060};
   // Physical execution is granted only by the explicit robot-adapter
   // operable_control_ids allowlist populated during configure_controls().
   bool operable{false};
@@ -1246,6 +1247,8 @@ public:
     active_control_publisher_ = create_publisher<std_msgs::msg::String>(
       kActiveControlTopic,
       rclcpp::QoS(1).reliable().transient_local());
+    contact_release_publisher_ = create_publisher<std_msgs::msg::String>(
+      "contact_release", rclcpp::QoS(1).reliable());
     operation_heartbeat_publisher_ =
       create_publisher<std_msgs::msg::String>(
       kOperationHeartbeatTopic, rclcpp::QoS(1).reliable());
@@ -2866,6 +2869,15 @@ private:
                   "Control '" + control_id +
                   "' has an invalid grasp outward offset.");
         }
+      }
+      button->rotary_retreat_distance = is_knob ? declare_parameter<double>(
+        prefix + "rotary_retreat_distance", prepress_distance_) : prepress_distance_;
+      if (is_knob && (!std::isfinite(button->rotary_retreat_distance) ||
+        button->rotary_retreat_distance <= button->grasp_outward_offset))
+      {
+        throw std::invalid_argument(
+                "Control '" + control_id +
+                "' rotary retreat distance must exceed its grasp offset.");
       }
       // A drawer travels linearly along its rail (m); a grasped rotary control
       // reports angular travel (rad).
@@ -5621,7 +5633,7 @@ private:
           // position, prepress standoff) must match the retreat the operator
           // actually executes after releasing the grasp.
           const auto retreat_pose = calculate_rotary_tool_pose(
-            *control, rotary_manip_pos, prepress_distance_, false,
+            *control, rotary_manip_pos, control->rotary_retreat_distance, false,
             rotary_tool_roll_offset);
           rotary_branch_seed = select_rotary_branch_seed(
             *move_group, *control, rotary_poses.pregrasp_pose,
@@ -5790,7 +5802,7 @@ private:
         const bool is_door = control->control_type ==
           xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
         const double release_clearance = is_door ?
-          door_release_clearance_ : prepress_distance_;
+          door_release_clearance_ : control->rotary_retreat_distance;
         const auto target_ready = calculate_rotary_tool_pose(
           *control, manipulation_position, release_clearance, false,
           rotary_tool_roll_offset);
@@ -5872,6 +5884,20 @@ private:
         }
         result->physical_outcome_confirmed = true;
         result->final_state_verified = true;
+      }
+
+      if (control->control_type ==
+        xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
+      {
+        // Restore target/child collisions before transport while retaining the
+        // anchored cabinet transform and operation lease for the entire task.
+        std_msgs::msg::String released_contact;
+        {
+          std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+          released_contact.data = operation_lease_id_;
+        }
+        contact_release_publisher_->publish(released_contact);
+        interruptible_hold(goal_handle, planning_scene_settle_seconds_);
       }
 
       result->diagnostic_stage = "transport";
@@ -12881,7 +12907,7 @@ private:
            *control, state.position, state.position).prepress_pose :
            calculate_rotary_tool_pose(
            *control, state.position,
-           is_door ? door_release_clearance_ : prepress_distance_, false,
+           is_door ? door_release_clearance_ : control->rotary_retreat_distance, false,
            rotary_tool_roll_offset));
         best_effort_retreat(
           *move_group, retreat_pose, &result->operation_executed);
@@ -13735,8 +13761,7 @@ private:
   // mirror (the first group joint negated).  Each candidate is dry-run with
   // computeCartesianPath -- the same path the operator will execute -- and the
   // first candidate that clears the full chain is returned.  This is a branch
-  // PICKER, not a gate: if nothing clears, the configured seed is returned and
-  // the real execution reports the failure honestly.
+  // gate: no physical approach may start unless retreat is feasible too.
   std::vector<double> select_rotary_branch_seed(
     MoveGroupInterface & move_group,
     const ButtonSpec & control,
@@ -13783,7 +13808,6 @@ private:
     double best_margin = -1.0;
     std::vector<double> best_margin_seed;
     double best_fraction = -1.0;
-    std::vector<double> best_fraction_seed;
     for (const auto & seed : candidates) {
       try {
         const auto current_state =
@@ -13843,7 +13867,6 @@ private:
           {f_approach, f_arc, f_retreat});
         if (fraction > best_fraction) {
           best_fraction = fraction;
-          best_fraction_seed = seed;
         }
         if (f_retreat < kRequired) {
           continue;
@@ -13874,14 +13897,11 @@ private:
         control.id.c_str(), best_margin);
       return best_margin_seed;
     }
-    RCLCPP_WARN(
-      get_logger(),
-      "No rotary branch cleared approach+arc+retreat for '%s' "
-      "(best min fraction=%.3f); using the best candidate. The execution "
-      "reports any failure honestly.",
-      control.id.c_str(), best_fraction > 0.0 ? best_fraction : 0.0);
-    return best_fraction_seed.empty() ?
-      control.ready_joint_seed_positions : best_fraction_seed;
+    throw GenericOperationError(
+            OperateCabinetControl::Result::PLANNING_FAILED,
+            "No collision-free rotary approach, arc and retreat branch for '" +
+            control.id + "' (best minimum fraction=" +
+            std::to_string(std::max(0.0, best_fraction)) + ").");
   }
 
   double joint_limit_margin(
@@ -14452,7 +14472,7 @@ private:
           0.99, "manipulation", result);
       }
       const double release_clearance = is_door ?
-        door_release_clearance_ : prepress_distance_;
+        door_release_clearance_ : control.rotary_retreat_distance;
       const auto target_ready = calculate_rotary_tool_pose(
         control, manipulation_position, release_clearance, false,
         rotary_tool_roll_offset);
@@ -18182,6 +18202,7 @@ private:
     operation_heartbeat_publisher_;
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     operation_fault_subscription_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr contact_release_publisher_;
   std::mutex operation_heartbeat_mutex_;
   std::string operation_heartbeat_control_id_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr

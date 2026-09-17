@@ -405,11 +405,14 @@
         navigation_station:
           local_anchor: [-21.997, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
-          standoff: 1.4
+          # 后方障碍物从 y=6.75 起；为收拢的左臂和末端保留间隙。
+          standoff: 1.0
           base_yaw_offset: 1.5707963267948966
           frame_id: map
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
+        # 低位近站先直线退出 36 mm，再做无碰撞关节空间回位。
+        rotary_retreat_distance: 0.04
         detent_release_fraction: 1.0
         tool_roll_offsets:
           - 0.0
@@ -442,11 +445,14 @@
         navigation_station:
           local_anchor: [-30.1, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
-          standoff: 1.4
+          # 后方障碍物从 y=6.75 起；为收拢的左臂和末端保留间隙。
+          standoff: 1.0
           base_yaw_offset: 1.5707963267948966
           frame_id: map
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
+        # 低位近站先直线退出 36 mm，再做无碰撞关节空间回位。
+        rotary_retreat_distance: 0.04
         detent_release_fraction: 1.0
         tool_roll_offsets:
           - 0.0

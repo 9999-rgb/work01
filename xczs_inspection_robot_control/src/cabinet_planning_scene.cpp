@@ -173,6 +173,17 @@ public:
       [this](const std_msgs::msg::String::SharedPtr message) {
         receive_active_control(message->data);
       });
+    contact_release_subscription_ = create_subscription<std_msgs::msg::String>(
+      "contact_release", rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::String::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (operation_heartbeat_received_ && !message->data.empty() &&
+          message->data == operation_heartbeat_lease_id_ && !contact_released_)
+        {
+          contact_released_ = true;
+          ++scene_revision_;
+        }
+      });
     operation_heartbeat_subscription_ =
       create_subscription<std_msgs::msg::String>(
       "operation_heartbeat", rclcpp::QoS(1).reliable(),
@@ -247,6 +258,7 @@ private:
       remember_expired_operation_lease_locked(operation_heartbeat_lease_id_);
     }
     active_control_id_.clear();
+    contact_released_ = false;
     operation_heartbeat_received_ = false;
     operation_heartbeat_lease_id_.clear();
     operation_last_heartbeat_ =
@@ -267,6 +279,7 @@ private:
     }
     remember_expired_operation_lease_locked(operation_heartbeat_lease_id_);
     active_control_id_ = control_id;
+    contact_released_ = false;
     operation_heartbeat_received_ = false;
     operation_heartbeat_lease_id_.clear();
     operation_last_heartbeat_ =
@@ -830,7 +843,7 @@ private:
       if (scene_published_ && published_revision_ == scene_revision_) {
         return;
       }
-      active_control = operation_heartbeat_received_ ?
+      active_control = operation_heartbeat_received_ && !contact_released_ ?
         active_control_id_ : std::string{};
       published_active_control = published_active_control_id_;
       model = model_transform_;
@@ -927,6 +940,8 @@ private:
   std::unique_ptr<tf2_ros::TransformListener> transform_listener_;
 
   mutable std::mutex state_mutex_;
+  bool contact_released_{false};
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr contact_release_subscription_;
   std::string active_control_id_;
   std::string published_active_control_id_;
   std::uint64_t active_control_generation_{0U};
