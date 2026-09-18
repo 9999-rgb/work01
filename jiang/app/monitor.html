@@ -4674,40 +4674,40 @@ function renderCabinetTarget() {
       : '低于触发下限也会实际执行，并返回“力度不足”。';
   }
   if (canSetState && stateIds.length) {
-    // A multi-detent knob (control_type 1) may only move ONE detent per
-    // operation -- the physical transition guard rejects anything further and
-    // the control is left untouched.  The old list offered every detent, so a
-    // previously picked target survived catalog refreshes (it outranks the
-    // "next adjacent detent" default below) and the operator could end up
-    // submitting e.g. left -> right, which the guard always rejects.  Offer
-    // only the physically reachable neighbours for such controls.
+    // Keep the full catalog visible; explain restrictions instead of hiding
+    // detents when only one adjacent transition is currently possible.
     const currentDetentIndex = stateIds.indexOf(control.current_state);
     const adjacentOnly = Number(control.control_type) === 1
       && stateIds.length > 2
       && currentDetentIndex >= 0;
-    const offeredIndices = adjacentOnly
-      ? [currentDetentIndex - 1, currentDetentIndex + 1]
-          .filter(index => index >= 0 && index < stateIds.length)
-      : stateIds.map((_, index) => index);
-    offeredIndices.forEach(index => {
+    stateIds.forEach((stateId, index) => {
       const option = document.createElement('option');
-      option.value = stateIds[index];
-      option.textContent = stateLabelsForControl[index] || stateIds[index];
+      option.value = stateId;
+      const label = stateLabelsForControl[index] || stateId;
+      const isCurrent = index === currentDetentIndex;
+      const requiresIntermediate = adjacentOnly
+        && Math.abs(index - currentDetentIndex) > 1;
+      option.disabled = adjacentOnly && (isCurrent || requiresIntermediate);
+      const intermediateIndex = currentDetentIndex + Math.sign(index - currentDetentIndex);
+      const intermediateLabel = stateLabelsForControl[intermediateIndex]
+        || stateIds[intermediateIndex];
+      option.textContent = isCurrent ? `${label}（当前）`
+        : requiresIntermediate ? `${label}（需先到${intermediateLabel}）` : label;
       stateSelect.appendChild(option);
     });
     const stateIsAvailable = stateId => Array.from(stateSelect.options).some(
-      option => option.value === stateId
+      option => option.value === stateId && !option.disabled
     );
     // For a newly selected articulated control, choose the next calibrated
     // detent instead of its current detent.  A user-selected value is retained
     // across live catalog/state refreshes, but only while it is still one of
-    // the offered options -- see ``offeredIndices`` above.
+    // the enabled options.
     const nextState = adjacentCabinetStateId(control);
     const preferredState = [
       previousStateSelection,
       nextState,
       control.current_state,
-      stateIds[offeredIndices[0]]
+      ...stateIds
     ].find(stateIsAvailable);
     if (preferredState) stateSelect.value = preferredState;
     stateField.hidden = false;

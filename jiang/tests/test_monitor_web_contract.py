@@ -1034,3 +1034,40 @@ class MonitorWebContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class KnobDetentVisibilityTest(unittest.TestCase):
+    @unittest.skipUnless(shutil.which('node'), 'Node.js is required')
+    def test_all_detents_visible_and_only_adjacent_targets_enabled(self):
+        source = _inline_script()
+        start = source.index('  if (canSetState && stateIds.length) {')
+        end = source.index('  stateSelect.dataset.controlId =', start)
+        render = source[start:end]
+        adjacent = _source_block('function adjacentCabinetStateId(', 'function renderCabinetTarget(')
+        script = adjacent + '\n' + '''
+const assert = require('assert');
+const document = {createElement: () => ({disabled: false})};
+function render(current, previous = '') {
+  const control = {control_type: 1, current_state: current,
+    state_ids: ['left','center','right']};
+  const stateIds = control.state_ids;
+  const stateLabelsForControl = ['左档','中档','右档'];
+  const stateSelect = {options: [], value: '', appendChild(o) {this.options.push(o);}};
+  const stateField = {hidden: true};
+  const canSetState = true;
+  const previousStateSelection = previous;
+''' + render + '''
+  return stateSelect;
+}
+for (const current of ['left','center','right']) {
+  const select = render(current);
+  assert.deepStrictEqual(select.options.map(o => o.value), ['left','center','right']);
+  const enabled = select.options.filter(o => !o.disabled).map(o => o.value);
+  assert.deepStrictEqual(enabled, current === 'center' ? ['left','right'] : ['center']);
+  assert(select.options.find(o => o.value === current).textContent.includes('当前'));
+}
+assert(render('left').options[2].textContent.includes('需先到中档'));
+assert.strictEqual(render('left', 'right').value, 'center');
+assert.strictEqual(render('center', 'right').value, 'right');
+'''
+        subprocess.run(['node', '-e', script], check=True, capture_output=True, text=True)

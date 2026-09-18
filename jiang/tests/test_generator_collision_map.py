@@ -1,5 +1,4 @@
 """The generator navigation map must match the CPU lidar collision geometry."""
-import importlib.util
 import sys
 from pathlib import Path
 
