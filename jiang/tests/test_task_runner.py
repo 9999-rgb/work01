@@ -399,6 +399,8 @@ def _inventory(count: int = 2) -> CabinetInventory:
 def _server(count: int = 2) -> tuple[ControlServer, _NavigationNode]:
     server = object.__new__(ControlServer)
     server._inventory = _inventory(count)
+    server._taught_runners = {}
+    server._taught_sequences = {}
     manual_joints = tuple(
         SimpleNamespace(name=name, default_position=position)
         for name, position in (
@@ -3610,3 +3612,24 @@ class TaskRunnerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GeneratorAisleRouteTests(unittest.TestCase):
+    def test_enter_nearer_lane_before_crossing_rear_equipment(self):
+        start = {"x": -15.457, "y": 6.13, "yaw": .12}
+        target = {"cabinet": "generator_plant", "x": -21.997,
+                  "y": 5.8113, "yaw": 0.0}
+        legs = ControlServer._axis_navigation_legs(start, target)
+        self.assertEqual(["y", "x"], [leg["axis"] for leg in legs])
+        self.assertEqual(start["x"], legs[0]["target"]["x"])
+        self.assertEqual(target["y"], legs[0]["target"]["y"])
+        self.assertEqual(0.0, legs[0]["target"]["yaw"])
+        self.assertEqual(target, legs[1]["target"])
+
+    def test_leave_nearer_lane_only_after_crossing_equipment(self):
+        start = {"x": -21.997, "y": 5.8113, "yaw": 0.0}
+        target = {"cabinet": "generator_plant", "x": -15.457,
+                  "y": 6.2113, "yaw": 0.0}
+        legs = ControlServer._axis_navigation_legs(start, target)
+        self.assertEqual(["x", "y"], [leg["axis"] for leg in legs])
+        self.assertEqual(start["y"], legs[0]["target"]["y"])

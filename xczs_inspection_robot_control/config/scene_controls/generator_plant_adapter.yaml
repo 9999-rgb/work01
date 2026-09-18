@@ -485,11 +485,13 @@
         navigation_station:
           local_anchor: [-35.01, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
-          standoff: 1.4
+          # 与同高度旋钮使用已验证的近站位。
+          standoff: 1.0
           base_yaw_offset: 1.5707963267948966
           frame_id: map
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
+        rotary_retreat_distance: 0.04
         detent_release_fraction: 1.0
         tool_roll_offsets:
           - 0.0

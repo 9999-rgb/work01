@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Generate Nav2 occupancy-grid maps by slicing static scene STL meshes.
 
-This is a development-time tool: it reads a binary STL scene mesh, projects it
+Generator-plant maps use the existing static collision boxes, matching Gazebo's
+CPU ray sensor. Other scenes retain STL slicing. Neither path edits visuals.
+
+This is a development-time tool: it reads scene geometry, projects it
 onto a horizontal occupancy grid, and writes a PGM + YAML pair that Nav2's
 ``map_server`` can serve.  The generated maps are committed, so this script
 (and its ``vtk``/``numpy`` dependencies) is not needed at runtime.
@@ -39,6 +42,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import numpy as np
@@ -76,6 +80,7 @@ def _scene_registry() -> dict[str, dict[str, object]]:
         "generator_plant": {
             "stl": description
             / "meshes/scenes/generator_plant/fadianground.STL",
+            "collision_model": description / "urdf/scenes/generator_plant.xacro",
             "basename": "inspection_map_generator_plant",
             "out_dir": nav2,
         },
@@ -215,6 +220,45 @@ def build_occupancy(
     return occupancy, metadata
 
 
+def build_collision_occupancy(model_path: Path, *, resolution: float,
+                              margin: float, floor_threshold: float,
+                              clearance_height: float):
+    """Match the CPU ray sensor's static boxes, not the decorative STL.
+
+    Generator geometry uses axis-aligned boxes in its fixed floor link.
+    Reject unsupported geometry rather than silently creating a partial map.
+    """
+    boxes = []
+    for collision in ET.parse(model_path).findall(
+            ".//link[@name='fadianground']/collision"):
+        pose = np.fromstring(collision.findtext("pose", "0 0 0 0 0 0"), sep=" ")
+        size = np.fromstring(collision.findtext("geometry/box/size", ""), sep=" ")
+        if len(size) != 3 or len(pose) != 6 or not np.allclose(pose[3:], 0):
+            raise ValueError("Collision map requires axis-aligned floor boxes")
+        boxes.append((pose[:3], size))
+    floors = [(p, s) for p, s in boxes if p[2] + s[2]/2 <= floor_threshold]
+    if not floors or resolution <= 0 or margin < 0:
+        raise ValueError("Invalid collision-map floor or grid parameters")
+    low = np.min([p[:2]-s[:2]/2 for p, s in floors], axis=0)-margin
+    high = np.max([p[:2]+s[:2]/2 for p, s in floors], axis=0)+margin
+    width, height = np.ceil((high-low)/resolution).astype(int)
+    x, y = np.meshgrid(low[0]+(np.arange(width)+.5)*resolution,
+                       low[1]+(height-np.arange(height)-.5)*resolution)
+    floor = np.zeros((height, width), dtype=bool)
+    blocked = np.zeros_like(floor)
+    for position, size in boxes:
+        inside = ((abs(x-position[0]) <= size[0]/2) &
+                  (abs(y-position[1]) <= size[1]/2))
+        if position[2]+size[2]/2 <= floor_threshold:
+            floor |= inside
+        elif position[2]-size[2]/2 < clearance_height:
+            blocked |= inside
+    occupancy = np.where(floor & ~blocked, FREE, OCCUPIED).astype(np.uint8)
+    return occupancy, dict(image="", resolution=resolution,
+                          origin=[float(low[0]), float(low[1]), 0.0],
+                          negate=0, occupied_thresh=.65, free_thresh=.25)
+
+
 def _write_pgm(path: Path, occupancy: np.ndarray) -> None:
     rows, cols = occupancy.shape
     header = f"P5\n{cols} {rows}\n255\n".encode("ascii")
@@ -257,15 +301,16 @@ def generate(
         out_dir = Path(scene["out_dir"])
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        occupancy, metadata = build_occupancy(
-            mesh_path,
-            resolution=resolution,
-            margin=margin,
-            floor_threshold=floor_threshold,
-            clearance_height=clearance_height,
-            decimate_below=decimate_below,
-            progress=progress,
-        )
+        if "collision_model" in scene:
+            occupancy, metadata = build_collision_occupancy(
+                Path(scene["collision_model"]), resolution=resolution,
+                margin=margin, floor_threshold=floor_threshold,
+                clearance_height=clearance_height)
+        else:
+            occupancy, metadata = build_occupancy(
+                mesh_path, resolution=resolution, margin=margin,
+                floor_threshold=floor_threshold, clearance_height=clearance_height,
+                decimate_below=decimate_below, progress=progress)
         metadata["image"] = f"{basename}.pgm"
 
         _write_pgm(out_dir / f"{basename}.pgm", occupancy)

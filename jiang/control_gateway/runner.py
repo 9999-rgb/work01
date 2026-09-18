@@ -4793,7 +4793,7 @@ class ControlServer:
         station: Mapping[str, Any],
         keepout: Any = None,
     ) -> Tuple[Dict[str, Any], ...]:
-        """Build stoppable map-axis legs, always preferring X before Y.
+        """Build stoppable map-axis legs, normally preferring X before Y.
 
         When a straight axis leg would cross the configured navigation
         keep-out band (the cabinet row), the route is replaced with a clear-
@@ -4886,6 +4886,21 @@ class ControlServer:
                     ),
                     "target": dict(station),
                 },
+            )
+
+        # Generator stations share a narrow aisle.  Enter its nearer lane
+        # before translating along the cabinet row: the folded left tool
+        # extends beyond the base footprint into the rear equipment block
+        # if we retain the farther station's Y during the X leg.
+        if (
+            station.get("cabinet") == "generator_plant"
+            and has_x and has_y and delta_y < -NAVIGATION_AXIS_EPSILON_M
+        ):
+            corner = dict(station)
+            corner.update(x=start_x, y=target_y, yaw=float(station["yaw"]))
+            return (
+                {"axis": "y", "distance_m": abs(delta_y), "target": corner},
+                {"axis": "x", "distance_m": abs(delta_x), "target": dict(station)},
             )
 
         legs: List[Dict[str, Any]] = []

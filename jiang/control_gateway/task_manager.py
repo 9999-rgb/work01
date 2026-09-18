@@ -1114,6 +1114,10 @@ class TaskManager:
                 existing = dict(task.get("failure_details") or {})
                 existing.update(safe_details)
                 task["failure_details"] = existing
+            if backend_termination_confirmed and task["status"] == "canceled":
+                reason = "Cancellation completed; backend termination confirmed."
+                task["message"] = reason
+                task["failure_reason"] = reason
             self._cancel_callbacks.pop(task_id, None)
             task["cancel_callback_in_progress"] = False
             if self._active_task_id == task_id:

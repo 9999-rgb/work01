@@ -595,7 +595,26 @@ def test_planning_scene_exemption_requires_live_exact_lease() -> None:
         "lookup_model_transform(observed_model)"
     )
     assert (
-        "active_control = operation_heartbeat_received_ ?\n"
+        "active_control = operation_heartbeat_received_ && !contact_released_ ?\n"
         "        active_control_id_ : std::string{};" in publish
     )
     assert "active_control_id_.empty() || !operation_heartbeat_received_" in publish
+
+
+def test_released_contact_restores_collisions_for_transport() -> None:
+    scene = PLANNING_SCENE_SOURCE.read_text(encoding="utf-8")
+    callback = scene.split("    contact_release_subscription_ =", 1)[1].split(
+        "    operation_heartbeat_subscription_ =", 1
+    )[0]
+    assert "operation_heartbeat_received_ && !message->data.empty()" in callback
+    assert "message->data == operation_heartbeat_lease_id_" in callback
+    assert "contact_released_ = true;" in callback
+    assert "++scene_revision_;" in callback
+    reset = scene.split("  void receive_active_control(", 1)[1].split(
+        "  void receive_operation_heartbeat(", 1
+    )[0]
+    assert "contact_released_ = false;" in reset
+    operator = OPERATOR_SOURCE.read_text(encoding="utf-8")
+    release = operator.index("contact_release_publisher_->publish(released_contact)")
+    transport = operator.index('result->diagnostic_stage = "transport";', release)
+    assert "planning_scene_settle_seconds_" in operator[release:transport]

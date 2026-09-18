@@ -500,6 +500,21 @@ class TaskManagerTest(unittest.TestCase):
         snapshots[0]["result"]["value"] = 999
         self.assertEqual(3, manager.get_task(third["task_id"])["result"]["value"])
 
+    def test_confirmed_cancel_refreshes_message_but_unconfirmed_does_not(self):
+        for confirmed in (False, True):
+            manager = self._manager()
+            task = manager.create_task("operate", {"cabinet": "cabinet_a"})
+            manager.start_task(task["task_id"])
+            manager.mark_canceled_retaining_reservation(
+                task["task_id"], reason="Backend termination remains unconfirmed.")
+            released = manager.release_reservation(
+                task["task_id"], backend_termination_confirmed=confirmed)
+            expected = ("Cancellation completed; backend termination confirmed."
+                        if confirmed else "Backend termination remains unconfirmed.")
+            self.assertEqual(expected, released["message"])
+            self.assertEqual(expected, released["failure_reason"])
+            self.assertEqual("canceled", released["status"])
+
     def test_terminal_timeout_retains_global_reservation_until_backend_exit(
         self,
     ) -> None:
