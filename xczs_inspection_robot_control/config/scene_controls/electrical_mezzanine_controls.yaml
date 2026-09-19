@@ -5,7 +5,7 @@
     # spawn，故局部系 == 世界/map 系）；位置单位为 m，转角单位为 rad。
     # 五扇抽屉（ds1/ds2/db1/ds3/dm1）为正面抽拉抽屉：从东侧（正面）停靠，
     # grasp 固定关节把三电缸探针刚性附着到面板前脸（x=0.099），再沿滑动轴
-    # 拖拽 —— 拉出到 detent 0.3 = 打开，推回到 0 = 关闭。grasp_operated=true
+    # 拖拽 —— 拉出到 detent 0.05 = 打开，推回到 0 = 关闭。grasp_operated=true
     # 让 operator 走 grasp-drag 分支；local_position = 面板前脸中心（= 关节
     # 原点 + 面板 bbox 中心，与 xacro grasp_point 在零位重合）；approach_normal
     # = [1,0,0] 指向东（机器人侧），工具自正面逼近面板。
@@ -29,7 +29,7 @@
         max_position: 0.38
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
-        state_positions: [0.0, 0.03]
+        state_positions: [0.0, 0.05]
       ds2:
         type: slider
         display_name: "ds2 抽拉柜"
@@ -42,7 +42,7 @@
         max_position: 0.38
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
-        state_positions: [0.0, 0.03]
+        state_positions: [0.0, 0.05]
       db1:
         type: drawer
         display_name: "db1 抽拉柜"
@@ -54,7 +54,7 @@
         max_position: 0.38
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
-        state_positions: [0.0, 0.03]
+        state_positions: [0.0, 0.05]
         # 双手抽拉几何合同（2026-09-09 用户目视裁决：把手 = b1.STL 原生两条竖向
         # 立筋，外加横杆/短横杆已删；b1p 恢复真实可按解锁按钮；世界坐标 = b1 关位
         # q0，b1 根 (0.030,4.047,0.83187)，立筋前脸/面板前缘 x0.099。完整几何
@@ -129,7 +129,7 @@
         max_position: 0.38
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
-        state_positions: [0.0, 0.03]
+        state_positions: [0.0, 0.05]
       dm1:
         type: slider
         display_name: "dm1 抽拉柜"
@@ -142,7 +142,7 @@
         max_position: 0.38
         state_ids: ["closed", "open"]
         state_labels: ["关闭", "打开"]
-        state_positions: [0.0, 0.03]
+        state_positions: [0.0, 0.05]
 
     # 类型默认值（按钮逐项覆盖 axis/approach/limits）。
     button_defaults:

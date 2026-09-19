@@ -278,6 +278,7 @@ class TaughtSequenceRunner:
                     "command": self._command,
                     "execution_backend": "taught",
                     "duration_seconds": elapsed,
+                    **getattr(node, "drawer_result", {}),
                 },
             )
         except Exception as error:  # noqa: BLE001

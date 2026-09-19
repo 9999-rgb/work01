@@ -1,56 +1,22 @@
-# 由 derive_taught_pose.py 自动生成（IK 求得，非人工教学）
-label: ds3 举起位姿（001 + IK，Δz 0.5657）
-captured_wall_time: 2026-09-14T08:38:49+0800
+label: ds3 实际把手间距工作姿态
 world_frame: odom
-derived_from: xczs_inspection_robot_control/config/taught_poses/db1_teach_node001_raise30.yaml
-offset:
-  dx: 0.0
-  dy: 0.0
-  dz: 0.5657
 joints:
-  l_arm_0_joint: -0.6564902879445635
-  l_arm_1_joint: -1.957590872079845
-  l_arm_2_joint: -1.703454173574863
-  l_arm_3_joint: -0.5725257631798613
-  l_arm_4_joint: -1.2715986256554013
-  l_arm_5_joint: -0.2649607747313922
-  l_arm_6_joint: 0.33214408014963537
-  r_arm_0_joint: 0.6380840122705879
-  r_arm_1_joint: -1.810193625596923
-  r_arm_2_joint: -1.7943168816901591
-  r_arm_3_joint: 0.6107567286668507
-  r_arm_4_joint: 1.640187782881452
-  r_arm_5_joint: -2.805059767895135
-  r_arm_6_joint: 2.843088579204577
+  l_arm_0_joint: 2.3838287122277255
+  l_arm_1_joint: 1.80574034556609
+  l_arm_3_joint: -1.0424469140612853
+  l_arm_4_joint: 0.14853154886981754
+  l_arm_5_joint: -1.8677983506588003
+  r_arm_0_joint: 0.11524724465649654
+  r_arm_1_joint: -2.049172952321926
+  l_arm_2_joint: 3.070298943477912
+  r_arm_2_joint: -2.0804315926117494
   l_two_cyl_finger1_joint: 0.018719
   l_two_cyl_finger2_joint: 0.082954
   r_three_cyl_finger1_joint: 0.081971
-  r_three_cyl_finger2_joint: 0.018449
+  r_arm_3_joint: 1.2095791546012487
+  l_arm_6_joint: -2.454592686604387
   r_three_cyl_finger3_joint: 4.2e-05
-joint_efforts:
-  l_arm_0_joint: 0.0
-  l_arm_1_joint: 0.0
-  l_arm_2_joint: 0.0
-  l_arm_3_joint: 0.0
-  l_arm_4_joint: 0.0
-  l_arm_5_joint: 0.0
-  l_arm_6_joint: 0.0
-  r_arm_0_joint: 0.0
-  r_arm_1_joint: 0.0
-  r_arm_2_joint: 0.0
-  r_arm_3_joint: 0.0
-  r_arm_4_joint: 0.0
-  r_arm_5_joint: 0.0
-  r_arm_6_joint: 0.0
-  l_two_cyl_finger1_joint: 0.0
-  l_two_cyl_finger2_joint: 0.0
-  r_three_cyl_finger1_joint: 0.0
-  r_three_cyl_finger2_joint: 0.0
-  r_three_cyl_finger3_joint: 0.0
-frames: {}
-controls:
-  db1:
-    state_id: closed
-    position: -2.1e-05
-    effort: 0.6735
-    in_motion: false
+  r_arm_5_joint: -2.517949526738776
+  r_three_cyl_finger2_joint: 0.018449
+  r_arm_6_joint: 3.127830819492244
+  r_arm_4_joint: 1.2522449170954302

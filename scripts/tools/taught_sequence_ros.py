@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
@@ -220,10 +221,17 @@ class TaughtRosWorker(SpinNode):
         deadline = time.monotonic() + max(40.0, duration * 6.0)
         while self.context.ok() and not result_future.done() and \
                 time.monotonic() < deadline:
+            if self._cancel.is_set():
+                handle.cancel_goal_async()
+                self._check_cancel()
             time.sleep(0.05)
         if not result_future.done():
+            handle.cancel_goal_async()
             raise RuntimeError("控制器未在时限内完成")
-        return int(result_future.result().result.error_code)
+        code = int(result_future.result().result.error_code)
+        if code != 0:
+            raise RuntimeError("控制器执行失败 error_code=%s" % code)
+        return code
 
     def _call(self, client, request, timeout, what):
         if not client.wait_for_service(timeout_sec=timeout):
@@ -311,10 +319,10 @@ class TaughtRosWorker(SpinNode):
             trajectory.points.append(new_point)
         return self._send_trajectory(side, trajectory, timeout)
 
-    def _send_trajectory(self, side: str, trajectory, timeout: float) -> int:
-        client = self._arm_clients[side]
+    def _send_trajectory(self, side: str, trajectory, timeout: float, *, rods=False) -> int:
+        client = (self._rod_clients if rods else self._arm_clients)[side]
         if not client.wait_for_server(timeout_sec=15.0):
-            raise RuntimeError("%s 控制器不可用" % ARMS[side]["action"])
+            raise RuntimeError("%s 控制器不可用" % (ROD_SIDES if rods else ARMS)[side]["action"])
         goal = FollowJointTrajectory.Goal()
         goal.trajectory = trajectory
         goal.goal_time_tolerance.sec = 5
@@ -329,10 +337,17 @@ class TaughtRosWorker(SpinNode):
         deadline = time.monotonic() + timeout
         while self.context.ok() and not result_future.done() and \
                 time.monotonic() < deadline:
+            if self._cancel.is_set():
+                handle.cancel_goal_async()
+                self._check_cancel()
             time.sleep(0.05)
         if not result_future.done():
+            handle.cancel_goal_async()
             raise RuntimeError("%s 未在 %.0fs 内完成轨迹" % (side, timeout))
-        return int(result_future.result().result.error_code)
+        code = int(result_future.result().result.error_code)
+        if code != 0:
+            raise RuntimeError("控制器执行失败 error_code=%s" % code)
+        return code
 
     # ------------------------------------------------------------- 步骤 1 送底盘
     def step_preposition_base(self, step: Mapping[str, Any],
@@ -368,7 +383,8 @@ class TaughtRosWorker(SpinNode):
         rod_joints = {j for cfg in ROD_SIDES.values() for j in cfg["joints"]}
         arm_joints = {j for cfg in ARMS.values() for j in cfg["joints"]}
         for joint in sorted(rod_joints):
-            targets[joint] = _clamp_rod(joint, targets[joint])
+            targets[joint] = (0.0 if step.get("retract_only", False)
+                              else _clamp_rod(joint, targets[joint]))
 
         on_progress(0.1, "退杆到 0")
         for side, cfg in ROD_SIDES.items():
@@ -471,7 +487,7 @@ class TaughtRosWorker(SpinNode):
             cfg = ROD_SIDES[side]
             current = self._measured(joint)
             low, high = ROD_LIMITS.get(joint, ROD_LIMITS["default"])
-            target = max(low, min(high, current + distance))
+            target = max(low, min(high, float(step.get("target", current + distance))))
             values = {j: self._measured(j) for j in cfg["joints"]}
             values[joint] = target
             code = self._send(self._rod_clients[side], cfg["joints"], values,
@@ -595,45 +611,32 @@ class TaughtRosWorker(SpinNode):
             self._check_cancel()
             plans = {}
             for side in ARMS:
-                solution, fraction, tip = self._plan_translate(side, axis, seg)
+                side_distance = (-seg if step.get("mirror", False) and side == "left"
+                                 else seg)
+                solution, fraction, tip = self._plan_translate(side, axis, side_distance)
                 if fraction < 0.99 or not solution.points:
                     raise RuntimeError(
                         "%s 平移第 %d/%d 段（%+.3f m）路径完整度仅 %.4f"
                         % (side, index + 1, len(segments), seg, fraction))
                 plans[side] = solution
-            for side, solution in plans.items():
-                code = self._execute_plan(side, solution, 1.0, 90.0)
-                if code != 0:
-                    raise RuntimeError("%s 平移 error_code=%s" % (side, code))
+            times = {side: max(p.time_from_start.sec + p.time_from_start.nanosec * 1e-9
+                               for p in solution.points)
+                     for side, solution in plans.items()}
+            common_duration = max(duration / len(segments), *times.values())
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = {
+                    side: executor.submit(self._execute_plan, side, solution,
+                                          common_duration / times[side] if times[side] else 1.0,
+                                          90.0)
+                    for side, solution in plans.items()
+                }
+                for side, future in futures.items():
+                    if future.result() != 0:
+                        raise RuntimeError("%s 平移失败" % side)
             for side in ARMS:
                 self._tip_settled(ARMS[side]["tip"])
             on_progress(0.05 + 0.9 * (index + 1) / float(len(segments)),
                         "平移 %d/%d 段完成" % (index + 1, len(segments)))
-        on_progress(1.0, "末端平移完成")
-        return
-
-        plans = {}
-        for side in ARMS:
-            solution, fraction, tip = self._plan_translate(side, axis, distance)
-            if fraction < 0.99 or not solution.points:
-                raise RuntimeError("%s 平移路径完整度仅 %.4f" % (side, fraction))
-            plans[side] = solution
-        scale = 1.0
-        if duration > 0.0:
-            plan_time = max(
-                (p.time_from_start.sec + p.time_from_start.nanosec * 1e-9)
-                for solution in plans.values() for p in solution.points)
-            scale = max(1.0, duration / plan_time) if plan_time > 0 else 1.0
-        for index, (side, solution) in enumerate(plans.items()):
-            self._check_cancel()
-            on_progress(0.1 + 0.85 * index / float(len(plans)),
-                        "平移（%s）" % side)
-            code = self._execute_plan(side, solution, scale,
-                                      max(120.0, duration * 4 or 120.0))
-            if code != 0:
-                raise RuntimeError("%s 控制器 error_code=%s" % (side, code))
-        for side in ARMS:
-            self._tip_settled(ARMS[side]["tip"])
         on_progress(1.0, "末端平移完成")
 
     # ------------------------------------------------------- 步骤 4 收回电缸杆
@@ -691,35 +694,21 @@ class TaughtRosWorker(SpinNode):
         control = str(step["control"])
         duration = float(step["duration"])
         distance = float(step.get("distance") or 0.0)
-        # 轨道位置优先从**插件每个控件都发的 <ns>/<control>/joint_states** 读。
-        # 只有 db1 有 `/state` 话题（实测 ds2/dm1 的 state 话题根本不存在），
-        # 之前一律等它、于是非 db1 的抽屉全卡在最后一步"等状态超时"。
+        # 每个抽屉均从插件的位置反馈确定本次位移。
         joint_topic = "/xczs/cabinet/%s/%s/joint_states" % (self._cabinet, control)
         state_topic = "/xczs/cabinet/%s/%s/state" % (self._cabinet, control)
         self.create_subscription(JointState, joint_topic,
-                                 self._rail_cb(control), 10)
+                                 self._rail_cb(control), best_effort_qos())
         self.create_subscription(CabinetControlState, state_topic,
-                                 self._state_cb(control), 10)
-        # 位置话题**不是每个控件都有**（实测只有 db1 有 /state；ds2/dm1 连
-        # /joint_states 也不发）。所以只等一小会儿，读不到就用步骤里的
-        # `assume_start`（默认 0，即"抽屉在关位"）——开抽屉场景天然成立；
-        # 关抽屉场景由序列显式给 assume_start: 0.25。这样不依赖插件是否发布。
-        # **给了 assume_start 就完全不等位置话题**。非 db1 的控件不发布位置话题，
-        # 等它必然白等 6 秒（实测这一段占了整轮的 9.5s 里的大头）。序列里每步都
-        # 显式给了 assume_start（开=0、合=0.03），本来就以它为准。
-        if step.get("assume_start") is None:
-            try:
-                wait_for(lambda: control in self._rails
-                         or control in self._controls, 1.5, joint_topic)
-            except RuntimeError:
-                print("注意：%s 的位置话题读不到，按 0 起算" % control, flush=True)
-        # 坑③：关到位时轨道位置实测是负的微小值，而下限是 0 → 必须钳进限位，
-        # 否则插件按 `q < lower` 直接拒收。
+                                 self._state_cb(control), best_effort_qos())
+        # 插件使用 SensorDataQoS；必须读到当前位置，避免重复打开时累计错位。
+        wait_for(lambda: control in self._rails or control in self._controls,
+                 5.0, joint_topic)
         raw = self._rails.get(control)
         if raw is None and control in self._controls:
             raw = self._controls[control].position
         if raw is None:
-            raw = float(step.get("assume_start") or 0.0)
+            raise RuntimeError("抽屉位置反馈缺失: " + control)
         start = max(0.0, min(RAIL_LIMIT, float(raw)))
         # **支持绝对目标位**（给 target 就按"当前位置 → target"算位移）。
         # 只用相对距离会在异常后累积：实测闭合失败一次、抽屉停在 0.07，
@@ -736,11 +725,9 @@ class TaughtRosWorker(SpinNode):
         on_progress(0.05, "规划双臂后拉路径")
         plans = {}
         for side in ARMS:
-            # 步长 0.02：抽拉是 3cm 直线，粗插补足够。
-            # 注：也试过关掉 avoid_collisions（以为碰撞检查是这段 ~9.5s 的开销），
-            # **实测无变化**，且那会降低安全性，故保留碰撞检查。
+            # 机械臂分担 35 mm，剩余 15 mm 由钩杆回缩完成。
             solution, fraction, tip = self._plan_translate(
-                side, "x", distance, max_step=0.02)
+                side, "x", distance * 0.7, max_step=0.01)
             if fraction < 0.99 or not solution.points:
                 raise RuntimeError("%s 后拉路径完整度仅 %.4f" % (side, fraction))
             plans[side] = (solution, tip)
@@ -748,6 +735,29 @@ class TaughtRosWorker(SpinNode):
             (p.time_from_start.sec + p.time_from_start.nanosec * 1e-9)
             for solution, _tip in plans.values() for p in solution.points)
         scale = max(1.0, duration / plan_time) if plan_time > 0 else 1.0
+
+        # 双臂承担 70% 行程，钩杆回缩承担 30%；支撑杆等量伸长，端点留在墙面。
+        # 5 cm 行程下支撑杆从 8 cm 到 11.5 cm，保持在原有 12 cm 限位内。
+        rod_plans = {}
+        contract = self._rod_contract()
+        for side, cfg in ROD_SIDES.items():
+            trajectory = JointTrajectory()
+            trajectory.joint_names = list(cfg["joints"])
+            initial = {j: self._measured(j) for j in cfg["joints"]}
+            target_rods = dict(initial)
+            target_rods[contract[side]["support"]] += distance * 0.7
+            target_rods[contract[side]["gripper"]] -= distance * 0.3
+            for joint, value in target_rods.items():
+                if abs(_clamp_rod(joint, value) - value) > 0.001:
+                    raise RuntimeError("抽拉所需电缸行程超限: %s=%.4f" % (joint, value))
+            lead = float(step.get("lead") or 0.3)
+            for elapsed, values in ((0.0, initial), (lead, initial),
+                                    (lead + plan_time * scale, target_rods)):
+                point = JointTrajectoryPoint()
+                point.positions = [values[j] for j in cfg["joints"]]
+                point.time_from_start = Duration(seconds=elapsed).to_msg()
+                trajectory.points.append(point)
+            rod_plans[side] = trajectory
 
         # 复用预热好的客户端（见 wait_ready），不再新建——新建要重新发现，
         # 实测那一次发现要等好几秒。
@@ -776,7 +786,10 @@ class TaughtRosWorker(SpinNode):
             def run_arm(side_name, arm_solution):
                 try:
                     results[side_name] = self._execute_plan(
-                        side_name, arm_solution, scale,
+                        side_name, arm_solution,
+                        (plan_time * scale) / max(
+                            p.time_from_start.sec + p.time_from_start.nanosec * 1e-9
+                            for p in arm_solution.points),
                         max(120.0, duration * 4), lead=lead)
                 except Exception as error:  # noqa: BLE001
                     results[side_name] = error
@@ -793,13 +806,26 @@ class TaughtRosWorker(SpinNode):
                 threads.append(thread)
 
 
+            def run_rods(side_name, trajectory):
+                try:
+                    results["rods_" + side_name] = self._send_trajectory(
+                        side_name, trajectory, max(120.0, duration * 4), rods=True)
+                except Exception as error:
+                    results["rods_" + side_name] = error
+
+            for side, trajectory in rod_plans.items():
+                thread = threading.Thread(target=run_rods, args=(side, trajectory),
+                                          daemon=True)
+                thread.start()
+                threads.append(thread)
+
             self.release_previous_hold(playback)
             on_progress(0.3, "启动抽屉轨道播放")
             self._start_playback(playback, lease_id, control, start,
-                                 distance, duration, lead=lead)
+                                 distance, plan_time * scale, lead=lead)
             for thread in threads:
                 thread.join(timeout=max(180.0, duration * 6))
-            for side in plans:
+            for side in list(plans) + ["rods_" + s for s in rod_plans]:
                 outcome = results.get(side)
                 if isinstance(outcome, Exception):
                     raise RuntimeError("%s 后拉失败: %s" % (side, outcome))
@@ -811,16 +837,23 @@ class TaughtRosWorker(SpinNode):
             final = self._rails.get(control)
             if final is None and control in self._controls:
                 final = self._controls[control].position
+            if final is None or abs(float(final) - (start + distance)) > 0.003:
+                raise RuntimeError("抽屉未到目标位置: 实测 %s，目标 %.4f"
+                                   % (final, start + distance))
+            self.drawer_result = {
+                "simulation_outcome_confirmed": True,
+                "final_position": float(final),
+                "target_position": start + distance,
+                "position_tolerance": 0.003,
+            }
             on_progress(1.0, "抽屉轨道 %.4f → %.4f m"
                         % (start, float(final) if final is not None else start))
         finally:
             self._stop_playback(playback, lease_id)
-            # HOLD 生效后**不能停续租、也不能释放租约**：租约一到期，插件的
-            # 60s 闲置看门狗就回收播放会话，抽屉随即被闩锁/弹簧拉回档位
-            # （实测 3cm 会自己合上）。所以把续租线程与租约都留着，由调用方
-            # 决定何时收尾。
+            # 插件 RELEASE 后会保持轨道当前位置，可以释放任务租约。
             self.stop_renewing()
             self._release_lease(lease_id)
+            self._current_lease_id = None
 
     def _wait_for_arms_moving(self, plans, timeout: float = 8.0,
                               epsilon: float = 0.0015) -> bool:
@@ -912,6 +945,8 @@ class TaughtRosWorker(SpinNode):
         if self._current_lease_id:
             return self._current_lease_id
         lease_id = self._acquire_lease()
+        self._current_lease_id = lease_id
+        self._start_renewing(lease_id)
         return lease_id
 
     def _acquire_lease(self) -> str:
@@ -1009,16 +1044,7 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("抽屉播放被拒: %s" % response.message)
 
     def _stop_playback(self, client, lease_id, hold: bool = False) -> None:
-        """结束播放。
-
-        **默认发 HOLD 而不是 RELEASE**：RELEASE 会把抽屉交回插件的默认控制，
-        闩锁/弹簧随即把它拉回最近的档位——实测拉出 3cm 时抽屉"开了又自己合上"
-        （0.3m 是它的开档位，3cm 离 0 档太近）。HOLD 则把抽屉**冻在当前位置**
-        （srv 定义：HOLD freezes the drawer at the current playback position）。
-
-        代价：HOLD 期间必须一直持有播放租约，否则 60s 闲置看门狗会回收、抽屉
-        照样弹回。所以持有时长由 hold_seconds 控制，期间后台线程持续续租。
-        """
+        """释放播放会话；插件以当前位置进入轨道保持模式。"""
         request = SetCabinetPlayback.Request()
         request.command = SetCabinetPlayback.Request.COMMAND_RELEASE
         request.control_id = getattr(self, "_playback_control", "")

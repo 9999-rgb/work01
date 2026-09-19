@@ -1,56 +1,22 @@
-# 由 derive_taught_pose.py 自动生成（IK 求得，非人工教学）
-label: ds3 拉出后位姿（001 + IK，Δx0.03 Δz0.5657）
-captured_wall_time: 2026-09-14T08:49:47+0800
+label: ds3 拉出5cm后的工作姿态（双臂35mm，钩杆回缩15mm）
 world_frame: odom
-derived_from: xczs_inspection_robot_control/config/taught_poses/db1_teach_node001_raise30.yaml
-offset:
-  dx: 0.03
-  dy: 0.0
-  dz: 0.5657
 joints:
-  l_arm_0_joint: -0.5233435934669156
-  l_arm_1_joint: -1.973228699796839
-  l_arm_2_joint: -1.6433895051627154
-  l_arm_3_joint: -0.7652060308742964
-  l_arm_4_joint: -1.2595338089364347
-  l_arm_5_joint: -0.25038822337034733
-  l_arm_6_joint: 0.2645697195808065
-  r_arm_0_joint: 0.51887606227096
-  r_arm_1_joint: -1.789616789829395
-  r_arm_2_joint: -1.8411560508687104
-  r_arm_3_joint: 0.7982796957478572
-  r_arm_4_joint: 1.6248092627279853
-  r_arm_5_joint: -2.781579564896726
-  r_arm_6_joint: 2.9160809970033847
-  l_two_cyl_finger1_joint: 0.018719
-  l_two_cyl_finger2_joint: 0.082954
-  r_three_cyl_finger1_joint: 0.081971
-  r_three_cyl_finger2_joint: 0.018449
+  l_arm_0_joint: 2.440106423122928
+  l_arm_1_joint: 1.785922261035786
+  l_arm_3_joint: -1.1388338604295474
+  l_arm_4_joint: 0.16670434939768305
+  l_arm_5_joint: -1.792668867937068
+  r_arm_0_joint: 0.15853920740425181
+  r_arm_1_joint: -1.86863146220928
+  l_arm_2_joint: 3.0781864341784204
+  r_arm_2_joint: 0.7730959856864785
+  l_two_cyl_finger1_joint: 0.00375
+  l_two_cyl_finger2_joint: 0.115
+  r_three_cyl_finger1_joint: 0.115
+  r_arm_3_joint: -1.3012898626958929
+  l_arm_6_joint: -2.422205629109171
   r_three_cyl_finger3_joint: 4.2e-05
-joint_efforts:
-  l_arm_0_joint: 0.0
-  l_arm_1_joint: 0.0
-  l_arm_2_joint: 0.0
-  l_arm_3_joint: 0.0
-  l_arm_4_joint: 0.0
-  l_arm_5_joint: 0.0
-  l_arm_6_joint: 0.0
-  r_arm_0_joint: 0.0
-  r_arm_1_joint: 0.0
-  r_arm_2_joint: 0.0
-  r_arm_3_joint: 0.0
-  r_arm_4_joint: 0.0
-  r_arm_5_joint: 0.0
-  r_arm_6_joint: 0.0
-  l_two_cyl_finger1_joint: 0.0
-  l_two_cyl_finger2_joint: 0.0
-  r_three_cyl_finger1_joint: 0.0
-  r_three_cyl_finger2_joint: 0.0
-  r_three_cyl_finger3_joint: 0.0
-frames: {}
-controls:
-  db1:
-    state_id: closed
-    position: -2.1e-05
-    effort: 0.6735
-    in_motion: false
+  r_arm_5_joint: -2.290424640228788
+  r_three_cyl_finger2_joint: 0.00375
+  r_arm_6_joint: -3.0694462985524362
+  r_arm_4_joint: -1.6921721680529789

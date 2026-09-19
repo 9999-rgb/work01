@@ -515,14 +515,14 @@
         navigation_station:
           local_anchor: [0.099, 4.219, 0.0]
           outward_axis: [1.0, 0.0, 0.0]
-          standoff: 1.1
+          standoff: 0.9
           base_yaw_offset: 0.0
           frame_id: map
       ds3:
         navigation_station:
           local_anchor: [0.099, 5.381, 0.0]
           outward_axis: [1.0, 0.0, 0.0]
-          standoff: 1.1
+          standoff: 0.9
           base_yaw_offset: 0.0
           frame_id: map
     # 物理执行能力正向清单（AGENT P3 起：db1 抽屉为本阶段唯一 drawer 流程
