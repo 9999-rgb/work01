@@ -3,7 +3,7 @@ schema_version: 1
 sequences:
   db1:
     open:
-      display_name: db1 抽拉柜 打开（教学动作）
+      display_name: db1 抽拉柜 打开
       steps:
       - type: preposition_base
         control: db1
@@ -40,7 +40,7 @@ sequences:
         duration: 3.0
         lead: 0.3
     closed:
-      display_name: db1 抽拉柜 关闭（教学动作）
+      display_name: db1 抽拉柜 关闭
       steps:
       - type: restore_pose
         pose: db1_ready.yaml
@@ -92,7 +92,7 @@ sequences:
       - type: go_home
   dm1:
     open:
-      display_name: dm1 抽拉柜 打开（教学动作）
+      display_name: dm1 抽拉柜 打开
       steps:
       - type: preposition_base
         control: dm1
@@ -129,7 +129,7 @@ sequences:
         duration: 3.0
         lead: 0.3
     closed:
-      display_name: dm1 抽拉柜 关闭（教学动作）
+      display_name: dm1 抽拉柜 关闭
       steps:
       - type: restore_pose
         pose: dm1_ready.yaml
@@ -181,7 +181,7 @@ sequences:
       - type: go_home
   ds2:
     open:
-      display_name: ds2 抽拉柜 打开（教学动作）
+      display_name: ds2 抽拉柜 打开
       steps:
       - type: preposition_base
         control: ds2
@@ -215,7 +215,7 @@ sequences:
         lead: 0.3
         support_enabled: false
     closed:
-      display_name: ds2 抽拉柜 关闭（教学动作）
+      display_name: ds2 抽拉柜 关闭
       steps:
       - type: restore_pose
         pose: ds2_ready.yaml
@@ -258,7 +258,7 @@ sequences:
       - type: go_home
   ds3:
     open:
-      display_name: ds3 抽拉柜 打开（教学动作）
+      display_name: ds3 抽拉柜 打开
       steps:
       - type: preposition_base
         control: ds3
@@ -292,7 +292,7 @@ sequences:
         lead: 0.3
         support_enabled: false
     closed:
-      display_name: ds3 抽拉柜 关闭（教学动作）
+      display_name: ds3 抽拉柜 关闭
       steps:
       - type: restore_pose
         pose: ds3_ready.yaml

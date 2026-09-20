@@ -63,7 +63,7 @@ def load_sequences(path: Optional[Path] = None) -> Dict[str, Dict[str, Dict[str,
     """读序列文件 → ``{control_id: {command: {"display_name", "steps"}}}``。"""
     path = Path(path) if path else DEFAULT_SEQUENCE_FILE
     if not path.is_file():
-        raise TaughtSequenceError(f"教学序列文件不存在: {path}")
+        raise TaughtSequenceError(f"操作流程文件不存在: {path}")
     with path.open("r", encoding="utf-8") as handle:
         document = yaml.safe_load(handle)
     if not isinstance(document, Mapping):
@@ -242,7 +242,7 @@ class TaughtSequenceRunner:
             from taught_sequence_ros import TaughtRosWorker  # noqa: WPS433
 
             self._feedback("starting", 0.02,
-                           f"开始执行教学动作：{self._display_name}")
+                           f"开始执行：{self._display_name}")
             node = TaughtRosWorker(self._cabinet, self._cancel,
                                    context=self._context)
             node.wait_ready()
@@ -262,7 +262,7 @@ class TaughtSequenceRunner:
             total = len(steps)
             for index, step in enumerate(steps):
                 if self._cancel.is_set():
-                    self._terminal("canceled", "教学动作被取消。")
+                    self._terminal("canceled", "操作已取消。")
                     return
                 step_type = str(step.get("type"))
                 base = index / float(total)
@@ -284,7 +284,7 @@ class TaughtSequenceRunner:
             # 与 operator 的结果字段保持同形，前端/录像的消费方不用区分来源。
             self._terminal(
                 "success",
-                f"教学动作完成：{self._display_name}（{elapsed:.1f} s）",
+                f"操作完成：{self._display_name}（{elapsed:.1f} s）",
                 result={
                     "cabinet": self._cabinet,
                     "control_id": self._control_id,
@@ -300,8 +300,8 @@ class TaughtSequenceRunner:
             import traceback
 
             detail = traceback.format_exc()
-            print("教学动作异常详情:\n%s" % detail, flush=True)
-            self._terminal("failed", f"教学动作失败：{error}",
+            print("操作异常详情:\n%s" % detail, flush=True)
+            self._terminal("failed", f"操作失败：{error}",
                            result={"traceback": detail[-2000:]})
         finally:
             if node is not None:
@@ -310,7 +310,7 @@ class TaughtSequenceRunner:
                 # 这是已知的取舍——代价是每个 such 任务会留下一个常驻节点；
                 # 正解是另起一个小的常驻 holder 节点，见该处 TODO。
                 if getattr(node, "_hold_active", False):
-                    print("保留教学序列节点以维持抽屉冻结（HOLD 需持续持有租约）",
+                    print("保留操作节点以维持抽屉位置（HOLD 需持续持有租约）",
                           flush=True)
                 else:
                     try:

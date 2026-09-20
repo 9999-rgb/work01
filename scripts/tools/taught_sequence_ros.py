@@ -618,7 +618,7 @@ class TaughtRosWorker(SpinNode):
                 continue
             self._send(self._rod_clients[side], cfg["joints"], targets, 3.0)
         self._settled(sorted(rod_joints))
-        on_progress(1.0, "已还原教学位姿 %s" % pose_path.name)
+        on_progress(1.0, "已到达预设位姿 %s" % pose_path.name)
 
     # ------------------------------------------------- 步骤 3a 电缸杆伸缩
     def _rod_contract(self):
@@ -689,7 +689,8 @@ class TaughtRosWorker(SpinNode):
             current = self._measured(joint)
             low, high = ROD_LIMITS.get(joint, ROD_LIMITS["default"])
             target = max(low, min(high, float(step.get("target", current + distance))))
-            values = {j: self._measured(j) for j in cfg["joints"]}
+            # 接触负载可能让被动杆反馈短暂越过零点，不能把越界反馈再作为目标。
+            values = {j: _clamp_rod(j, self._measured(j)) for j in cfg["joints"]}
             values[joint] = target
             code = self._send(self._rod_clients[side], cfg["joints"], values,
                               duration)
@@ -956,6 +957,9 @@ class TaughtRosWorker(SpinNode):
             trajectory = JointTrajectory()
             trajectory.joint_names = list(cfg["joints"])
             initial = {j: self._measured(j) for j in cfg["joints"]}
+            active_joints = {contract[side]["gripper"], contract[side]["support"]}
+            for joint in set(cfg["joints"]) - active_joints:
+                initial[joint] = _clamp_rod(joint, initial[joint])
             target_rods = dict(initial)
             if step.get("support_enabled", True):
                 target_rods[contract[side]["support"]] += distance * arm_share
@@ -1001,6 +1005,12 @@ class TaughtRosWorker(SpinNode):
                 except Exception as error:  # noqa: BLE001
                     results[side_name] = error
 
+            # 跟随模式的零点由 START 服务捕获。先确认零点登记，再发运动，
+            # 否则服务偶发慢于 lead 时，会漏掉机械臂已经走出的那段行程。
+            self.release_previous_hold(playback)
+            on_progress(0.3, "登记抽屉联动零点")
+            self._start_playback(playback, lease_id, control, start,
+                                 distance, plan_time * scale, lead=lead)
             threads = []
             for index, (side, (solution, _tip)) in enumerate(plans.items()):
                 self._check_cancel()
@@ -1026,10 +1036,6 @@ class TaughtRosWorker(SpinNode):
                 thread.start()
                 threads.append(thread)
 
-            self.release_previous_hold(playback)
-            on_progress(0.3, "启动抽屉轨道播放")
-            self._start_playback(playback, lease_id, control, start,
-                                 distance, plan_time * scale, lead=lead)
             for thread in threads:
                 thread.join(timeout=max(180.0, duration * 6))
             for side in list(plans) + ["rods_" + s for s in rod_plans]:

@@ -129,6 +129,61 @@ class DrawerSafetyTests(unittest.TestCase):
         worker.TaughtRosWorker._plan_translate(node, 'left', 'x', .05)
         node._tip_pose.assert_not_called()
 
+    def test_passive_rod_feedback_is_not_reissued_outside_limits(self):
+        joints = worker.ROD_SIDES['right']['joints']
+        values = {joint: 0.0 for joint in joints}
+        values['r_three_cyl_finger3_joint'] = -0.0028
+        sent = []
+        node = SimpleNamespace(
+            _rod_contract=lambda: {'right': {'support': 'r_three_cyl_finger1_joint'}},
+            _measured=lambda joint: values[joint], _rod_clients={'right': None},
+            _send=lambda client, names, targets, duration: sent.append(dict(targets)) or 0,
+            _settled=lambda _: True)
+        worker.TaughtRosWorker.step_rod_stroke(node,
+            {'role': 'support', 'side': 'right', 'distance': 0.0, 'target': .115},
+            lambda *_: None)
+        self.assertEqual(sent[0]['r_three_cyl_finger3_joint'], 0.0)
+        self.assertEqual(sent[0]['r_three_cyl_finger1_joint'], .115)
+
+    def test_playback_origin_is_registered_before_any_arm_motion(self):
+        events = []
+        trajectory = JointTrajectory(points=[JointTrajectoryPoint()])
+        trajectory.points[0].time_from_start.sec = 3
+        contract = {
+            'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
+            'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}}
+
+        class ImmediateThread:
+            def __init__(self, target, args, **kwargs):
+                self.target, self.args = target, args
+            def start(self):
+                self.target(*self.args)
+            def join(self, **kwargs):
+                pass
+
+        def execute(side, *args, **kwargs):
+            self.assertIn('playback', events)
+            events.append(side)
+            node._rails['test'] = .05
+            return 0
+
+        node = SimpleNamespace(
+            _cabinet='test', _rails={'test': 0.0}, _controls={},
+            _ensure_rail_subscription=lambda _: None, create_subscription=Mock(),
+            _state_cb=lambda _: Mock(), _plan_translate=lambda *a, **k: (trajectory, 1.0, (0, 0, 0)),
+            _retime_drawer_path=lambda *a: None, _rod_contract=lambda: contract,
+            _measured=lambda _: 0.0, _playback_warm=object(), ensure_lease=lambda: 'test',
+            _check_cancel=lambda: None, _execute_plan=execute,
+            release_previous_hold=lambda _: events.append('release'),
+            _start_playback=lambda *a, **k: events.append('playback'),
+            _tip_settled=lambda _: None, _stop_playback=lambda *a: None,
+            stop_renewing=lambda: None, _release_lease=lambda _: None)
+        with patch.object(worker.threading, 'Thread', ImmediateThread), patch.object(worker.time, 'sleep'):
+            worker.TaughtRosWorker.step_pull_drawer(node,
+                {'control': 'test', 'target': .05, 'duration': 3.0, 'support_enabled': False},
+                lambda *_: None)
+        self.assertEqual(events, ['release', 'playback', 'left', 'right'])
+
     def test_repeat_target_uses_measured_position(self):
         node = SimpleNamespace(_cabinet='test', _rails={'ds3': .05}, _rail_subscriptions={},
                                _rail_cb=lambda _: Mock(),
