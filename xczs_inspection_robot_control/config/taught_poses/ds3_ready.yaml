@@ -1,0 +1,22 @@
+label: ds3 连续钩拉姿态 ready
+world_frame: odom
+joints:
+  l_arm_0_joint: 2.538611781123412
+  l_arm_1_joint: 1.772426340206573
+  l_arm_3_joint: 1.2400611982399747
+  l_arm_4_joint: 0.3449259809310682
+  l_arm_5_joint: -1.429434014047819
+  r_arm_0_joint: 1.304991674571086
+  r_arm_1_joint: -1.887105136736323
+  l_arm_2_joint: -0.07466513469464064
+  r_arm_2_joint: -0.7790179022815701
+  l_two_cyl_finger1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: -1.3996196976046926
+  l_arm_6_joint: 0.6403148240222072
+  r_three_cyl_finger3_joint: 0.0
+  r_arm_5_joint: -0.7768832923295976
+  r_three_cyl_finger2_joint: 0.0
+  r_arm_6_joint: -1.9179676128258818
+  r_arm_4_joint: -1.2746714584141585

@@ -1,22 +1,22 @@
-label: ds2 拉出5cm后的工作姿态（双臂35mm，钩杆回缩15mm）
+label: ds2 连续钩拉姿态 opened
 world_frame: odom
 joints:
-  l_arm_0_joint: -0.2126306210203893
-  l_arm_1_joint: -1.9914753775860066
-  l_arm_3_joint: 1.1231197271871733
-  l_arm_4_joint: 1.6681762946162584
-  l_arm_5_joint: -0.9084642591575315
-  r_arm_0_joint: 0.07559181388845021
-  r_arm_1_joint: -2.1297451246643346
-  l_arm_2_joint: 2.388334586786285
-  r_arm_2_joint: -2.140238232992257
-  l_two_cyl_finger1_joint: 0.00375
-  l_two_cyl_finger2_joint: 0.115
-  r_three_cyl_finger1_joint: 0.115
-  r_arm_3_joint: 1.1134169711490367
-  l_arm_6_joint: 0.012897060156116146
-  r_three_cyl_finger3_joint: 4.2e-05
-  r_arm_5_joint: -2.4232698998924596
-  r_three_cyl_finger2_joint: 0.00375
-  r_arm_6_joint: 3.05440134225346
-  r_arm_4_joint: 1.2345107197323988
+  l_arm_0_joint: -0.17630953381331665
+  l_arm_1_joint: -1.9830100219086935
+  l_arm_3_joint: 1.1600908679949993
+  l_arm_4_joint: 1.6948987436628469
+  l_arm_5_joint: -0.9214041514971604
+  r_arm_0_joint: -2.2598115838517523
+  r_arm_1_joint: 1.796839097925132
+  l_arm_2_joint: 2.409801819942782
+  r_arm_2_joint: -0.23569254455719013
+  l_two_cyl_finger1_joint: 0.01875
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: 1.1510386921729545
+  l_arm_6_joint: -0.002913839813242099
+  r_three_cyl_finger3_joint: 0.0
+  r_arm_5_joint: -1.8861097693760873
+  r_three_cyl_finger2_joint: 0.01875
+  r_arm_6_joint: 1.5769979157232945
+  r_arm_4_joint: -2.1755086409580158

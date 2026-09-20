@@ -246,8 +246,21 @@ class TaughtSequenceRunner:
             node = TaughtRosWorker(self._cabinet, self._cancel,
                                    context=self._context)
             node.wait_ready()
-            total = len(self._steps)
-            for index, step in enumerate(self._steps):
+            steps = self._steps
+            continued_from_open = False
+            pull = next((s for s in steps if s["type"] == "pull_drawer"), None)
+            if (pull is not None and "target" in pull
+                    and node.drawer_already_at_target(pull["control"], float(pull["target"]))):
+                steps = []
+                self._feedback("taught", 1.0, "抽屉已到目标位置，跳过重复动作")
+            elif (pull is not None and float(pull.get("target", -1)) == 0.0
+                  and node.can_continue_drawer_close(
+                      pull["control"], pull.get("support_enabled", True))):
+                steps = steps[steps.index(pull):]
+                continued_from_open = True
+                self._feedback("taught", 0.0, "末端仍在扣手开位，直接推回")
+            total = len(steps)
+            for index, step in enumerate(steps):
                 if self._cancel.is_set():
                     self._terminal("canceled", "教学动作被取消。")
                     return
@@ -278,6 +291,7 @@ class TaughtSequenceRunner:
                     "command": self._command,
                     "execution_backend": "taught",
                     "duration_seconds": elapsed,
+                    "continued_from_open": continued_from_open,
                     **getattr(node, "drawer_result", {}),
                 },
             )

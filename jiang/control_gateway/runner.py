@@ -5336,6 +5336,28 @@ class ControlServer:
                 last_report_at = now
             time.sleep(OPERATION_START_STATION_POLL_SEC)
 
+    def _find_taught_sequence(self, control_id, command, target_state):
+        sequence = None
+        try:
+            sequences = self._taught_sequences
+            if sequences is None:
+                from .taught_sequence import load_sequences
+
+                sequences = load_sequences()
+                self._taught_sequences = sequences
+            from .taught_sequence import find_sequence as find_taught_sequence
+            sequence = find_taught_sequence(
+                sequences, control_id, command, target_state
+            )
+        except Exception as error:  # noqa: BLE001
+            # 配置坏了不能让整个控件不可用：记一条日志，退回原路径。
+            self._node.get_logger().error(
+                f"Taught sequence config unusable, falling back to the "
+                f"cabinet action: {error}"
+            )
+
+        return sequence
+
     def _submit_taught_or_action(
         self,
         client: "CabinetClient",
@@ -5358,24 +5380,7 @@ class ControlServer:
         所以后面那段监视线程、超时、取消、SSE 推进一行都不用改。
         """
         runner = self._taught_runners
-        sequence = None
-        try:
-            sequences = self._taught_sequences
-            if sequences is None:
-                from .taught_sequence import load_sequences
-
-                sequences = load_sequences()
-                self._taught_sequences = sequences
-            from .taught_sequence import find_sequence as find_taught_sequence
-            sequence = find_taught_sequence(
-                sequences, control_id, command, target_state
-            )
-        except Exception as error:  # noqa: BLE001
-            # 配置坏了不能让整个控件不可用：记一条日志，退回原路径。
-            self._node.get_logger().error(
-                f"Taught sequence config unusable, falling back to the "
-                f"cabinet action: {error}"
-            )
+        sequence = self._find_taught_sequence(control_id, command, target_state)
 
         if sequence is None:
             # See the navigation equivalent earlier in this file: the
@@ -5472,11 +5477,15 @@ class ControlServer:
                     force,
                 )
         except TaskExecutionError as error:
-            self._annotate_task_failure_recovery(
-                context,
-                error,
-                cabinet,
-            )
+            sequence = self._find_taught_sequence(control_id, command, target_state)
+            if sequence is not None and any(
+                step.get("type") == "pull_drawer" for step in sequence["steps"]
+            ):
+                # 钩爪可能仍扣在把手上；故障后直接关节回零会横穿柜体。
+                error.result = {**(error.result or {}), "recovery": {
+                    "status": "skipped", "reason": "drawer_pose_held_after_failure"}}
+            else:
+                self._annotate_task_failure_recovery(context, error, cabinet)
             raise
 
     def _execute_operation_task(
@@ -5553,17 +5562,24 @@ class ControlServer:
             progress_base=0.0,
             progress_span=OPERATION_START_STATION_PROGRESS_SPAN,
         )
-        self._home_robot_joints(
-            context,
-            cabinet,
-            progress_base=OPERATION_START_STATION_PROGRESS_SPAN,
-            progress_span=(
-                OPERATION_PREFLIGHT_PROGRESS
-                - OPERATION_START_STATION_PROGRESS_SPAN
-            ),
-            strict_joint_tolerance=OPERATION_START_POSTURE_TOLERANCE_RAD,
-            settle_seconds=OPERATION_START_POSTURE_STABLE_SEC,
+        # 抽拉教学流程自己负责准备、重复目标检查与扣手后的直接推回。
+        # 此处先强制回零会拆散扣手姿态，甚至在重复点击时拖着把手收臂。
+        sequence = self._find_taught_sequence(control_id, command, target_state)
+        owns_drawer_posture = sequence is not None and any(
+            step.get("type") == "pull_drawer" for step in sequence["steps"]
         )
+        if not owns_drawer_posture:
+            self._home_robot_joints(
+                context,
+                cabinet,
+                progress_base=OPERATION_START_STATION_PROGRESS_SPAN,
+                progress_span=(
+                    OPERATION_PREFLIGHT_PROGRESS
+                    - OPERATION_START_STATION_PROGRESS_SPAN
+                ),
+                strict_joint_tolerance=OPERATION_START_POSTURE_TOLERANCE_RAD,
+                settle_seconds=OPERATION_START_POSTURE_STABLE_SEC,
+            )
         event_queue: "queue.Queue[Dict[str, Any]]" = queue.Queue()
         with self._operation_bindings_lock:
             self._operation_event_queues[cabinet] = event_queue

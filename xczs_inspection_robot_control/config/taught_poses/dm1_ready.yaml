@@ -1,0 +1,22 @@
+label: dm1 柜前8cm准备姿态
+world_frame: odom
+joints:
+  l_arm_0_joint: -1.1705213974922393
+  l_arm_1_joint: -2.106804908479064
+  l_arm_3_joint: -1.4628395929106217
+  l_arm_4_joint: -1.0314259780470965
+  l_arm_5_joint: -0.1061844496219719
+  r_arm_0_joint: 1.2093551849636026
+  r_arm_1_joint: -1.8208216862016882
+  l_arm_2_joint: -1.540896346501871
+  r_arm_2_joint: -1.9063791122920375
+  l_two_cyl_finger1_joint: 0.0
+  l_two_cyl_finger2_joint: 0.0
+  r_three_cyl_finger1_joint: 0.0
+  r_arm_3_joint: 1.4740416330728519
+  l_arm_6_joint: -1.093355980354342
+  r_three_cyl_finger3_joint: 4.2e-05
+  r_arm_5_joint: -2.7673067448599897
+  r_three_cyl_finger2_joint: 0.0
+  r_arm_6_joint: -1.9291937113809827
+  r_arm_4_joint: 1.3276099993062083

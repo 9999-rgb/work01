@@ -35,10 +35,12 @@ import tf2_ros
 import yaml
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose
-from moveit_msgs.srv import GetCartesianPath
+from moveit_msgs.msg import CollisionObject, Constraints, JointConstraint
+from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetMotionPlan, GetPositionFK
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.parameter import Parameter
+from shape_msgs.msg import SolidPrimitive
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from xczs_inspection_robot_interfaces.msg import CabinetControlState
 from xczs_inspection_robot_interfaces.srv import (
@@ -108,12 +110,16 @@ class TaughtRosWorker(SpinNode):
         self._controls: Dict[str, Any] = {}
         # 轨道位置：优先取 joint_states（每控件都有），state 话题只 db1 有
         self._rails: Dict[str, float] = {}
+        self._rail_subscriptions = {}
         self.create_subscription(JointState, JOINT_STATES_TOPIC,
                                  self._on_joint_state, best_effort_qos())
         self._tf_buffer = tf2_ros.Buffer()
         self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
         self._cartesian_cli = self.create_client(GetCartesianPath,
                                                  CARTESIAN_SERVICE)
+        self._fk_cli = self.create_client(GetPositionFK, "/compute_fk")
+        self._motion_plan_cli = self.create_client(GetMotionPlan, "/plan_kinematic_path")
+        self._planning_scene_cli = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
         self._lease_cli = self.create_client(ManageOperationLease, LEASE_SERVICE)
         self._arm_clients = {
             side: ActionClient(self, FollowJointTrajectory, cfg["action"])
@@ -127,6 +133,70 @@ class TaughtRosWorker(SpinNode):
         self._current_lease_id: Optional[str] = None
         self._renew_stop: Optional[threading.Event] = None
         self._renew_thread: Optional[threading.Thread] = None
+
+    def _ensure_rail_subscription(self, control):
+        # MultiThreadedExecutor 可能正准备读取订阅，不能在任务线程提前销毁。
+        # 持有至 shutdown 停止 executor 后，再由 destroy_node 统一释放。
+        if control not in self._rail_subscriptions:
+            topic = "/xczs/cabinet/%s/%s/joint_states" % (self._cabinet, control)
+            self._rail_subscriptions[control] = self.create_subscription(
+                JointState, topic, self._rail_cb(control), best_effort_qos())
+
+    def drawer_already_at_target(self, control, target):
+        """整条动作开始前检查位置，重复点击不再驱动底盘与机械臂。"""
+        self._ensure_rail_subscription(control)
+        wait_for(lambda: control in self._rails, 5.0, "抽屉轨道反馈")
+        position = self._rails[control]
+        if not math.isfinite(position):
+            raise RuntimeError("抽屉位置反馈无效")
+        if abs(position - target) > 0.003:
+            return False
+        self.drawer_result = {
+            "simulation_outcome_confirmed": True,
+            "final_position": position, "target_position": target,
+            "position_tolerance": 0.003, "already_at_target": True,
+        }
+        return True
+
+    def can_continue_drawer_close(self, control, support_enabled):
+        """仅实测仍处在扣手开位时省略重新准备，不依赖上次任务成功标志。"""
+        path = TAUGHT_POSES_DIR / (control + "_opened.yaml")
+        if not path.is_file():
+            return False
+        targets = yaml.safe_load(path.read_text())["joints"]
+        contract = self._rod_contract()
+        for side in ROD_SIDES:
+            gripper = 0.00375 if support_enabled else 0.01875
+            if abs(self._measured(contract[side]["gripper"]) - gripper) > 0.003:
+                return False
+            support = 0.115 if support_enabled else 0.0
+            if abs(self._measured(contract[side]["support"]) - support) > 0.003:
+                return False
+        if abs(self._rails.get(control, float("inf")) - 0.05) > 0.003:
+            return False
+        # 七轴臂有冗余自由度：关节角不同也可能是同一个扣手姿态。
+        # 用实测末端位置与方向确认接合，避免 Web 新任务误走整套准备。
+        client = self._fk_cli
+        try:
+            request = GetPositionFK.Request()
+            request.header.frame_id = WORLD_FRAME
+            request.fk_link_names = [cfg["tip"] for cfg in ARMS.values()]
+            request.robot_state.joint_state.name = list(targets)
+            request.robot_state.joint_state.position = [float(v) for v in targets.values()]
+            response = self._call(client, request, 10.0, "末端姿态校验")
+            if response.error_code.val != 1 or len(response.pose_stamped) != len(ARMS):
+                return False
+            for tip, expected in zip(request.fk_link_names, response.pose_stamped):
+                position, quaternion = self._tip_pose(tip)
+                p, q = expected.pose.position, expected.pose.orientation
+                if math.dist(position, (p.x, p.y, p.z)) > 0.006:
+                    return False
+                dot = abs(sum(a*b for a, b in zip(quaternion, (q.x, q.y, q.z, q.w))))
+                if 2.0 * math.acos(min(1.0, dot)) > 0.03:
+                    return False
+            return True
+        except RuntimeError as error:
+            raise RuntimeError("扣手姿态校验失败，保持当前位置: %s" % error) from error
 
     # ------------------------------------------------------------------ infra
     def _on_joint_state(self, msg):
@@ -176,7 +246,10 @@ class TaughtRosWorker(SpinNode):
         names = list(self._joint_state.name)
         if joint not in names:
             raise RuntimeError("关节 %s 不在 %s 里" % (joint, JOINT_STATES_TOPIC))
-        return float(self._joint_state.position[names.index(joint)])
+        value = float(self._joint_state.position[names.index(joint)])
+        if not math.isfinite(value):
+            raise RuntimeError("关节位置反馈无效: " + joint)
+        return value
 
     def _settled(self, joints: List[str], timeout: float = 12.0,
                  tolerance: float = 0.0002, window: float = 0.15) -> bool:
@@ -195,6 +268,8 @@ class TaughtRosWorker(SpinNode):
         trajectory.joint_names = list(joints)
         point = JointTrajectoryPoint()
         point.positions = [float(targets[j]) for j in joints]
+        point.velocities = [0.0] * len(joints)
+        point.accelerations = [0.0] * len(joints)
         point.time_from_start = Duration(seconds=float(duration)).to_msg()
         trajectory.points = [point]
         if not client.wait_for_server(timeout_sec=15.0):
@@ -261,15 +336,25 @@ class TaughtRosWorker(SpinNode):
         raise RuntimeError("TF %s→%s 不可用: %s" % (WORLD_FRAME, tip, last))
 
     def _plan_translate(self, side: str, axis: str, distance: float,
-                        # 2026-09-15 实测更正：这里必须保持 0.02。曾按 a48843b 提交
-                        # 信息（自称"提速无收益"）把它退回 0.005，结果 db1 教学序列
-                        # 直接失败——right 平移 +0.040m 路径完整度仅 0.75（插补变细
-                        # → 碰撞检查变密 → 半途判定碰撞而停）。0.02 是这套序列能规划
-                        # 通过的必要条件，不是可调的性能参数。**勿再回退。**
                         max_step: float = 0.02, timeout: float = 60.0,
                         avoid_collisions: bool = True):
         cfg = ARMS[side]
-        (sx, sy, sz), quat = self._tip_pose(cfg["tip"])
+        # TF 的末端变换可能落后于刚完成的关节轨迹。起点和目标必须由同一份
+        # 关节快照计算，否则“最新起点 + 旧末端目标”会产生额外横移和高度偏差。
+        start_joints = self._joint_state
+        fk = GetPositionFK.Request()
+        fk.header.frame_id = WORLD_FRAME
+        fk.fk_link_names = [cfg["tip"]]
+        fk.robot_state.joint_state = start_joints
+        pose_response = self._call(self._fk_cli, fk, timeout, "直线起点正解")
+        if pose_response.error_code.val != 1 or not pose_response.pose_stamped:
+            raise RuntimeError("直线起点正解失败: " + side)
+        start_pose = pose_response.pose_stamped[0].pose
+        sx, sy, sz = start_pose.position.x, start_pose.position.y, start_pose.position.z
+        q = start_pose.orientation
+        quat = (q.x, q.y, q.z, q.w)
+        if not all(math.isfinite(value) for value in (sx, sy, sz, *quat)):
+            raise RuntimeError("直线起点正解包含无效读数: " + side)
         target = Pose()
         target.position.x = sx + (distance if axis == "x" else 0.0)
         target.position.y = sy + (distance if axis == "y" else 0.0)
@@ -279,15 +364,25 @@ class TaughtRosWorker(SpinNode):
         request = GetCartesianPath.Request()
         request.header.frame_id = WORLD_FRAME
         request.header.stamp = self.get_clock().now().to_msg()
+        request.start_state.joint_state = start_joints
         request.group_name = cfg["group"]
         request.link_name = cfg["tip"]
         request.waypoints = [target]
         request.max_step = max_step
-        request.jump_threshold = 0.0
+        request.jump_threshold = 2.0
         request.avoid_collisions = avoid_collisions
         response = self._call(self._cartesian_cli, request, timeout,
                               CARTESIAN_SERVICE)
-        return response.solution.joint_trajectory, response.fraction, (sx, sy, sz)
+        trajectory = response.solution.joint_trajectory
+        indices = {name: i for i, name in enumerate(trajectory.joint_names)}
+        previous = {joint: self._measured(joint) for joint in cfg["joints"]}
+        for point in trajectory.points:
+            for joint in cfg["joints"]:
+                current = point.positions[indices[joint]]
+                if not math.isfinite(current) or abs(current - previous[joint]) > 0.35:
+                    raise RuntimeError("直线轨迹发生关节跳变，停止执行: " + joint)
+                previous[joint] = current
+        return trajectory, response.fraction, (sx, sy, sz)
 
     def _execute_plan(self, side: str, solution, scale: float,
                       timeout: float, lead: float = 0.0) -> int:
@@ -349,6 +444,110 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("控制器执行失败 error_code=%s" % code)
         return code
 
+    def _move_arm_to(self, side, targets):
+        """准备/归位走规划路径，末端基座始终留在柜前净空内。"""
+        cfg = ARMS[side]
+        tool_base = "l_two_cyl_base" if side == "left" else "r_three_cyl_base"
+        fk_client = self._fk_cli
+        plan_client = self._motion_plan_cli
+        fk = GetPositionFK.Request()
+        fk.header.frame_id = WORLD_FRAME
+        fk.fk_link_names = [tool_base]
+        goal_state = {j: self._measured(j) for j in self._joint_state.name}
+        goal_state.update({j: float(targets[j]) for j in cfg["joints"]})
+        fk.robot_state.joint_state.name = list(goal_state)
+        fk.robot_state.joint_state.position = list(goal_state.values())
+        goal_fk = self._call(fk_client, fk, 10.0, "准备姿态正解")
+        if goal_fk.error_code.val != 1 or not goal_fk.pose_stamped:
+            raise RuntimeError("准备姿态正解失败: " + side)
+        current, _ = self._tip_pose(tool_base)
+        destination = goal_fk.pose_stamped[0].pose.position
+        # 仅在准备/归位期间加一块柜前净空障碍，直接检查全部机器人网格。
+        # 比位置约束的 IK 区域采样更稳定，也能覆盖杆件没有变形的穿模。
+        guard = CollisionObject()
+        guard.header.frame_id = WORLD_FRAME
+        guard.id = "taught_drawer_transit_clearance"
+        guard.operation = CollisionObject.ADD
+        box = SolidPrimitive(type=SolidPrimitive.BOX, dimensions=[10.0, 20.0, 6.0])
+        center = Pose()
+        center.position.x = min(current[0], destination.x) - 0.43 - 5.0
+        center.position.y = destination.y
+        center.position.z = 3.0
+        center.orientation.w = 1.0
+        guard.primitives = [box]
+        guard.primitive_poses = [center]
+        update = ApplyPlanningScene.Request()
+        update.scene.is_diff = True
+        update.scene.world.collision_objects = [guard]
+        if not self._call(self._planning_scene_cli, update, 10.0, "设置柜前净空").success:
+            raise RuntimeError("设置柜前净空失败")
+        try:
+            request = GetMotionPlan.Request()
+            motion = request.motion_plan_request
+            motion.group_name = cfg["group"]
+            motion.planner_id = "RRTConnect"
+            motion.allowed_planning_time = 5.0
+            motion.num_planning_attempts = 3
+            motion.max_velocity_scaling_factor = 0.4
+            motion.max_acceleration_scaling_factor = 0.4
+            motion.start_state.joint_state = self._joint_state
+            goal = Constraints()
+            for joint in cfg["joints"]:
+                goal.joint_constraints.append(JointConstraint(
+                    joint_name=joint, position=float(targets[joint]),
+                    tolerance_above=0.001, tolerance_below=0.001, weight=1.0))
+            motion.goal_constraints = [goal]
+            # 随机采样路径经插值细查后偶尔会触碰净空边界（INVALID_MOTION_PLAN）。
+            # 保留障碍且不执行该路径，最多重新规划两次；其他错误立即停止。
+            for attempt in range(3):
+                self._check_cancel()
+                response = self._call(plan_client, request, 30.0, "柜外准备路径规划")
+                result = response.motion_plan_response
+                if result.error_code.val != -2 or attempt == 2:
+                    break
+            if result.error_code.val != 1 or not result.trajectory.joint_trajectory.points:
+                raise RuntimeError("无法规划柜外准备路径: %s (%s)" % (side, result.error_code.val))
+            self._execute_plan(side, result.trajectory.joint_trajectory, 1.0, 120.0)
+        finally:
+            guard.operation = CollisionObject.REMOVE
+            update.scene.world.collision_objects = [guard]
+            if not self._call(self._planning_scene_cli, update, 10.0, "清除柜前净空").success:
+                raise RuntimeError("清除柜前净空失败")
+
+    def _retime_drawer_path(self, side, trajectory, duration):
+        """按真实笛卡尔位移配速，而不是把 MoveIt 返回的点当成等距点。"""
+        positions = []
+        for point in trajectory.points:
+            request = GetPositionFK.Request()
+            request.header.frame_id = WORLD_FRAME
+            request.fk_link_names = [ARMS[side]["tip"]]
+            request.robot_state.joint_state.name = list(trajectory.joint_names)
+            request.robot_state.joint_state.position = list(point.positions)
+            response = self._call(self._fk_cli, request, 10.0, "抽拉轨迹位移校验")
+            if response.error_code.val != 1 or not response.pose_stamped:
+                raise RuntimeError("抽拉轨迹正解失败: " + side)
+            positions.append(response.pose_stamped[0].pose.position.x)
+        if len(positions) < 2 or not all(math.isfinite(x) for x in positions):
+            raise RuntimeError("抽拉轨迹采样不足或无效")
+        travel = positions[-1] - positions[0]
+        if abs(travel) < 1e-6:
+            raise RuntimeError("抽拉轨迹没有有效位移")
+        retimed = []
+        previous = -1.0
+        for index, (point, position) in enumerate(zip(trajectory.points, positions)):
+            fraction = (position - positions[0]) / travel
+            if fraction < previous - 1e-6 or not -1e-6 <= fraction <= 1.0 + 1e-6:
+                raise RuntimeError("抽拉轨迹中途反向，停止执行")
+            fraction = min(1.0, max(0.0, fraction))
+            point.time_from_start = Duration(seconds=duration * fraction).to_msg()
+            if fraction <= previous + 1e-6:
+                if index == len(positions) - 1:
+                    retimed[-1] = point
+                continue
+            retimed.append(point)
+            previous = fraction
+        trajectory.points = retimed
+
     # ------------------------------------------------------------- 步骤 1 送底盘
     def step_preposition_base(self, step: Mapping[str, Any],
                               on_progress: Callable) -> None:
@@ -409,12 +608,14 @@ class TaughtRosWorker(SpinNode):
         self._check_cancel()
         on_progress(0.4, "双臂到位")
         for side, cfg in ARMS.items():
-            self._send(self._arm_clients[side], cfg["joints"], targets, 2.0)
+            self._move_arm_to(side, targets)
         self._settled(sorted(arm_joints), timeout=12.0)
 
         self._check_cancel()
         on_progress(0.8, "电缸伸到目标值")
         for side, cfg in ROD_SIDES.items():
+            if all(abs(targets[j] - self._measured(j)) < 0.0005 for j in cfg["joints"]):
+                continue
             self._send(self._rod_clients[side], cfg["joints"], targets, 3.0)
         self._settled(sorted(rod_joints))
         on_progress(1.0, "已还原教学位姿 %s" % pose_path.name)
@@ -682,8 +883,7 @@ class TaughtRosWorker(SpinNode):
             if all(abs(float(targets[j]) - self._measured(j)) < 1e-6
                    for j in joints):
                 continue
-            self._send(self._arm_clients[side], joints,
-                       {j: float(targets[j]) for j in joints}, 2.0)
+            self._move_arm_to(side, targets)
         self._settled([j for cfg in ARMS.values() for j in cfg["joints"]],
                       timeout=12.0)
         on_progress(1.0, "机械臂已回到初始姿势")
@@ -692,13 +892,13 @@ class TaughtRosWorker(SpinNode):
     def step_pull_drawer(self, step: Mapping[str, Any],
                          on_progress: Callable) -> None:
         control = str(step["control"])
+        arm_share = 0.7 if step.get("support_enabled", True) else 1.0
         duration = float(step["duration"])
         distance = float(step.get("distance") or 0.0)
         # 每个抽屉均从插件的位置反馈确定本次位移。
         joint_topic = "/xczs/cabinet/%s/%s/joint_states" % (self._cabinet, control)
         state_topic = "/xczs/cabinet/%s/%s/state" % (self._cabinet, control)
-        self.create_subscription(JointState, joint_topic,
-                                 self._rail_cb(control), best_effort_qos())
+        self._ensure_rail_subscription(control)
         self.create_subscription(CabinetControlState, state_topic,
                                  self._state_cb(control), best_effort_qos())
         # 插件使用 SensorDataQoS；必须读到当前位置，避免重复打开时累计错位。
@@ -722,19 +922,31 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("目标 %.4f m 超出轨道 [0, %.2f]"
                                % (start + distance, RAIL_LIMIT))
 
+        if abs(distance) <= 0.001:
+            self.drawer_result = {
+                "simulation_outcome_confirmed": True,
+                "final_position": start,
+                "target_position": start + distance,
+                "position_tolerance": 0.003,
+            }
+            on_progress(1.0, "抽屉已在目标位置，无需重复抽拉")
+            return
+
         on_progress(0.05, "规划双臂后拉路径")
         plans = {}
         for side in ARMS:
-            # 机械臂分担 35 mm，剩余 15 mm 由钩杆回缩完成。
+            # 宽柜双臂分担 35 mm；小柜双臂完成全部 50 mm。
             solution, fraction, tip = self._plan_translate(
-                side, "x", distance * 0.7, max_step=0.01)
+                side, "x", distance * arm_share, max_step=0.002)
             if fraction < 0.99 or not solution.points:
                 raise RuntimeError("%s 后拉路径完整度仅 %.4f" % (side, fraction))
             plans[side] = (solution, tip)
-        plan_time = max(
-            (p.time_from_start.sec + p.time_from_start.nanosec * 1e-9)
-            for solution, _tip in plans.values() for p in solution.points)
-        scale = max(1.0, duration / plan_time) if plan_time > 0 else 1.0
+        # MoveIt 的时间参数化会重新采样，点序号并不代表笛卡尔路程。
+        # 以正解得到的实际路程定时，支撑杆才不会在中途伸得过快或缩得过慢。
+        for side, (solution, _tip) in plans.items():
+            self._retime_drawer_path(side, solution, duration)
+        plan_time = duration
+        scale = 1.0
 
         # 双臂承担 70% 行程，钩杆回缩承担 30%；支撑杆等量伸长，端点留在墙面。
         # 5 cm 行程下支撑杆从 8 cm 到 11.5 cm，保持在原有 12 cm 限位内。
@@ -745,8 +957,12 @@ class TaughtRosWorker(SpinNode):
             trajectory.joint_names = list(cfg["joints"])
             initial = {j: self._measured(j) for j in cfg["joints"]}
             target_rods = dict(initial)
-            target_rods[contract[side]["support"]] += distance * 0.7
-            target_rods[contract[side]["gripper"]] -= distance * 0.3
+            if step.get("support_enabled", True):
+                target_rods[contract[side]["support"]] += distance * arm_share
+            else:
+                initial[contract[side]["support"]] = 0.0
+                target_rods[contract[side]["support"]] = 0.0
+            target_rods[contract[side]["gripper"]] -= distance * (1.0 - arm_share)
             for joint, value in target_rods.items():
                 if abs(_clamp_rod(joint, value) - value) > 0.001:
                     raise RuntimeError("抽拉所需电缸行程超限: %s=%.4f" % (joint, value))
@@ -757,7 +973,8 @@ class TaughtRosWorker(SpinNode):
                 point.positions = [values[j] for j in cfg["joints"]]
                 point.time_from_start = Duration(seconds=elapsed).to_msg()
                 trajectory.points.append(point)
-            rod_plans[side] = trajectory
+            if step.get("support_enabled", True):
+                rod_plans[side] = trajectory
 
         # 复用预热好的客户端（见 wait_ready），不再新建——新建要重新发现，
         # 实测那一次发现要等好几秒。
@@ -768,17 +985,7 @@ class TaughtRosWorker(SpinNode):
         try:
             on_progress(0.15, "启动双臂后拉")
             self._playback_control = control
-            # **两条臂必须并发**：抽屉的时间表是时长 duration 的一条线，
-            # 若串行执行（左 6 s 再右 6 s），抽屉 6 s 就走完而臂要 12 s——
-            # 全程错位，钩爪（跨在把手两侧）会被抽屉拖着穿过把手，实测表现为
-            # "抽拉过程中不断穿模"。各起一个线程，与抽屉共用同一条时间线。
-            # **起跑对齐**：两份运动各有自己的启动延迟（臂的目标要走 action
-            # 受理，抽屉的播放要等插件处理），先后发的两种做法只会把误差从一边
-            # 挪到另一边——实测"先抽屉后臂"抽屉领先、"等臂动再放抽屉"手臂领先
-            # 16.6 mm（≈0.4 s，恒定，足以让跨在把手两侧的钩爪插进去）。正确做法
-            # 是给两边**定同一个起跑时刻**：同时下发，并给臂轨迹前置 `lead` 秒的
-            # 保持点（该值是实测出的启动延迟差，允许微调）。
-            # 注意 lead 必须在**启动线程之前**算好——run_arm 闭包立刻要用它。
+            # 双臂并行执行并预留控制器接收时间，抽屉跟随两侧实际位移。
             lead = float(step.get("lead") or 0.3)
             on_progress(0.28, "起跑对齐：臂前置保持 %.2f s，与抽屉同刻起跑" % lead)
             results: Dict[str, Any] = {}

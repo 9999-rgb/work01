@@ -1,4 +1,4 @@
-# 电气夹层仿真动作：工位 → 准备 → 张臂 → 伸钩 → 内扣 → 支撑 → 抽拉5cm。
+# 小柜钩杆保持不动，由双臂平移5cm；大柜保留支撑联动。
 schema_version: 1
 sequences:
   db1:
@@ -10,22 +10,26 @@ sequences:
         cabinet: ''
         toolset: A
       - type: restore_pose
-        pose: db1_raised.yaml
+        pose: db1_ready.yaml
         retract_only: true
       - type: translate_tool
         axis: y
         distance: 0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
         duration: 1.0
       - type: translate_tool
+        axis: x
+        distance: -0.08
+        duration: 3.0
+      - type: translate_tool
         axis: y
         distance: -0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
       - type: rod_stroke
         role: support
         distance: 0.08
@@ -39,13 +43,27 @@ sequences:
       display_name: db1 抽拉柜 关闭（教学动作）
       steps:
       - type: restore_pose
-        pose: db1_opened.yaml
+        pose: db1_ready.yaml
         retract_only: true
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: rod_stroke
         role: gripper
         distance: 0.0
         target: 0.00375
         duration: 1.0
+      - type: translate_tool
+        axis: x
+        distance: -0.045
+        duration: 3.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 2.0
+        mirror: true
       - type: rod_stroke
         role: support
         distance: 0.0
@@ -56,7 +74,21 @@ sequences:
         target: 0.0
         duration: 3.0
         lead: 0.3
+      - type: rod_stroke
+        role: support
+        distance: 0.0
+        target: 0.0
+        duration: 2.0
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.08
+        duration: 3.0
       - type: go_home
   dm1:
     open:
@@ -67,22 +99,26 @@ sequences:
         cabinet: ''
         toolset: A
       - type: restore_pose
-        pose: dm1_raised.yaml
+        pose: dm1_ready.yaml
         retract_only: true
       - type: translate_tool
         axis: y
         distance: 0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
         duration: 1.0
       - type: translate_tool
+        axis: x
+        distance: -0.08
+        duration: 3.0
+      - type: translate_tool
         axis: y
         distance: -0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
       - type: rod_stroke
         role: support
         distance: 0.08
@@ -96,13 +132,27 @@ sequences:
       display_name: dm1 抽拉柜 关闭（教学动作）
       steps:
       - type: restore_pose
-        pose: dm1_opened.yaml
+        pose: dm1_ready.yaml
         retract_only: true
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: rod_stroke
         role: gripper
         distance: 0.0
         target: 0.00375
         duration: 1.0
+      - type: translate_tool
+        axis: x
+        distance: -0.045
+        duration: 3.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 2.0
+        mirror: true
       - type: rod_stroke
         role: support
         distance: 0.0
@@ -113,7 +163,21 @@ sequences:
         target: 0.0
         duration: 3.0
         lead: 0.3
+      - type: rod_stroke
+        role: support
+        distance: 0.0
+        target: 0.0
+        duration: 2.0
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.08
+        duration: 3.0
       - type: go_home
   ds2:
     open:
@@ -124,53 +188,73 @@ sequences:
         cabinet: ''
         toolset: A
       - type: restore_pose
-        pose: ds2_raised.yaml
+        pose: ds2_ready.yaml
         retract_only: true
       - type: translate_tool
         axis: y
         distance: 0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
         duration: 1.0
       - type: translate_tool
+        axis: x
+        distance: -0.08
+        duration: 3.0
+      - type: translate_tool
         axis: y
         distance: -0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
-      - type: rod_stroke
-        role: support
-        distance: 0.08
-        duration: 1.0
       - type: pull_drawer
         control: ds2
         target: 0.05
         duration: 3.0
         lead: 0.3
+        support_enabled: false
     closed:
       display_name: ds2 抽拉柜 关闭（教学动作）
       steps:
       - type: restore_pose
-        pose: ds2_opened.yaml
+        pose: ds2_ready.yaml
         retract_only: true
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: rod_stroke
         role: gripper
         distance: 0.0
-        target: 0.00375
+        target: 0.01875
         duration: 1.0
-      - type: rod_stroke
-        role: support
-        distance: 0.0
-        target: 0.115
-        duration: 1.0
+      - type: translate_tool
+        axis: x
+        distance: -0.03
+        duration: 3.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 2.0
+        mirror: true
       - type: pull_drawer
         control: ds2
         target: 0.0
         duration: 3.0
         lead: 0.3
+        support_enabled: false
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.08
+        duration: 3.0
       - type: go_home
   ds3:
     open:
@@ -181,51 +265,71 @@ sequences:
         cabinet: ''
         toolset: A
       - type: restore_pose
-        pose: ds3_raised.yaml
+        pose: ds3_ready.yaml
         retract_only: true
       - type: translate_tool
         axis: y
         distance: 0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
       - type: rod_stroke
         role: gripper
         distance: 0.01875
         duration: 1.0
       - type: translate_tool
+        axis: x
+        distance: -0.08
+        duration: 3.0
+      - type: translate_tool
         axis: y
         distance: -0.04
+        duration: 2.0
         mirror: true
-        duration: 1.2
-      - type: rod_stroke
-        role: support
-        distance: 0.08
-        duration: 1.0
       - type: pull_drawer
         control: ds3
         target: 0.05
         duration: 3.0
         lead: 0.3
+        support_enabled: false
     closed:
       display_name: ds3 抽拉柜 关闭（教学动作）
       steps:
       - type: restore_pose
-        pose: ds3_opened.yaml
+        pose: ds3_ready.yaml
         retract_only: true
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: rod_stroke
         role: gripper
         distance: 0.0
-        target: 0.00375
+        target: 0.01875
         duration: 1.0
-      - type: rod_stroke
-        role: support
-        distance: 0.0
-        target: 0.115
-        duration: 1.0
+      - type: translate_tool
+        axis: x
+        distance: -0.03
+        duration: 3.0
+      - type: translate_tool
+        axis: y
+        distance: -0.04
+        duration: 2.0
+        mirror: true
       - type: pull_drawer
         control: ds3
         target: 0.0
         duration: 3.0
         lead: 0.3
+        support_enabled: false
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
       - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.08
+        duration: 3.0
       - type: go_home

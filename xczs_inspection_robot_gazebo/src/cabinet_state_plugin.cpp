@@ -829,6 +829,11 @@ private:
     // schedule.  Only a drawer control accepts playback.  All playback fields
     // are written by the physics request drain and read only inside on_update,
     // both under physics_callback_mutex_ (single writer).
+    std::string playback_follow_model;
+    std::vector<std::string> playback_follow_links;
+    double playback_follow_arm_share{1.0};
+    std::vector<gazebo::physics::LinkPtr> playback_follow_link_ptrs;
+    double playback_follow_origin{0.0};
     bool playback_active{false};
     bool playback_paused{false};
     bool playback_finished{false};
@@ -1028,6 +1033,17 @@ private:
       control.state_ids = parse_words(required_text(element, "state_ids"));
       control.reset_position = optional_double(
         element, "reset_position", 0.0);
+      if (element->HasElement("playback_follow_model")) {
+        control.playback_follow_model = required_text(element, "playback_follow_model");
+        control.playback_follow_links = parse_words(required_text(element, "playback_follow_links"));
+        control.playback_follow_arm_share = optional_double(element, "playback_follow_arm_share", 1.0);
+        if (control.playback_follow_links.size() != 2U ||
+          !std::isfinite(control.playback_follow_arm_share) ||
+          control.playback_follow_arm_share <= 0.0 || control.playback_follow_arm_share > 1.0)
+        {
+          throw std::invalid_argument("Playback follow requires two tools: " + control.id);
+        }
+      }
       control.damping = optional_double(element, "spring_damping", 0.1);
       control.grasp_damping = optional_double(
         element, "grasp_damping", control.damping);
@@ -2939,6 +2955,17 @@ private:
     }
   }
 
+  double playback_tool_position(const Control & control) const
+  {
+    const auto axis = control.joint->GlobalAxis(0).Normalized();
+    double sum = 0.0;
+    for (const auto & link : control.playback_follow_link_ptrs) {
+      sum += link->WorldPose().Pos().Dot(axis);
+    }
+    return sum / (static_cast<double>(control.playback_follow_link_ptrs.size()) *
+      control.playback_follow_arm_share);
+  }
+
   void drive_drawer_playback(Control & control, double simulation_time)
   {
     // AGENT T3 deferred start: a START whose trajectory.header.stamp lies in
@@ -2952,6 +2979,26 @@ private:
     // and refresh playback_last_sim every tick so no wait-time delta accrues
     // when motion finally begins -- there is deliberately no mid-schedule
     // catch-up after a stall.
+    // In visual follow mode the measured tool travel is authoritative. Keep
+    // HOLD at its current position instead of falling back to the time curve.
+    if (!control.playback_follow_link_ptrs.empty()) {
+      const double start = control.playback_samples.front().second;
+      const double finish = control.playback_samples.back().second;
+      const double position = control.playback_paused ? control.joint->Position(0) :
+        start + playback_tool_position(control) - control.playback_follow_origin;
+      if (!std::isfinite(position)) {
+        end_playback_session(control, "invalid tool feedback");
+        return;
+      }
+      const double target = std::clamp(position, std::min(start, finish), std::max(start, finish));
+      control.joint->SetPosition(0, target);
+      control.joint->SetVelocity(0, 0.0);
+      control.effort = 0.0;
+      control.playback_finished = std::abs(target - finish) <= 0.0008;
+      control.playback_last_sim = simulation_time;
+      update_control_state(control, true);
+      return;
+    }
     const double node_clock_now = ros_node_->get_clock()->now().seconds();
     if (!control.playback_paused && !control.playback_finished &&
       control.playback_start_at > 0.0 &&
@@ -3150,6 +3197,25 @@ private:
       }
     }
 
+    control.playback_follow_link_ptrs.clear();
+    if (!control.playback_follow_model.empty()) {
+      const auto robot = world_->ModelByName(control.playback_follow_model);
+      if (!robot) {
+        return {false, "Playback follow robot is unavailable.", current};
+      }
+      for (std::size_t i = 0; i < control.playback_follow_links.size(); ++i) {
+        const auto link = robot->GetLink(control.playback_follow_links[i]);
+        if (!link) {
+          control.playback_follow_link_ptrs.clear();
+          return {false, "Playback follow tool is unavailable.", current};
+        }
+        control.playback_follow_link_ptrs.push_back(link);
+      }
+      control.playback_follow_origin = playback_tool_position(control);
+      if (!std::isfinite(control.playback_follow_origin)) {
+        return {false, "Playback follow tool position is invalid.", current};
+      }
+    }
     control.playback_samples = std::move(samples);
     control.playback_active = true;
     control.playback_paused = false;

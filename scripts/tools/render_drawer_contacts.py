@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """以 Gazebo 实测 link 位姿渲染末端与抽拉柜，避免截取用户桌面。"""
 import argparse
+import json
 import math
 from pathlib import Path
 import sys
@@ -34,7 +35,20 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--control', choices=['db1', 'dm1', 'ds1', 'ds2', 'ds3'], required=True)
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--motion-file', type=Path,
+                        help='回放实测位姿；默认选择杆偏转最大的一帧')
+    parser.add_argument('--at-time', type=float, help='选择最接近的记录时间（Unix 秒）')
+    parser.add_argument('--view', choices=['oblique', 'side'], default='oblique',
+                        help='斜视或沿柜面侧视，用于检查接触深度')
     args = parser.parse_args()
+    recorded = {}
+    if args.motion_file:
+        frames = [json.loads(line) for line in args.motion_file.read_text().splitlines()]
+        frame = (min(frames, key=lambda f: abs(f['time']-args.at_time))
+                 if args.at_time is not None else
+                 max(frames, key=lambda f: max(f['rod_rotation_deg'].values(), default=0)))
+        recorded = frame['poses']
+        print('recorded_time', frame['time'])
     rclpy.init()
     node = SpinNode('render_drawer_contacts')
     entity = node.create_client(GetEntityState, '/get_entity_state')
@@ -68,6 +82,8 @@ def main():
             pose = response.state.pose
             matrix = transform([getattr(pose.position, a) for a in 'xyz'],
                                [getattr(pose.orientation, a) for a in 'xyzw'])
+            if name in recorded:
+                matrix = transform(recorded[name][:3], recorded[name][3:])
             for visual in link.findall('visual'):
                 mesh = visual.find('geometry/mesh')
                 if mesh is None:
@@ -99,7 +115,10 @@ def main():
                    'ds2':(4.219,1.463), 'ds3':(5.4,1.458)}
         y, z = centers[args.control]
         camera = renderer.GetActiveCamera()
-        camera.SetPosition(1.65, y-0.75, z+0.5)
+        if args.view == 'side':
+            camera.SetPosition(0.45, y-1.8, z+0.15)
+        else:
+            camera.SetPosition(1.65, y-0.75, z+0.5)
         camera.SetFocalPoint(0.16,y,z)
         camera.SetViewUp(0,0,1)
         camera.ParallelProjectionOn()

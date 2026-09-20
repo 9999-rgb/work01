@@ -9,6 +9,7 @@ import time
 import rclpy
 from gazebo_msgs.msg import LinkStates
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import qos_profile_sensor_data
 
 
@@ -19,13 +20,17 @@ def main():
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
     rclpy.init()
-    node = Node('drawer_motion_recorder')
+    node = Node('drawer_motion_recorder', parameter_overrides=[
+        Parameter('use_sim_time', value=True)])
     stream = args.out.open('w')
     last = 0.0
 
     def receive(message):
         nonlocal last
         now = time.time()
+        simulation_time = node.get_clock().now().nanoseconds * 1e-9
+        if simulation_time <= 0.0:
+            return
         if now-last < .04:
             return
         last = now
@@ -42,7 +47,7 @@ def main():
             if base:
                 dot = abs(sum(a*b for a,b in zip(base[3:],pose[3:])))
                 angles[name] = math.degrees(2*math.acos(min(1.0,dot)))
-        stream.write(json.dumps({'time':now,'poses':poses,'rod_rotation_deg':angles})+'\n')
+        stream.write(json.dumps({'time':now,'simulation_time':simulation_time,'poses':poses,'rod_rotation_deg':angles})+'\n')
         stream.flush()
 
     node.create_subscription(LinkStates,'/link_states',receive,qos_profile_sensor_data)

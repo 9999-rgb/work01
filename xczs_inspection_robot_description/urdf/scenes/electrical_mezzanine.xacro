@@ -1,5 +1,18 @@
 <?xml version="1.0" ?>
 <sdf xmlns:xacro="http://www.ros.org/wiki/xacro" version="1.6">
+  <!-- 仅本层抽拉柜使用柔和的接触纠偏，避免运动学轨道挤压轻质钩杆。
+       保留碰撞与可见几何；不改变工具在其他场景的按钮、柜门接触参数。 -->
+  <xacro:macro name="drawer_contact_surface" params="">
+    <surface>
+      <contact>
+        <ode>
+          <kp>10000</kp>
+          <kd>1</kd>
+          <max_vel>0.02</max_vel>
+        </ode>
+      </contact>
+    </surface>
+  </xacro:macro>
   <model name="electrical_mezzanine">
     <static>false</static>
     <link name="dianqiground">
@@ -160,6 +173,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <!-- 圆形机构 s2r（固定装饰）与指示灯 s2p（仅显示）并入抽屉本体 s2。 -->
       <visual name="visual_r">
@@ -180,6 +194,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <visual name="visual_p">
         <pose>0.069 0.222 0.121 0 0 0</pose>
@@ -199,6 +214,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
     </link>
     
@@ -264,6 +280,7 @@
             <size>0.008 0.016 0.080</size>
           </box>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <collision name="handle_riser_r">
         <pose>0.004 0.646 0.120 0 0 0</pose>
@@ -272,6 +289,7 @@
             <size>0.008 0.016 0.080</size>
           </box>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <collision name="handle_flange_l">
         <pose>0.065 0.060 0.120 0 0 0</pose>
@@ -280,6 +298,7 @@
             <size>0.008 0.016 0.096</size>
           </box>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <collision name="handle_flange_r">
         <pose>0.065 0.646 0.120 0 0 0</pose>
@@ -288,6 +307,7 @@
             <size>0.008 0.016 0.096</size>
           </box>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <!-- 外加短横杆已删除（2026-09-09 用户目视裁决）——把手即上方所述两条原生
            竖向立筋，见 link b1.STL visual 前脸立筋与 fix#25 的空心立筋碰撞体。 -->
@@ -312,6 +332,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
     </link>
 
@@ -445,6 +466,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <!-- 圆形机构 s3r（固定装饰）与指示灯 s3p（仅显示）并入抽屉本体 s3。 -->
       <visual name="visual_r">
@@ -465,6 +487,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <visual name="visual_p">
         <pose>0.069 0.274 0.121 0 0 0</pose>
@@ -484,6 +507,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
     </link>
     
@@ -520,6 +544,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <!-- 圆形机构 m1r（固定装饰）与指示灯 m1p（仅显示）并入抽屉本体 m1。 -->
       <visual name="visual_r">
@@ -540,6 +565,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
       <visual name="visual_p">
         <pose>0.069 0.638 0.108 0 0 0</pose>
@@ -559,6 +585,7 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri>
           </mesh>
         </geometry>
+        <xacro:drawer_contact_surface />
       </collision>
     </link>
     
@@ -808,6 +835,10 @@
       </control>
       <control>
         <control_id>ds2</control_id>
+        <!-- 仿真轨道跟随钩爪实际位移，消除独立时间表的穿模误差。 -->
+        <playback_follow_model>xczs_inspection_robot</playback_follow_model>
+        <playback_follow_links>l_two_cyl_base r_three_cyl_base</playback_follow_links>
+        <playback_follow_arm_share>1.0</playback_follow_arm_share>
         <control_type>slider</control_type>
         <joint_name>ds2</joint_name>
         <joint_state_topic>/xczs/cabinet/electrical_mezzanine/ds2/joint_states</joint_state_topic>
@@ -835,6 +866,10 @@
              strictly below" 校验失败并连累 db1。 -->
         <control>
         <control_id>db1</control_id>
+        <!-- 仿真轨道跟随钩爪实际位移，消除独立时间表的穿模误差。 -->
+        <playback_follow_model>xczs_inspection_robot</playback_follow_model>
+        <playback_follow_links>l_two_cyl_base r_three_cyl_base</playback_follow_links>
+        <playback_follow_arm_share>0.7</playback_follow_arm_share>
         <control_type>drawer</control_type>
         <joint_name>db1</joint_name>
         <joint_state_topic>/xczs/cabinet/electrical_mezzanine/db1/joint_states</joint_state_topic>
@@ -957,6 +992,10 @@
       </control>
       <control>
         <control_id>ds3</control_id>
+        <!-- 仿真轨道跟随钩爪实际位移，消除独立时间表的穿模误差。 -->
+        <playback_follow_model>xczs_inspection_robot</playback_follow_model>
+        <playback_follow_links>l_two_cyl_base r_three_cyl_base</playback_follow_links>
+        <playback_follow_arm_share>1.0</playback_follow_arm_share>
         <control_type>slider</control_type>
         <joint_name>ds3</joint_name>
         <joint_state_topic>/xczs/cabinet/electrical_mezzanine/ds3/joint_states</joint_state_topic>
@@ -978,6 +1017,10 @@
       </control>
       <control>
         <control_id>dm1</control_id>
+        <!-- 仿真轨道跟随钩爪实际位移，消除独立时间表的穿模误差。 -->
+        <playback_follow_model>xczs_inspection_robot</playback_follow_model>
+        <playback_follow_links>l_two_cyl_base r_three_cyl_base</playback_follow_links>
+        <playback_follow_arm_share>0.7</playback_follow_arm_share>
         <control_type>slider</control_type>
         <joint_name>dm1</joint_name>
         <joint_state_topic>/xczs/cabinet/electrical_mezzanine/dm1/joint_states</joint_state_topic>

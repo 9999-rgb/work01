@@ -1076,6 +1076,40 @@ class TaskRunnerTest(unittest.TestCase):
         task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
         self.assertEqual("success", task["status"])
 
+    def test_taught_drawer_keeps_engaged_posture_before_submission(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        sequence = {"steps": [{"type": "pull_drawer", "target": 0.0}]}
+        with patch.object(server, "_find_taught_sequence", return_value=sequence), \
+                patch.object(server, "_submit_taught_or_action",
+                             side_effect=lambda *args: client.submit_operation(
+                                 "button_1", "press", navigate=False)):
+            accepted = server.submit_operation_task(
+                "cabinet_a", "button_1", "press", None, None, 5.0)
+            self.assertTrue(client.submit_event.wait(timeout=1.0))
+            self.assertEqual([], node.joint_targets)
+            client.finish("success")
+            task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+            self.assertEqual("success", task["status"])
+
+    def test_failed_taught_drawer_does_not_blindly_home(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        sequence = {"steps": [{"type": "pull_drawer", "target": 0.0}]}
+        with patch.object(server, "_find_taught_sequence", return_value=sequence), \
+                patch.object(server, "_submit_taught_or_action",
+                             side_effect=lambda *args: client.submit_operation(
+                                 "button_1", "press", navigate=False)):
+            accepted = server.submit_operation_task(
+                "cabinet_a", "button_1", "press", None, None, 5.0)
+            self.assertTrue(client.submit_event.wait(timeout=1.0))
+            client.finish("failed")
+            task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+            self.assertEqual("failed", task["status"])
+            self.assertEqual([], node.joint_targets)
+            self.assertEqual("drawer_pose_held_after_failure",
+                             task["result"]["recovery"]["reason"])
+
     def test_operation_confirms_base_station_before_submission(self) -> None:
         """点位门：提交 operate 前必须复验底盘停在本次控件工位上。
 
