@@ -2,6 +2,7 @@
 """通过 Web 操作验证电气夹层仿真抽拉往返；运行前需位于目标工位。"""
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -30,7 +31,7 @@ def main():
                 api('/cabinets/electrical_mezzanine/controls')['controls']}
 
     baseline = controls()
-    evidence = {'control': args.control, 'checks': [], 'success': False}
+    evidence = {'control': args.control, 'baseline': baseline, 'checks': [], 'success': False}
     try:
         for state, expected in [('open', .05), ('closed', 0.0)]:
             task = api('/task/operate', {'cabinet': 'electrical_mezzanine',
@@ -51,10 +52,15 @@ def main():
                 item = snapshot[args.control]
                 position = float(item['current_position'])
                 positions.append(position)
-                if abs(position - expected) > .003 or item['current_state'] != state:
+                if (not math.isfinite(position) or abs(position - expected) > .003
+                        or item['current_state'] != state):
                     raise RuntimeError('轨道未稳定在目标: %s, %.6f' % (state, position))
                 for cid, other in snapshot.items():
-                    if cid != args.control and abs(other['current_position'] - baseline[cid]['current_position']) > .003:
+                    if cid != args.control and (not math.isfinite(other['current_position'])
+                            or abs(other['current_position'] - baseline[cid]['current_position']) > .003):
+                        evidence['unexpected_motion'] = {'control': cid,
+                            'before': baseline[cid]['current_position'],
+                            'after': other['current_position']}
                         raise RuntimeError('其他抽屉发生串动: ' + cid)
                 time.sleep(.5)
             evidence['checks'].append({'state': state, 'task': task,

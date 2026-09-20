@@ -791,7 +791,8 @@
         <state_ids>closed open</state_ids>
         <detents>0.0 0.05</detents>
         <detent_stiffness>500</detent_stiffness>
-        <spring_damping>1</spring_damping>
+        <!-- 约30–37 kg抽屉配500 N/m弹簧：接近临界阻尼，抑制非操作抽屉回弹。 -->
+        <spring_damping>250</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.07</slider_release_position>
         <slider_release_reengage_position>0.015</slider_release_reengage_position>
@@ -815,7 +816,8 @@
         <state_ids>closed open</state_ids>
         <detents>0.0 0.05</detents>
         <detent_stiffness>500</detent_stiffness>
-        <spring_damping>1</spring_damping>
+        <!-- 约30–37 kg抽屉配500 N/m弹簧：接近临界阻尼，抑制非操作抽屉回弹。 -->
+        <spring_damping>250</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.07</slider_release_position>
         <slider_release_reengage_position>0.015</slider_release_reengage_position>
@@ -963,7 +965,8 @@
         <state_ids>closed open</state_ids>
         <detents>0.0 0.05</detents>
         <detent_stiffness>500</detent_stiffness>
-        <spring_damping>1</spring_damping>
+        <!-- 约30–37 kg抽屉配500 N/m弹簧：接近临界阻尼，抑制非操作抽屉回弹。 -->
+        <spring_damping>250</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.07</slider_release_position>
         <slider_release_reengage_position>0.015</slider_release_reengage_position>
@@ -983,7 +986,8 @@
         <state_ids>closed open</state_ids>
         <detents>0.0 0.05</detents>
         <detent_stiffness>500</detent_stiffness>
-        <spring_damping>1</spring_damping>
+        <!-- 约30–37 kg抽屉配500 N/m弹簧：接近临界阻尼，抑制非操作抽屉回弹。 -->
+        <spring_damping>250</spring_damping>
         <detent_hysteresis>0.01</detent_hysteresis>
         <slider_release_position>0.07</slider_release_position>
         <slider_release_reengage_position>0.015</slider_release_reengage_position>

@@ -707,8 +707,8 @@ class TaughtRosWorker(SpinNode):
         raw = self._rails.get(control)
         if raw is None and control in self._controls:
             raw = self._controls[control].position
-        if raw is None:
-            raise RuntimeError("抽屉位置反馈缺失: " + control)
+        if raw is None or not math.isfinite(float(raw)):
+            raise RuntimeError("抽屉位置反馈缺失或无效: " + control)
         start = max(0.0, min(RAIL_LIMIT, float(raw)))
         # **支持绝对目标位**（给 target 就按"当前位置 → target"算位移）。
         # 只用相对距离会在异常后累积：实测闭合失败一次、抽屉停在 0.07，
@@ -837,7 +837,8 @@ class TaughtRosWorker(SpinNode):
             final = self._rails.get(control)
             if final is None and control in self._controls:
                 final = self._controls[control].position
-            if final is None or abs(float(final) - (start + distance)) > 0.003:
+            if (final is None or not math.isfinite(float(final))
+                    or abs(float(final) - (start + distance)) > 0.003):
                 raise RuntimeError("抽屉未到目标位置: 实测 %s，目标 %.4f"
                                    % (final, start + distance))
             self.drawer_result = {
