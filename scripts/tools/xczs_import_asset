@@ -10,9 +10,9 @@ in 阶段3) and records the entry in the SQLite catalog (``assets`` table).
 
 Examples::
 
-    scripts/xczs_import_asset jiang/samples/scene_cabinet_operation   # import
-    scripts/xczs_import_asset --select --print-env jiang/samples/scene_cabinet_operation
-    scripts/xczs_import_asset --list
+    scripts/tools/xczs_import_asset model/场景-资产/electrical_mezzanine   # import
+    scripts/tools/xczs_import_asset --select --print-env model/场景-资产/electrical_mezzanine
+    scripts/tools/xczs_import_asset --list
 
 Selection maps onto the existing ``SCENES_CONFIG`` / ``SCENE`` /
 ``CABINET_INSTANCES_PATH`` environment pointers via

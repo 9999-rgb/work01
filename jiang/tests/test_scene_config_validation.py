@@ -342,7 +342,7 @@ class SceneConfigValidationTest(unittest.TestCase):
                 self.assertEqual(1, result.returncode, result.stdout)
                 self.assertIn(expected, result.stderr)
 
-    def test_current_three_scene_catalog_passes(self) -> None:
+    def test_current_two_scene_catalog_passes(self) -> None:
         result = subprocess.run(
             [sys.executable, str(CHECKER)],
             cwd=str(WORKSPACE),
@@ -353,7 +353,7 @@ class SceneConfigValidationTest(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertIn(
-            "scenes=cabinet_operation, electrical_mezzanine, generator_plant",
+            "scenes=electrical_mezzanine, generator_plant",
             result.stdout,
         )
 

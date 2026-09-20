@@ -188,16 +188,12 @@
     </joint>
 
     <link name="${prefix}_three_cyl_finger3">
+      <!-- 源模型质量约 2 g，惯量为 1e-8 量级；接触时滑动副出现
+           数十度的非物理偏转。采用稳定的仿真等效惯量，视觉和碰撞不变。 -->
       <inertial>
         <origin xyz="-2.3655E-07 0.00029683 -0.0041007" rpy="0 0 0" />
-        <mass value="0.001962" />
-        <inertia
-          ixx="5.992E-08"
-          ixy="7.7782E-13"
-          ixz="1.417E-13"
-          iyy="5.4141E-08"
-          iyz="3.0527E-10"
-          izz="4.3864E-08" />
+        <mass value="0.05" />
+        <inertia ixx="1e-4" ixy="0" ixz="0" iyy="1e-4" iyz="0" izz="1e-4" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -219,13 +215,14 @@
       <child link="${prefix}_three_cyl_finger3" />
       <axis xyz="0 0 -1" />
       <limit lower="0" upper="0.0254" effort="100" velocity="1" />
-      <!-- Finger3 is the light unlock motor (0.002 kg, p=120), its own free-air
-           resonance (~39 Hz) is even harder for the slow controller rate, but
-           heavy damping would slow the 8 mm unlock extension.  Damping 2.0 gives
-           zeta ~2 at the physics rate yet keeps the extension fast. -->
+      <!-- 解锁杆保留原有 2 N s/m 阻尼与 25.4 mm 行程。 -->
       <dynamics damping="2.0" friction="0.05" />
       <safety_controller soft_lower_limit="0" soft_upper_limit="0.0254" k_position="1" k_velocity="1" />
     </joint>
+    <!-- 使用 ODE 隐式阻尼，避免轻质滑动副接触后的显式力抖动。 -->
+    <gazebo reference="${prefix}_three_cyl_finger3_joint">
+      <implicitSpringDamper>true</implicitSpringDamper>
+    </gazebo>
   </xacro:macro>
 
   <!-- Two electric cylinders (left hand) - a two-finger drawer grasp. -->
@@ -270,13 +267,9 @@
       <inertial>
         <origin xyz="0.00019307 0.00639 0.024544" rpy="0 0 0" />
         <mass value="0.070322" />
-        <inertia
-          ixx="7.0736E-05"
-          ixy="-1.1531E-10"
-          ixz="-1.1462E-12"
-          iyy="6.3227E-05"
-          iyz="2.1893E-06"
-          izz="1.1317E-05" />
+        <!-- 小柜接触时原薄杆惯量会造成滑动副弯转；保留质量和几何，
+             使用稳定的仿真等效转动惯量。 -->
+        <inertia ixx="2e-4" ixy="0" ixz="0" iyy="2e-4" iyz="0" izz="2e-4" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />

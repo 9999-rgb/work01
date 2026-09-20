@@ -1445,7 +1445,7 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument("robot_spawn_yaw", default_value=""),
         DeclareLaunchArgument("cabinet_bringup", default_value="true"),
         DeclareLaunchArgument("spawn_cabinet", default_value="true"),
-        DeclareLaunchArgument("scene", default_value="cabinet_operation"),
+        DeclareLaunchArgument("scene", default_value="electrical_mezzanine"),
         DeclareLaunchArgument(
             "scenes_config",
             default_value=str(control_share / "config" / "scenes.yaml"),

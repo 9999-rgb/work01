@@ -1,0 +1,7 @@
+instances:
+  - name: cabinet_a
+    x: 2.0
+    y: 0.33
+    z: 0.0
+    roll: 1.57079632679
+    yaw: -1.57079632679

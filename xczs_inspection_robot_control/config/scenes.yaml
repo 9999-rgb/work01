@@ -17,16 +17,8 @@
 #                      - 映射：声明本场景专属的 x_min/x_max/y_min/y_max/
 #                        corridor_offset/side_clearance 六字段
 #
-# 三个场景共用世界原点：默认场景在原点附近布柜体，两个新场景的地板同样
-# 从世界原点展开。切换 = 删除旧场景实体 + spawn 新场景地板/柜体 + LoadMap
-# + 把机器人 teleport 到 robot_spawn 并重定位。
+# 两个生产场景共用世界原点；切换时替换场景实体、地图并重定位机器人。
 scenes:
-  - name: cabinet_operation
-    spawn_cabinet: true
-    model: null
-    nav2_map: package://xczs_inspection_robot_nav2/maps/inspection_map.yaml
-    robot_spawn: {x: 0.0, y: 0.0, z: 0.515, yaw: 1.5707963267948966}
-
   - name: electrical_mezzanine
     spawn_cabinet: false
     model:

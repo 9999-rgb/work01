@@ -2,11 +2,13 @@
 """记录 Gazebo 实际 link 位姿，检查电缸滑动副是否发生非预期转动。"""
 import argparse
 import json
+import signal
 import math
 from pathlib import Path
 import time
 
 import rclpy
+from rclpy.signals import SignalHandlerOptions
 from gazebo_msgs.msg import LinkStates
 from rclpy.node import Node
 from rclpy.parameter import Parameter
@@ -19,7 +21,16 @@ def main():
     parser.add_argument('--seconds', type=float, default=90)
     args = parser.parse_args()
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    stop_requested = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    # 先结束采样循环再销毁 ROS 实体，避免 SIGINT 与 take_message 并发。
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
     node = Node('drawer_motion_recorder', parameter_overrides=[
         Parameter('use_sim_time', value=True)])
     stream = args.out.open('w')
@@ -53,12 +64,14 @@ def main():
     node.create_subscription(LinkStates,'/link_states',receive,qos_profile_sensor_data)
     end = time.monotonic()+args.seconds
     try:
-        while time.monotonic()<end:
+        while not stop_requested and time.monotonic()<end:
             rclpy.spin_once(node,timeout_sec=.1)
+    except KeyboardInterrupt:
+        pass
     finally:
         stream.close()
         node.destroy_node()
-        rclpy.shutdown()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

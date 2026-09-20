@@ -179,13 +179,12 @@ class SceneCatalogTest(unittest.TestCase):
         )
         catalog = SceneCatalog.load(config)
         self.assertEqual(
-            ("cabinet_operation", "electrical_mezzanine", "generator_plant"),
+            ("electrical_mezzanine", "generator_plant"),
             catalog.names,
         )
 
-        cabinet = catalog.get("cabinet_operation")
-        self.assertTrue(cabinet.spawn_cabinet)
-        self.assertIsNone(cabinet.model)
+        with self.assertRaises(SceneNotFoundError):
+            catalog.get("cabinet_operation")
 
         for name in ("electrical_mezzanine", "generator_plant"):
             scene = catalog.get(name)

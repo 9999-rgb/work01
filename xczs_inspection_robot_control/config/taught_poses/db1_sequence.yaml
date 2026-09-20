@@ -32,7 +32,7 @@ sequences:
         mirror: true
       - type: rod_stroke
         role: support
-        distance: 0.08
+        distance: 0.078
         duration: 1.0
       - type: pull_drawer
         control: db1
@@ -67,7 +67,7 @@ sequences:
       - type: rod_stroke
         role: support
         distance: 0.0
-        target: 0.115
+        target: 0.113
         duration: 1.0
       - type: pull_drawer
         control: db1
@@ -121,7 +121,7 @@ sequences:
         mirror: true
       - type: rod_stroke
         role: support
-        distance: 0.08
+        distance: 0.078
         duration: 1.0
       - type: pull_drawer
         control: dm1
@@ -156,7 +156,7 @@ sequences:
       - type: rod_stroke
         role: support
         distance: 0.0
-        target: 0.115
+        target: 0.113
         duration: 1.0
       - type: pull_drawer
         control: dm1

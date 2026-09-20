@@ -899,15 +899,10 @@ def validate_profile(
             "robot adapter require_cabinet_pose_valid must be true."
         )
 
-    # 混合库存（共享 profile 的 cabinet 实例 + 夹具注册）中，夹具实例使用
-    # 逐场景 scene_controls/ 三件套，本站校验（共享 adapter/controls/scene）
-    # 只覆盖 kind == cabinet 的实例。若库存全为夹具（逐场景 profile），
-    # 夹具实例照常校验其导航/控制站。--instance-id 时 focused 恰好是该实例。
-    has_cabinet_instances = any(
-        instance.kind != "fixture" for instance in focused
-    )
+    # 共享 profile 只校验普通柜体。夹具始终使用 --instance-id 指定的
+    # 逐场景三件套；库存仅剩夹具时也不能拿共享柜体工位验证它们。
     for cabinet in focused:
-        if cabinet.kind == "fixture" and has_cabinet_instances:
+        if cabinet.kind == "fixture" and instance_id is None:
             continue
         station = inventory.station_for(cabinet.name)
         if station.frame_id != adapter.navigation_frame:

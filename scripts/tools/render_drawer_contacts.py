@@ -108,7 +108,9 @@ def main():
                 local.RotateY(math.degrees(values[4]))
                 local.RotateX(math.degrees(values[3]))
                 actor.SetUserMatrix(local.GetMatrix())
-                actor.GetProperty().SetColor((0.55, 0.57, 0.6) if sdf else
+                scene_color = [float(v) for v in visual.findtext(
+                    'material/diffuse', '0.55 0.57 0.6 1').split()][:3]
+                actor.GetProperty().SetColor(scene_color if sdf else
                                              ((0.9, 0.58, 0.1) if 'finger' in name else (0.12, 0.18, 0.25)))
                 renderer.AddActor(actor)
         centers = {'db1':(4.4,.95), 'dm1':(5.2,.955), 'ds1':(4.581,2.003),

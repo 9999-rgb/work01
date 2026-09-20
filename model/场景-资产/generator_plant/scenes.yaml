@@ -11,8 +11,6 @@ scenes:
       file: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.xacro
       pose: {x: 0.0, y: 0.0, z: 0.0, roll: 0.0, pitch: 0.0, yaw: 0.0}
     nav2_map: maps/inspection_map_generator_plant.yaml
-    # 出生点取按钮排（y=4.81）正南通道 (x=-16, y=2)，机头朝 +Y（yaw=π/2）
-    # 正对按钮台；check_scene_config 已验证带朝向 footprint 全落 FREE 格。
-    # 地板无柜体走廊，绕行带置空。
+    # 与运行场景目录保持一致：柜体北侧安全出生点。
     navigation_keepout: null
-    robot_spawn: {x: -16.0, y: 2.0, z: 0.515, yaw: 1.5707963267948966}
+    robot_spawn: {x: -13.1867, y: 6.2113, z: 0.515, yaw: 0.0}

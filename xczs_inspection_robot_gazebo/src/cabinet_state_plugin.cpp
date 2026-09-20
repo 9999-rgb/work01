@@ -4,6 +4,7 @@
 #include <gazebo/common/Events.hh>
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/physics/Collision.hh>
+#include <gazebo/physics/BoxShape.hh>
 #include <gazebo/physics/Contact.hh>
 #include <gazebo/physics/ContactManager.hh>
 #include <gazebo/physics/PhysicsEngine.hh>
@@ -41,6 +42,7 @@
 #include "std_msgs/msg/string.hpp"
 #include "std_srvs/srv/trigger.hpp"
 #include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
+#include "xczs_inspection_robot_control/box_contact.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
@@ -1454,6 +1456,35 @@ private:
 
   }
 
+  bool jaw_box_still_touches(
+    const gazebo::physics::LinkPtr & jaw, const gazebo::physics::LinkPtr & target)
+  {
+    // ODE can omit resting contacts for tens of microns of numerical gap.
+    // Only the actual fingertip collision box is eligible, never a link AABB.
+    const auto fingertip = jaw->GetCollision("jaw_proxy_2");
+    const auto plate = target->GetCollision("collision");
+    if (!fingertip || !plate) {return false;}
+    const auto a = boost::dynamic_pointer_cast<gazebo::physics::BoxShape>(fingertip->GetShape());
+    const auto b = boost::dynamic_pointer_cast<gazebo::physics::BoxShape>(plate->GetShape());
+    if (!a || !b) {return false;}
+    const auto box = [](const auto & collision, const auto & shape) {
+        ContactBox result;
+        const auto pose = collision->WorldPose();
+        const auto size = shape->Size();
+        for (int i = 0; i < 3; ++i) {
+          result.center[i] = pose.Pos()[i];
+          result.half_size[i] = size[i] * 0.5;
+          ignition::math::Vector3d basis(0, 0, 0);
+          basis[i] = 1;
+          const auto axis = pose.Rot().RotateVector(basis);
+          result.axes[i] = {axis.X(), axis.Y(), axis.Z()};
+        }
+        return result;
+      };
+    const double gap = box_contact_separation(box(fingertip, a), box(plate, b));
+    return std::isfinite(gap) && gap >= -0.001 && gap <= 0.0001;
+  }
+
   // Called on the physics thread before servicing an attach request. Require
   // both actual jaw/target contact pairs, not just a near link origin.
   bool physical_knob_contact_is_valid(
@@ -1479,9 +1510,11 @@ private:
       // ODE reports pre-correction contact depths. Reject sustained >1 mm
       // overlap after 10 ms, and any >2 mm spike immediately.
 
+      const bool stale_contact = found != grasp_contacts_.end() &&
+        now - found->second.first > 0.2;
       if (found == grasp_contacts_.end() || now < found->second.first ||
-        now - found->second.first > 0.2 || found->second.second > 0.002 ||
-        sustained_penetration)
+        (stale_contact && !jaw_box_still_touches(jaw, target)) ||
+        found->second.second > 0.002 || sustained_penetration)
       {
         RCLCPP_ERROR(ros_node_->get_logger(),
           "Knob contact invalid: %s -> %s, age %.6f s, depth %.6f m.",

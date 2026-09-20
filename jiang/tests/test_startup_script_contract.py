@@ -34,6 +34,24 @@ class StartupScriptContractTests(unittest.TestCase):
             encoding="utf-8"
         )
 
+    def test_explicit_builtin_scene_keeps_catalog_and_instances_together(self) -> None:
+        start = self.startup_source.index('case "${SCENE:-}" in')
+        end = self.startup_source.index('XCZS_ASSETS_DIR=', start)
+        block = self.startup_source[start:end]
+        for scene in ('electrical_mezzanine', 'generator_plant'):
+            for custom in (False, True):
+                env = {'PATH': os.environ['PATH'], 'WORK_DIR': '/workspace', 'SCENE': scene}
+                if custom:
+                    env.update(SCENES_CONFIG='/custom/scenes.yaml',
+                               CABINET_INSTANCES_PATH='/custom/instances.yaml')
+                result = subprocess.run(
+                    ['bash', '-c', block + '\nprintf "%s\\n%s\\n" "$SCENES_CONFIG" "$CABINET_INSTANCES_PATH"'],
+                    env=env, check=True, capture_output=True, text=True)
+                expected = ['/custom/scenes.yaml', '/custom/instances.yaml'] if custom else [
+                    '/workspace/xczs_inspection_robot_control/config/scenes.yaml',
+                    '/workspace/xczs_inspection_robot_control/config/cabinet_instances.yaml']
+                self.assertEqual(result.stdout.splitlines(), expected)
+
     def test_preflight_checks_runtime_contract_and_ports(self) -> None:
         # 用 rindex 定位"预检退出"块：_require_port_available 内还有一处更早的
         # `if [ "$PREFLIGHT_ONLY" = "true" ]`（预检端口占用收集分支），

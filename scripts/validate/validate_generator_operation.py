@@ -166,6 +166,9 @@ def main():
             assert abs(after[child]['current_position']) < .001, '旋钮未插回'
             target = control['state_positions'][control['state_ids'].index(args.target)]
             assert abs(after[args.control]['current_position'] - target) < .05, '旋钮角度未到位'
+            peak_velocity = max(abs(s['velocities'][args.control]) for s in evidence['samples'])
+            evidence['rotation_peak_velocity_rad_s'] = peak_velocity
+            assert math.isfinite(peak_velocity) and peak_velocity < 2.0, '旋钮出现异常高速抖动'
         allowed = {args.control}
         if not continuous and not button:
             allowed.add(args.control.replace('_knob', '_button'))
@@ -174,6 +177,13 @@ def main():
                      abs(after[name]['current_position'] - before[name]['current_position']) > .005]
         evidence['disturbed_controls'] = disturbed
         assert not disturbed, f'旁路控件发生位移: {disturbed}'
+        transient = [name for name in before if name not in allowed and any(
+            not isinstance(sample['positions'][name], (int, float)) or
+            not math.isfinite(sample['positions'][name]) or
+            abs(sample['positions'][name] - before[name]['current_position']) > .005
+            for sample in evidence['samples'])]
+        evidence['transient_disturbed_controls'] = transient
+        assert not transient, f'操作过程中旁路控件发生串动: {transient}'
         evidence['success'] = True
         print('PASS', args.control, flush=True)
     except (Exception, KeyboardInterrupt) as error:

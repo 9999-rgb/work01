@@ -184,6 +184,91 @@ class DrawerSafetyTests(unittest.TestCase):
                 lambda *_: None)
         self.assertEqual(events, ['release', 'playback', 'left', 'right'])
 
+    def test_contact_feedback_drift_does_not_accumulate_into_rod_targets(self):
+        trajectory = JointTrajectory(points=[JointTrajectoryPoint()])
+        trajectory.points[0].time_from_start.sec = 3
+        contract = {
+            'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
+            'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}}
+        sent = {}
+
+        def execute(*args, **kwargs):
+            node._rails['db1'] = .05
+            return 0
+
+        def rods(side, plan, timeout, **kwargs):
+            sent[side] = dict(zip(plan.joint_names, plan.points[-1].positions))
+            return 0
+
+        # 接触使左钩杆反馈比标称 18.75 mm 多出 5 mm；目标仍应回到校准开位。
+        def measured(joint):
+            if joint == contract['left']['gripper']:
+                return .02375
+            if joint == contract['right']['gripper']:
+                return .01875
+            return .078 if joint in [c['support'] for c in contract.values()] else 0.
+
+        node = SimpleNamespace(
+            _cabinet='test', _rails={'db1': 0.0}, _controls={},
+            _ensure_rail_subscription=lambda _: None, create_subscription=Mock(),
+            _state_cb=lambda _: Mock(), _plan_translate=lambda *a, **k: (trajectory, 1., (0, 0, 0)),
+            _retime_drawer_path=lambda *a: None, _rod_contract=lambda: contract,
+            _measured=measured, _playback_warm=object(), ensure_lease=lambda: 'test',
+            _check_cancel=lambda: None, _execute_plan=execute, _send_trajectory=rods,
+            release_previous_hold=lambda _: None, _start_playback=lambda *a, **k: None,
+            _tip_settled=lambda _: None, _stop_playback=lambda *a: None,
+            stop_renewing=lambda: None, _release_lease=lambda _: None)
+        with patch.object(worker.time, 'sleep'):
+            worker.TaughtRosWorker.step_pull_drawer(node,
+                {'control': 'db1', 'target': .05, 'duration': 3.}, lambda *_: None)
+        for side in contract:
+            self.assertAlmostEqual(sent[side][contract[side]['gripper']], .00375)
+            self.assertAlmostEqual(sent[side][contract[side]['support']], .113)
+
+    def test_direct_close_uses_one_snapshot_without_stale_world_tf(self):
+        state = JointState(name=['l_two_cyl_finger1_joint', 'l_two_cyl_finger2_joint', 'r_three_cyl_finger2_joint', 'r_three_cyl_finger1_joint'], position=[.00375, .113, .00375, .113])
+        node = SimpleNamespace(_joint_state=state, _rails={'db1': .05}, _fk_cli=None,
+            _rod_contract=lambda: {'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
+                                  'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}},
+            _tip_pose=Mock(side_effect=RuntimeError('stale world TF')))
+        requests = []
+        def call(client, request, timeout, label):
+            requests.append(request)
+            node._joint_state = JointState(name=state.name, position=[0.] * 4)
+            poses = [PoseStamped(), PoseStamped()]
+            for pose in poses:
+                pose.pose.orientation.w = 1.
+            return SimpleNamespace(error_code=SimpleNamespace(val=1), pose_stamped=poses)
+        node._call = call
+        self.assertTrue(worker.TaughtRosWorker.can_continue_drawer_close(node, 'db1', True))
+        self.assertEqual([r.header.frame_id for r in requests], ['body', 'body'])
+        self.assertEqual(list(requests[1].robot_state.joint_state.position), list(state.position))
+        node._tip_pose.assert_not_called()
+
+    def test_direct_close_rejects_displaced_or_invalid_fk(self):
+        for error_code, offset in [(1, .02), (0, 0.)]:
+            with self.subTest(error_code=error_code):
+                node = SimpleNamespace(
+                    _joint_state=JointState(name=['l_two_cyl_finger1_joint', 'l_two_cyl_finger2_joint', 'r_three_cyl_finger2_joint', 'r_three_cyl_finger1_joint'],
+                                            position=[.00375, .113, .00375, .113]),
+                    _rails={'db1': .05}, _fk_cli=None,
+                    _rod_contract=lambda: {'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
+                                          'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}})
+                def call(client, request, timeout, label):
+                    actual = label == '实测扣手姿态正解'
+                    poses = [PoseStamped(), PoseStamped()]
+                    for pose in poses:
+                        pose.pose.orientation.w = 1.
+                        pose.pose.position.x = offset if actual else 0.
+                    return SimpleNamespace(error_code=SimpleNamespace(val=error_code if actual else 1),
+                                           pose_stamped=poses)
+                node._call = call
+                if error_code == 1:
+                    self.assertFalse(worker.TaughtRosWorker.can_continue_drawer_close(node, 'db1', True))
+                else:
+                    with self.assertRaisesRegex(RuntimeError, '正解失败'):
+                        worker.TaughtRosWorker.can_continue_drawer_close(node, 'db1', True)
+
     def test_repeat_target_uses_measured_position(self):
         node = SimpleNamespace(_cabinet='test', _rails={'ds3': .05}, _rail_subscriptions={},
                                _rail_cb=lambda _: Mock(),

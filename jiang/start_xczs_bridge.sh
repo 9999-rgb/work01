@@ -87,6 +87,14 @@ done
 # SCENES_CONFIG / SCENE / TOOLSET 环境变量，由下方默认值块与 launch/Web 消费。仅当用户
 # 没有显式设置对应变量时生效——显式环境变量优先于资产库选择。无选择（空表 /
 # 首次启动）正常返回空结果；数据库迁移或 schema 错误必须阻止带病启动。
+# 显式选择内置场景时，场景目录与实例必须一起覆盖持久化资产选择。
+# 否则 SCENE 为电气夹层，却可能加载上次保存的发电机层单场景文件。
+case "${SCENE:-}" in
+    electrical_mezzanine|generator_plant)
+        SCENES_CONFIG="${SCENES_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/scenes.yaml}"
+        CABINET_INSTANCES_PATH="${CABINET_INSTANCES_PATH:-$WORK_DIR/xczs_inspection_robot_control/config/cabinet_instances.yaml}"
+        ;;
+esac
 XCZS_ASSETS_DIR="${XCZS_ASSETS_DIR:-$WORK_DIR/jiang/data/assets}"
 if ! ASSET_SELECTION_LINES="$(
     "$PYTHON_BIN" "$WORK_DIR/scripts/tools/xczs_import_asset" \
@@ -134,7 +142,7 @@ NAV2_LAUNCH_PATH="${NAV2_LAUNCH_PATH:-$WORK_DIR/xczs_inspection_robot_nav2/launc
 # 可选覆盖：默认留空，由 scenes.yaml 的 nav2_map 决定实际地图。
 NAV2_MAP_PATH="${NAV2_MAP_PATH:-}"
 NAV2_PARAMS_FILE="${NAV2_PARAMS_FILE:-$WORK_DIR/xczs_inspection_robot_nav2/config/nav2_params.yaml}"
-SCENE="${SCENE:-cabinet_operation}"
+SCENE="${SCENE:-electrical_mezzanine}"
 SCENES_CONFIG="${SCENES_CONFIG:-$WORK_DIR/xczs_inspection_robot_control/config/scenes.yaml}"
 # 当前进程栈启动时实际挂载的场景 / 柜体资产（供 Web「立即生效」按钮诚实报告：
 # 场景可即时切换，柜体资产生效需重启）。绝不写重启标记。柜体资产名从解析后的

@@ -220,108 +220,15 @@ class CabinetInventoryTest(unittest.TestCase):
         self.assertAlmostEqual(-0.2, spec.base_yaw_offset)
         self.assertEqual("map", spec.frame_id)
 
-    def test_project_layout_reserves_front_rear_and_side_workspace(self) -> None:
+    def test_project_registers_only_the_two_fixture_scenes(self) -> None:
         config = WORKSPACE / "xczs_inspection_robot_control" / "config"
         inventory = CabinetInventory.load(
-            config / "cabinet_instances.yaml",
-            config / "cabinet_scene.yaml",
+            config / "cabinet_instances.yaml", config / "cabinet_scene.yaml"
         )
-        adapter = load_robot_adapter(
-            config / "cabinet_robot_adapter.yaml",
-            toolset="A",
-        )
-        # 共享柜体布局合同只针对 kind == cabinet 的实例；夹具实例
-        # （如 generator_plant）随场景模型以恒等位姿加载，不属于柜体布局。
-        instances = {
-            instance.name: instance
-            for instance in inventory
-            if instance.kind == "cabinet"
-        }
-
-        expected_y = {
-            "cabinet_a": 0.33,
-            "cabinet_b": 2.83,
-            "cabinet_c": -2.17,
-        }
-        self.assertEqual(set(expected_y), set(instances))
-        for name, y in expected_y.items():
-            self.assertAlmostEqual(2.0, instances[name].x)
-            self.assertAlmostEqual(y, instances[name].y)
-
-        # With the configured RPY, the 0.662 m cabinet width lies on world Y.
-        cabinet_width = 0.662
-        ordered = sorted(instances.values(), key=lambda instance: instance.y)
-        clearances = [
-            upper.y - cabinet_width - lower.y
-            for lower, upper in zip(ordered, ordered[1:])
-        ]
-        self.assertAlmostEqual(1.838, min(clearances), places=6)
-
-        # The static map has a two-cell occupied border, leaving [-4.9, 4.9].
-        # Nav2's padded footprint spans x=[-0.58, 0.45], y=[-0.45, 0.45]
-        # while facing the cabinet from the front.
-        map_min = -4.9
-        map_max = 4.9
-        for name in expected_y:
-            front = inventory.station_for(name)
-            self.assertAlmostEqual(1.07, front.x, places=6)
-            self.assertAlmostEqual(instances[name].y - 0.331, front.y, places=6)
-            self.assertGreaterEqual(front.x - 0.58, map_min)
-            self.assertLessEqual(front.x + 0.45, map_max)
-            self.assertGreaterEqual(front.y - 0.45, map_min)
-            self.assertLessEqual(front.y + 0.45, map_max)
-
-            # The layout reserves a collision-clear rear service corridor 1.20 m
-            # behind the 0.60 m cabinet body.  This is a layout allowance, not a
-            # claim that the current robot has a verified door trajectory there.
-            rear_x = instances[name].x + 1.80
-            rear_y = instances[name].y - cabinet_width / 2.0
-            self.assertGreaterEqual(rear_x - 0.45, map_min)
-            self.assertLessEqual(rear_x + 0.58, map_max)
-            self.assertGreaterEqual(rear_y - 0.45, map_min)
-            self.assertLessEqual(rear_y + 0.45, map_max)
-
-            # A conservative 0.65 m rear-door sweep ends at x=3.25.
-            door_sweep_max_x = instances[name].x + 0.60 + 0.65
-            self.assertGreaterEqual(rear_x - 0.45 - door_sweep_max_x, 0.09)
-
-        # Every robot-specific control station is inside the usable map for all
-        # three instances.  The tested door candidate is retained for a future
-        # full-loop revalidation: its operation remains disabled until
-        # open/retreat/close is safe, so this test does not mislabel it as
-        # collision-clear.
-        configured_stations = dict(adapter.control_navigation_stations)
-        self.assertIn("cabinet_rear_door", configured_stations)
-        for control_id, control_station in configured_stations.items():
-            with self.subTest(control=control_id):
-                for name in expected_y:
-                    station = inventory.station_for(
-                        name,
-                        control_station=control_station,
-                    )
-                    self.assertGreaterEqual(station.x - 0.58, map_min)
-                    self.assertLessEqual(station.x + 0.58, map_max)
-                    self.assertGreaterEqual(station.y - 0.58, map_min)
-                    self.assertLessEqual(station.y + 0.58, map_max)
-
-        door_station = inventory.station_for(
-            "cabinet_a",
-            control_station=configured_stations["cabinet_rear_door"],
-        )
-        self.assertAlmostEqual(3.61, door_station.x, places=6)
-        self.assertAlmostEqual(-0.28, door_station.y, places=6)
-        self.assertAlmostEqual(math.pi, abs(door_station.yaw), places=6)
-
-        # A 0.93 m side standoff plus the footprint's 0.58 m rear extent
-        # still leaves more than 0.30 m before the adjacent cabinet.
-        self.assertGreaterEqual(min(clearances) - 0.93 - 0.58, 0.30)
-
-        upper_side_max_y = instances["cabinet_b"].y + 0.93 + 0.58
-        lower_side_min_y = (
-            instances["cabinet_c"].y - cabinet_width - 0.93 - 0.58
-        )
-        self.assertLessEqual(upper_side_max_y, map_max)
-        self.assertGreaterEqual(lower_side_min_y, map_min)
+        self.assertEqual({"generator_plant", "electrical_mezzanine"}, set(inventory.names))
+        for instance in inventory:
+            self.assertEqual("fixture", instance.kind)
+            self.assertEqual(instance.name, instance.associated_scene)
 
     def test_uses_full_rpy_rotation_and_instance_override(self) -> None:
         inventory = self._load(

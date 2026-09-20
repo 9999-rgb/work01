@@ -44,7 +44,7 @@ def generate_launch_description() -> LaunchDescription:
         get_package_share_directory("nav2_bringup")
     )
 
-    default_map = config_share / "maps" / "inspection_map.yaml"
+    default_map = config_share / "maps" / "inspection_map_electrical_mezzanine.yaml"
     default_params = config_share / "config" / "nav2_params.yaml"
     default_rviz = (
         nav2_bringup_share / "rviz" / "nav2_default_view.rviz"

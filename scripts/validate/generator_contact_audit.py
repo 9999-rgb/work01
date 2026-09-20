@@ -7,6 +7,7 @@
 """
 import argparse
 import json
+import signal
 from pathlib import Path
 import subprocess
 import sys
@@ -15,6 +16,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import rclpy
+from rclpy.signals import SignalHandlerOptions
 from gazebo_msgs.msg import LinkStates
 from sensor_msgs.msg import JointState
 import vtk
@@ -177,22 +179,35 @@ def main():
             frame.update(metrics)
             print(json.dumps(frame), flush=True)
         return
-    rclpy.init()
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    stop_requested = False
+
+    def request_stop(_signum, _frame):
+        nonlocal stop_requested
+        stop_requested = True
+
+    # 先结束采样循环再销毁 ROS 实体，避免 SIGINT 与 take_message 并发。
+    signal.signal(signal.SIGINT, request_stop)
+    signal.signal(signal.SIGTERM, request_stop)
     node = rclpy.create_node('generator_contact_audit')
     poses, joints = {}, {}
-    node.create_subscription(LinkStates, '/link_states', lambda m: poses.update({k: matrix(p) for k, p in zip(m.name, m.pose) if k in shapes}), 10)
-    node.create_subscription(JointState, '/xczs/joint_states', lambda m: joints.update({k: v for k, v in zip(m.name, m.position) if 'rotbtn' in k}), 10)
+    node.create_subscription(LinkStates, '/link_states', lambda m: poses.update({k: matrix(p) for k, p in zip(m.name, m.pose) if k in shapes or k == "xczs_inspection_robot::body"}), 10)
+    node.create_subscription(JointState, '/xczs/joint_states', lambda m: joints.update({k: v for k, v in zip(m.name, m.position)}), 10)
     started = time.monotonic()
     last = 0
-    while time.monotonic() - started < args.duration:
-        rclpy.spin_once(node, timeout_sec=.05)
-        if time.monotonic() - last < args.interval:
-            continue
-        last = time.monotonic()
-        metrics = measure(shapes, boxes, poses)
-        print(json.dumps({'wall_time': time.time(), 'elapsed': last-started, 'joints': joints, 'link_poses': {k: p.tolist() for k, p in poses.items()}, **metrics}), flush=True)
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        while not stop_requested and time.monotonic() - started < args.duration:
+            rclpy.spin_once(node, timeout_sec=.05)
+            if time.monotonic() - last < args.interval:
+                continue
+            last = time.monotonic()
+            metrics = measure(shapes, boxes, poses)
+            print(json.dumps({'wall_time': time.time(), 'elapsed': last-started, 'joints': joints, 'link_poses': {k: p.tolist() for k, p in poses.items()}, **metrics}), flush=True)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
 
 
 if __name__ == '__main__':

@@ -153,7 +153,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 
 | 阶段 | 状态 | 落点 |
 |---|---|---|
-| **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/tools/xczs_import_asset`(CLI 导入)、`jiang/samples/scene_cabinet_operation/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
+| **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/tools/xczs_import_asset`(CLI 导入)、`model/场景-资产/electrical_mezzanine/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
 | **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/场景与柜体组合选择；末端 A/B 另设运行态和一键切换；非管理员禁用写操作) |
 | **3 · 换柜体** | ✅ 已实现 | `scripts/validate/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`) |
 

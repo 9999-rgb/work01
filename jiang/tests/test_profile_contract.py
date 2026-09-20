@@ -194,7 +194,7 @@ class ProfileContractTest(unittest.TestCase):
             pose_path=config / "cabinet_pose.yaml",
         )
 
-        self.assertEqual(3, report.cabinet_count)
+        self.assertEqual(0, report.cabinet_count)
         self.assertEqual(33, report.control_count)
         self.assertEqual("odom", report.planning_frame)
         self.assertEqual("map", report.navigation_frame)
@@ -715,7 +715,7 @@ class FixtureInstanceProfileContractTest(unittest.TestCase):
                 robot_adapter_path=(
                     CONTROL_CONFIG_DIR / "cabinet_robot_adapter.yaml"
                 ),
-                instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+                instances_path=JIANG_DIR / "tests/fixtures/generic_cabinet_instances.yaml",
                 controls_path=CONTROL_CONFIG_DIR / "cabinet_controls.yaml",
                 scene_path=CONTROL_CONFIG_DIR / "cabinet_scene.yaml",
                 pose_path=CONTROL_CONFIG_DIR / "cabinet_pose.yaml",
@@ -751,7 +751,7 @@ class FixtureInstanceProfileContractTest(unittest.TestCase):
         self.assertNotEqual("shared_controls.yaml", resolution.controls_path)
 
         cabinet = resolve_instance_profile_paths(
-            instances_path=CONTROL_CONFIG_DIR / "cabinet_instances.yaml",
+            instances_path=JIANG_DIR / "tests/fixtures/generic_cabinet_instances.yaml",
             instance_id="cabinet_a",
             default_controls="shared_controls.yaml",
             default_scene="shared_scene.yaml",

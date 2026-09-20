@@ -11,8 +11,8 @@ joints:
   l_arm_2_joint: -1.583158662221335
   r_arm_2_joint: -1.8581086777574938
   l_two_cyl_finger1_joint: 0.00375
-  l_two_cyl_finger2_joint: 0.115
-  r_three_cyl_finger1_joint: 0.115
+  l_two_cyl_finger2_joint: 0.113
+  r_three_cyl_finger1_joint: 0.113
   r_arm_3_joint: 1.3211339078880815
   l_arm_6_joint: -0.9845365514018363
   r_three_cyl_finger3_joint: 4.2e-05

@@ -165,13 +165,17 @@ class TaughtRosWorker(SpinNode):
             return False
         targets = yaml.safe_load(path.read_text())["joints"]
         contract = self._rod_contract()
+        # 新任务内所有杆件与末端判断使用同一份关节反馈，避免采样时序混用。
+        joint_state = self._joint_state
+        measured = dict(zip(joint_state.name, joint_state.position))
         for side in ROD_SIDES:
-            gripper = 0.00375 if support_enabled else 0.01875
-            if abs(self._measured(contract[side]["gripper"]) - gripper) > 0.003:
-                return False
-            support = 0.115 if support_enabled else 0.0
-            if abs(self._measured(contract[side]["support"]) - support) > 0.003:
-                return False
+            for role in ("gripper", "support"):
+                target = float(targets[contract[side][role]])
+                value = measured.get(contract[side][role], float("nan"))
+                if not math.isfinite(value):
+                    raise RuntimeError("扣手杆件反馈无效，保持当前位置")
+                if abs(value - target) > 0.003:
+                    return False
         if abs(self._rails.get(control, float("inf")) - 0.05) > 0.003:
             return False
         # 七轴臂有冗余自由度：关节角不同也可能是同一个扣手姿态。
@@ -179,19 +183,32 @@ class TaughtRosWorker(SpinNode):
         client = self._fk_cli
         try:
             request = GetPositionFK.Request()
-            request.header.frame_id = WORLD_FRAME
+            # 在固定机身坐标系比较两次 FK，避免 MoveIt 的 odom 快照与
+            # 新建 TF 缓冲时间不一致，把仍在扣手的末端误判为离开。
+            request.header.frame_id = "body"
             request.fk_link_names = [cfg["tip"] for cfg in ARMS.values()]
             request.robot_state.joint_state.name = list(targets)
             request.robot_state.joint_state.position = [float(v) for v in targets.values()]
             response = self._call(client, request, 10.0, "末端姿态校验")
             if response.error_code.val != 1 or len(response.pose_stamped) != len(ARMS):
-                return False
-            for tip, expected in zip(request.fk_link_names, response.pose_stamped):
-                position, quaternion = self._tip_pose(tip)
+                raise RuntimeError("目标扣手姿态正解失败")
+            actual_request = GetPositionFK.Request()
+            actual_request.header.frame_id = "body"
+            actual_request.fk_link_names = request.fk_link_names
+            actual_request.robot_state.joint_state = joint_state
+            actual = self._call(client, actual_request, 10.0, "实测扣手姿态正解")
+            if actual.error_code.val != 1 or len(actual.pose_stamped) != len(ARMS):
+                raise RuntimeError("实测扣手姿态正解失败")
+            for current, expected in zip(actual.pose_stamped, response.pose_stamped):
                 p, q = expected.pose.position, expected.pose.orientation
-                if math.dist(position, (p.x, p.y, p.z)) > 0.006:
+                cp, cq = current.pose.position, current.pose.orientation
+                values = (p.x, p.y, p.z, q.x, q.y, q.z, q.w,
+                          cp.x, cp.y, cp.z, cq.x, cq.y, cq.z, cq.w)
+                if not all(math.isfinite(v) for v in values):
+                    raise RuntimeError("扣手姿态正解包含无效读数")
+                if math.dist((cp.x, cp.y, cp.z), (p.x, p.y, p.z)) > 0.006:
                     return False
-                dot = abs(sum(a*b for a, b in zip(quaternion, (q.x, q.y, q.z, q.w))))
+                dot = abs(cq.x*q.x + cq.y*q.y + cq.z*q.z + cq.w*q.w)
                 if 2.0 * math.acos(min(1.0, dot)) > 0.03:
                     return False
             return True
@@ -950,9 +967,12 @@ class TaughtRosWorker(SpinNode):
         scale = 1.0
 
         # 双臂承担 70% 行程，钩杆回缩承担 30%；支撑杆等量伸长，端点留在墙面。
-        # 5 cm 行程下支撑杆从 8 cm 到 11.5 cm，保持在原有 12 cm 限位内。
+        # 5 cm 行程下支撑杆从 7.8 cm 到 11.3 cm，预留 2 mm 仿真接触余量。
         rod_plans = {}
         contract = self._rod_contract()
+        opened_rods = (yaml.safe_load(
+            (TAUGHT_POSES_DIR / (control + "_opened.yaml")).read_text())["joints"]
+            if step.get("support_enabled", True) else {})
         for side, cfg in ROD_SIDES.items():
             trajectory = JointTrajectory()
             trajectory.joint_names = list(cfg["joints"])
@@ -962,11 +982,16 @@ class TaughtRosWorker(SpinNode):
                 initial[joint] = _clamp_rod(joint, initial[joint])
             target_rods = dict(initial)
             if step.get("support_enabled", True):
-                target_rods[contract[side]["support"]] += distance * arm_share
+                # 接触瞬间的反馈偏差不能累加成下一阶段的目标偏差。
+                # 使用已校准的开位作为基准，实测值仅作为轨迹起点。
+                remaining = 0.05 - (start + distance)
+                target_rods[contract[side]["support"]] = (
+                    float(opened_rods[contract[side]["support"]]) - remaining * arm_share)
+                target_rods[contract[side]["gripper"]] = (
+                    float(opened_rods[contract[side]["gripper"]]) + remaining * (1.0 - arm_share))
             else:
                 initial[contract[side]["support"]] = 0.0
                 target_rods[contract[side]["support"]] = 0.0
-            target_rods[contract[side]["gripper"]] -= distance * (1.0 - arm_share)
             for joint, value in target_rods.items():
                 if abs(_clamp_rod(joint, value) - value) > 0.001:
                     raise RuntimeError("抽拉所需电缸行程超限: %s=%.4f" % (joint, value))

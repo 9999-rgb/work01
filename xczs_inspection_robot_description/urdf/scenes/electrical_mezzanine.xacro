@@ -162,8 +162,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.7 0.73 0.78 1</ambient>
-          <diffuse>0.7 0.73 0.78 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -183,8 +183,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.2 0.2 0.22 1</ambient>
-          <diffuse>0.2 0.2 0.22 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_r">
@@ -203,8 +203,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s2p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.85 0.04 0.04 1</ambient>
-          <diffuse>0.85 0.04 0.04 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_p">
@@ -240,8 +240,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.7 0.73 0.78 1</ambient>
-          <diffuse>0.7 0.73 0.78 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <!-- 真实把手 = b1.STL 原生两竖向立筋（2026-09-09 用户目视裁决：删去外加
@@ -321,8 +321,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/b1r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.2 0.2 0.22 1</ambient>
-          <diffuse>0.2 0.2 0.22 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_r">
@@ -381,6 +381,8 @@
             <size>0.013 0.016 0.005</size>
           </box>
         </geometry>
+        <!-- 随抽屉运动的按钮也使用同一接触参数，避免挤压 2 g 解锁小杆。 -->
+        <xacro:drawer_contact_surface />
       </collision>
     </link>
     <!-- b1p_anchor：b1p 的专用承载锚（0.05kg 小球惯性，无视觉/碰撞，纯承载关节），
@@ -455,8 +457,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.7 0.73 0.78 1</ambient>
-          <diffuse>0.7 0.73 0.78 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -476,8 +478,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.2 0.2 0.22 1</ambient>
-          <diffuse>0.2 0.2 0.22 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_r">
@@ -496,8 +498,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/s3p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.85 0.04 0.04 1</ambient>
-          <diffuse>0.85 0.04 0.04 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_p">
@@ -533,8 +535,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.7 0.73 0.78 1</ambient>
-          <diffuse>0.7 0.73 0.78 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision">
@@ -554,8 +556,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1r.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.2 0.2 0.22 1</ambient>
-          <diffuse>0.2 0.2 0.22 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_r">
@@ -574,8 +576,8 @@
             <uri>model://xczs_inspection_robot_description/meshes/scenes/electrical_mezzanine/m1p.STL</uri></mesh>
         </geometry>
         <material>
-          <ambient>0.85 0.04 0.04 1</ambient>
-          <diffuse>0.85 0.04 0.04 1</diffuse>
+          <ambient>0.12 0.48 0.88 1</ambient>
+          <diffuse>0.12 0.48 0.88 1</diffuse>
         </material>
       </visual>
       <collision name="collision_p">

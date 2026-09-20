@@ -175,6 +175,9 @@ ament_export_include_directories(include)
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
   find_package(ament_cmake_pytest REQUIRED)
+  ament_add_gtest(box_contact_test test/box_contact_test.cpp)
+  target_compile_features(box_contact_test PUBLIC cxx_std_17)
+  target_include_directories(box_contact_test PRIVATE include)
   ament_add_gtest(
     operation_lease_state_test
     test/operation_lease_state_test.cpp

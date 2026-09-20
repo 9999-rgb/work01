@@ -41,3 +41,9 @@ Makefile
 *.swp
 *.tmp
 *~
+
+# Reproducible asset archives and root TF exports
+/jiang/samples/*.zip
+/model/场景-资产/*.zip
+/frames_*.gv
+/frames_*.pdf
