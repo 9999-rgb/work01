@@ -421,6 +421,11 @@ struct ButtonSpec
   bool requires_grasp{false};
   double grasp_outward_offset{0.0};
   double rotary_retreat_distance{0.060};
+  bool continuous_rotation{false};
+  double rotor_alignment_offset{0.0};
+  std::string axial_control_id;
+  double axial_pull_distance{0.0};
+  double axial_seating_offset{0.0};
   // Physical execution is granted only by the explicit robot-adapter
   // operable_control_ids allowlist populated during configure_controls().
   bool operable{false};
@@ -2707,16 +2712,18 @@ private:
                   "joint_names and finite positions.");
         }
       }
-      if (is_button) {
+      if (is_button || is_switch) {
         button->tool_roll_offset = declare_parameter<double>(
           prefix + "tool_roll_offset", 0.0);
         if (!std::isfinite(button->tool_roll_offset) ||
           std::abs(button->tool_roll_offset) > std::acos(-1.0))
         {
           throw std::invalid_argument(
-                  "Button '" + control_id +
+                  "Control '" + control_id +
                   "' tool_roll_offset must be finite and within [-pi, pi].");
         }
+      }
+      if (is_button) {
         button->spring_stiffness = declare_parameter<double>(
           prefix + "spring_stiffness", button_default_spring_stiffness);
         button->press_threshold = declare_parameter<double>(
@@ -2724,12 +2731,25 @@ private:
         button->default_force = declare_parameter<double>(
           prefix + "default_force", button_default_force);
       }
+      button->continuous_rotation = declare_parameter<bool>(prefix + "continuous_rotation", false);
+      button->rotor_alignment_offset = declare_parameter<double>(
+        prefix + "rotor_alignment_offset", 0.0);
+      if (!std::isfinite(button->rotor_alignment_offset)) {
+        throw std::invalid_argument("Invalid rotor alignment offset: " + control_id);
+      }
+      if (button->continuous_rotation && !is_switch) {
+        throw std::invalid_argument("Continuous rotation requires a switch profile: " + control_id);
+      }
+      button->required_toolset = declare_parameter<std::string>(prefix + "required_toolset",
+        required_toolset_for_control(button->control_type));
+      if (button->required_toolset != "A" && button->required_toolset != "B") {
+        throw std::invalid_argument("Unknown required toolset: " + control_id);
+      }
       const bool in_allowlist = operable_controls.count(control_id) != 0U;
-      const bool tool_serves = tool_serves_control(button->control_type);
+      const bool tool_serves = toolset_ == button->required_toolset;
       button->adapter_validated = in_allowlist;
       button->toolset_compatible = tool_serves;
-      button->required_toolset = required_toolset_for_control(
-        button->control_type);
+
       button->operable = in_allowlist && tool_serves;
       button->unavailable_reason = declare_parameter<std::string>(
         prefix + "unavailable_reason", "");
@@ -2868,6 +2888,27 @@ private:
           throw std::invalid_argument(
                   "Control '" + control_id +
                   "' has an invalid grasp outward offset.");
+        }
+      }
+      if (is_knob) {
+        button->axial_control_id = declare_parameter<std::string>(
+          prefix + "axial_control_id", "");
+        button->axial_pull_distance = declare_parameter<double>(
+          prefix + "axial_pull_distance", 0.0);
+        button->axial_seating_offset = declare_parameter<double>(
+          prefix + "axial_seating_offset", 0.0);
+        if (!std::isfinite(button->axial_seating_offset) ||
+          button->axial_seating_offset < 0.0 || button->axial_seating_offset > 0.001 ||
+          button->axial_seating_offset >= button->grasp_outward_offset ||
+          (button->axial_control_id.empty() && button->axial_seating_offset != 0.0))
+        {
+          throw std::invalid_argument("Invalid axial seating offset: " + control_id);
+        }
+        if (!std::isfinite(button->axial_pull_distance) ||
+          button->axial_pull_distance < 0.0 ||
+          (button->axial_control_id.empty() != (button->axial_pull_distance == 0.0)))
+        {
+          throw std::invalid_argument("Invalid axial pull configuration: " + control_id);
         }
       }
       button->rotary_retreat_distance = is_knob ? declare_parameter<double>(
@@ -3082,7 +3123,10 @@ private:
       // right detent to the left detent would cross an intermediate detent
       // and is rejected by the physical transition guard.  Switches and
       // doors have two-state semantics and may expose TOGGLE.
-      if (is_button) {
+      if (button->continuous_rotation) {
+        button->supported_commands =
+          xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_SET_STATE;
+      } else if (is_button) {
         button->supported_commands =
           xczs_inspection_robot_interfaces::msg::CabinetControl::SUPPORT_PRESS;
       } else {
@@ -3178,6 +3222,17 @@ private:
     }
 
     for (const auto & control : buttons_in_order_) {
+      if (!control->axial_control_id.empty()) {
+        const auto child = buttons_by_id_.find(control->axial_control_id);
+        if (child == buttons_by_id_.end() ||
+          child->second->parent_control_id != control->id ||
+          control->axial_pull_distance >= child->second->max_position ||
+          control->axis.dot(child->second->axis) < 0.999 ||
+          control->axis.dot(control->approach_normal) < 0.999)
+        {
+          throw std::invalid_argument("Invalid axial pull child/axis/range: " + control->id);
+        }
+      }
       std::unordered_set<std::string> ancestors;
       std::string parent_id = control->parent_control_id;
       while (!parent_id.empty()) {
@@ -3466,6 +3521,7 @@ private:
       control.state_ids = button->state_ids;
       control.state_labels = button->state_labels;
       control.state_positions = button->state_positions;
+      control.continuous_rotation = button->continuous_rotation;
       control.requires_grasp = button->requires_grasp;
       control.operable = button->operable;
       control.unavailable_reason = button->unavailable_reason;
@@ -3861,7 +3917,7 @@ private:
                 PressCabinetButton::Result::INVALID_BUTTON,
                 "The accepted cabinet button is no longer configured.");
       }
-      if (!tool_serves_control(button->control_type)) {
+      if (toolset_ != button->required_toolset) {
         throw OperationError(
                 PressCabinetButton::Result::TOOLSET_MISMATCH,
                 "Button '" + button->id + "' requires end-effector toolset " +
@@ -4271,9 +4327,9 @@ private:
                 OperateCabinetControl::Result::INVALID_CONTROL,
                 "The accepted cabinet control is no longer configured.");
       }
-      if (!tool_serves_control(control->control_type)) {
+      if (toolset_ != control->required_toolset) {
         const std::string required_toolset =
-          required_toolset_for_control(control->control_type);
+          control->required_toolset;
         result->success = false;
         result->error_code =
           OperateCabinetControl::Result::TOOLSET_MISMATCH;
@@ -4322,7 +4378,12 @@ private:
       {
         bool command_valid = false;
         std::string command_reason;
-        if (is_button) {
+        if (control->continuous_rotation) {
+          command_valid = goal_handle->get_goal()->command ==
+            OperateCabinetControl::Goal::COMMAND_SET_STATE &&
+            goal_handle->get_goal()->target_state == "running";
+          command_reason = "连续旋转只接受开始指令；停止请取消正在运行的任务。";
+        } else if (is_button) {
           command_valid = goal_handle->get_goal()->command ==
             OperateCabinetControl::Goal::COMMAND_PRESS;
           if (!command_valid) {
@@ -4477,8 +4538,8 @@ private:
         *control, *goal_handle->get_goal(), initial_state);
       if (is_button) {
         target_position = button_press_depth;
-      } else if (std::abs(target_position - initial_state.position) <=
-        target_tolerance_)
+      } else if (!control->continuous_rotation &&
+        std::abs(target_position - initial_state.position) <= target_tolerance_)
       {
         throw GenericOperationError(
                 OperateCabinetControl::Result::UNSUPPORTED_COMMAND,
@@ -4499,6 +4560,9 @@ private:
         rotary_tool_roll_offset = control->tool_roll_offsets.at(
           rotary_transition_matrix_index(
             source_index, target_index, control->state_ids.size()));
+      }
+      if (control->continuous_rotation) {
+        rotary_tool_roll_offset = control->tool_roll_offset;
       }
       if (!is_button) {
         wait_for_pregrasp_controls_stable(
@@ -5635,9 +5699,21 @@ private:
           const auto retreat_pose = calculate_rotary_tool_pose(
             *control, rotary_manip_pos, control->rotary_retreat_distance, false,
             rotary_tool_roll_offset);
+          auto branch_waypoints = rotary_arc_waypoints;
+          if (control->axial_pull_distance > 0.0) {
+            branch_waypoints.insert(branch_waypoints.begin(), calculate_rotary_tool_pose(
+              *control, initial_state.position,
+              control->grasp_outward_offset + control->axial_pull_distance,
+              true, rotary_tool_roll_offset));
+            branch_waypoints.push_back(calculate_rotary_tool_pose(
+              *control, rotary_manip_pos,
+              control->grasp_outward_offset - control->axial_seating_offset,
+              true, rotary_tool_roll_offset));
+            wait_for_knob_axial_position(goal_handle, *control, 0.0);
+          }
           rotary_branch_seed = select_rotary_branch_seed(
             *move_group, *control, rotary_poses.pregrasp_pose,
-            rotary_poses.grasp_pose, rotary_arc_waypoints, retreat_pose,
+            rotary_poses.grasp_pose, branch_waypoints, retreat_pose,
             contact_tool_link_);
           if (!rotary_branch_seed.empty()) {
             rotary_branch_seed_ptr = &rotary_branch_seed;
@@ -5648,6 +5724,9 @@ private:
           contact_tool_link_, &result->operation_executed, control.get(),
           rotary_branch_seed_ptr);
         should_attempt_retreat = true;
+        if (control->continuous_rotation) {
+          align_rocker_socket(goal_handle, *control);
+        }
         result->diagnostic_stage = "approach";
         publish_operate_feedback(
           goal_handle,
@@ -5702,6 +5781,23 @@ private:
         // Let the transient grasp-active notification reach the planar
         // stabilizer before the arm starts driving the physical constraint.
         interruptible_hold(goal_handle, grasp_attach_settle_duration_);
+        if (control->continuous_rotation) {
+          run_continuous_rocker(goal_handle, *control, &result->operation_executed);
+        }
+        if (control->axial_pull_distance > 0.0) {
+          result->diagnostic_stage = "axial_pull";
+          publish_operate_feedback(goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING, 0.57F,
+            target_position, "夹紧旋钮，沿轴向拉出。");
+          const auto pulled_pose = calculate_rotary_tool_pose(
+            *control, initial_state.position,
+            control->grasp_outward_offset + control->axial_pull_distance,
+            true, rotary_tool_roll_offset);
+          execute_cartesian_path(*move_group, goal_handle, {pulled_pose},
+            cartesian_velocity_scale_ * 0.25, cartesian_acceleration_scale_ * 0.25,
+            0.99, &result->operation_executed);
+          wait_for_knob_axial_position(goal_handle, *control, control->axial_pull_distance);
+        }
         // Doors and calibrated knobs are over-center mechanisms.  Moving
         // safely beyond the next midpoint lets the physical detent spring
         // finish the requested travel after release, without demanding an
@@ -5772,6 +5868,21 @@ private:
           wait_for_knob_release_position(
             goal_handle, *control, initial_state.position, target_position,
             target_state, std::chrono::steady_clock::now());
+        }
+        if (control->axial_pull_distance > 0.0) {
+          wait_for_knob_axial_position(goal_handle, *control, control->axial_pull_distance);
+          result->diagnostic_stage = "axial_insert";
+          publish_operate_feedback(goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING, 0.72F,
+            target_position, "保持目标角度，将旋钮插回安装位置。");
+          const auto inserted_pose = calculate_rotary_tool_pose(
+            *control, manipulation_position,
+            control->grasp_outward_offset - control->axial_seating_offset,
+            true, rotary_tool_roll_offset);
+          execute_cartesian_path(*move_group, goal_handle, {inserted_pose},
+            cartesian_velocity_scale_ * 0.25, cartesian_acceleration_scale_ * 0.25,
+            0.99, &result->operation_executed);
+          wait_for_knob_axial_position(goal_handle, *control, 0.0);
         }
         const auto release_hold_started = std::chrono::steady_clock::now();
         publish_operate_feedback(
@@ -6850,6 +6961,8 @@ private:
     bool require_stable_parent = true,
     double tool_roll_offset = 0.0)
   {
+    // The inserted rocker rotates its own motor; the arm orientation stays fixed.
+    if (control.continuous_rotation) {position = 0.0;}
     const tf2::Transform cabinet = resolve_cabinet_transform();
     const auto geometry = resolve_control_geometry(
       control, require_stable_parent);
@@ -8220,6 +8333,170 @@ private:
     }
   }
 
+  void align_rocker_socket(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const ButtonSpec & control)
+  {
+    const std::string joint = "l_rocker_rotor_joint";
+    double current = 0.0;
+    if (!cached_real_joint_position(joint, current) || !std::isfinite(current)) {
+      throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
+        "摇杆旋转关节没有实时反馈，无法对准插口。");
+    }
+    // The square socket has four equivalent orientations. Compensate for
+    // wrist roll and the fixture's actual rest angle before moving inward.
+    const double target = current + std::remainder(
+      control.rotor_alignment_offset - button_snapshot(control).position -
+      control.tool_roll_offset - current,
+      std::acos(-1.0) / 2.0);
+    auto publisher = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      controller_namespace_ + "/rocker_controller/joint_trajectory", 1);
+    const auto send = [&](double position, double seconds) {
+        trajectory_msgs::msg::JointTrajectory message;
+        message.joint_names = {joint};
+        trajectory_msgs::msg::JointTrajectoryPoint point;
+        point.positions = {position};
+        point.velocities = {0.0};
+        point.time_from_start = rclcpp::Duration::from_seconds(seconds);
+        message.points.push_back(point);
+        publisher->publish(message);
+      };
+    const auto started = std::chrono::steady_clock::now();
+    while (publisher->get_subscription_count() == 0) {
+      check_cancel(goal_handle);
+      if (std::chrono::steady_clock::now() - started > 2s) {
+        throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
+          "摇杆控制器没有接收对准指令。");
+      }
+      std::this_thread::sleep_for(20ms);
+    }
+    publish_operate_feedback(goal_handle,
+      OperateCabinetControl::Feedback::APPROACHING, 0.40F,
+      button_snapshot(control).position, "对准方形插口后沿轴线插入。");
+    send(target, 2.0);
+    auto stable_since = std::chrono::steady_clock::now();
+    try {
+      while (std::chrono::steady_clock::now() - started < 8s) {
+        check_cancel(goal_handle);
+        if (!cached_real_joint_position(joint, current) ||
+          !std::isfinite(current) || std::abs(current - target) > 0.005)
+        {
+          stable_since = std::chrono::steady_clock::now();
+        } else if (std::chrono::steady_clock::now() - stable_since >= 200ms) {
+          return;
+        }
+        std::this_thread::sleep_for(20ms);
+      }
+      throw GenericOperationError(OperateCabinetControl::Result::TARGET_NOT_REACHED,
+        "摇杆未对准方形插口，已禁止插入。");
+    } catch (...) {
+      if (cached_real_joint_position(joint, current) && std::isfinite(current)) {
+        send(current, 0.2);
+      }
+      throw;
+    }
+  }
+
+  void run_continuous_rocker(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const ButtonSpec & control, bool * operation_executed)
+  {
+    const std::string joint = "l_rocker_rotor_joint";
+    auto publisher = create_publisher<trajectory_msgs::msg::JointTrajectory>(
+      controller_namespace_ + "/rocker_controller/joint_trajectory", 1);
+    const auto send = [&](double position, double velocity, double seconds) {
+        trajectory_msgs::msg::JointTrajectory trajectory;
+        trajectory.joint_names = {joint};
+        trajectory_msgs::msg::JointTrajectoryPoint point;
+        point.positions = {position};
+        point.velocities = {velocity};
+        point.time_from_start = rclcpp::Duration::from_seconds(seconds);
+        trajectory.points.push_back(point);
+        if (velocity != 0.0) {
+          // JTC requires a stopped final point. Keep a short braking tail so
+          // lost refreshes decelerate the motor instead of rejecting the goal.
+          point.positions = {position + velocity * 0.1};
+          point.velocities = {0.0};
+          point.time_from_start = rclcpp::Duration::from_seconds(seconds + 0.2);
+          trajectory.points.push_back(point);
+        }
+        publisher->publish(trajectory);
+      };
+    double last_tool = 0.0;
+    bool measured = cached_real_joint_position(joint, last_tool);
+    if (!measured) {
+      throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
+        "摇杆旋转关节没有实时反馈。");
+    }
+    const auto start = std::chrono::steady_clock::now();
+    double fixture_start = button_snapshot(control).position;
+    auto last_motion_check = start;
+    try {
+      while (rclcpp::ok()) {
+        check_cancel(goal_handle);
+        double position = 0.0;
+        if (!cached_real_joint_position(joint, position) || !std::isfinite(position)) {
+          throw GenericOperationError(OperateCabinetControl::Result::EXECUTION_FAILED,
+            "摇杆旋转反馈中断。");
+        }
+        last_tool = position;
+        const auto fixture = button_snapshot(control);
+        const auto now = std::chrono::steady_clock::now();
+        if (!fixture.valid || now - fixture.received_at > 1s ||
+          (now - last_motion_check > 3s && std::abs(fixture.position - fixture_start) < 0.05))
+        {
+          throw GenericOperationError(OperateCabinetControl::Result::TARGET_NOT_REACHED,
+            "插口没有跟随摇杆旋转。");
+        }
+        if (now - last_motion_check > 3s) {
+          fixture_start = fixture.position;
+          last_motion_check = now;
+        }
+        // A bounded moving horizon stops on lost commands; it never queues an
+        // unbounded trajectory. Local +Z points into the socket, opposite +Y.
+        send(position - 0.2, -0.5, 0.4);
+        *operation_executed = true;
+        publish_operate_feedback(goal_handle,
+          OperateCabinetControl::Feedback::MANIPULATING, 0.65F,
+          fixture.position, "摇杆已插入，持续旋转中；点击停止后退出。");
+        std::this_thread::sleep_for(50ms);
+      }
+      throw GenericOperationError(OperateCabinetControl::Result::CANCELED,
+        "摇杆操作随系统关闭停止。");
+    } catch (...) {
+      // Stop the motor before shared cancellation recovery detaches and retracts.
+      cached_real_joint_position(joint, last_tool);
+      send(last_tool, 0.0, 0.2);
+      std::this_thread::sleep_for(300ms);
+      throw;
+    }
+  }
+
+  void wait_for_knob_axial_position(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    const ButtonSpec & control, double target)
+  {
+    const auto child = buttons_by_id_.at(control.axial_control_id);
+    const auto started = std::chrono::steady_clock::now();
+    auto stable_since = started;
+    while (std::chrono::steady_clock::now() - started < 5s) {
+      check_cancel(goal_handle);
+      const auto now = std::chrono::steady_clock::now();
+      const auto state = button_snapshot(*child);
+      if (!state.valid || state.received_at < started ||
+        now - state.received_at > 500ms ||
+        std::abs(state.position - target) > 0.001 || std::abs(state.velocity) > 0.005)
+      {
+        stable_since = now;
+      } else if (now - stable_since >= 200ms) {
+        return;
+      }
+      std::this_thread::sleep_for(20ms);
+    }
+    throw GenericOperationError(OperateCabinetControl::Result::CONTACT_DETECTION_TIMEOUT,
+      "旋钮轴向未到位：" + control.id + ", target=" + std::to_string(target));
+  }
+
   std::vector<geometry_msgs::msg::Pose> calculate_rotation_waypoints(
     const ButtonSpec & control,
     double initial_position,
@@ -8238,7 +8515,8 @@ private:
       waypoints.push_back(
         calculate_rotary_tool_pose(
           control, initial_position + travel * ratio,
-          control.grasp_outward_offset, true, tool_roll_offset));
+          control.grasp_outward_offset + control.axial_pull_distance,
+          true, tool_roll_offset));
     }
     return waypoints;
   }
@@ -8248,6 +8526,7 @@ private:
     double initial_position,
     double target_position) const
   {
+    if (control.continuous_rotation) {return initial_position;}
     double release_fraction = 1.0;
     if (control.control_type ==
       xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR)
@@ -12917,7 +13196,8 @@ private:
       }
     }
     if (motion_recovery_allowed && move_group && rclcpp::ok()) {
-      best_effort_stow(*move_group, &result->operation_executed);
+      best_effort_stow(*move_group, &result->operation_executed,
+        control && control->continuous_rotation ? 5U : 1U);
     }
     if (control) {
       const auto final_state = button_snapshot(*control);
@@ -15675,7 +15955,8 @@ private:
 
   void best_effort_stow(
     MoveGroupInterface & move_group,
-    bool * operation_executed = nullptr) noexcept
+    bool * operation_executed = nullptr,
+    unsigned int planning_attempts = 1U) noexcept
   {
     try {
       move_group.stop();
@@ -15689,7 +15970,17 @@ private:
         return;
       }
       MoveGroupInterface::Plan plan;
-      if (move_group.plan(plan) != moveit::core::MoveItErrorCode::SUCCESS) {
+      bool planned = false;
+      for (unsigned int attempt = 0; attempt < planning_attempts; ++attempt) {
+        move_group.setStartState(*synchronized_current_robot_state(move_group));
+        if (move_group.plan(plan) == moveit::core::MoveItErrorCode::SUCCESS) {
+          planned = true;
+          break;
+        }
+        RCLCPP_WARN(get_logger(), "Safety stow planning attempt %u/%u failed.",
+          attempt + 1, planning_attempts);
+      }
+      if (!planned) {
         RCLCPP_ERROR(get_logger(), "Safety stow planning failed.");
         return;
       }

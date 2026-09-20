@@ -8,6 +8,11 @@
     # （r1352_1 prismatic 关节在 r1352 内 pose (0,0.007,0)，把按钮 -Y 面
     # 推到 fr* 关节 y=4.8113 处）；旋钮 pivot_position = 关节原点。
     control_ids:
+      - frb
+      - fbutton1
+      - fbutton2
+      - fbutton3
+      - fbutton4
       - fr135_button
       - fr2222_button
       - fr4332_button
@@ -22,10 +27,93 @@
       - fr25452_knob
 
     controls:
+      frb:
+        type: switch
+        display_name: "摇杆插口（连续旋转）"
+        joint_name: frb
+        continuous_rotation: true
+        required_toolset: B
+        # 源插口中心保持 pivot_position；补偿该工位实测末端跟踪偏差
+        # （世界 X +0.05 mm、Z +0.42 mm），避免零间隙方孔在插入时挤转。
+        local_position: [-14.81205, 4.7783, 0.70558]
+        pivot_position: [-14.812, 4.7833, 0.706]
+        axis: [0.0, 1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
+        min_position: -1000000000000.0
+        max_position: 1000000000000.0
+        state_ids: ["stopped", "running"]
+        state_labels: ["停止", "开始旋转"]
+        state_positions: [0.0, 1.0]
+      fbutton1:
+        type: button
+        display_name: "按钮 1"
+        joint_name: fbutton1
+        required_toolset: B
+        local_position: [-16.275, 4.7933, 0.751]
+        axis: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
+        min_position: 0.0
+        max_position: 0.005
+        spring_stiffness: 800.0
+        press_threshold: 0.003
+        default_force: 3.2
+        state_ids: ["released", "pressed"]
+        state_labels: ["释放", "按下"]
+        state_positions: [0.0, 0.003]
+      fbutton2:
+        type: button
+        display_name: "按钮 2"
+        joint_name: fbutton2
+        required_toolset: B
+        local_position: [-16.375, 4.7933, 0.751]
+        axis: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
+        min_position: 0.0
+        max_position: 0.005
+        spring_stiffness: 800.0
+        press_threshold: 0.003
+        default_force: 3.2
+        state_ids: ["released", "pressed"]
+        state_labels: ["释放", "按下"]
+        state_positions: [0.0, 0.003]
+      fbutton3:
+        type: button
+        display_name: "按钮 3"
+        joint_name: fbutton3
+        required_toolset: B
+        local_position: [-16.475, 4.7933, 0.751]
+        axis: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
+        min_position: 0.0
+        max_position: 0.005
+        spring_stiffness: 800.0
+        press_threshold: 0.003
+        default_force: 3.2
+        state_ids: ["released", "pressed"]
+        state_labels: ["释放", "按下"]
+        state_positions: [0.0, 0.003]
+      fbutton4:
+        type: button
+        display_name: "按钮 4"
+        joint_name: fbutton4
+        required_toolset: B
+        local_position: [-16.575, 4.7933, 0.751]
+        axis: [0.0, -1.0, 0.0]
+        approach_normal: [0.0, 1.0, 0.0]
+        min_position: 0.0
+        max_position: 0.005
+        spring_stiffness: 800.0
+        press_threshold: 0.003
+        default_force: 3.2
+        state_ids: ["released", "pressed"]
+        state_labels: ["释放", "按下"]
+        state_positions: [0.0, 0.003]
       # ---- 发电机按钮（六组，press 方向 +Y，approach 自南 -Y）----
       fr135_button:
+        unavailable_reason: "旋钮插拔轴，由对应旋钮的拉出、旋转、插回流程统一控制。"
         type: button
-        display_name: "fr135 按钮"
+        required_toolset: B
+        display_name: "fr135 旋钮轴向状态"
         joint_name: r1352_1
         parent_control_id: fr135_knob
         local_position: [-13.1867, 4.8113, 0.691314593]
@@ -40,11 +128,13 @@
         state_labels: ["释放", "按下"]
         state_positions: [0.0, 0.006]
       fr2222_button:
+        unavailable_reason: "旋钮插拔轴，由对应旋钮的拉出、旋转、插回流程统一控制。"
         type: button
-        display_name: "fr2222 按钮"
+        required_toolset: B
+        display_name: "fr2222 旋钮轴向状态"
         joint_name: r2222_1
         parent_control_id: fr2222_knob
-        local_position: [-13.787, 4.8113, 0.83131]
+        local_position: [-13.7867, 4.8113, 0.83131]
         axis: [0.0, 1.0, 0.0]
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
@@ -56,11 +146,13 @@
         state_labels: ["释放", "按下"]
         state_positions: [0.0, 0.006]
       fr4332_button:
+        unavailable_reason: "旋钮插拔轴，由对应旋钮的拉出、旋转、插回流程统一控制。"
         type: button
-        display_name: "fr4332 按钮"
+        required_toolset: B
+        display_name: "fr4332 旋钮轴向状态"
         joint_name: r4332_1
         parent_control_id: fr4332_knob
-        local_position: [-15.457, 4.8113, 0.69131]
+        local_position: [-15.4567, 4.8113, 0.69131]
         axis: [0.0, 1.0, 0.0]
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
@@ -72,11 +164,13 @@
         state_labels: ["释放", "按下"]
         state_positions: [0.0, 0.006]
       fr12452_button:
+        unavailable_reason: "旋钮插拔轴，由对应旋钮的拉出、旋转、插回流程统一控制。"
         type: button
-        display_name: "fr12452 按钮"
+        required_toolset: B
+        display_name: "fr12452 旋钮轴向状态"
         joint_name: r12452_1
         parent_control_id: fr12452_knob
-        local_position: [-21.997, 4.8113, 0.55131]
+        local_position: [-21.9967, 4.8113, 0.55131]
         axis: [0.0, 1.0, 0.0]
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
@@ -88,8 +182,10 @@
         state_labels: ["释放", "按下"]
         state_positions: [0.0, 0.006]
       fr20422_button:
+        unavailable_reason: "旋钮插拔轴，由对应旋钮的拉出、旋转、插回流程统一控制。"
         type: button
-        display_name: "fr20422 按钮"
+        required_toolset: B
+        display_name: "fr20422 旋钮轴向状态"
         joint_name: r20422_1
         parent_control_id: fr20422_knob
         local_position: [-30.1, 4.8113, 0.55131]
@@ -104,8 +200,10 @@
         state_labels: ["释放", "按下"]
         state_positions: [0.0, 0.006]
       fr25452_button:
+        unavailable_reason: "旋钮插拔轴，由对应旋钮的拉出、旋转、插回流程统一控制。"
         type: button
-        display_name: "fr25452 按钮"
+        required_toolset: B
+        display_name: "fr25452 旋钮轴向状态"
         joint_name: r25452_1
         parent_control_id: fr25452_knob
         local_position: [-35.01, 4.8113, 0.551314593]
@@ -128,7 +226,7 @@
       # ---- 发电机旋钮（六组，revolute 轴(0,1,0) 0→0.8 rad）----
       # 旋钮体 r*52 为 Ø5×14 mm 圆柱（2026-09-14 更正：此前误记为「5×14×5
       # 小方块」；STL 实测是圆柱，自按钮板前脸 -Y 凸出 7 mm），夹具面板/按钮板
-      # 承担主要外形。档位按 0→0.8 三等分。
+      # 承担主要外形。两档为原始安装角 0° 和沿源模型正向旋转 45°。
       # 2026-09-14 用户令「用套装 B 旋转旋钮」：fr135_knob 升为可操作，已在
       # adapter 的 operable_control_ids 内并补齐标定项（见 generator_plant_adapter.yaml
       # 的 fr135_knob 块）。其余五组仍仅状态展示。
@@ -137,6 +235,8 @@
       # box_5_knob 的 local_position 有偏移是因为那是 11×65 mm 叶片。
       # 场景 xacro 的 <graspable> 已是 true（旧注释曾写 false，已过期）。
       fr135_knob:
+        axial_control_id: fr135_button
+        axial_pull_distance: 0.008
         type: knob
         display_name: "fr135 旋钮"
         joint_name: fr135
@@ -146,49 +246,61 @@
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
-        state_ids: ["left", "center", "right"]
-        state_labels: ["左档", "中档", "右档"]
-        state_positions: [0.0, 0.4, 0.8]
+        state_ids: ["center", "turned"]
+        state_labels: ["正中间（0°）", "旋转45°"]
+        state_positions: [0.0, 0.7853981633974483]
       fr2222_knob:
+        axial_control_id: fr2222_button
+        axial_pull_distance: 0.008
         type: knob
         display_name: "fr2222 旋钮"
         joint_name: fr2222
-        pivot_position: [-13.787, 4.8113, 0.83131]
-        local_position: [-13.787, 4.8113, 0.83131]
+        pivot_position: [-13.7867, 4.8113, 0.83131]
+        local_position: [-13.7867, 4.8113, 0.83131]
         axis: [0.0, 1.0, 0.0]
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
-        state_ids: ["left", "center", "right"]
-        state_labels: ["左档", "中档", "右档"]
-        state_positions: [0.0, 0.4, 0.8]
+        state_ids: ["center", "turned"]
+        state_labels: ["正中间（0°）", "旋转45°"]
+        state_positions: [0.0, 0.7853981633974483]
       fr4332_knob:
+        axial_control_id: fr4332_button
+        axial_pull_distance: 0.008
         type: knob
         display_name: "fr4332 旋钮"
         joint_name: fr4332
-        pivot_position: [-15.457, 4.8113, 0.69131]
-        local_position: [-15.457, 4.8113, 0.69131]
+        pivot_position: [-15.4567, 4.8113, 0.69131]
+        local_position: [-15.4567, 4.8113, 0.69131]
         axis: [0.0, 1.0, 0.0]
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
-        state_ids: ["left", "center", "right"]
-        state_labels: ["左档", "中档", "右档"]
-        state_positions: [0.0, 0.4, 0.8]
+        state_ids: ["center", "turned"]
+        state_labels: ["正中间（0°）", "旋转45°"]
+        state_positions: [0.0, 0.7853981633974483]
       fr12452_knob:
+        # 同一次回插额外向内补偿 0.5 mm 静差，轴向关节仍验证回到零位。
+        axial_seating_offset: 0.0005
+        axial_control_id: fr12452_button
+        axial_pull_distance: 0.008
         type: knob
         display_name: "fr12452 旋钮"
         joint_name: fr12452
-        pivot_position: [-21.997, 4.8113, 0.55131]
-        local_position: [-21.997, 4.8113, 0.55131]
+        pivot_position: [-21.9967, 4.8113, 0.55131]
+        local_position: [-21.9967, 4.8113, 0.55131]
         axis: [0.0, 1.0, 0.0]
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
-        state_ids: ["left", "center", "right"]
-        state_labels: ["左档", "中档", "右档"]
-        state_positions: [0.0, 0.4, 0.8]
+        state_ids: ["center", "turned"]
+        state_labels: ["正中间（0°）", "旋转45°"]
+        state_positions: [0.0, 0.7853981633974483]
       fr20422_knob:
+        # 同一次回插额外向内补偿 0.5 mm 静差，轴向关节仍验证回到零位。
+        axial_seating_offset: 0.0005
+        axial_control_id: fr20422_button
+        axial_pull_distance: 0.008
         type: knob
         display_name: "fr20422 旋钮"
         joint_name: fr20422
@@ -198,10 +310,14 @@
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
-        state_ids: ["left", "center", "right"]
-        state_labels: ["左档", "中档", "右档"]
-        state_positions: [0.0, 0.4, 0.8]
+        state_ids: ["center", "turned"]
+        state_labels: ["正中间（0°）", "旋转45°"]
+        state_positions: [0.0, 0.7853981633974483]
       fr25452_knob:
+        # 同一次回插额外向内补偿 0.5 mm 静差，轴向关节仍验证回到零位。
+        axial_seating_offset: 0.0005
+        axial_control_id: fr25452_button
+        axial_pull_distance: 0.008
         type: knob
         display_name: "fr25452 旋钮"
         joint_name: fr25452
@@ -211,9 +327,9 @@
         approach_normal: [0.0, 1.0, 0.0]
         min_position: 0.0
         max_position: 0.8
-        state_ids: ["left", "center", "right"]
-        state_labels: ["左档", "中档", "右档"]
-        state_positions: [0.0, 0.4, 0.8]
+        state_ids: ["center", "turned"]
+        state_labels: ["正中间（0°）", "旋转45°"]
+        state_positions: [0.0, 0.7853981633974483]
 
     # 类型默认值（沿用共享柜体目录；按钮逐项覆盖 axis/approach/limits）。
     button_defaults:
@@ -231,10 +347,10 @@
       axis: [0.0, 0.0, 1.0]
       approach_normal: [0.0, 0.0, 1.0]
       min_position: -0.78539816339
-      max_position: 0.78539816339
-      state_ids: ["left", "center", "right"]
-      state_labels: ["左档", "中档", "右档"]
-      state_positions: [-0.78539816339, 0.0, 0.78539816339]
+      max_position: 0.7853981633974483
+      state_ids: ["center", "turned"]
+      state_labels: ["正中间（0°）", "旋转45°"]
+      state_positions: [0.0, 0.7853981633974483]
 
     # 操作与闭环容差（与共享柜体目录一致；launch 会覆盖 cabinet_frame）。
     cabinet_frame: generator_plant_frame

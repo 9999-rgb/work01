@@ -86,7 +86,7 @@
       </collision>
     </link>
     <link name="r1352">
-      <pose>-13.1867 4.8113 0.691314593 0 0 0</pose>
+      <pose>-13.1867 4.8113 0.691314592744 0 0 0</pose>
       <inertial>
         <pose>0 -2.13873363e-12 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -119,7 +119,7 @@
       </collision>
     </link>
     <link name="r1351">
-      <pose>-13.1867 4.8183 0.691314593 0 0 0</pose>
+      <pose>-13.1867 4.8183 0.691314592744 0 0 0</pose>
       <inertial>
         <pose>1.42108547e-14 -0.00298032725 -2.84217094e-14 0 0 0</pose>
         <mass>0.05</mass>
@@ -168,7 +168,7 @@
       </collision>
     </link>
     <link name="r2222">
-      <pose>-13.787 4.8113 0.83131 0 0 0</pose>
+      <pose>-13.7867 4.8113 0.831314592744 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -194,7 +194,7 @@
       </collision>
     </link>
     <link name="r2221">
-      <pose>-13.787 4.8183 0.83131 0 0 0</pose>
+      <pose>-13.7867 4.8183 0.831314592744 0 0 0</pose>
       <inertial>
         <pose>1.42108547e-14 -0.00298032725 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -232,7 +232,7 @@
       </collision>
     </link>
     <link name="r4332">
-      <pose>-15.457 4.8113 0.69131 0 0 0</pose>
+      <pose>-15.4567 4.8113 0.691314592744 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -258,7 +258,7 @@
       </collision>
     </link>
     <link name="r4331">
-      <pose>-15.457 4.8183 0.69131 0 0 0</pose>
+      <pose>-15.4567 4.8183 0.691314592744 0 0 0</pose>
       <inertial>
         <pose>7.10542736e-15 -0.00298032725 -2.84217094e-14 0 0 0</pose>
         <mass>0.05</mass>
@@ -296,7 +296,7 @@
       </collision>
     </link>
     <link name="r12452">
-      <pose>-21.997 4.8113 0.55131 0 0 0</pose>
+      <pose>-21.9967 4.8113 0.551314592744 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -322,7 +322,7 @@
       </collision>
     </link>
     <link name="r12451">
-      <pose>-21.997 4.8183 0.55131 0 0 0</pose>
+      <pose>-21.9967 4.8183 0.551314592744 0 0 0</pose>
       <inertial>
         <pose>7.10542736e-15 -0.00298032725 2.84217094e-14 0 0 0</pose>
         <mass>0.05</mass>
@@ -360,7 +360,7 @@
       </collision>
     </link>
     <link name="r20422">
-      <pose>-30.1 4.8113 0.55131 0 0 0</pose>
+      <pose>-30.1 4.8113 0.551314592744 0 0 0</pose>
       <inertial>
         <pose>0 -2.13162821e-12 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -386,7 +386,7 @@
       </collision>
     </link>
     <link name="r20421">
-      <pose>-30.1 4.8183 0.55131 0 0 0</pose>
+      <pose>-30.1 4.8183 0.551314592744 0 0 0</pose>
       <inertial>
         <pose>0 -0.00298032725 2.84217094e-14 0 0 0</pose>
         <mass>0.05</mass>
@@ -424,7 +424,7 @@
       </collision>
     </link>
     <link name="r25452">
-      <pose>-35.01 4.8113 0.551314593 0 0 0</pose>
+      <pose>-35.01 4.8113 0.551314592744 0 0 0</pose>
       <inertial>
         <pose>0 0 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -450,7 +450,7 @@
       </collision>
     </link>
     <link name="r25451">
-      <pose>-35.01 4.8183 0.551314593 0 0 0</pose>
+      <pose>-35.01 4.8183 0.551314592744 0 0 0</pose>
       <inertial>
         <pose>-3.55271368e-15 -0.00298032725 0 0 0 0</pose>
         <mass>0.05</mass>
@@ -487,6 +487,280 @@
         </geometry>
       </collision>
     </link>
+    <link name="rotatebutton">
+      <pose>-14.812 4.7833 0.706 0 0 0</pose>
+      <inertial>
+        <pose>1.1121e-06 -0.010194 4.2641e-09 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-05</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-05</iyy>
+          <iyz>0</iyz>
+          <izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/rotatebutton.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/rotatebutton.STL</uri>
+          </mesh>
+        </geometry>
+        <!-- 配合网格有约 0.05 mm 离散误差，限制微小接触的纠正速度。 -->
+        <surface>
+          <contact><ode><kp>100000</kp><kd>10</kd><max_vel>0.01</max_vel><min_depth>0.0001</min_depth></ode></contact>
+        </surface>
+      </collision>
+    </link>
+    <joint name="frb" type="revolute">
+      <pose>0 0 0 0 0 0</pose>
+      <!-- 固定柜体的插口直接锚定世界，避免超大父质量导致接触求解发散。 -->
+      <parent>world</parent>
+      <child>rotatebutton</child>
+      <axis>
+        <xyz>0 1 0</xyz>
+        <limit>
+          <lower>-1e+12</lower>
+          <upper>1e+12</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.0001</damping>
+          <friction>0.001</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <link name="button1">
+      <pose>-16.275 4.7933 0.751 0 0 0</pose>
+      <inertial>
+        <pose>0 -0.005 -2.8422e-14 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-05</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-05</iyy>
+          <iyz>0</iyz>
+          <izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/button1.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 -0.005 0 1.5707963267948966 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.01</radius>
+            <length>0.01</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="fbutton1" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>world</parent>
+      <child>button1</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.005</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>0.05</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <link name="button2">
+      <pose>-16.375 4.7933 0.751 0 0 0</pose>
+      <inertial>
+        <pose>0 -0.005 -2.8422e-14 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-05</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-05</iyy>
+          <iyz>0</iyz>
+          <izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/button2.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 -0.005 0 1.5707963267948966 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.01</radius>
+            <length>0.01</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="fbutton2" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>world</parent>
+      <child>button2</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.005</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>0.05</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <link name="button3">
+      <pose>-16.475 4.7933 0.751 0 0 0</pose>
+      <inertial>
+        <pose>0 -0.005 -2.8422e-14 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-05</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-05</iyy>
+          <iyz>0</iyz>
+          <izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/button3.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 -0.005 0 1.5707963267948966 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.01</radius>
+            <length>0.01</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="fbutton3" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>world</parent>
+      <child>button3</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.005</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>0.05</friction>
+        </dynamics>
+      </axis>
+    </joint>
+    <link name="button4">
+      <pose>-16.575 4.7933 0.751 0 0 0</pose>
+      <inertial>
+        <pose>0 0 0 0 0 0</pose>
+        <mass>0.05</mass>
+        <inertia>
+          <ixx>1e-05</ixx>
+          <ixy>0</ixy>
+          <ixz>0</ixz>
+          <iyy>1e-05</iyy>
+          <iyz>0</iyz>
+          <izz>1e-05</izz>
+        </inertia>
+      </inertial>
+      <visual name="visual">
+        <pose>0 0 0 0 0 0</pose>
+        <geometry>
+          <mesh>
+            <uri>model://xczs_inspection_robot_description/meshes/scenes/generator_plant/button4.STL</uri>
+          </mesh>
+        </geometry>
+        <material>
+          <ambient>1 1 1 1</ambient>
+          <diffuse>1 1 1 1</diffuse>
+        </material>
+      </visual>
+      <collision name="collision">
+        <pose>0 -0.005 0 1.5707963267948966 0 0</pose>
+        <geometry>
+          <cylinder>
+            <radius>0.01</radius>
+            <length>0.01</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+    <joint name="fbutton4" type="prismatic">
+      <pose>0 0 0 0 0 0</pose>
+      <parent>world</parent>
+      <child>button4</child>
+      <axis>
+        <xyz>0 -1 0</xyz>
+        <limit>
+          <lower>0</lower>
+          <upper>0.005</upper>
+          <effort>100</effort>
+          <velocity>1</velocity>
+        </limit>
+        <dynamics>
+          <damping>0.1</damping>
+          <friction>0.05</friction>
+        </dynamics>
+      </axis>
+    </joint>
     <joint name="anchor_fadianground" type="fixed">
       <parent>world</parent>
       <child>fadianground</child>
@@ -750,7 +1024,96 @@
       <grasp_joint><name>r_rotbtn_jaw2_joint</name><position>0.003</position><tolerance>0.0032</tolerance></grasp_joint>
       <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
       <control>
+        <control_id>frb</control_id>
+        <control_type>switch</control_type>
+        <joint_name>frb</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/frb/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/frb/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/frb/state</state_topic>
+        <continuous_rotation>true</continuous_rotation>
+        <state_ids>stopped running</state_ids>
+        <detents>0 1</detents>
+        <detent_stiffness>0</detent_stiffness>
+        <!-- 转动惯量为 1e-5；避免显式阻尼在 2 ms 物理步长下发散。 -->
+        <spring_damping>0.0001</spring_damping>
+        <grasp_stiffness>0</grasp_stiffness>
+        <grasp_damping>0</grasp_damping>
+        <grasp_coupling_stiffness>0.1</grasp_coupling_stiffness>
+        <grasp_coupling_damping>0.001</grasp_coupling_damping>
+        <grasp_coupling_max_effort>0.01</grasp_coupling_max_effort>
+        <motion_tolerance>0.05</motion_tolerance>
+        <reset_position>0</reset_position>
+        <graspable>true</graspable>
+        <!-- 插入确认后由单轴柔性力矩传动，避免与运动学转子的网格接触重复约束。 -->
+        <actuation_collision>rotatebutton::collision</actuation_collision>
+        <actuation_collision_restore_delay>0.2</actuation_collision_restore_delay>
+        <actuation_collision_restore_distance>0.05</actuation_collision_restore_distance>
+        <grasp_point>0 -0.001 0</grasp_point>
+      </control>
+      <control>
+        <control_id>fbutton1</control_id>
+        <control_type>button</control_type>
+        <joint_name>fbutton1</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fbutton1/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fbutton1/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fbutton1/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.003</press_threshold>
+        <release_threshold>0.001</release_threshold>
+        <reset_position>0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fbutton2</control_id>
+        <control_type>button</control_type>
+        <joint_name>fbutton2</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fbutton2/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fbutton2/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fbutton2/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.003</press_threshold>
+        <release_threshold>0.001</release_threshold>
+        <reset_position>0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fbutton3</control_id>
+        <control_type>button</control_type>
+        <joint_name>fbutton3</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fbutton3/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fbutton3/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fbutton3/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.003</press_threshold>
+        <release_threshold>0.001</release_threshold>
+        <reset_position>0</reset_position>
+        <graspable>false</graspable>
+      </control>
+      <control>
+        <control_id>fbutton4</control_id>
+        <control_type>button</control_type>
+        <joint_name>fbutton4</joint_name>
+        <joint_state_topic>/xczs/cabinet/generator_plant/fbutton4/joint_states</joint_state_topic>
+        <pressed_topic>/xczs/cabinet/generator_plant/fbutton4/pressed</pressed_topic>
+        <state_topic>/xczs/cabinet/generator_plant/fbutton4/state</state_topic>
+        <state_ids>released pressed</state_ids>
+        <spring_stiffness>800</spring_stiffness>
+        <spring_damping>8</spring_damping>
+        <press_threshold>0.003</press_threshold>
+        <release_threshold>0.001</release_threshold>
+        <reset_position>0</reset_position>
+        <graspable>false</graspable>
+      </control>
+
+      <control>
         <control_id>fr135_button</control_id>
+        <axial_grasp_parent>fr135_knob</axial_grasp_parent>
         <control_type>button</control_type>
         <joint_name>r1352_1</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr135_button/joint_states</joint_state_topic>
@@ -766,6 +1129,7 @@
       </control>
       <control>
         <control_id>fr2222_button</control_id>
+        <axial_grasp_parent>fr2222_knob</axial_grasp_parent>
         <control_type>button</control_type>
         <joint_name>r2222_1</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr2222_button/joint_states</joint_state_topic>
@@ -781,6 +1145,7 @@
       </control>
       <control>
         <control_id>fr4332_button</control_id>
+        <axial_grasp_parent>fr4332_knob</axial_grasp_parent>
         <control_type>button</control_type>
         <joint_name>r4332_1</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr4332_button/joint_states</joint_state_topic>
@@ -796,6 +1161,7 @@
       </control>
       <control>
         <control_id>fr12452_button</control_id>
+        <axial_grasp_parent>fr12452_knob</axial_grasp_parent>
         <control_type>button</control_type>
         <joint_name>r12452_1</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr12452_button/joint_states</joint_state_topic>
@@ -811,6 +1177,7 @@
       </control>
       <control>
         <control_id>fr20422_button</control_id>
+        <axial_grasp_parent>fr20422_knob</axial_grasp_parent>
         <control_type>button</control_type>
         <joint_name>r20422_1</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr20422_button/joint_states</joint_state_topic>
@@ -826,6 +1193,7 @@
       </control>
       <control>
         <control_id>fr25452_button</control_id>
+        <axial_grasp_parent>fr25452_knob</axial_grasp_parent>
         <control_type>button</control_type>
         <joint_name>r25452_1</joint_name>
         <joint_state_topic>/xczs/cabinet/generator_plant/fr25452_button/joint_states</joint_state_topic>
@@ -847,8 +1215,8 @@
         <joint_state_topic>/xczs/cabinet/generator_plant/fr135_knob/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/generator_plant/fr135_knob/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/generator_plant/fr135_knob/state</state_topic>
-        <state_ids>left center right</state_ids>
-        <detents>0.0 0.4 0.8</detents>
+        <state_ids>center turned</state_ids>
+        <detents>0.0 0.7853981633974483</detents>
         <detent_stiffness>0.6</detent_stiffness>
         <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
@@ -863,7 +1231,7 @@
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
-             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             的天然落位（in_motion 不再误报），又不影响 0/45° 两档判定。
              按钮仍用 press/release_threshold，与此无关。 -->
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
@@ -878,8 +1246,8 @@
         <joint_state_topic>/xczs/cabinet/generator_plant/fr2222_knob/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/generator_plant/fr2222_knob/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/generator_plant/fr2222_knob/state</state_topic>
-        <state_ids>left center right</state_ids>
-        <detents>0.0 0.4 0.8</detents>
+        <state_ids>center turned</state_ids>
+        <detents>0.0 0.7853981633974483</detents>
         <detent_stiffness>0.6</detent_stiffness>
         <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
@@ -889,7 +1257,7 @@
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
-             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             的天然落位（in_motion 不再误报），又不影响 0/45° 两档判定。
              按钮仍用 press/release_threshold，与此无关。 -->
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
@@ -904,8 +1272,8 @@
         <joint_state_topic>/xczs/cabinet/generator_plant/fr4332_knob/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/generator_plant/fr4332_knob/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/generator_plant/fr4332_knob/state</state_topic>
-        <state_ids>left center right</state_ids>
-        <detents>0.0 0.4 0.8</detents>
+        <state_ids>center turned</state_ids>
+        <detents>0.0 0.7853981633974483</detents>
         <detent_stiffness>0.6</detent_stiffness>
         <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
@@ -915,7 +1283,7 @@
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
-             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             的天然落位（in_motion 不再误报），又不影响 0/45° 两档判定。
              按钮仍用 press/release_threshold，与此无关。 -->
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
@@ -930,8 +1298,8 @@
         <joint_state_topic>/xczs/cabinet/generator_plant/fr12452_knob/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/generator_plant/fr12452_knob/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/generator_plant/fr12452_knob/state</state_topic>
-        <state_ids>left center right</state_ids>
-        <detents>0.0 0.4 0.8</detents>
+        <state_ids>center turned</state_ids>
+        <detents>0.0 0.7853981633974483</detents>
         <detent_stiffness>0.6</detent_stiffness>
         <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
@@ -941,7 +1309,7 @@
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
-             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             的天然落位（in_motion 不再误报），又不影响 0/45° 两档判定。
              按钮仍用 press/release_threshold，与此无关。 -->
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
@@ -956,8 +1324,8 @@
         <joint_state_topic>/xczs/cabinet/generator_plant/fr20422_knob/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/generator_plant/fr20422_knob/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/generator_plant/fr20422_knob/state</state_topic>
-        <state_ids>left center right</state_ids>
-        <detents>0.0 0.4 0.8</detents>
+        <state_ids>center turned</state_ids>
+        <detents>0.0 0.7853981633974483</detents>
         <detent_stiffness>0.6</detent_stiffness>
         <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
@@ -967,7 +1335,7 @@
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
-             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             的天然落位（in_motion 不再误报），又不影响 0/45° 两档判定。
              按钮仍用 press/release_threshold，与此无关。 -->
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>
@@ -982,8 +1350,8 @@
         <joint_state_topic>/xczs/cabinet/generator_plant/fr25452_knob/joint_states</joint_state_topic>
         <pressed_topic>/xczs/cabinet/generator_plant/fr25452_knob/pressed</pressed_topic>
         <state_topic>/xczs/cabinet/generator_plant/fr25452_knob/state</state_topic>
-        <state_ids>left center right</state_ids>
-        <detents>0.0 0.4 0.8</detents>
+        <state_ids>center turned</state_ids>
+        <detents>0.0 0.7853981633974483</detents>
         <detent_stiffness>0.6</detent_stiffness>
         <spring_damping>0.005</spring_damping>
         <grasp_stiffness>0</grasp_stiffness>
@@ -993,7 +1361,7 @@
         <grasp_coupling_max_effort>0.2</grasp_coupling_max_effort>
         <!-- 旋钮物理静止位由重力+干摩擦决定（死区约 0.056 rad，fr135 因按钮
              偏心质心偏到 0.0558）。motion_tolerance 放宽到 0.08：既认可旋钮
-             的天然落位（in_motion 不再误报），又不影响 0/0.4/0.8 三档判定。
+             的天然落位（in_motion 不再误报），又不影响 0/45° 两档判定。
              按钮仍用 press/release_threshold，与此无关。 -->
         <motion_tolerance>0.08</motion_tolerance>
         <reset_position>0.0</reset_position>

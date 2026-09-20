@@ -5500,6 +5500,10 @@ class ControlServer:
         force: Optional[float],
     ) -> Mapping[str, Any]:
         context.raise_if_canceled()
+        continuous_rotation = any(
+            item.get("control_id") == control_id and item.get("continuous_rotation")
+            for item in client.snapshot_controls().get("controls", [])
+        )
         # Quiesce stale manual outputs before homing so a lingering manual
         # cmd_vel cannot keep moving the chassis while the arm resets
         # (mirrors the reset/replay/toolset admission paths).
@@ -5766,6 +5770,13 @@ class ControlServer:
                     else:
                         # No usable advancing sim clock: bound with wall time.
                         op_timed_out = elapsed >= OPERATION_TIMEOUT_SEC
+                    if continuous_rotation:
+                        # Deliberately runs until user stop; clock stalls still fail closed.
+                        op_timed_out = (
+                            operation_sim_baseline is not None
+                            and operation_last_sim > operation_sim_baseline + 1.0e-6
+                            and now - operation_last_sim_advance_wall >= NAVIGATION_CLOCK_STALL_TIMEOUT_SEC
+                        )
                     if op_timed_out:
                         timeout_started_at = now
                 timed_out = timeout_started_at is not None

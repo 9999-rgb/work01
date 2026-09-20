@@ -13,6 +13,11 @@
     # 所有旋钮均建真实尺寸的碰撞代理；只在该控件活动期间移除目标旋钮，
     # 邻近按钮板和柜体始终保留，以允许夹持接触并阻止穿板。
     control_ids:
+      - frb
+      - fbutton1
+      - fbutton2
+      - fbutton3
+      - fbutton4
       - fr135_button
       - fr2222_button
       - fr4332_button
@@ -41,7 +46,7 @@
     # 垂直支撑筋，0.04~0.24 m 宽）的规划代理，仅用于 MoveIt 避障——它们不在
     # xacro 碰撞列表里（地面碰撞只有地板 + 大盒），故从视觉网格取真实位置。
     # 注意碰撞盒必须按真实宽度 0.05 m 收窄：原先 0.5 m 宽的代理把 fr12452
-    # 按钮（x=-21.997）到立柱（x≈-22.4）的净空从 0.38 m 压到 0.14 m，直接
+    # 按钮（x=-21.9967）到立柱（x≈-22.4）的净空从 0.38 m 压到 0.14 m，直接
     # 导致"Start state in collision"、prepress 规划失败。
     frame_part_ids:
       - collision_0
@@ -97,3 +102,11 @@
       # 旋钮 mesh 沿 Y 缩放 1.6、平移 4 mm 后的实体范围。
       knob_size: [0.0224, 0.0025]
       knob_center_offset: 0.004
+
+    switch:
+      control_id: frb
+      parent_control_id: ""
+      pivot_position: [-14.812, 4.7833, 0.706]
+      axis: [0.0, 1.0, 0.0]
+      size: [0.027, 0.021, 0.027]
+      center_offset: [0.0, -0.0095, 0.0]

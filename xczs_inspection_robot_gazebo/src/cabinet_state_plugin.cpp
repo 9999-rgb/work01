@@ -728,6 +728,10 @@ private:
     gazebo::physics::JointPtr joint;
     gazebo::physics::LinkPtr link;
     std::string grasp_contact_target;
+    // Existing prismatic child follows the held tool only during its parent's grasp.
+    bool continuous_rotation{false};
+    std::string axial_grasp_parent;
+    double axial_initial_position{0.0};
     std::string joint_state_topic;
     std::string pressed_topic;
     std::string state_topic;
@@ -1053,9 +1057,16 @@ private:
         element, "grasp_coupling_damping", 0.0);
       control.grasp_coupling_max_effort = optional_double(
         element, "grasp_coupling_max_effort", 0.0);
+      control.continuous_rotation = optional_bool(element, "continuous_rotation", false);
       control.motion_tolerance = optional_double(
         element, "motion_tolerance", 0.025);
       control.graspable = optional_bool(element, "graspable", false);
+      if (element->HasElement("axial_grasp_parent")) {
+        control.axial_grasp_parent = element->Get<std::string>("axial_grasp_parent");
+        if (control.kind != ControlKind::kButton || control.axial_grasp_parent.empty()) {
+          throw std::invalid_argument("Invalid axial grasp child: " + control.id);
+        }
+      }
       if (element->HasElement("grasp_contact_target")) {
         control.grasp_contact_target = element->Get<std::string>("grasp_contact_target");
         if (!model_->GetLink(control.grasp_contact_target) || grasp_contact_links_.empty()) {
@@ -1207,7 +1218,10 @@ private:
             [](double left, double right) {
               return std::abs(left - right) <= 1.0e-9;
             }) != control.detents.end() ||
-          control.stiffness <= 0.0 || control.grasp_stiffness < 0.0 ||
+          control.stiffness < 0.0 ||
+          (!control.continuous_rotation && control.stiffness == 0.0) ||
+          (control.continuous_rotation && control.kind != ControlKind::kSwitch) ||
+          control.grasp_stiffness < 0.0 ||
           control.detent_hysteresis < 0.0)
         {
           throw std::invalid_argument(
@@ -1408,6 +1422,17 @@ private:
     // control_indices_ fills as controls load, so a drawer parsed before its
     // button control cannot be validated inline.
     for (const auto & control : controls_) {
+      if (!control.axial_grasp_parent.empty()) {
+        const auto parent = control_indices_.find(control.axial_grasp_parent);
+        if (parent == control_indices_.end() ||
+          controls_[parent->second].kind != ControlKind::kKnob ||
+          controls_[parent->second].grasp_coupling_stiffness <= 0.0 ||
+          control.joint->GetParent() != controls_[parent->second].link ||
+          controls_[parent->second].grasp_contact_target != control.link->GetName())
+        {
+          throw std::invalid_argument("Invalid axial grasp parent: " + control.id);
+        }
+      }
       if (control.kind == ControlKind::kDrawer &&
         !control.unlock_button_id.empty())
       {
@@ -1735,7 +1760,17 @@ private:
         }
         target = control.detents[control.detent_target_index];
       }
-      const double effective_damping = control_is_being_grasped ?
+      const bool axial_grasp_active = compliant_grasp_active_ &&
+        active_robot_link_ptr_ && !control.axial_grasp_parent.empty() &&
+        control.axial_grasp_parent == active_grasp_control_;
+      if (axial_grasp_active) {
+        const auto displacement = active_robot_link_ptr_->WorldPose().Pos() -
+          grasp_tool_position_;
+        target = std::clamp(control.axial_initial_position +
+          displacement.Dot(control.joint->GlobalAxis(0)),
+          control.joint->LowerLimit(0), control.joint->UpperLimit(0));
+      }
+      double effective_damping = control_is_being_grasped ?
         control.grasp_damping : control.damping;
       double effective_stiffness = control_is_being_grasped ?
         control.grasp_stiffness : control.stiffness;
@@ -1757,8 +1792,12 @@ private:
       // and lets the cap come to rest at the stop.  Doors, sliders, knobs and
       // drawers keep the two-sided detent/latch spring (they hold at
       // non-zero detents).
+      if (axial_grasp_active) {
+        effective_stiffness = 2000.0;
+        effective_damping = 10.0;
+      }
       const double spring_error =
-        (control.kind == ControlKind::kButton) ?
+        (control.kind == ControlKind::kButton && !axial_grasp_active) ?
         std::max(0.0, raw_position - target) :
         (raw_position - target);
       control.effort =
@@ -1918,7 +1957,8 @@ private:
         simulation_time >= control.collision_restore_not_before &&
         actuation_operation_is_complete(control) &&
         actuation_tool_is_clear(control) &&
-        std::abs(raw_position - target) <= control.motion_tolerance &&
+        (control.continuous_rotation ||
+        std::abs(raw_position - target) <= control.motion_tolerance) &&
         std::abs(velocity) <= control.motion_tolerance)
       {
         set_actuation_collision_enabled(control, true);
@@ -2342,7 +2382,7 @@ private:
     double velocity,
     bool control_is_being_grasped)
   {
-    if (control.kind == ControlKind::kButton || control_is_being_grasped ||
+    if (control.continuous_rotation || control.kind == ControlKind::kButton || control_is_being_grasped ||
       control.detent_target_index >= control.detents.size())
     {
       return;
@@ -2400,7 +2440,12 @@ private:
       std::max(0.0, raw_position) : raw_position;
     control.velocity = control.joint->GetVelocity(0);
 
-    if (control.kind == ControlKind::kButton) {
+    if (control.continuous_rotation) {
+      control.in_motion = std::abs(control.velocity) > control.motion_tolerance;
+      control.activated = control.in_motion;
+      control.state_index = control.in_motion ? 1U : 0U;
+      control.state_id = control.state_ids[control.state_index];
+    } else if (control.kind == ControlKind::kButton) {
       if (!control.activated && control.position >= control.press_threshold) {
         control.activated = true;
       } else if (
@@ -4197,7 +4242,9 @@ private:
             maximum_velocity, pregrasp_max_velocity_);
         }
       }
-      if (approach_disturbed) {
+      if (!std::isfinite(raw_position) || !std::isfinite(raw_velocity) ||
+        (!control.continuous_rotation && approach_disturbed))
+      {
         return {false,
           "Unsafe pre-grasp movement was detected for cabinet control '" +
           control.id + "' (maximum detent error " +
@@ -4316,6 +4363,12 @@ private:
       max_grasp_linear_error_ = 0.0;
       grasp_initial_position_ = control.joint->Position(0);
       grasp_tool_rotation_ = robot_link->WorldPose().Rot();
+      grasp_tool_position_ = robot_link->WorldPose().Pos();
+      for (auto & child : controls_) {
+        if (child.axial_grasp_parent == control.id) {
+          child.axial_initial_position = child.joint->Position(0);
+        }
+      }
       grasp_axis_world_ = grasp_axis_world;
       grasp_previous_twist_ = 0.0;
       grasp_unwrapped_twist_ = 0.0;
@@ -4709,6 +4762,7 @@ private:
     ignition::math::Vector3d::UnitZ};
   double grasp_previous_twist_{0.0};
   double grasp_unwrapped_twist_{0.0};
+  ignition::math::Vector3d grasp_tool_position_{0.0, 0.0, 0.0};
   double max_grasp_angle_error_{0.0};
   double max_grasp_coupling_effort_{0.0};
   std::string active_grasp_control_;

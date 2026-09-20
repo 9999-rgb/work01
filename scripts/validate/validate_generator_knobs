@@ -11,7 +11,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--api', default='http://127.0.0.1:8090')
     parser.add_argument('--controls', nargs='+', default=[f'fr{i}_knob' for i in ('135', '2222', '4332', '12452', '20422', '25452')])
-    parser.add_argument('--states', nargs='+', default=['center', 'right', 'center', 'left'])
+    parser.add_argument('--states', nargs='+', default=['turned', 'center'])
     parser.add_argument('--no-navigate', action='store_true')
     parser.add_argument('--timeout', type=float, default=360)
     parser.add_argument('--output', required=True)
@@ -64,7 +64,10 @@ def main():
             expected = before[control]['state_positions'][before[control]['state_ids'].index(target)]
             if after[control]['current_state'] != target or abs(after[control]['current_position'] - expected) > .04:
                 raise RuntimeError(f'{control}: 实测角度或档位不匹配')
-            changed = [name for name in before if name != control and (abs(after[name]['current_position'] - before[name]['current_position']) > .005 or after[name]['transition_sequence'] != before[name]['transition_sequence'])]
+            child_id = control.replace('_knob', '_button')
+            if abs(after[child_id]['current_position']) > .001:
+                raise RuntimeError(f'{control}: 旋钮未插回安装位置')
+            changed = [name for name in before if name not in (control, before[control].get('axial_control_id', control.replace('_knob', '_button'))) and (abs(after[name]['current_position'] - before[name]['current_position']) > .005 or after[name]['transition_sequence'] != before[name]['transition_sequence'])]
             if changed:
                 raise RuntimeError(f'旁路控件变化超过 5 mm/rad: {changed}')
             print('VERIFIED', control, target, after[control]['current_position'], flush=True)

@@ -4687,7 +4687,7 @@ function renderCabinetTarget() {
       const isCurrent = index === currentDetentIndex;
       const requiresIntermediate = adjacentOnly
         && Math.abs(index - currentDetentIndex) > 1;
-      option.disabled = adjacentOnly && (isCurrent || requiresIntermediate);
+      option.disabled = control.continuous_rotation ? stateId !== 'running' : adjacentOnly && (isCurrent || requiresIntermediate);
       const intermediateIndex = currentDetentIndex + Math.sign(index - currentDetentIndex);
       const intermediateLabel = stateLabelsForControl[intermediateIndex]
         || stateIds[intermediateIndex];
@@ -4766,7 +4766,8 @@ function renderCabinetTarget() {
     ? control.capability_metadata_present && !control.toolset_compatible
       ? `切换套装 ${control.required_toolset || '?'} 后操作：${control.display_name}`
       : `导航并验证：${control.display_name}`
-    : `导航并${verbs[type] || '操作'}：${control.display_name}`;
+    : control.continuous_rotation ? `开始旋转：${control.display_name}` : `导航并${verbs[type] || '操作'}：${control.display_name}`;
+  $('btnCabinetCancel').textContent = control.continuous_rotation ? '停止并退出' : '取消操作';
 }
 
 function startAutonomyPolling() {

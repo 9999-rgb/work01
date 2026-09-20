@@ -158,14 +158,9 @@
     tool_profiles:
       button:
         move_group: right_arm
-        contact_tool_link: r_three_cyl_base
+        contact_tool_link: r_rotbtn_probe_tip
         transport_named_target: home
-        tool_tip_position: [0.0265, -0.061735, -0.3885]
-        calibration_joint_names:
-          - r_three_cyl_finger1_joint
-          - r_three_cyl_finger2_joint
-          - r_three_cyl_finger3_joint
-        calibration_joint_positions: [0.0, 0.0, 0.0]
+        tool_tip_position: [0.0, 0.0, 0.0]
       knob:
         move_group: right_arm
         contact_tool_link: r_rotbtn_body
@@ -176,8 +171,7 @@
         # 物理锚定已消除定位偏差，规划点与旋转盘真实几何中心一致。
         tool_tip_position: [-0.06128, -0.006, 0.2105]
         grasp_point_position: [0.0, 0.0, 0.038]
-      # 夹具场景暂无 switch/door，但 operator 要求 button 非空时四档
-      # tool_profiles 全声明；沿用共享柜体的同工具集 profile。
+      # 连续旋转插口使用第二套左侧摇杆；door 保留公共配置合同。
       switch:
         move_group: left_arm
         contact_tool_link: l_rocker_body
@@ -223,6 +217,50 @@
     # bwo=0 的 body_yaw=180° 下按钮位于右臂 0.98m 斜对角，超出关节限位）。
     # standoff 0.914 沿用柜体；local_anchor z 取 0（贴地），Nav2/精停只消费 x/y/yaw。
     controls:
+      frb:
+        # 绕插入轴偏转 45°，为摇杆壳体和腕部留出柜面间隙。
+        tool_roll_offset: -0.7853981633974483
+        # 源摇杆网格的方孔相对转子坐标旋转 30°，插入前补偿该角度。
+        rotor_alignment_offset: -0.5235987755982988
+        ready_joint_seed:
+          joint_names: [l_arm_0_joint, l_arm_1_joint, l_arm_2_joint, l_arm_3_joint, l_arm_4_joint, l_arm_5_joint, l_arm_6_joint]
+          positions: [1.0281900799, 1.8819511043, -1.4735500508, 1.8165353165, -2.8167100497, 0.0201943968, -1.5861171992]
+        navigation_station:
+          local_anchor: [-14.812, 4.7833, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.0
+          base_yaw_offset: -1.5707963267948966
+          frame_id: map
+        grasp_outward_offset: 0.004
+        rotary_retreat_distance: 0.12
+      fbutton1:
+        navigation_station:
+          local_anchor: [-16.275, 4.7833, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.0
+          base_yaw_offset: 1.5707963267948966
+          frame_id: map
+      fbutton2:
+        navigation_station:
+          local_anchor: [-16.375, 4.7833, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.0
+          base_yaw_offset: 1.5707963267948966
+          frame_id: map
+      fbutton3:
+        navigation_station:
+          local_anchor: [-16.475, 4.7833, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.0
+          base_yaw_offset: 1.5707963267948966
+          frame_id: map
+      fbutton4:
+        navigation_station:
+          local_anchor: [-16.575, 4.7833, 0.0]
+          outward_axis: [0.0, 1.0, 0.0]
+          standoff: 1.0
+          base_yaw_offset: 1.5707963267948966
+          frame_id: map
       # 2026-09-14 用户裁决修正：工位方向原先全错。
       # `approach_normal`（12 个控件全是 [0,-1,0]）是**工具逼近控件的方向**，
       # 因此机器人站位应在控件的 +Y（北）侧；而 `outward_axis` 是**从控件指向
@@ -243,7 +281,7 @@
           frame_id: map
       fr2222_button:
         navigation_station:
-          local_anchor: [-13.787, 4.8113, 0.0]
+          local_anchor: [-13.7867, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           # 沿用 fr135 验证过的停靠几何：body_yaw=270°（bwo=π/2）下右臂肩部
           # 在按钮正南 ~0.56m，prepress 目标在右臂可达域内（bwo=0 时按钮在
@@ -253,14 +291,14 @@
           frame_id: map
       fr4332_button:
         navigation_station:
-          local_anchor: [-15.457, 4.8113, 0.0]
+          local_anchor: [-15.4567, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fr12452_button:
         navigation_station:
-          local_anchor: [-21.997, 4.8113, 0.0]
+          local_anchor: [-21.9967, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
@@ -280,26 +318,15 @@
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fr135_knob:
+        rotary_retreat_distance: 0.04
         navigation_station:
           local_anchor: [-13.1867, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
           frame_id: map
-        # 2026-09-14 作业面改北侧后：tool_rotation_from_outward 在南北两侧给出的基准
-        # 姿态相差一个绕工具轴的自转，而下面这些值是按**南侧**标定的 → 北侧钳口歪着咬
-        # 旋钮 → 实测第二次旋转起失控。北侧暂全部归零，待北侧专用标定。
-        # 索引 = source*3+target（left=0 center=1 right=2）。
-        tool_roll_offsets:
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
+        # 北侧作业面的工具角度补偿；索引 = source*2+target（center=0 turned=1）。
+        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
         # 夹持可见方板的两侧；夹持点位于板厚中部（相对旋钮轴心向外 4 mm）。
         # 与末端局部 z=38 mm 标定配套，钳口在板厚方向重叠 7 mm。
         grasp_outward_offset: 0.004
@@ -328,8 +355,9 @@
             - 0.014786
             - -1.656403
       fr2222_knob:
+        rotary_retreat_distance: 0.04
         navigation_station:
-          local_anchor: [-13.787, 4.8113, 0.0]
+          local_anchor: [-13.7867, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
@@ -337,16 +365,7 @@
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
         detent_release_fraction: 1.0
-        tool_roll_offsets:
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
+        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -365,8 +384,9 @@
             - 0.014786
             - -1.656403
       fr4332_knob:
+        rotary_retreat_distance: 0.04
         navigation_station:
-          local_anchor: [-15.457, 4.8113, 0.0]
+          local_anchor: [-15.4567, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           standoff: 1.4
           base_yaw_offset: 1.5707963267948966
@@ -374,16 +394,7 @@
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
         detent_release_fraction: 1.0
-        tool_roll_offsets:
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
+        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -403,7 +414,7 @@
             - -1.656403
       fr12452_knob:
         navigation_station:
-          local_anchor: [-21.997, 4.8113, 0.0]
+          local_anchor: [-21.9967, 4.8113, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
           # 后方障碍物从 y=6.75 起；为收拢的左臂和末端保留间隙。
           standoff: 1.0
@@ -411,19 +422,10 @@
           frame_id: map
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
-        # 低位近站先直线退出 36 mm，再做无碰撞关节空间回位。
-        rotary_retreat_distance: 0.04
+        # 低位近站先直线退出 26 mm，再做无碰撞关节空间回位。
+        rotary_retreat_distance: 0.03
         detent_release_fraction: 1.0
-        tool_roll_offsets:
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
+        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -451,19 +453,10 @@
           frame_id: map
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
-        # 低位近站先直线退出 36 mm，再做无碰撞关节空间回位。
-        rotary_retreat_distance: 0.04
+        # 低位近站先直线退出 26 mm，再做无碰撞关节空间回位。
+        rotary_retreat_distance: 0.03
         detent_release_fraction: 1.0
-        tool_roll_offsets:
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
+        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -491,18 +484,9 @@
           frame_id: map
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
-        rotary_retreat_distance: 0.04
+        rotary_retreat_distance: 0.03
         detent_release_fraction: 1.0
-        tool_roll_offsets:
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
-          - 0.0
+        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -522,17 +506,16 @@
             - -1.656403
     # 发电机层执行清单；六组旋钮共用套装 B 方板夹持标定。
     operable_control_ids:
-      - fr135_button
+      - frb
+      - fbutton1
+      - fbutton2
+      - fbutton3
+      - fbutton4
       - fr2222_knob
       - fr4332_knob
       - fr12452_knob
       - fr20422_knob
       - fr25452_knob
-      - fr2222_button
-      - fr4332_button
-      - fr12452_button
-      - fr20422_button
-      - fr25452_button
       - fr135_knob
     inoperable_control_reason: >-
       该控件未列入发电机层可操作清单，仅保留状态显示和实时规划验证。

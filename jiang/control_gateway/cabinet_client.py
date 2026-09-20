@@ -1897,6 +1897,7 @@ class CabinetClient(Node):
             "state_ids": state_ids,
             "state_labels": state_labels,
             "state_positions": state_positions,
+            "continuous_rotation": bool(getattr(entry, "continuous_rotation", False)),
             "requires_grasp": bool(getattr(entry, "requires_grasp", False)),
             "operable": operable,
             "required_toolset": required_toolset,

@@ -8,8 +8,8 @@
 #   ./run_all.sh --with-proxy     # 附加 CDR→JSON 代理（精细化数据处理）
 #   同机隔离启动（端口应避开其他实例）:
 #     ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 BRIDGE_TCP_PORT=17447 \
-#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=18090 \
-#       XCZS_CONTROL_ORIGINS=http://localhost:18090,http://127.0.0.1:18090 \
+#       BRIDGE_REST_PORT=18000 CONTROL_HOST=127.0.0.1 CONTROL_PORT=8090 \
+#       XCZS_CONTROL_ORIGINS=http://localhost:8090,http://127.0.0.1:8090 \
 #       ./run_all.sh --web
 #   端口被本项目旧实例进程占用时，启动会自动终止占用进程后继续；
 #   非本项目进程占用会明确报错，不会误杀。

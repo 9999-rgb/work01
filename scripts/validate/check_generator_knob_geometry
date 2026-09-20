@@ -40,6 +40,28 @@ def main():
     tip_z = adapter['tool_profiles']['knob']['tool_tip_position'][2]
     tool = ET.parse(DESCRIPTION / 'urdf/components/tools.xacro').getroot()
     macro = next(m for m in tool if m.get('name') == 'xczs_rotate_button')
+    # 业务坐标必须来自原网格，防止只在逻辑里按到、画面里未接触。
+    probe = macro.find("joint[@name='${prefix}_rotbtn_probe_tip_joint']")
+    body_points = vertices(DESCRIPTION / 'meshes/tools/rotate_button/endbody.STL')
+    probe_points = body_points[body_points[:, 1] > body_points[:, 1].max() - 1e-6]
+    probe_tip = (probe_points.min(0) + probe_points.max(0)) / 2
+    if probe is None or not np.allclose(
+            np.fromstring(probe.find('origin').get('xyz'), sep=' '), probe_tip, atol=1e-5):
+        errors.append('按压头业务坐标与源网格端点不一致')
+    # 用方孔主内壁的面法向复核角度补偿，不依赖控制代码的假设。
+    triangles = vertices(DESCRIPTION / 'meshes/tools/rocker/endrotatelink.STL').reshape(-1, 3, 3)
+    centers = triangles.mean(1)
+    normals = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+    areas = np.linalg.norm(normals, axis=1)
+    normals /= np.maximum(areas[:, None], 1e-15)
+    inside = ((centers[:, 2] > -.04) & (np.abs(normals[:, 2]) < .1) &
+              (np.sum(centers[:, :2] * normals[:, :2], axis=1) < 0))
+    index = np.argmax(np.where(inside, areas, 0))
+    angle = np.arctan2(normals[index, 1], normals[index, 0])
+    compensation = adapter['controls']['frb']['rotor_alignment_offset']
+    error = (angle + compensation + np.pi / 4) % (np.pi / 2) - np.pi / 4
+    if abs(error) > .001:
+        errors.append('摇杆方孔源网格角度与插入对准补偿不一致')
     rotor = macro.find("joint[@name='${prefix}_rotbtn_rotate_joint']")
     rotor_z = float(rotor.find('origin').get('xyz').split()[2])
     jaw_extents = []
@@ -55,9 +77,28 @@ def main():
         errors.append('抓取距离门槛大于 3 mm')
     if len(plugin.findall('grasp_joint')) != 3:
         errors.append('缺少旋转盘及双钳口抓取前校验')
+    continuous = next(c for c in plugin.findall('control') if c.findtext('control_id') == 'frb')
+    socket_joint = model.find("joint[@name='frb']")
+    inertia = float(model.findtext("link[@name='rotatebutton']/inertial/inertia/iyy"))
+    dt = float(ET.parse(ROOT / 'xczs_inspection_robot_gazebo/worlds/inspection_robot.world')
+               .findtext('./world/physics/max_step_size'))
+    rocker = next(m for m in tool if m.get('name') == 'xczs_rocker')
+    motor = rocker.find("joint[@name='${prefix}_rocker_rotor_joint']")
+    motor_inertia = float(rocker.find("link[@name='${prefix}_rocker_rotor']/inertial/inertia").get('izz'))
+    if float(motor.find('dynamics').get('damping')) * dt / motor_inertia >= 2:
+        errors.append('摇杆转子的关节阻尼相对惯量和物理步长过大')
+    damping = (float(socket_joint.findtext('axis/dynamics/damping')) +
+               float(continuous.findtext('spring_damping')) +
+               float(continuous.findtext('grasp_coupling_damping')))
+    stiffness = float(continuous.findtext('grasp_coupling_stiffness'))
+    if damping * dt / inertia + stiffness * dt * dt / (2 * inertia) >= 2:
+        errors.append('摇杆阻尼/刚度相对惯量和物理步长过大，显式力更新存在发散风险')
     for control_id, control in controls.items():
         if control['type'] != 'knob':
             continue
+        if control['state_ids'] != ['center', 'turned'] or not np.allclose(
+                control['state_positions'], [0.0, np.pi / 4]):
+            errors.append(f'{control_id}: 应为 0°/45° 两档')
         pivot = np.array(control['pivot_position'])
         tuning = adapter['controls'][control_id]
         if control_id not in scene['control_ids']:
@@ -71,6 +112,21 @@ def main():
         tip_y = tuning['grasp_outward_offset'] + tip_z - rotor_z - max(jaw_extents)
         target = next(c for c in plugin.findall('control') if c.findtext('control_id') == control_id)
         plate = model.find("link[@name='%s']" % target.findtext('grasp_contact_target'))
+        axial_id = control.get('axial_control_id')
+        axial = controls.get(axial_id, {})
+        axial_plugin = next((c for c in plugin.findall('control')
+                             if c.findtext('control_id') == axial_id), None)
+        joint = model.find("joint[@name='%s']" % axial.get('joint_name'))
+        stroke = control.get('axial_pull_distance', 0)
+        if (axial.get('parent_control_id') != control_id or axial_plugin is None or
+                axial_plugin.findtext('axial_grasp_parent') != control_id or
+                joint is None or joint.get('type') != 'prismatic'):
+            errors.append(f'{control_id}: 轴向关节/父控件合同不一致')
+        elif not (0 < stroke < float(joint.findtext('axis/limit/upper'))):
+            errors.append(f'{control_id}: 拔出行程必须位于原滑动关节限位内')
+        elif (not np.allclose(np.fromstring(joint.findtext('axis/xyz'), sep=' '), control['axis']) or
+              joint.findtext('child') != plate.get('name')):
+            errors.append(f'{control_id}: 轴向关节不是夹持板的同轴滑动关节')
         plate_pose = np.fromstring(plate.findtext('pose'), sep=' ')[:3]
         col = plate.find('collision')
         center = plate_pose + np.fromstring(col.findtext('pose'), sep=' ')[:3]
@@ -78,20 +134,26 @@ def main():
         axial_overlap = center[1] + size[1]/2 - (pivot[1] + tip_y)
         if axial_overlap < .002:
             errors.append(f'{control_id}: 钳口与方板厚度方向交叠小于 2 mm')
+        retreat = tuning.get('rotary_retreat_distance', adapter['prepress_distance'])
+        if retreat - tuning['grasp_outward_offset'] < axial_overlap + .005:
+            errors.append(f'{control_id}: 撤离距离不足以脱离夹持板并保留 5 mm 余量')
         open_gap = .036
         targets = adapter['knob_gripper']['closed_positions']
         closed_gap = open_gap - targets[1] - targets[2]
         if not closed_gap < size[0] < open_gap:
             errors.append(f'{control_id}: 方板宽度不在夹爪开合范围内')
         cabinet_gap = pivot[1] + tip_y - 4.7733
-        if cabinet_gap < .01:
+        seating = control.get('axial_seating_offset', 0.0)
+        if not 0 <= seating <= .001:
+            errors.append(f'{control_id}: 回插静差补偿超过 1 mm')
+        if cabinet_gap - seating < .01:
             errors.append(f'{control_id}: 指端到柜体北面余量小于 10 mm')
         print(f'{control_id}: plate overlap = {axial_overlap*1000:.3f} mm; cabinet gap = {cabinet_gap*1000:.3f} mm')
     if errors:
         for error in errors:
             print('FAIL:', error)
         return 1
-    print('PASS: six knob geometry contracts (live contact validation still required)')
+    print('PASS: six knob, button probe and rocker alignment geometry contracts (live contact validation still required)')
     return 0
 
 

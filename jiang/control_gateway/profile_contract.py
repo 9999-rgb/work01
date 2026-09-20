@@ -402,9 +402,11 @@ def _validate_robot_control_overrides(
         if "tool_roll_offset" in override:
             field = f"robot adapter controls.{control_id}.tool_roll_offset"
             roll_offset = override.get("tool_roll_offset")
-            if control.get("type") != "button":
+            if control.get("type") != "button" and not (
+                control.get("type") == "switch" and control.get("continuous_rotation") is True
+            ):
                 raise ProfileContractError(
-                    f"{field} is only valid for button controls."
+                    f"{field} is only valid for button or continuous switch controls."
                 )
             if (
                 isinstance(roll_offset, bool)

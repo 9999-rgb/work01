@@ -364,7 +364,7 @@ def test_toolset_mismatch_finishes_before_any_moveit_profile_change() -> None:
     )
     operate = source[operate_start:operate_end]
 
-    mismatch = operate.index("if (!tool_serves_control(control->control_type))")
+    mismatch = operate.index("if (toolset_ != control->required_toolset)")
     profile_change = operate.index("apply_tool_profile(control->control_type)")
     assert mismatch < profile_change
     assert "OperateCabinetControl::Result::TOOLSET_MISMATCH" in operate

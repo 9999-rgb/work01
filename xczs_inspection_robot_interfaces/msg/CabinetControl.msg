@@ -30,6 +30,7 @@ float64 max_position
 string[] state_ids
 string[] state_labels
 float64[] state_positions
+bool continuous_rotation
 bool requires_grasp
 bool operable
 string unavailable_reason
