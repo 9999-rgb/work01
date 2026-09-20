@@ -173,7 +173,7 @@ def test_rotary_controls_are_stable_at_both_pregrasp_boundaries() -> None:
         "wait_for_pregrasp_controls_stable("
     )
     final_cartesian_approach = operate.index(
-        "{corrected_rotary_pose(rotary_poses.grasp_pose)}", pregrasp_motion
+        "{rotary_poses.grasp_pose}", pregrasp_motion
     )
     attach_grasp = operate.index(
         "set_control_grasp(goal_handle, control->id, true)",

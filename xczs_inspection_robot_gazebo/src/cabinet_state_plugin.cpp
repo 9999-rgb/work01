@@ -1456,17 +1456,24 @@ private:
 
   }
 
-  bool jaw_box_still_touches(
+  double jaw_box_contact_gap(
     const gazebo::physics::LinkPtr & jaw, const gazebo::physics::LinkPtr & target)
   {
     // ODE can omit resting contacts for tens of microns of numerical gap.
     // Only the actual fingertip collision box is eligible, never a link AABB.
-    const auto fingertip = jaw->GetCollision("jaw_proxy_2");
+    gazebo::physics::CollisionPtr fingertip;
+    for (const auto & collision : jaw->GetCollisions()) {
+      // URDF conversion adds fixed_joint_lump and collision index suffixes.
+      if (collision->GetName().find("jaw_proxy_2") != std::string::npos) {
+        fingertip = collision;
+        break;
+      }
+    }
     const auto plate = target->GetCollision("collision");
-    if (!fingertip || !plate) {return false;}
+    if (!fingertip || !plate) {return std::numeric_limits<double>::infinity();}
     const auto a = boost::dynamic_pointer_cast<gazebo::physics::BoxShape>(fingertip->GetShape());
     const auto b = boost::dynamic_pointer_cast<gazebo::physics::BoxShape>(plate->GetShape());
-    if (!a || !b) {return false;}
+    if (!a || !b) {return std::numeric_limits<double>::infinity();}
     const auto box = [](const auto & collision, const auto & shape) {
         ContactBox result;
         const auto pose = collision->WorldPose();
@@ -1482,7 +1489,7 @@ private:
         return result;
       };
     const double gap = box_contact_separation(box(fingertip, a), box(plate, b));
-    return std::isfinite(gap) && gap >= -0.001 && gap <= 0.0001;
+    return gap;
   }
 
   // Called on the physics thread before servicing an attach request. Require
@@ -1512,15 +1519,17 @@ private:
 
       const bool stale_contact = found != grasp_contacts_.end() &&
         now - found->second.first > 0.2;
+      const double gap = stale_contact ? jaw_box_contact_gap(jaw, target) : 0.0;
+      const bool touching = std::isfinite(gap) && gap >= -0.001 && gap <= 0.0001;
       if (found == grasp_contacts_.end() || now < found->second.first ||
-        (stale_contact && !jaw_box_still_touches(jaw, target)) ||
+        (stale_contact && !touching) ||
         found->second.second > 0.002 || sustained_penetration)
       {
         RCLCPP_ERROR(ros_node_->get_logger(),
-          "Knob contact invalid: %s -> %s, age %.6f s, depth %.6f m.",
+          "Knob contact invalid: %s -> %s, age %.6f s, depth %.6f m, box gap %.6f m.",
           name.c_str(), control.grasp_contact_target.c_str(),
           found == grasp_contacts_.end() ? -1.0 : now - found->second.first,
-          found == grasp_contacts_.end() ? -1.0 : found->second.second);
+          found == grasp_contacts_.end() ? -1.0 : found->second.second, gap);
         return false;
       }
     }

@@ -184,6 +184,18 @@ public:
           ++scene_revision_;
         }
       });
+    contact_begin_subscription_ = create_subscription<std_msgs::msg::String>(
+      "contact_begin", rclcpp::QoS(1).reliable(),
+      [this](const std_msgs::msg::String::SharedPtr message) {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        if (operation_heartbeat_received_ && !active_control_id_.empty() &&
+          !message->data.empty() && message->data == operation_heartbeat_lease_id_ &&
+          contact_released_)
+        {
+          contact_released_ = false;
+          ++scene_revision_;
+        }
+      });
     operation_heartbeat_subscription_ =
       create_subscription<std_msgs::msg::String>(
       "operation_heartbeat", rclcpp::QoS(1).reliable(),
@@ -921,6 +933,7 @@ private:
       active_control.empty() ? "none" : active_control.c_str());
   }
 
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr contact_begin_subscription_;
   rclcpp::Publisher<moveit_msgs::msg::PlanningScene>::SharedPtr
     planning_scene_publisher_;
   rclcpp::TimerBase::SharedPtr retry_timer_;

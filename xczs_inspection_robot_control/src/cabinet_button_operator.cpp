@@ -773,7 +773,7 @@ public:
             }
             // Follow each physical contact independently. A fixed close
             // position either loses contact or pushes the moving plate.
-            point.positions[j] = std::clamp(measured + 0.00025,
+            point.positions[j] = std::clamp(measured + 0.00015,
               knob_gripper_open_[j], knob_gripper_closed_[j]);
           }
           command.points.push_back(point);
@@ -1252,6 +1252,8 @@ public:
     active_control_publisher_ = create_publisher<std_msgs::msg::String>(
       kActiveControlTopic,
       rclcpp::QoS(1).reliable().transient_local());
+    contact_begin_publisher_ = create_publisher<std_msgs::msg::String>(
+      "contact_begin", rclcpp::QoS(1).reliable());
     contact_release_publisher_ = create_publisher<std_msgs::msg::String>(
       "contact_release", rclcpp::QoS(1).reliable());
     operation_heartbeat_publisher_ =
@@ -4276,6 +4278,7 @@ private:
     DoorArcProgress door_arc_progress;
     double target_position = 0.0;
     double rotary_tool_roll_offset = 0.0;
+    double axial_grasp_offset = 0.0;
     // Precomputed upstream so the manipulation block and the ready/pregrasp
     // branch selection share the exact same arc targets and waypoints.
     double rotary_manip_pos = 0.0;
@@ -5673,13 +5676,6 @@ private:
         result->physical_outcome_confirmed = true;
         result->final_state_verified = true;
       } else {
-        tf2::Vector3 rotary_physics_offset(0.0, 0.0, 0.0);
-        const auto corrected_rotary_pose = [&](geometry_msgs::msg::Pose pose) {
-            pose.position.x += rotary_physics_offset.x();
-            pose.position.y += rotary_physics_offset.y();
-            pose.position.z += rotary_physics_offset.z();
-            return pose;
-          };
         result->diagnostic_stage = "gripper_open";
         drive_knob_gripper(goal_handle, *move_group, *control, false,
           &result->operation_executed);
@@ -5726,6 +5722,18 @@ private:
             rotary_branch_seed_ptr = &rotary_branch_seed;
           }
         }
+        // Keep the target as an obstacle during pose-planned travel. Only
+        // the final straight approach may enter the verified contact region.
+        const auto set_rotary_contact_planning = [&](bool enabled) {
+            std_msgs::msg::String message;
+            {
+              std::lock_guard<std::mutex> lock(operation_lease_mutex_);
+              message.data = operation_lease_id_;
+            }
+            (enabled ? contact_begin_publisher_ : contact_release_publisher_)->publish(message);
+            interruptible_hold(goal_handle, planning_scene_settle_seconds_);
+          };
+        if (control->axial_pull_distance > 0.0) {set_rotary_contact_planning(false);}
         plan_and_execute_pose(
           *move_group, goal_handle, rotary_poses.ready_pose,
           contact_tool_link_, &result->operation_executed, control.get(),
@@ -5770,18 +5778,9 @@ private:
         wait_for_pregrasp_controls_stable(
           goal_handle, *control, pregrasp_stability_references,
           std::chrono::steady_clock::now());
-        if (control->control_type ==
-          xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
-        {
-          // 在柜外预抓取点测量姿态相关的物理偏差；合并进本次直线接近，
-          // 不新增探触或往返动作。后续拉出、转动、插回使用同一补偿。
-          rotary_physics_offset = measure_rotary_approach_offset(rotary_poses.pregrasp_pose);
-          for (auto & waypoint : rotary_arc_waypoints) {
-            waypoint = corrected_rotary_pose(waypoint);
-          }
-        }
+        if (control->axial_pull_distance > 0.0) {set_rotary_contact_planning(true);}
         execute_cartesian_path(
-          *move_group, goal_handle, {corrected_rotary_pose(rotary_poses.grasp_pose)},
+          *move_group, goal_handle, {rotary_poses.grasp_pose},
           cartesian_velocity_scale_ * 0.5,
           cartesian_acceleration_scale_ * 0.5,
           0.99, &result->operation_executed);
@@ -5806,11 +5805,27 @@ private:
           publish_operate_feedback(goal_handle,
             OperateCabinetControl::Feedback::MANIPULATING, 0.57F,
             target_position, "夹紧旋钮，沿轴向拉出。");
+          // Clamping can already displace the spring-loaded cap. Account for
+          // that measured travel once across pull, rotation and insertion;
+          // otherwise the nominal 8 mm pull adds the clamping displacement.
+          const auto axial = button_snapshot(*buttons_by_id_.at(control->axial_control_id));
+          if (!axial.valid || std::chrono::steady_clock::now() - axial.received_at > 500ms ||
+            !std::isfinite(axial.position) || std::abs(axial.position) > 0.003)
+          {
+            throw GenericOperationError(OperateCabinetControl::Result::GRASP_FAILED,
+              "旋钮夹紧后的轴向反馈无效或偏移超过 3 mm：" + control->id);
+          }
+          axial_grasp_offset = axial.position;
+          RCLCPP_INFO(get_logger(), "Knob '%s' axial clamp displacement: %.6f m.",
+            control->id.c_str(), axial_grasp_offset);
+          rotary_arc_waypoints = calculate_rotation_waypoints(
+            *control, initial_state.position, rotary_manip_pos,
+            rotary_tool_roll_offset, axial_grasp_offset);
           const auto pulled_pose = calculate_rotary_tool_pose(
             *control, initial_state.position,
-            control->grasp_outward_offset + control->axial_pull_distance,
+            control->grasp_outward_offset + control->axial_pull_distance - axial_grasp_offset,
             true, rotary_tool_roll_offset);
-          execute_cartesian_path(*move_group, goal_handle, {corrected_rotary_pose(pulled_pose)},
+          execute_cartesian_path(*move_group, goal_handle, {pulled_pose},
             cartesian_velocity_scale_ * 0.25, cartesian_acceleration_scale_ * 0.25,
             0.99, &result->operation_executed);
           wait_for_knob_axial_position(goal_handle, *control, control->axial_pull_distance);
@@ -5894,9 +5909,9 @@ private:
             target_position, "保持目标角度，将旋钮插回安装位置。");
           const auto inserted_pose = calculate_rotary_tool_pose(
             *control, manipulation_position,
-            control->grasp_outward_offset - control->axial_seating_offset,
+            control->grasp_outward_offset - control->axial_seating_offset - axial_grasp_offset,
             true, rotary_tool_roll_offset);
-          execute_cartesian_path(*move_group, goal_handle, {corrected_rotary_pose(inserted_pose)},
+          execute_cartesian_path(*move_group, goal_handle, {inserted_pose},
             cartesian_velocity_scale_ * 0.25, cartesian_acceleration_scale_ * 0.25,
             0.99, &result->operation_executed);
           wait_for_knob_axial_position(goal_handle, *control, 0.0);
@@ -8350,44 +8365,6 @@ private:
     }
   }
 
-  tf2::Vector3 measure_rotary_approach_offset(
-    const geometry_msgs::msg::Pose & expected_tool_pose)
-  {
-    if (!physics_anchor_configured_ || physics_anchor_reference_frame_.empty()) {
-      return tf2::Vector3(0.0, 0.0, 0.0);
-    }
-    auto request = std::make_shared<gazebo_msgs::srv::GetEntityState::Request>();
-    request->name = robot_model_name_ + "::" + contact_tool_link_;
-    request->reference_frame = robot_model_name_ + "::" + physics_anchor_reference_frame_;
-    auto future = drawer_entity_client_->async_send_request(request);
-    if (future.wait_for(2s) != std::future_status::ready) {
-      throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
-        "旋钮接近前读取末端实际位置超时。");
-    }
-    const auto response = future.get();
-    if (response == nullptr || !response->success) {
-      throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
-        "旋钮接近前无法读取末端实际位置。");
-    }
-    tf2::Transform measured, planning_from_body, expected;
-    tf2::fromMsg(response->state.pose, measured);
-    tf2::fromMsg(transform_buffer_->lookupTransform(
-      planning_frame_, physics_anchor_reference_frame_, tf2::TimePointZero,
-      tf2::durationFromSec(0.5)).transform, planning_from_body);
-    tf2::fromMsg(expected_tool_pose, expected);
-    const tf2::Vector3 offset = expected * tool_tip_position_ -
-      planning_from_body * measured * tool_tip_position_;
-    if (!std::isfinite(offset.x()) || !std::isfinite(offset.y()) ||
-      !std::isfinite(offset.z()) || offset.length() > 0.010)
-    {
-      throw GenericOperationError(OperateCabinetControl::Result::TARGET_NOT_REACHED,
-        "旋钮预抓取位置偏差超过 10 mm，禁止继续接近。");
-    }
-    RCLCPP_INFO(get_logger(), "Rotary physical approach offset: %.6f %.6f %.6f m",
-      offset.x(), offset.y(), offset.z());
-    return offset;
-  }
-
   void align_rocker_socket(
     const std::shared_ptr<OperateGoalHandle> & goal_handle,
     const ButtonSpec & control)
@@ -8556,7 +8533,8 @@ private:
     const ButtonSpec & control,
     double initial_position,
     double target_position,
-    double tool_roll_offset = 0.0)
+    double tool_roll_offset = 0.0,
+    double axial_grasp_offset = 0.0)
   {
     const double travel = target_position - initial_position;
     const std::size_t count = std::max<std::size_t>(
@@ -8570,7 +8548,7 @@ private:
       waypoints.push_back(
         calculate_rotary_tool_pose(
           control, initial_position + travel * ratio,
-          control.grasp_outward_offset + control.axial_pull_distance,
+          control.grasp_outward_offset + control.axial_pull_distance - axial_grasp_offset,
           true, tool_roll_offset));
     }
     return waypoints;
@@ -18549,6 +18527,7 @@ private:
   rclcpp::Subscription<std_msgs::msg::String>::SharedPtr
     operation_fault_subscription_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr contact_release_publisher_;
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr contact_begin_publisher_;
   std::mutex operation_heartbeat_mutex_;
   std::string operation_heartbeat_control_id_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr

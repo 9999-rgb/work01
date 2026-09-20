@@ -461,17 +461,13 @@
       <origin xyz="-0.06128 0.198 0.1525" rpy="1.5707963267948966 0 0" />
     </joint>
 
+    <!-- 仿真等效惯量稳定小转盘与钳口的约束求解，保留原网格、碰撞和行程。 -->
     <link name="${prefix}_rotbtn_rotate">
       <inertial>
         <origin xyz="6.4752E-07 -1.0998E-06 0.0066044" rpy="0 0 0" />
-        <mass value="0.011598" />
-        <inertia
-          ixx="1.66116E-06"
-          ixy="1.33386E-10"
-          ixz="5.84594E-12"
-          iyy="1.36259E-06"
-          iyz="-1.68912E-11"
-          izz="2.57566E-06" />
+        <mass value=".05" />
+        <inertia ixx="1e-4" ixy="0" ixz="0"
+          iyy="1e-4" iyz="0" izz="1e-4" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -505,14 +501,9 @@
     <link name="${prefix}_rotbtn_jaw1">
       <inertial>
         <origin xyz="-0.0058217 0.019764 0.0055009" rpy="0 0 0" />
-        <mass value="0.00481" />
-        <inertia
-          ixx="3.7186E-07"
-          ixy="3.7141E-08"
-          ixz="4.2433E-08"
-          iyy="2.6869E-07"
-          iyz="-6.4061E-08"
-          izz="2.9875E-07" />
+        <mass value=".02" />
+        <inertia ixx="1e-5" ixy="0" ixz="0"
+          iyy="1e-5" iyz="0" izz="1e-5" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
@@ -548,14 +539,9 @@
     <link name="${prefix}_rotbtn_jaw2">
       <inertial>
         <origin xyz="0.0058217 -0.019764 0.0055009" rpy="0 0 0" />
-        <mass value="0.00481" />
-        <inertia
-          ixx="3.7186E-07"
-          ixy="3.7141E-08"
-          ixz="-4.2433E-08"
-          iyy="2.6869E-07"
-          iyz="6.4061E-08"
-          izz="2.9875E-07" />
+        <mass value=".02" />
+        <inertia ixx="1e-5" ixy="0" ixz="0"
+          iyy="1e-5" iyz="0" izz="1e-5" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />
