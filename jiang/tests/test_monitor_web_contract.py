@@ -443,6 +443,22 @@ class MonitorWebContractTest(unittest.TestCase):
             assert.equal(limited.disabled, false);
             assert.match(limited.textContent, /需实时规划验证/);
             assert.doesNotMatch(limited.textContent, /不可操作/);
+
+            // Internal axial feedback stays in the API, but is not an independent target.
+            // Validated targets remain visible when a toolset switch is needed.
+            assert.equal(applyCabinetControls({{
+              cabinet: 'cabinet_a', catalog_received: true,
+              controls: [
+                {{control_id: 'axial', control_type: 0, required_toolset: 'B',
+                  adapter_validated: false, operable: false}},
+                {{control_id: 'knob', control_type: 1, required_toolset: 'B',
+                  adapter_validated: true, toolset_compatible: false, operable: false}}
+              ]
+            }}), true);
+            assert.deepEqual(cabinetControls.map(c => c.control_id), ['knob']);
+            assert.equal(cabinetTarget.value, 'knob');
+            assert.equal(cabinetTarget.children[0].children.length, 1);
+            assert.match(cabinetTarget.children[0].children[0].textContent, /需套装 B/);
         """))
 
     def test_missing_operable_capability_is_fail_closed(self) -> None:

@@ -5789,8 +5789,8 @@ private:
         if (control->axial_pull_distance > 0.0) {set_rotary_contact_planning(true);}
         execute_cartesian_path(
           *move_group, goal_handle, {rotary_poses.grasp_pose},
-          cartesian_velocity_scale_ * (control->continuous_rotation ? 0.1 : 0.5),
-          cartesian_acceleration_scale_ * (control->continuous_rotation ? 0.1 : 0.5),
+          cartesian_velocity_scale_ * (control->continuous_rotation ? 0.3 : 0.5),
+          cartesian_acceleration_scale_ * (control->continuous_rotation ? 0.3 : 0.5),
           0.99, &result->operation_executed);
         result->diagnostic_stage = "grasp";
         publish_operate_feedback(
@@ -5834,7 +5834,7 @@ private:
             control->grasp_outward_offset + control->axial_pull_distance - axial_grasp_offset,
             true, rotary_tool_roll_offset);
           execute_cartesian_path(*move_group, goal_handle, {pulled_pose},
-            cartesian_velocity_scale_ * 0.25, cartesian_acceleration_scale_ * 0.25,
+            cartesian_velocity_scale_ * 0.5, cartesian_acceleration_scale_ * 0.5,
             0.99, &result->operation_executed);
           wait_for_knob_axial_position(goal_handle, *control, control->axial_pull_distance);
         }
@@ -5871,10 +5871,11 @@ private:
             &result->operation_executed);
           door_arc_progress.in_progress = false;
         } else {
+          const double arc_speed_scale = control->axial_pull_distance > 0.0 ? 1.0 : 0.5;
           execute_cartesian_path(
             *move_group, goal_handle, waypoints,
-            cartesian_velocity_scale_ * 0.5,
-            cartesian_acceleration_scale_ * 0.5,
+            cartesian_velocity_scale_ * arc_speed_scale,
+            cartesian_acceleration_scale_ * arc_speed_scale,
             0.99, &result->operation_executed);
         }
         if (control->control_type ==
@@ -5920,7 +5921,7 @@ private:
             control->grasp_outward_offset - control->axial_seating_offset - axial_grasp_offset,
             true, rotary_tool_roll_offset);
           execute_cartesian_path(*move_group, goal_handle, {inserted_pose},
-            cartesian_velocity_scale_ * 0.25, cartesian_acceleration_scale_ * 0.25,
+            cartesian_velocity_scale_ * 0.5, cartesian_acceleration_scale_ * 0.5,
             0.99, &result->operation_executed);
           wait_for_knob_axial_position(goal_handle, *control, 0.0);
         }

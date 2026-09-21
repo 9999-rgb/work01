@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--api', default='http://127.0.0.1:8090')
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--drawer-cycles', type=int, default=2)
-    parser.add_argument('--phase', choices=['all', 'electrical', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons'], default='all')
+    parser.add_argument('--phase', choices=['all', 'electrical', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons', 'generator_knobs'], default='all')
     args = parser.parse_args()
     if not 1 <= args.drawer_cycles <= 20:
         parser.error('--drawer-cycles 必须在 1..20')
@@ -109,7 +109,7 @@ def main():
                 run('scripts/tools/render_drawer_contacts.py', '--control', control,
                     '--motion-file', motion, '--at-time', worst['time'], '--view', 'side',
                     '--out', args.out / (control + '_worst.png'))
-        if args.phase in ('all', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons'):
+        if args.phase in ('all', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons', 'generator_knobs'):
             select('generator_plant', 'B')
             recorder = start_recording('scripts/validate/generator_contact_audit.py',
                 '--duration', 3600, '--interval', .4, output=args.out / 'generator_contact.jsonl')
@@ -117,6 +117,8 @@ def main():
                 controls = ['fr135_knob', 'fr2222_knob', 'fr4332_knob',
                             'fr12452_knob', 'fr20422_knob', 'fr25452_knob',
                             'fbutton1', 'fbutton2', 'fbutton3', 'fbutton4', 'frb']
+                if args.phase == 'generator_knobs':
+                    controls = [control for control in controls if control.endswith('_knob')]
                 if args.phase == 'generator_aux':
                     controls = ['fbutton1', 'fbutton2', 'fbutton3', 'fbutton4', 'frb']
                 if args.phase == 'generator_buttons':
@@ -135,7 +137,7 @@ def main():
                         run('scripts/validate/validate_generator_operation.py', '--api', args.api,
                             '--control', control, '--output', args.out / (control + '_repeat.json'))
                     position('frb', 'generator_plant', 'B')
-                if args.phase != 'generator_buttons':
+                if args.phase not in ('generator_buttons', 'generator_knobs'):
                     run('scripts/validate/validate_generator_operation.py', '--api', args.api,
                         '--control', 'frb', '--turns', .1, '--output', args.out / 'frb_repeat.json')
             finally:
@@ -145,6 +147,8 @@ def main():
             for control, suffix, measured in [('fr135_knob', 'turned', 'fr135_button'),
                                                ('fbutton4', 'press', 'fbutton4'),
                                                ('frb', 'press', 'frb')]:
+                if args.phase == 'generator_knobs' and not control.endswith('_knob'):
+                    continue
                 if args.phase == 'generator_buttons' and control != 'fbutton4':
                     continue
                 if args.phase == 'generator_rocker' and control != 'frb':

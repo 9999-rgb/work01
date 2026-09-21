@@ -4481,7 +4481,10 @@ function applyCabinetControls(payload) {
       max_force: Number(control.max_force) || 0
     }));
 
-  const nextControls = validControls;
+  // 内部联动状态与未开放操作的目标仍由后端保留，不进入操作菜单。
+  const nextControls = validControls.filter(control => (
+    !control.capability_metadata_present || control.adapter_validated
+  ));
   const previousSelection = cabinetTarget.value;
   const activeTarget = isCabinetOperationActive() && cabinetStatus
     ? (cabinetStatus.control_id || cabinetStatus.button_id)
@@ -4620,7 +4623,7 @@ function renderCabinetTarget() {
   $('cabinetCatalogHint').textContent = !cabinetCatalogCoherent
     ? `末端目录正在同步，操作已锁定：${cabinetCatalogCoherenceReason || '等待当前末端发布新目录。'}`
     : cabinetCatalogReceived
-      ? `已载入 ${cabinetControls.length} 个控制件；错套装请求会在导航前失败，已验收控件才会执行物理写入，其余仅做规划验证。`
+      ? `已载入 ${cabinetControls.length} 个操作目标；请选择对应末端套装进行操作。`
       : '控制柜目录尚未到达，操作功能已禁用。';
   const unavailable = $('cabinetUnavailable');
   unavailable.hidden = !control || control.operable === true;
