@@ -105,6 +105,7 @@ def main():
     print('TASK', task, payload, flush=True)
     deadline = time.monotonic() + args.timeout
     stopped = False
+    rotation_start = None
     last_message = None
     try:
         while time.monotonic() < deadline:
@@ -121,7 +122,17 @@ def main():
             if not isinstance(measured, (int, float)) or not math.isfinite(measured):
                 raise RuntimeError('操作中控件实时状态失效')
             travel = abs(measured - control['current_position'])
-            if continuous and not stopped and travel >= 2 * math.pi * args.turns + .2:
+            if continuous and not stopped:
+                if '持续旋转' in (message or '') and rotation_start is None:
+                    rotation_start = measured
+                    evidence['rotation_started_at'] = time.time()
+                    evidence['rotation_start_position'] = measured
+                if rotation_start is None:
+                    assert abs(snapshot[args.control]['velocity']) < .5, '插入期间插口异常高速转动'
+                    assert travel < .1, '插入期间插口被异常带动'
+                else:
+                    travel = abs(measured - rotation_start)
+            if continuous and rotation_start is not None and not stopped and travel >= 2 * math.pi * args.turns + .2:
                 request(f'/task/{task}/cancel', {})
                 stopped = True
                 evidence['stop_requested_at'] = time.time()

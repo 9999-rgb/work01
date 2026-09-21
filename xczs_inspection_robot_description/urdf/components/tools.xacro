@@ -376,13 +376,8 @@
       <inertial>
         <origin xyz="-1.0757E-05 -6.0061E-06 -0.086156" rpy="0 0 0" />
         <mass value="0.051985" />
-        <inertia
-          ixx="1.2277E-05"
-          ixy="-6.5213E-09"
-          ixz="-1.9512E-10"
-          iyy="1.235E-05"
-          iyz="-1.8084E-09"
-          izz="5.3078E-06" />
+        <!-- 仿真等效惯量，避免方孔接触时转子弹转；保留质量与外观。 -->
+        <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001" />
       </inertial>
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0" />

@@ -234,6 +234,10 @@
         grasp_outward_offset: 0.004
         rotary_retreat_distance: 0.12
       fbutton1:
+        # 实测成功的按压姿态作为起点；执行前验证接近、按压和退出整段路径。
+        ready_joint_seed:
+          joint_names: [r_arm_0_joint, r_arm_1_joint, r_arm_2_joint, r_arm_3_joint, r_arm_4_joint, r_arm_5_joint, r_arm_6_joint]
+          positions: [-2.75468, -0.65948, -2.53624, 1.48148, -2.20585, 2.68849, -0.49518]
         navigation_station:
           local_anchor: [-16.275, 4.7833, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
@@ -241,6 +245,10 @@
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fbutton2:
+        # 实测成功的按压姿态作为起点；执行前验证接近、按压和退出整段路径。
+        ready_joint_seed:
+          joint_names: [r_arm_0_joint, r_arm_1_joint, r_arm_2_joint, r_arm_3_joint, r_arm_4_joint, r_arm_5_joint, r_arm_6_joint]
+          positions: [-2.75468, -0.65948, -2.53624, 1.48148, -2.20585, 2.68849, -0.49518]
         navigation_station:
           local_anchor: [-16.375, 4.7833, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
@@ -248,6 +256,10 @@
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fbutton3:
+        # 实测成功的按压姿态作为起点；执行前验证接近、按压和退出整段路径。
+        ready_joint_seed:
+          joint_names: [r_arm_0_joint, r_arm_1_joint, r_arm_2_joint, r_arm_3_joint, r_arm_4_joint, r_arm_5_joint, r_arm_6_joint]
+          positions: [-2.75468, -0.65948, -2.53624, 1.48148, -2.20585, 2.68849, -0.49518]
         navigation_station:
           local_anchor: [-16.475, 4.7833, 0.0]
           outward_axis: [0.0, 1.0, 0.0]
@@ -255,6 +267,10 @@
           base_yaw_offset: 1.5707963267948966
           frame_id: map
       fbutton4:
+        # 实测成功的按压姿态作为起点；执行前验证接近、按压和退出整段路径。
+        ready_joint_seed:
+          joint_names: [r_arm_0_joint, r_arm_1_joint, r_arm_2_joint, r_arm_3_joint, r_arm_4_joint, r_arm_5_joint, r_arm_6_joint]
+          positions: [-2.75468, -0.65948, -2.53624, 1.48148, -2.20585, 2.68849, -0.49518]
         navigation_station:
           local_anchor: [-16.575, 4.7833, 0.0]
           outward_axis: [0.0, 1.0, 0.0]

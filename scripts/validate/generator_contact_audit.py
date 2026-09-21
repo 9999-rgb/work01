@@ -191,8 +191,8 @@ def main():
     signal.signal(signal.SIGTERM, request_stop)
     node = rclpy.create_node('generator_contact_audit')
     poses, joints = {}, {}
-    node.create_subscription(LinkStates, '/link_states', lambda m: poses.update({k: matrix(p) for k, p in zip(m.name, m.pose) if k in shapes or k == "xczs_inspection_robot::body"}), 10)
-    node.create_subscription(JointState, '/xczs/joint_states', lambda m: joints.update({k: v for k, v in zip(m.name, m.position)}), 10)
+    node.create_subscription(LinkStates, '/link_states', lambda m: poses.update({k: matrix(p) for k, p in zip(m.name, m.pose) if k in shapes or k == "xczs_inspection_robot::body"}), 1)
+    node.create_subscription(JointState, '/xczs/joint_states', lambda m: joints.update({k: v for k, v in zip(m.name, m.position)}), 1)
     started = time.monotonic()
     last = 0
     try:
@@ -201,8 +201,9 @@ def main():
             if time.monotonic() - last < args.interval:
                 continue
             last = time.monotonic()
+            sample_time = time.time()
             metrics = measure(shapes, boxes, poses)
-            print(json.dumps({'wall_time': time.time(), 'elapsed': last-started, 'joints': joints, 'link_poses': {k: p.tolist() for k, p in poses.items()}, **metrics}), flush=True)
+            print(json.dumps({'wall_time': sample_time, 'elapsed': last-started, 'joints': joints, 'link_poses': {k: p.tolist() for k, p in poses.items()}, **metrics}), flush=True)
     except KeyboardInterrupt:
         pass
     finally:

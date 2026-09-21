@@ -4900,9 +4900,17 @@ private:
           OperateCabinetControl::Feedback::MOVING_TO_READY,
           0.25F, target_position,
           "Planning to the button ready pose.");
+        // Reuse the complete-chain branch gate for the linear button stroke.
+        // Reaching ready alone is insufficient: the wrist may hit its limit
+        // during approach. Select a branch that also presses and withdraws.
+        const auto button_branch_seed = select_rotary_branch_seed(
+          *move_group, *control, button_poses.prepress_pose,
+          button_poses.contact_pose, {button_poses.pressed_pose},
+          button_poses.prepress_pose, contact_tool_link_);
         plan_and_execute_pose(
           *move_group, goal_handle, button_poses.prepress_pose,
-          contact_tool_link_, &result->operation_executed, control.get());
+          contact_tool_link_, &result->operation_executed, control.get(),
+          button_branch_seed.empty() ? nullptr : &button_branch_seed);
         should_attempt_retreat = true;
         result->diagnostic_stage = "approach";
         publish_operate_feedback(
@@ -5781,8 +5789,8 @@ private:
         if (control->axial_pull_distance > 0.0) {set_rotary_contact_planning(true);}
         execute_cartesian_path(
           *move_group, goal_handle, {rotary_poses.grasp_pose},
-          cartesian_velocity_scale_ * 0.5,
-          cartesian_acceleration_scale_ * 0.5,
+          cartesian_velocity_scale_ * (control->continuous_rotation ? 0.1 : 0.5),
+          cartesian_acceleration_scale_ * (control->continuous_rotation ? 0.1 : 0.5),
           0.99, &result->operation_executed);
         result->diagnostic_stage = "grasp";
         publish_operate_feedback(
@@ -8486,12 +8494,14 @@ private:
         }
         // A bounded moving horizon stops on lost commands; it never queues an
         // unbounded trajectory. Local +Z points into the socket, opposite +Y.
-        send(position - 0.2, -0.5, 0.4);
+        send(position - 0.4, -0.5, 0.8);
         *operation_executed = true;
         publish_operate_feedback(goal_handle,
           OperateCabinetControl::Feedback::MANIPULATING, 0.65F,
           fixture.position, "摇杆已插入，持续旋转中；点击停止后退出。");
-        std::this_thread::sleep_for(50ms);
+        // Let the controller accelerate before refreshing the moving horizon.
+        // Replacing it every 50 ms repeatedly restarted the acceleration ramp.
+        interruptible_hold(goal_handle, 0.4);
       }
       throw GenericOperationError(OperateCabinetControl::Result::CANCELED,
         "摇杆操作随系统关闭停止。");

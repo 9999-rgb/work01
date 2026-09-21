@@ -18,13 +18,13 @@ def main():
     parser.add_argument('--api', default='http://127.0.0.1:8090')
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--drawer-cycles', type=int, default=2)
-    parser.add_argument('--phase', choices=['all', 'electrical', 'generator'], default='all')
+    parser.add_argument('--phase', choices=['all', 'electrical', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons'], default='all')
     args = parser.parse_args()
     if not 1 <= args.drawer_cycles <= 20:
         parser.error('--drawer-cycles 必须在 1..20')
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
-    report = {'success': False, 'steps': [], 'prepositioned_simulation': True}
+    report = {'success': False, 'steps': [], 'prepositioned_simulation': True, 'phase': args.phase}
     headers = {'Content-Type': 'application/json'}
     if os.environ.get('XCZS_CONTROL_TOKEN'):
         headers['Authorization'] = 'Bearer ' + os.environ['XCZS_CONTROL_TOKEN']
@@ -109,7 +109,7 @@ def main():
                 run('scripts/tools/render_drawer_contacts.py', '--control', control,
                     '--motion-file', motion, '--at-time', worst['time'], '--view', 'side',
                     '--out', args.out / (control + '_worst.png'))
-        if args.phase in ('all', 'generator'):
+        if args.phase in ('all', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons'):
             select('generator_plant', 'B')
             recorder = start_recording('scripts/validate/generator_contact_audit.py',
                 '--duration', 3600, '--interval', .4, output=args.out / 'generator_contact.jsonl')
@@ -117,14 +117,27 @@ def main():
                 controls = ['fr135_knob', 'fr2222_knob', 'fr4332_knob',
                             'fr12452_knob', 'fr20422_knob', 'fr25452_knob',
                             'fbutton1', 'fbutton2', 'fbutton3', 'fbutton4', 'frb']
+                if args.phase == 'generator_aux':
+                    controls = ['fbutton1', 'fbutton2', 'fbutton3', 'fbutton4', 'frb']
+                if args.phase == 'generator_buttons':
+                    controls = ['fbutton1', 'fbutton2', 'fbutton3', 'fbutton4']
+                if args.phase == 'generator_rocker':
+                    controls = ['frb']
                 for control in controls:
                     position(control, 'generator_plant', 'B')
                     for target in (['turned', 'center'] if control.endswith('_knob') else ['press']):
                         run('scripts/validate/validate_generator_operation.py', '--api', args.api,
                             '--control', control, '--target', target,
                             '--output', args.out / (control + '_' + target + '.json'))
-                run('scripts/validate/validate_generator_operation.py', '--api', args.api,
-                    '--control', 'frb', '--turns', .1, '--output', args.out / 'frb_repeat.json')
+                if args.phase == 'generator_aux':
+                    for control in ['fbutton1', 'fbutton2', 'fbutton3', 'fbutton4']:
+                        position(control, 'generator_plant', 'B')
+                        run('scripts/validate/validate_generator_operation.py', '--api', args.api,
+                            '--control', control, '--output', args.out / (control + '_repeat.json'))
+                    position('frb', 'generator_plant', 'B')
+                if args.phase != 'generator_buttons':
+                    run('scripts/validate/validate_generator_operation.py', '--api', args.api,
+                        '--control', 'frb', '--turns', .1, '--output', args.out / 'frb_repeat.json')
             finally:
                 stop_recording(recorder)
             run('scripts/validate/check_generator_motion.py', '--motion-file',
@@ -132,6 +145,12 @@ def main():
             for control, suffix, measured in [('fr135_knob', 'turned', 'fr135_button'),
                                                ('fbutton4', 'press', 'fbutton4'),
                                                ('frb', 'press', 'frb')]:
+                if args.phase == 'generator_buttons' and control != 'fbutton4':
+                    continue
+                if args.phase == 'generator_rocker' and control != 'frb':
+                    continue
+                if args.phase == 'generator_aux' and control.endswith('_knob'):
+                    continue
                 operation = json.loads((args.out / (control + '_' + suffix + '.json')).read_text())
                 sample = max(operation['samples'], key=(
                     (lambda item: abs(item['velocities']['frb'])) if control == 'frb' else

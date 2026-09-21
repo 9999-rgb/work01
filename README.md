@@ -37,7 +37,7 @@ SCENE=generator_plant TOOLSET=B ./run_all.sh
 
 场景唯一运行目录为 `xczs_inspection_robot_control/config/scenes.yaml`，实例注册为同目录 `cabinet_instances.yaml`。旧三柜场景已移除。共享柜体配置仍被适配器默认值、资产导入和通用测试使用，不属于可删除的运行垃圾。
 
-验收说明：[两场景整理与回归](docs/two_scene_verification.md)、[抽拉柜](docs/drawer_simulation_verification.md)、[发电机层](docs/generator_simulation_verification.md)。工位预定位测试不等于自主导航验收。
+验收说明：[按钮与摇杆专项](docs/generator_aux_verification.md)、[两场景整理与回归](docs/two_scene_verification.md)、[抽拉柜](docs/drawer_simulation_verification.md)、[发电机层](docs/generator_simulation_verification.md)。工位预定位测试不等于自主导航验收。
 
 ## 两场景动作回归
 
@@ -50,3 +50,11 @@ python3 scripts/validate/validate_two_scene_web.py --out log/two_scene_validatio
 ```
 
 该脚本会操作仿真机器人：经 Web 切换场景和末端，在预定位工位执行四柜重复开关、六旋钮往返、四按钮按压、摇杆启停和再次插入。`--phase electrical` 或 `--phase generator` 可单独复测某一层。开启鉴权时通过 `XCZS_CONTROL_TOKEN` 传入已有登录 token。
+
+只复测按钮和摇杆（四按钮各两次、摇杆整圈停止及非零角度再次插入）：
+
+```bash
+python3 scripts/validate/validate_two_scene_web.py --phase generator_aux --out log/generator_aux_validation/latest
+```
+
+`--phase generator_buttons` 只测四个按钮；`--phase generator_rocker` 只测摇杆两轮。

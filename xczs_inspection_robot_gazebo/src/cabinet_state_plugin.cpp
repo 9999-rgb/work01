@@ -43,6 +43,7 @@
 #include "std_srvs/srv/trigger.hpp"
 #include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/box_contact.hpp"
+#include "xczs_inspection_robot_control/insertion_alignment.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control.hpp"
 #include "xczs_inspection_robot_interfaces/msg/cabinet_control_state.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
@@ -732,6 +733,10 @@ private:
     std::string grasp_contact_target;
     // Existing prismatic child follows the held tool only during its parent's grasp.
     bool continuous_rotation{false};
+    bool insertion_prepared{false};
+    std::string insertion_robot_model;
+    std::string insertion_robot_link;
+    ignition::math::Vector3d insertion_face_normal{0.0, 0.0, 0.0};
     std::string axial_grasp_parent;
     double axial_initial_position{0.0};
     std::string joint_state_topic;
@@ -1060,6 +1065,20 @@ private:
       control.grasp_coupling_max_effort = optional_double(
         element, "grasp_coupling_max_effort", 0.0);
       control.continuous_rotation = optional_bool(element, "continuous_rotation", false);
+      if (element->HasElement("insertion_robot_model")) {
+        control.insertion_robot_model = element->Get<std::string>("insertion_robot_model");
+        control.insertion_robot_link = element->Get<std::string>("insertion_robot_link");
+        control.insertion_face_normal = parse_vector3(
+          element->Get<std::string>("insertion_face_normal"));
+        if (!control.continuous_rotation || control.insertion_robot_model.empty() ||
+          control.insertion_robot_link.empty() ||
+          !std::isfinite(control.insertion_face_normal.Length()) ||
+          control.insertion_face_normal.Length() < 0.99)
+        {
+          throw std::invalid_argument("Invalid continuous insertion geometry: " + control.id);
+        }
+        control.insertion_face_normal.Normalize();
+      }
       control.motion_tolerance = optional_double(
         element, "motion_tolerance", 0.025);
       control.graspable = optional_bool(element, "graspable", false);
@@ -1656,6 +1675,7 @@ private:
           continue;
         }
       }
+      prepare_continuous_insertion(control);
       const bool control_is_being_grasped = grasp_is_active() &&
         active_grasp_control_ == control.id;
       if (control_is_being_grasped && !control.grasp_contact_target.empty() &&
@@ -2638,6 +2658,7 @@ private:
       }
     }
     control.actuation_collision_suppressed = !enabled;
+    if (enabled) {control.insertion_prepared = false;}
     if (enabled) {
       control.collision_restore_not_before = 0.0;
       control.collision_restore_robot_link.reset();
@@ -2651,6 +2672,46 @@ private:
         enabled ? "Restored" : "Suppressed",
         control.actuation_collisions.size(), control.id.c_str());
     }
+  }
+
+  void prepare_continuous_insertion(Control & control)
+  {
+    if (control.insertion_robot_model.empty() || control.actuation_collisions.empty() ||
+      control.actuation_collision_suppressed || grasp_is_active()) {return;}
+    // A live lease is required even before grasp attachment. Retain the same
+    // watchdog and clear-after-withdrawal restoration used by the coupling.
+    std::lock_guard<std::mutex> lock(active_control_mutex_);
+    if (!operation_heartbeat_received_ || active_operation_control_ != control.id ||
+      operation_heartbeat_lease_id_.empty() ||
+      std::chrono::duration<double>(std::chrono::steady_clock::now() -
+      operation_last_heartbeat_).count() > operation_watchdog_timeout_)
+    {return;}
+    const auto robot = world_->ModelByName(control.insertion_robot_model);
+    const auto tool = robot ? robot->GetLink(control.insertion_robot_link) : nullptr;
+    if (!tool) {return;}
+    const auto fixture_pose = control.link->WorldPose();
+    const auto tool_pose = tool->WorldPose();
+    const auto axis = control.joint->GlobalAxis(0).Normalized();
+    const auto center = fixture_pose.Pos() +
+      fixture_pose.Rot().RotateVector(control.grasp_point);
+    const auto delta = tool_pose.Pos() - center;
+    const double axial = delta.Dot(axis);
+    const double lateral = (delta - axis * axial).Length();
+    const auto tool_axis = tool_pose.Rot().RotateVector(ignition::math::Vector3d::UnitZ);
+    const auto face = fixture_pose.Rot().RotateVectorReverse(
+      tool_pose.Rot().RotateVector(control.insertion_face_normal));
+    if (!continuous_insert_is_aligned(axial, lateral, -tool_axis.Dot(axis),
+      std::max(std::abs(face.X()), std::abs(face.Z()))) ||
+      std::abs(control.joint->GetVelocity(0)) > 0.02)
+    {return;}
+    suppress_actuation_collision(control, operation_heartbeat_lease_id_);
+    control.insertion_prepared = true;
+    // No transmission is attached here. The normal grasp service still
+    // requires the final <=3 mm seated position before applying any torque.
+    schedule_actuation_collision_restore(control.id, tool, ignition::math::Vector3d::Zero);
+    RCLCPP_INFO(ros_node_->get_logger(),
+      "Verified insertion alignment for '%s': axial %.6f m, lateral %.6f m.",
+      control.id.c_str(), axial, lateral);
   }
 
   void suppress_actuation_collision(
@@ -4220,8 +4281,12 @@ private:
         "operation; a new grasp is not yet safe.",
         std::numeric_limits<double>::quiet_NaN()};
     }
-    if (!grasp_is_active() && !base_brake_joint_ &&
-      first_suppressed_control())
+    const auto * suppressed = first_suppressed_control();
+    const bool prepared_insertion = suppressed == &control && control.insertion_prepared &&
+      control.actuation_collision_operation_lease_id == request.operation_lease_id &&
+      control.insertion_robot_model == request.robot_model &&
+      control.insertion_robot_link == request.robot_link;
+    if (!grasp_is_active() && !base_brake_joint_ && suppressed && !prepared_insertion)
     {
       return {false,
         "A prior cabinet grasp is still restoring its collision policy; a "
@@ -4398,6 +4463,7 @@ private:
         // it without teleporting either model or writing a control angle.
         grasp_joint_->Init();
       }
+      control.insertion_prepared = false;
       active_control_link_ = control.link;
       active_robot_link_ptr_ = robot_link;
       grasp_relative_pose_ =
