@@ -205,6 +205,19 @@ OPERATION_START_STATION_YAW_TOLERANCE_RAD = (
 OPERATION_START_STATION_STABLE_SEC = 0.4
 OPERATION_START_STATION_TIMEOUT_SEC = 5.0
 OPERATION_START_STATION_POLL_SEC = 0.10
+# 2026-09-21：长距离 Nav2 导航后里程计会漂（实测 map→odom 位移达 2.6 m、信念残差
+# 0.42 m / 偏航 10°），而下面这道工位门**只看信念**，于是机器人在工位上也报
+# `operation_station_unverified`，任何操作都过不去（operator 侧还会因为偏航×地板
+# 力臂 25 m 而击穿 physics_anchor_max_shift，报 anchor correction 超界）。
+# 所以在进入等待之前，用 Gazebo 物理真值把**信念**纠正一次：有界、每个操作至多一次。
+# 关键不变式：纠正的是"信念"而不是"目标点"——真值即机器人此刻的真实位姿，因此
+# 机器人若真的不在工位，纠正后本门照样如实失败，不会把错位掩盖成"已到站"。
+LOCALIZATION_REALIGN_POSITION_TOLERANCE_M = 0.05
+LOCALIZATION_REALIGN_YAW_TOLERANCE_RAD = 0.05
+# 导航监视循环里周期性校准的间隔。长距离行驶中 AMCL 会发散（实测一次 17 m 行程的
+# 末端信念偏 7.9 m：Nav2 据此算不出计划 → "Resulting plan has 0 poses" → abort，
+# 同时按错误位置打方向使车偏出走廊、臂蹭两侧）。起点校准管不到途中，故按此周期复查。
+NAVIGATION_REALIGN_PERIOD_SEC = 2.0
 # 点位门占用预检进度带的头部，其余留给关节复位（两者合计
 # OPERATION_PREFLIGHT_PROGRESS）。
 OPERATION_START_STATION_PROGRESS_SPAN = 0.005
@@ -3708,6 +3721,26 @@ class ControlServer:
         station_refresh_count = 0
         last_station_drift = {"position_m": 0.0, "yaw_rad": 0.0}
         significant_station_drift = False
+
+        # 2026-09-21：**导航前**同样先按物理真值纠正 AMCL 信念。长距离行驶会积累
+        # 里程计漂移（实测 map→odom 位移达 2.6 m），不纠正的话 Nav2 会把车开到
+        # **物理上偏移**的目标点并如实报"成功"——它的判据也是信念，所以这种错位
+        # 不会被它自己发现；等到操作时才会以工位门 / 物理锚定双双击穿的形式暴露。
+        # 只在漂移超阈值时才播种，且播种值取机器人此刻的**真实位姿**（不掩盖错位）。
+        cabinet_label = str(station.get("cabinet") or "robot")
+        try:
+            self._realign_localization_with_physics(
+                cabinet_label,
+                "",
+                self._robot_adapter.navigation_frame,
+            )
+        except Exception as error:  # noqa: BLE001
+            logger.warning(
+                "Localization realignment before navigation for %s failed "
+                "(%s); navigating on the existing belief.",
+                cabinet_label,
+                error,
+            )
         while True:
             context.raise_if_canceled()
             initial_pose = self._node.navigation_snapshot().get(
@@ -4266,10 +4299,29 @@ class ControlServer:
                     details=details,
                 )
 
+        # 途中周期性校准：起点那次校准管不到行驶中的发散（见
+        # NAVIGATION_REALIGN_PERIOD_SEC 的说明）。信念本来就准时这里只做一次读数
+        # 比较、几毫秒返回；只有确实漂了才会播种并等收敛。
+        next_realign_at = time.monotonic() + NAVIGATION_REALIGN_PERIOD_SEC
         while True:
             snapshot = self._node.navigation_snapshot()
             state = str(snapshot.get("state", "unknown"))
             now = time.monotonic()
+            if now >= next_realign_at:
+                next_realign_at = now + NAVIGATION_REALIGN_PERIOD_SEC
+                if state not in ("succeeded", "failed", "canceled"):
+                    try:
+                        self._realign_localization_with_physics(
+                            str(station.get("cabinet") or "robot"),
+                            "",
+                            self._robot_adapter.navigation_frame,
+                        )
+                    except Exception as error:  # noqa: BLE001
+                        logger.warning(
+                            "Mid-navigation localization realignment failed "
+                            "(%s); continuing on the existing belief.",
+                            error,
+                        )
             elapsed = now - task_started
             active_elapsed, clock_issue = self._navigation_elapsed(
                 snapshot,
@@ -5162,6 +5214,95 @@ class ControlServer:
             "duration_seconds": elapsed,
         }
 
+    def _realign_localization_with_physics(
+        self,
+        cabinet: str,
+        control_id: str,
+        navigation_frame: str,
+    ) -> Optional[Dict[str, Any]]:
+        """把 AMCL 信念按 Gazebo 物理真值纠正一次（漂移时）。
+
+        只在本仿真栈有意义：operator 的"物理锚定"本来就以同一套 Gazebo 真值为准，
+        这里只是把同一套真值也用到机器人自身的信念上。真机没有 ``/get_entity_state``
+        时本方法直接返回 None，调用方保持原语义。
+
+        纠正的是**信念**而非目标点：播种值取机器人此刻的**真实位姿**，所以机器人若
+        真的不在工位，纠正后工位门仍会如实失败——不会把错位掩盖成"已到站"。
+        """
+        get_state = getattr(self._gazebo_client, "get_entity_state", None)
+        publish_seed = getattr(self._node, "publish_initial_pose", None)
+        snapshot_provider = getattr(self._node, "navigation_snapshot", None)
+        if not (
+            callable(get_state)
+            and callable(publish_seed)
+            and callable(snapshot_provider)
+        ):
+            return None
+        try:
+            truth_x, truth_y, _truth_z, body_yaw = get_state(
+                self._robot_entity_name, reference_frame="world"
+            )
+        except ControlRequestError as error:
+            logger.warning(
+                "Localization realignment for %s/%s skipped: %s",
+                cabinet,
+                control_id,
+                error,
+            )
+            return None
+        # body 是 base_link 的 +pi/2 父帧；播种取 base_link 朝向（与
+        # _seed_boot_localization 同一约定）。
+        base_yaw = body_yaw - math.pi / 2.0
+        try:
+            belief = snapshot_provider().get("current_pose")
+        except Exception:  # noqa: BLE001
+            belief = None
+        if not isinstance(belief, Mapping):
+            return None
+        if belief.get("frame_id") != navigation_frame:
+            return None
+        # 用与工位门同一套平面度量比对，避免两处判据漂移。
+        error = self._planar_navigation_error(
+            belief,
+            {"x": truth_x, "y": truth_y, "yaw": base_yaw},
+        )
+        if (
+            error["position_m"] <= LOCALIZATION_REALIGN_POSITION_TOLERANCE_M
+            and error["yaw_rad"] <= LOCALIZATION_REALIGN_YAW_TOLERANCE_RAD
+        ):
+            return {"status": "aligned", "error": error}
+        publish_seed(
+            truth_x,
+            truth_y,
+            base_yaw,
+            frame_id=navigation_frame,
+            stamp_zero=True,
+        )
+        # 播种后等信念收敛再放行：否则调用方（工位门 / Nav2 提交）可能拿着半收敛的
+        # map→odom 去判据或规划。复用开机播种那套确认逻辑。
+        confirmed = self._confirm_localization(
+            truth_x,
+            truth_y,
+            base_yaw,
+            attempts=2,
+            settle_sec=1.0,
+            stamp_zero=True,
+        )
+        logger.warning(
+            "Localization drifted for %s/%s (belief off by %.3f m / %.3f rad); "
+            "re-hypothesized AMCL at the physical pose (%.3f, %.3f, %.3f), "
+            "converged=%s.",
+            cabinet,
+            control_id or "-",
+            error["position_m"],
+            error["yaw_rad"],
+            truth_x,
+            truth_y,
+            base_yaw,
+            confirmed,
+        )
+        return {"status": "realigned", "error": error, "converged": confirmed}
+
     def _confirm_operation_start_station(
         self,
         context: Any,
@@ -5234,6 +5375,30 @@ class ControlServer:
                     "actual_frame": station.get("frame_id"),
                 },
                 result={"cabinet": cabinet, "control_id": control_id},
+            )
+
+        # 长距离导航后里程计漂移会让下面这道门永远过不去（见常量注释）。先用物理
+        # 真值把信念纠正一次再按原判据等待；任何失败都退化为原语义，不改变本门
+        # "绝不卡住一次合法到站"的不变式。
+        try:
+            realignment = self._realign_localization_with_physics(
+                cabinet, control_id, adapter.navigation_frame
+            )
+        except Exception as error:  # noqa: BLE001
+            realignment = None
+            logger.warning(
+                "Localization realignment for %s/%s failed: %s",
+                cabinet,
+                control_id,
+                error,
+            )
+        if realignment and realignment.get("status") == "realigned":
+            # 助手内部已等 AMCL 收敛（_confirm_localization），此处无需再等。
+            logger.info(
+                "Localization realigned before the operation station gate "
+                "for %s/%s.",
+                cabinet,
+                control_id,
             )
 
         deadline = time.monotonic() + OPERATION_START_STATION_TIMEOUT_SEC

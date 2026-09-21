@@ -9,11 +9,13 @@ pattern used by :class:`~control_gateway.cabinet_client.CabinetClient`.
 
 from __future__ import annotations
 
+import math
 import threading
 from typing import Any, Optional, Tuple
 
 from gazebo_msgs.msg import EntityState
 from gazebo_msgs.srv import DeleteEntity
+from gazebo_msgs.srv import GetEntityState
 from gazebo_msgs.srv import SetEntityState
 from gazebo_msgs.srv import SpawnEntity
 from geometry_msgs.msg import Pose
@@ -39,6 +41,9 @@ class GazeboClient(Node):
         self._delete_client = self.create_client(DeleteEntity, "/delete_entity")
         self._set_state_client = self.create_client(
             SetEntityState, "/set_entity_state"
+        )
+        self._get_state_client = self.create_client(
+            GetEntityState, "/get_entity_state"
         )
 
     def spawn_entity(
@@ -120,6 +125,39 @@ class GazeboClient(Node):
                 503,
             )
 
+    def get_entity_state(
+        self,
+        name: str,
+        *,
+        reference_frame: str = "world",
+        timeout_sec: float = _SERVICE_TIMEOUT_SEC,
+    ) -> Tuple[float, float, float, float]:
+        """Read a model's planar pose ``(x, y, z, yaw)``.
+
+        仿真专属读数。本项目的"物理锚定"本来就以 Gazebo 真值为准（operator 用
+        同一套真值修正柜体几何），这里是把同一套真值用于**纠正 AMCL 信念**：
+        长距离导航后里程计会漂（实测 map→odom 曾达 2.6 m），信念随之偏离真值，
+        导致工位门永远过不去。真机没有对应服务，故此方法仅用于本仿真栈。
+        """
+        request = GetEntityState.Request()
+        request.name = name
+        request.reference_frame = reference_frame
+        response = self._call(
+            self._get_state_client, request, timeout_sec, "get entity state"
+        )
+        if not bool(response.success):
+            raise ControlRequestError(
+                str(response.status_message) or f"Entity '{name}' state unavailable.",
+                503,
+            )
+        pose = response.state.pose
+        return (
+            float(pose.position.x),
+            float(pose.position.y),
+            float(pose.position.z),
+            _yaw_from_quaternion(pose.orientation),
+        )
+
     @staticmethod
     def _service_ready(client: Any) -> bool:
         try:
@@ -163,6 +201,15 @@ def _looks_absent(message: str) -> bool:
     """Best-effort detection of a Gazebo "entity absent" response."""
     lowered = message.lower()
     return any(fragment in lowered for fragment in _ABSENT_SUBSTRINGS)
+
+
+def _yaw_from_quaternion(orientation: Quaternion) -> float:
+    """Planar yaw of a quaternion (ZYX, roll/pitch assumed negligible)."""
+    x = float(orientation.x)
+    y = float(orientation.y)
+    z = float(orientation.z)
+    w = float(orientation.w)
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
 
 def _pose_from_xyzrpy(

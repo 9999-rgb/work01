@@ -42,6 +42,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import shutil
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -63,6 +64,36 @@ from _scene_ray_classify import extract_triangles  # noqa: E402
 # The nav2 occupancy convention written to the PGM (see map_io.cpp).
 OCCUPIED = 0
 FREE = 254
+
+
+def _mirror_into_asset_library(
+    scene_name: str, out_dir: Path, basename: str
+) -> None:
+    """把刚生成的地图同步进资产库里的同场景副本（若该资产存在）。
+
+    资产库（``jiang/data/assets/scene/<name>/``）是**自包含**的：导入时把地图复制进
+    ``maps/``、并把 ``scenes.yaml`` 的 ``nav2_map`` 归一化成绝对路径，而**运行栈读的
+    正是它**。本脚本原先只写仓库目录，于是地图一重生成、资产库那份就成了静默过期
+    快照——2026-09-21 实测该漂移让旧图 origin 偏 0.5 m、把出生点整块判成占用，Nav2
+    因此以为机器人起步就在墙里、规划出一大圈绕行；而启动期 ``check_scene_config``
+    校验的是仓库那份（0% 占用、通过），这道门查不出运行时用的是另一张图。
+    """
+    asset_dir = (
+        Path(__file__).resolve().parent.parent.parent
+        / "jiang"
+        / "data"
+        / "assets"
+        / "scene"
+        / scene_name
+        / "maps"
+    )
+    if not asset_dir.is_dir():
+        return
+    for suffix in (".pgm", ".yaml"):
+        source = out_dir / f"{basename}{suffix}"
+        if source.is_file():
+            shutil.copyfile(source, asset_dir / source.name)
+            print(f"  mirrored {source.name} -> {asset_dir}")
 
 
 def _scene_registry() -> dict[str, dict[str, object]]:
@@ -315,6 +346,7 @@ def generate(
 
         _write_pgm(out_dir / f"{basename}.pgm", occupancy)
         _write_yaml(out_dir / f"{basename}.yaml", metadata)
+        _mirror_into_asset_library(name, out_dir, basename)
 
         free = int(np.count_nonzero(occupancy == FREE))
         total = occupancy.size
