@@ -5077,7 +5077,11 @@ function formatCabinetPosition(value, control) {
     return `${(position * 1000).toFixed(2)} mm`;
   }
   if (control && ['rad', 'radian', 'radians'].includes(String(control.unit))) {
-    return `${(position * 180 / Math.PI).toFixed(1)}°`;
+    // 发电机层方板的外观零位比源关节零位偏置 45°。
+    const visualKnob = /^fr(135|2222|4332|12452|20422|25452)_knob$/.test(control.control_id)
+      && (control.state_labels || [])[0] === '斜放（45°）';
+    const degrees = visualKnob ? 45 - position * 180 / Math.PI : position * 180 / Math.PI;
+    return `${(Math.abs(degrees) < 0.05 ? 0 : degrees).toFixed(1)}°`;
   }
   const unit = control && control.unit ? ` ${control.unit}` : '';
   return `${position.toFixed(3)}${unit}`;

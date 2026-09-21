@@ -247,7 +247,7 @@
         min_position: 0.0
         max_position: 0.8
         state_ids: ["center", "turned"]
-        state_labels: ["正中间（0°）", "旋转45°"]
+        state_labels: ["斜放（45°）", "正中间（0°）"]
         state_positions: [0.0, 0.7853981633974483]
       fr2222_knob:
         axial_control_id: fr2222_button
@@ -262,7 +262,7 @@
         min_position: 0.0
         max_position: 0.8
         state_ids: ["center", "turned"]
-        state_labels: ["正中间（0°）", "旋转45°"]
+        state_labels: ["斜放（45°）", "正中间（0°）"]
         state_positions: [0.0, 0.7853981633974483]
       fr4332_knob:
         axial_control_id: fr4332_button
@@ -277,7 +277,7 @@
         min_position: 0.0
         max_position: 0.8
         state_ids: ["center", "turned"]
-        state_labels: ["正中间（0°）", "旋转45°"]
+        state_labels: ["斜放（45°）", "正中间（0°）"]
         state_positions: [0.0, 0.7853981633974483]
       fr12452_knob:
         # 同一次回插额外向内补偿 0.5 mm 静差，轴向关节仍验证回到零位。
@@ -294,7 +294,7 @@
         min_position: 0.0
         max_position: 0.8
         state_ids: ["center", "turned"]
-        state_labels: ["正中间（0°）", "旋转45°"]
+        state_labels: ["斜放（45°）", "正中间（0°）"]
         state_positions: [0.0, 0.7853981633974483]
       fr20422_knob:
         # 同一次回插额外向内补偿 0.5 mm 静差，轴向关节仍验证回到零位。
@@ -311,7 +311,7 @@
         min_position: 0.0
         max_position: 0.8
         state_ids: ["center", "turned"]
-        state_labels: ["正中间（0°）", "旋转45°"]
+        state_labels: ["斜放（45°）", "正中间（0°）"]
         state_positions: [0.0, 0.7853981633974483]
       fr25452_knob:
         # 同一次回插额外向内补偿 0.5 mm 静差，轴向关节仍验证回到零位。
@@ -328,7 +328,7 @@
         min_position: 0.0
         max_position: 0.8
         state_ids: ["center", "turned"]
-        state_labels: ["正中间（0°）", "旋转45°"]
+        state_labels: ["斜放（45°）", "正中间（0°）"]
         state_positions: [0.0, 0.7853981633974483]
 
     # 类型默认值（沿用共享柜体目录；按钮逐项覆盖 axis/approach/limits）。
@@ -343,13 +343,15 @@
       state_ids: ["released", "pressed"]
       state_labels: ["释放", "按下"]
       state_positions: [0.0, 0.006]
+    # 标签按方板外观定义：源关节 0 为斜放，源关节 +pi/4 为摆正。
+    # state_ids/positions 保留源关节协议；Web 按标签对应的 ID 提交操作。
     knob_defaults:
       axis: [0.0, 0.0, 1.0]
       approach_normal: [0.0, 0.0, 1.0]
       min_position: -0.78539816339
       max_position: 0.7853981633974483
       state_ids: ["center", "turned"]
-      state_labels: ["正中间（0°）", "旋转45°"]
+      state_labels: ["斜放（45°）", "正中间（0°）"]
       state_positions: [0.0, 0.7853981633974483]
 
     # 操作与闭环容差（与共享柜体目录一致；launch 会覆盖 cabinet_frame）。

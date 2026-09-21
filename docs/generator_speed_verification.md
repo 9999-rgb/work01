@@ -43,3 +43,7 @@ python3 scripts/validate/validate_two_scene_web.py --phase generator_knobs --out
 ```
 
 本轮汇总：`log/generator_speed_validation/20260921/summary.json`。`final_knobs/` 保留前两旋钮结果，`remaining_knobs/` 保存调整后的 fr4332 与后三旋钮结果，`final_rocker/` 为最终摇杆结果。生成日志不提交 Git。
+
+## 外观角度标签修正（2026-09-21）
+
+六个旋钮统一按方板外观标注：摆正为 0°，斜放为 45°。源模型关节 0 rad 对应斜放、pi/4 rad 对应摆正，模型和运动路径保持不变。目录标签依次为 `斜放（45°）`、`正中间（0°）`，对应内部状态 ID `center`、`turned`。这些 ID 仍表示源关节档位，Web 按选项对应的 ID 提交，不能把 ID 的英文含义当成外观角度。Web 当前位置同步换算为 `45° - 源关节角度`；ROS/API 原始关节数值保持不变。上文的历史测试 turned/center 以及转动耗时按源关节定义记录。
