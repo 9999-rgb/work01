@@ -265,6 +265,12 @@
     docking_max_angular_speed: 0.45
     docking_linear_gain: 0.8
     docking_angular_gain: 1.2
+    # 断困加力（2026-09-22，与内置 profile 同一份共享合同）：停靠期指令已按比例
+    # 发出但误差在 stall_sec 内改善不足 progress 时，抬到 breakaway_speed，重新有
+    # 进展就退回比例项。见内置 profile 里同一段的完整说明。
+    docking_breakaway_speed: 0.08
+    docking_breakaway_stall_sec: 0.6
+    docking_breakaway_progress: 0.002
     # 多柜体共用同一套双臂和底盘；任何实际运动前必须取得全局短租约。
     operation_lease_service: /xczs/operation_lease
     operation_lease_duration: 3.0

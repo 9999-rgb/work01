@@ -265,6 +265,14 @@
     docking_max_angular_speed: 0.45
     docking_linear_gain: 0.8
     docking_angular_gain: 1.2
+    # 断困加力（2026-09-22）：停靠期「指令已按比例发出、但位置误差在 stall_sec 内
+    # 改善不足 progress」时，把指令抬到 breakaway_speed（仍受 docking_max_linear_speed
+    # 夹钳），重新有进展就退回比例项。起因：实测停靠期 cmd_vel 的**有效占空比只有
+    # 38%**（501 条里 189 条非零，按 ~80 ms 断续），小残差下比例项×占空比的有效速度
+    # 掉到静摩擦门槛以下，车从静止起不来、误差恒在 4 cm 直到 45 s 超时。
+    docking_breakaway_speed: 0.08
+    docking_breakaway_stall_sec: 0.6
+    docking_breakaway_progress: 0.002
     # 多柜体共用同一套双臂和底盘；任何实际运动前必须取得全局短租约。
     operation_lease_service: /xczs/operation_lease
     operation_lease_duration: 3.0

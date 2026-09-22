@@ -976,6 +976,17 @@ public:
       "docking_max_angular_speed", 0.45);
     docking_linear_gain_ = positive_parameter(
       "docking_linear_gain", 0.8);
+    // 断困（breakaway）：比例项已发出但底盘在停靠窗口内毫无进展时，短暂把速度抬到
+    // 能突破静摩擦/轻微卡阻的量级。2026-09-22 实测的失败签名正是「指令 0.0335 m/s
+    // 已发、底盘 40 s 只动 1.3 mm、误差恒在 0.042 m」→ 45 s 超时；而同量级速度在
+    // 静止状态下单独给是能走的，说明卡在某个姿态/方向上光靠比例项推不动。
+    // 抬高的速度仍受 docking_max_linear_speed_ 夹钳。
+    docking_breakaway_speed_ = positive_parameter(
+      "docking_breakaway_speed", 0.08);
+    docking_breakaway_stall_sec_ = positive_parameter(
+      "docking_breakaway_stall_sec", 0.6);
+    docking_breakaway_progress_ = positive_parameter(
+      "docking_breakaway_progress", 0.002);
     docking_angular_gain_ = positive_parameter(
       "docking_angular_gain", 1.2);
     // P3-8 grab-and-drive drawer pull: the base translates along the drawer
@@ -17745,6 +17756,10 @@ private:
     auto last_feedback = std::chrono::steady_clock::time_point{};
     int settled_cycles = 0;
     bool takeover_distance_verified = false;
+    // 断困加力的状态：历史最小位置误差与其发生时刻（见下面的加力分支）。
+    double breakaway_best_error = std::numeric_limits<double>::infinity();
+    auto breakaway_last_progress = std::chrono::steady_clock::now();
+    bool breakaway_active = false;
 
     try {
       while (std::chrono::steady_clock::now() < deadline) {
@@ -17812,9 +17827,28 @@ private:
           }
         } else {
           settled_cycles = 0;
+          // 断困加力：位置误差在 docking_breakaway_stall_sec_ 内没有改善
+          // （>docking_breakaway_progress_）就说明比例项推不动 —— 2026-09-22 实测
+          // 该情形下指令 0.0335 m/s 已发出、底盘 40 s 只动 1.3 mm、误差恒在
+          // 0.042 m。成因是底盘指令的**有效占空比**只有约 38%（探针实测：停靠期
+          // 501 条 cmd_vel 里仅 189 条非零，且按 ~80 ms 分段断续），于是有效速度
+          // 0.38×0.034≈0.013 m/s 掉到静摩擦门槛以下、从静止起不来。这里在停滞时
+          // 把指令抬到 docking_breakaway_speed_（仍受 docking_max_linear_speed_ 夹钳），
+          // 一旦重新有进展就退回比例项。
+          const auto stall_now = std::chrono::steady_clock::now();
+          if (position_error < breakaway_best_error - docking_breakaway_progress_) {
+            breakaway_best_error = position_error;
+            breakaway_last_progress = stall_now;
+          }
+          const bool stalled =
+            stall_now - breakaway_last_progress >=
+            std::chrono::duration<double>(docking_breakaway_stall_sec_);
+          breakaway_active = stalled;
+          const double proportional_speed = docking_linear_gain_ * position_error;
           const double world_speed = std::min(
             docking_max_linear_speed_,
-            docking_linear_gain_ * position_error);
+            stalled ? std::max(docking_breakaway_speed_, proportional_speed) :
+            proportional_speed);
           const double world_velocity_x = position_error > 1.0e-9 ?
             world_speed * error_x / position_error : 0.0;
           const double world_velocity_y = position_error > 1.0e-9 ?
@@ -17842,7 +17876,8 @@ private:
             0.20F,
             "Precision docking error: " +
             std::to_string(position_error) + " m, yaw: " +
-            std::to_string(std::abs(yaw_error)) + " rad.");
+            std::to_string(std::abs(yaw_error)) + " rad." +
+            (breakaway_active ? " (breakaway applied)" : ""));
         }
         std::this_thread::sleep_for(50ms);
       }
@@ -18789,6 +18824,10 @@ private:
   double docking_max_linear_speed_{0.15};
   double docking_max_angular_speed_{0.45};
   double docking_linear_gain_{0.8};
+  // 断困加力：指令已发但位置误差在窗口内无改善时，抬到该速度直到重新有进展。
+  double docking_breakaway_speed_{0.08};
+  double docking_breakaway_stall_sec_{0.6};
+  double docking_breakaway_progress_{0.002};
   double docking_angular_gain_{1.2};
   // P3-8 grab-and-drive drawer pull (base translation along the drawer axis).
   double drawer_base_drive_max_speed_{0.05};
