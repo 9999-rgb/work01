@@ -69,6 +69,29 @@ class AssetSceneProvider:
         ):
             return None
 
+    def scene_config_path(self, name: str) -> Optional[str]:
+        """该资产场景所用的 ``scenes.yaml`` 路径；非资产场景返回 None。
+
+        资产库的场景是**逐场景自包含**的单文件（``assets/scene/<name>/scenes.yaml``
+        只含该场景）。切套装重启子栈时必须把这份路径连同 ``scene:=`` 一起下发；
+        传错（例如拿另一场景的资产 scenes.yaml）会让子栈找不到该场景、启动即退出
+        （实测 ``robot child exited before ready (code 1)``）。
+        """
+        if self._library is None:
+            return None
+        try:
+            record = self._library.find("scene", name)
+            manifest = self._library.asset_manifest(record)
+            root = self._library.asset_root(record)
+            return str(manifest.file_path(root, _SCENES_ROLE))
+        except (
+            AssetNotFoundError,
+            AssetLibraryError,
+            ManifestError,
+            OSError,
+        ):
+            return None
+
     def iter_scene_specs(self) -> Iterator[SceneSpec]:
         """依次产出每个资产场景的 SceneSpec；解析失败的资产被跳过。"""
         for name in self.scene_asset_names():

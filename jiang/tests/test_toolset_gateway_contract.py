@@ -71,6 +71,7 @@ class _GatewayNode:
         ) = _accepted()
         self.on_request: Callable[[], None] | None = None
         self.requests: list[tuple[str, int]] = []
+        self.scene_requests: list[tuple[str, str]] = []
         self.reconfigured: list[tuple[str, ...]] = []
         self._lock = threading.RLock()
 
@@ -87,8 +88,11 @@ class _GatewayNode:
         target: str,
         *,
         expected_generation: int = 0,
+        scene: str = "",
+        scenes_config: str = "",
     ) -> dict[str, Any]:
         self.requests.append((target, expected_generation))
+        self.scene_requests.append((scene, scenes_config))
         if self.on_request is not None:
             self.on_request()
         effect = self.request_effect
@@ -385,3 +389,48 @@ def test_ros_request_marks_service_unavailable_as_definitely_unsent() -> None:
 
     assert raised.value.status == 503
     assert raised.value.details["admission_uncertain"] is False
+
+
+def test_switch_forwards_the_active_scene_override() -> None:
+    """切套装时必须把**当前活动场景**与其 scenes.yaml 成对下发给监督器。
+
+    2026-09-22 实测缺陷：场景切到电气夹层后再切套装，监督器按启动期烘死的
+    ``scene:=generator_plant`` 重启子栈 → map_server 载入发电机层地图 → Nav2 在
+    配置阶段卡住、永不 active → 就绪门 120 s 超时把套装**回滚回 B**（Web 上表现为
+    "NAV2 未就绪 / 控制柜操作未就绪，过一会又自动变回套装 B"）。同一份错误地图还会
+    让抽拉柜工位（夹层坐标）落进发电机图的占用带，导航被拒
+    （``Navigation goal is inside an occupied map cell``）。
+
+    路径必须**取自该场景所在的那份 scenes.yaml**：资产库场景是逐场景单文件，
+    非资产场景在内置 catalog。传错会让子栈找不到该场景、启动即退出
+    （实测 ``robot child exited before ready (code 1)``，回滚同样失败）。
+    """
+    server, node, _persisted = _server()
+    server._builtin_scenes_config_path = "/repo/config/scenes.yaml"
+    server._asset_scene_provider = SimpleNamespace(
+        scene_config_path=lambda name: (
+            f"/repo/jiang/data/assets/scene/{name}/scenes.yaml"
+            if name == "electrical_mezzanine"
+            else None
+        )
+    )
+
+    # 资产库里的场景 → 用资产自己的 scenes.yaml。
+    server._active_scene = "electrical_mezzanine"
+    server.request_toolset_switch("B", expected_generation=1)
+    assert node.scene_requests == [
+        (
+            "electrical_mezzanine",
+            "/repo/jiang/data/assets/scene/electrical_mezzanine/scenes.yaml",
+        )
+    ]
+
+    # 内置场景 → 用内置 catalog（每次切换都会留下待确认状态，故换一个 server）。
+    server2, node2, _persisted2 = _server()
+    server2._builtin_scenes_config_path = "/repo/config/scenes.yaml"
+    server2._asset_scene_provider = SimpleNamespace(
+        scene_config_path=lambda _name: None
+    )
+    server2._active_scene = "generator_plant"
+    server2.request_toolset_switch("B", expected_generation=1)
+    assert node2.scene_requests == [("generator_plant", "/repo/config/scenes.yaml")]

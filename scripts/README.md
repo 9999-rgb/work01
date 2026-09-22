@@ -20,9 +20,12 @@
   - `xczs_import_asset` 资产 CLI 导入（`--select` / `--print-env` / `--list`）
   - `preposition_base.py` 预置位（`/set_entity_state` 遥移到工位 + 发布 AMCL 初值）
   - `classify_controls.py` 逐控件可达性分类（订阅 `control_catalog`，纯规划不执行）
-  - `generate_scene_maps.py` 由 STL 场景网格生成 Nav2 地图（PGM+YAML）
+  - `generate_scene_maps.py` 由 STL 场景网格生成 Nav2 地图（PGM+YAML），
+    并镜像进资产库同场景副本（运行时读的是资产库那份，不镜像会留下过期快照）
   - `package_asset_samples.sh` 把样例资产打成上传用 zip
   - `cabinet_validation_targets.py` 控件目标选择纯函数（被 validate 与测试复用）
+
+上面两节列的是主要入口；两目录下的其余脚本为专项标定 / 探针 / 诊断工具（详见目录）。
 
 ## 功能介绍
 

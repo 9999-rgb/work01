@@ -14,7 +14,8 @@
   tools/sensors/ros2_control/gazebo_plugins）。
 - `urdf/control_cabinet.urdf.xacro` —— 柜体设备模型（独立入口，CMake 目标
   `generate_control_cabinet_urdf`），include `urdf/control_cabinet/components/`。
-- `urdf/scenes/` —— 场景地面 SDF（`electrical_mezzanine.sdf` / `generator_plant.sdf`）。
+- `urdf/scenes/` —— 场景地面 SDF 根的场景 xacro（`electrical_mezzanine.xacro` /
+  `generator_plant.xacro`；根为 `<sdf>`，使 Gazebo 保留完整 mesh）。
 - `meshes/` —— STL 网格，按目录分：`dual_arm/`（每 link 视觉+碰撞成对）、`tools/`
   （rocker/rotate_button/three_cylinder/two_cylinder）、`control_cabinet/`、`scenes/`。
 - `config/` —— `ros2_controllers_toolset_{A,B}.yaml`、`initial_positions.yaml`、
@@ -41,7 +42,7 @@
   joint_trajectory_controller/sensor_msgs/xacro`。
 - 被消费：`bringup`（按 `toolset`+`gazebo_plugin_instance_id` 构建并 spawn 机器人；
   `verify_initial_pose.py` 读 `initial_positions.yaml`）；`control`（`scenes.yaml` 引用
-  `urdf/scenes/*.sdf`）；`moveit_config` / `nav2`（构建机器人描述）；`jiang/`
+  `urdf/scenes/*.xacro`）；`moveit_config` / `nav2`（构建机器人描述）；`jiang/`
   （`control_server.py` / `runner.py` 按硬编码路径读 `control_cabinet.urdf.xacro`）。
 - 位置：`control_cabinet.urdf.xacro` 即设备几何合同（`docs/architecture.md` §3）；机器人本体
   供机器人适配层与 bringup 启动链；场景 world 由 `xczs_inspection_robot_gazebo` 提供。

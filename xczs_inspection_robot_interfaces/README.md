@@ -2,18 +2,19 @@
 
 ## 总体介绍
 
-本包是柜体操作相关接口的唯一来源：8 个 `msg/` / `srv/` / `action/` 定义，把
+本包是柜体操作相关接口的唯一来源：11 个 `msg/` / `srv/` / `action/` 定义，把
 「操作一个柜体控件」这一跨层合同建模成一组类型——按钮/旋钮/开关的命令、操作租约
 互斥、抓取点与末端工具切换都在这里定义。位于依赖最底层，接口一改，C++ 编译与
 Python 侧同步受影响。
 
 ## 模块架构
 
-- **内部组织**：`action/`（2 个）、`msg/`（3 个）、`srv/`（3 个）；`package.xml` 与
+- **内部组织**：`action/`（2 个）、`msg/`（3 个）、`srv/`（6 个）；`package.xml` 与
   `CMakeLists.txt` 描述构建与依赖。
 - **生成**：由 `ament_cmake` + `rosidl_default_generators` 生成 C++ 头与 Python
   模块，消费方在编译期/运行时引用。
-- **依赖**：仅 `action_msgs`、`geometry_msgs`、`std_msgs` 三个标准包，无自研运行时依赖。
+- **依赖**：`action_msgs`、`geometry_msgs`、`std_msgs`、`trajectory_msgs` 四个标准包
+  （外加生成期运行时 `rosidl_default_runtime`），无自研运行时依赖。
 - **协作方式**：本包只提供契约、自身不运行进程；消费方在 CMake / Python import
   中引用生成代码，接口变更会同时影响 C++ 编译与 Python 侧。
 
@@ -30,6 +31,11 @@ Python 侧同步受影响。
 - `msg/CabinetControlState.msg`：控件实时状态（位置/速度/归一化位置/是否触发/运动中）。
 - `srv/ManageOperationLease.srv`：操作租约（`ACQUIRE` / `RENEW` / `RELEASE`），全局操作互斥。
 - `srv/SetCabinetGrasp.srv`：设置/释放抓取点（`attach` 布尔），返回 `distance`。
+- `srv/SetCabinetBimanualGrasp.srv`：双臂封定抓取（抽拉柜用），左右臂各自给出抓取 link、
+  抓取点与基座 link。
+- `srv/SetCabinetUnlock.srv`：驱动柜体解锁电机（真实行程），不经过按压/抓取路径。
+- `srv/SetCabinetPlayback.srv`：声明式播放抽取的轨位调度（`START` / `HOLD` / `RELEASE`），
+  携带 `trajectory_msgs/JointTrajectory`；`header.stamp` 取**插件节点钟**，0 表示立即起播。
 - `srv/SwitchToolset.srv`：末端 A/B 无损切换，`expected_generation` 提供乐观并发保护。
 
 ## 与项目的关系

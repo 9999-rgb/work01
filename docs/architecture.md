@@ -33,7 +33,7 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
 
 | 包 | 职责 | 内容 | 不该放什么 |
 |---|---|---|---|
-| `xczs_inspection_robot_interfaces` | 自定义接口 | `action/` `msg/` `srv/`（8 个，含 `OperateCabinetControl`、`ManageOperationLease`、`CabinetControl*`） | 任何实现 |
+| `xczs_inspection_robot_interfaces` | 自定义接口 | `action/` `msg/` `srv/`（11 个，含 `OperateCabinetControl`、`ManageOperationLease`、`CabinetControl*`） | 任何实现 |
 | `xczs_inspection_robot_gazebo` | 仿真底座 | 3 个 Gazebo 插件（`planar_stabilizer` / `cabinet_state` / `ros_global_args_guard`，lib 名不变）+ `worlds/` | 节点、launch、接口 |
 | `xczs_inspection_robot_bringup` | 统一启动入口 | `launch/inspection_robot.launch.py` + `scripts/verify_initial_pose.py` | 节点实现、配置合同 |
 | `xczs_inspection_robot_control` | 控制节点 | `src/` 节点（base_command_router / 手动轨迹路由 / cabinet_planning_scene / cabinet_pose_authority / 按钮 operator / operation_lease_coordinator / cabinet_grasp_aggregator）+ `include/` 纯逻辑头 + `config/` 场景适配 YAML + `test/` | 接口、插件、launch、Python 运维脚本 |
@@ -88,7 +88,8 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
 - **`scripts/tools/`** —— 开发工具脚本：
   `xczs_import_asset`（资产 CLI 导入，bridge 启动时也会调用）、
   `cabinet_validation_targets.py`（可测试性目标选择，被 validate 脚本与测试复用）、
-  `classify_controls.py`（控件分类）、`generate_scene_maps.py`（场景地图生成）、
+  `classify_controls.py`（控件分类）、`generate_scene_maps.py`（场景地图生成，
+  写完镜像进资产库同场景副本——运行时读的是资产库那份，不镜像会留下静默过期快照）、
   `package_asset_samples.sh`（样例资产打包）、`preposition_base.py`（预置位）。
 
 两个桶内的脚本靠 `parents[N]` 相对自身定位工作区根，再把 `jiang/` 加入
@@ -97,14 +98,16 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
 ## 5. 运行时组件与启动链
 
 `jiang/start_xczs_bridge.sh` 先校验配置合同、Python/ROS 依赖、Zenoh 二进制和端口，
-再依次拉起 Zenoh bridge、可选 CDR→JSON 代理、统一 FastAPI Web 服务，最后执行
-`ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py` 按需 include
-Gazebo、MoveIt、Nav2、机器人 bringup 和各柜体节点。SSE、相机、雷达和静态页已合并
+再执行 `ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py` 拉起 ROS 栈
+（世界 owner + 工具集监督器 + 机器人子栈）按需 include Gazebo、MoveIt、Nav2、机器人
+bringup 和各柜体节点；随后依次拉起 Zenoh bridge、可选 CDR→JSON 代理，最后起统一的
+FastAPI Web 服务。SSE、相机、雷达和静态页已合并
 到同一 FastAPI 进程。脚本只终止本次注册的进程组；预检模式（`XCZS_PREFLIGHT_ONLY=true`）
 只验证配置，端口占用以 ⚠ 摘要提示而非硬性失败。
 
 launch 的承载性启动链（spawn_robot → controllers → tool_controllers → 位姿校验 →
-放行 router/moveit/nav2）跨子 launch 用 OnExit 事件按名匹配；启动完成前，手动
+放行 router/moveit/nav2）跨子 launch 靠 `OnProcessExit` 的**事件对象身份**串联
+（`target_action=<对象>`，不是按名字匹配）；启动完成前，手动
 `operation_lease_coordinator` 的租约拒绝一切操作。
 
 ## 6. 关键设计模式
@@ -122,3 +125,9 @@ launch 的承载性启动链（spawn_robot → controllers → tool_controllers 
   绝不隐式导航；Nav2 失败时诚实返回 `target_unreachable`。
 - **轨迹规划成功不算成功**：操作结果必须以 Gazebo 控件关节、按钮触发或档位状态等
   物理反馈为准。
+- **物理真值定位重播种（仿真专属）**：长距离行驶会积累里程计漂移（实测一次 17 m 行程
+  的末端信念偏离真值 7.9 m），Nav2 据此算不出计划而中止导航。导航任务开始、导航途中
+  每 2 s、操作任务开始前三处按 Gazebo 真值校准 AMCL 信念，只在校准量超阈值时才发
+  `/initialpose`。**播种值取机器人此刻的真实位姿而非工位目标点**——机器人真的不在工位
+  时，工位门仍如实失败，不会把错位掩盖成「已到站」。与既有的「物理锚定」同源。
+  详见 `localization_realign_verification.md`。

@@ -5,7 +5,15 @@
 # Gazebo world remains alive.  ``expected_generation == 0`` means the caller
 # accepts the current generation; non-zero values provide optimistic
 # concurrency protection for Web clients.
+#
+# ``scene`` / ``scenes_config`` 是重启子栈时要用的**当前活动场景**，用于覆盖
+# 启动期烘死的 ``scene:=``（监督器的重启参数来自启动时那套，它自己不知道场景）。
+# 空串表示沿用启动时的场景（兼容旧调用方）。不带它而先切了场景，子栈会拿着
+# **旧场景的地图**重启：map_server 载入旧图后 Nav2 在配置阶段卡住、永不 active，
+# 就绪门超时把套装回滚回去（2026-09-22 实测）。scenes_config 是 scenes.yaml 的路径。
 string toolset
+string scene
+string scenes_config
 uint64 expected_generation
 ---
 bool accepted

@@ -21,7 +21,8 @@ Gazebo、MoveIt、Nav2、ros2_control 与柜体控制节点组装成整套仿真
     汇聚各柜 grasp 信号 → `/xczs/cabinet/grasp_active`。
 - `scripts/verify_initial_pose.py` —— 启动哨兵：比对实测关节与 `initial_positions.yaml`，
   超差非零退出使父 launch 停机。
-- 启动链（`OnProcessExit` 按名串联）：`spawn_robot → controllers →
+- 启动链（`OnProcessExit` 按**事件对象身份**串联——`target_action=<对象>`，不是按
+  名字匹配）：`spawn_robot → controllers →
   tool_controllers → 位姿校验 → 放行 router/moveit/nav2`；任一环失败整栈关闭。
 
 ## 功能

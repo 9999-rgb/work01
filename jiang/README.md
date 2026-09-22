@@ -11,8 +11,10 @@
 - `control_server.py` —— 进程入口：解析参数、组装子系统、启动 uvicorn（:8090），并把
   `app/` 目录作为 `monitor.html` / `history.html` 的静态服务目录。
 - `control_gateway/` —— 核心网关（无 FastAPI 依赖，可独立测试）：
-  - 编排：`runner.py`（ROS executor/任务调度/场景切换/录制回放）、`ros_node.py`（Nav2 action、
-    map/amcl 订阅、工具切换）、`cabinet_client.py` / `gazebo_client.py`。
+  - 编排：`runner.py`（ROS executor/任务调度/场景切换/录制回放/定位重播种——
+    导航开始、导航途中每 2 s、操作开始前按 Gazebo 真值校准 AMCL 信念）、
+    `ros_node.py`（Nav2 action、map/amcl 订阅、工具切换）、
+    `cabinet_client.py` / `gazebo_client.py`（后者含读机器人真值的 `get_entity_state`）。
   - 任务与录制：`task_manager.py`（互斥调度 + 可重连 SSE）、`recording_manager.py` /
     `task_replay.py`（rosbag2 录制、隔离回放、任务重演）。
   - 配置与资产：`robot_adapter.py` / `profile_contract.py` / `inventory.py` / `scene_catalog.py`

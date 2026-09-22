@@ -40,6 +40,7 @@ SCENE=generator_plant TOOLSET=B ./run_all.sh
 验收说明：[按钮与摇杆专项](docs/generator_aux_verification.md)、[两场景整理与回归](docs/two_scene_verification.md)、[抽拉柜](docs/drawer_simulation_verification.md)、[发电机层](docs/generator_simulation_verification.md)。工位预定位测试不等于自主导航验收。
 
 - [发电机层提速与 Web 操作列表验收](docs/generator_speed_verification.md)：摇杆快速插入、六旋钮两档与菜单清理。
+- [定位重播种与场景地图同步验收](docs/localization_realign_verification.md)：长距离导航的定位发散恢复、工位门不掩盖错位、资产库地图不再过期。
 
 ## 两场景动作回归
 

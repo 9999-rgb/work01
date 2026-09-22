@@ -544,6 +544,22 @@ class ToolsetSupervisor(Node):
         except ToolsetSupervisorError as error:
             return self._reject_switch_response(response, str(error))
         expected_generation = int(request.expected_generation)
+        # 当前活动场景（调用方给）：重启子栈时用它覆盖启动期烘死的 scene:=。
+        # 两个字段必须同时给出才有意义（一个场景名 + 它对应的 scenes.yaml 路径），
+        # 缺一就整体忽略、保持旧行为（兼容未升级的调用方）。
+        scene = str(getattr(request, "scene", "") or "").strip()
+        scenes_config = str(getattr(request, "scenes_config", "") or "").strip()
+        if not scene or not scenes_config:
+            if scene or scenes_config:
+                self.get_logger().warning(
+                    "Toolset switch request carried an incomplete scene override "
+                    "(scene=%r, scenes_config=%r); ignoring it and keeping the "
+                    "startup scene.",
+                    scene,
+                    scenes_config,
+                )
+            scene = ""
+            scenes_config = ""
         with self._lock:
             status = dict(self._status)
             if self._stopping:
@@ -589,7 +605,7 @@ class ToolsetSupervisor(Node):
             )
             worker = threading.Thread(
                 target=self._switch_worker,
-                args=(active, target, generation, operation_id),
+                args=(active, target, generation, operation_id, scene, scenes_config),
                 name=f"xczs-toolset-switch-{generation}",
                 daemon=True,
             )
@@ -675,6 +691,8 @@ class ToolsetSupervisor(Node):
         target: str,
         generation: int,
         operation_id: str,
+        scene: str = "",
+        scenes_config: str = "",
     ) -> None:
         pose: dict[str, float] | None = None
         target_started = False
@@ -705,7 +723,13 @@ class ToolsetSupervisor(Node):
                 "starting_target_stack",
                 f"Starting the {target} robot control stack.",
             )
-            self._start_robot_child(target, pose=pose, spawn_cabinet=False)
+            self._start_robot_child(
+                target,
+                pose=pose,
+                spawn_cabinet=False,
+                scene=scene,
+                scenes_config=scenes_config,
+            )
             target_started = True
             self._set_switch_stage(
                 generation,
@@ -764,7 +788,9 @@ class ToolsetSupervisor(Node):
                             message=fatal,
                         )
                 return
-            restored = self._rollback(previous, pose, target_started, generation)
+            restored = self._rollback(
+                previous, pose, target_started, generation, scene, scenes_config
+            )
             with self._lock:
                 if self._stopping:
                     return
@@ -842,6 +868,8 @@ class ToolsetSupervisor(Node):
         pose: dict[str, float] | None,
         target_started: bool,
         generation: int,
+        scene: str = "",
+        scenes_config: str = "",
     ) -> bool:
         if not previous or self._is_stopping():
             return False
@@ -860,7 +888,13 @@ class ToolsetSupervisor(Node):
             if target_started or current_child is not None:
                 self._stop_current_robot_child()
             self._delete_robot_entity(ignore_missing=True)
-            self._start_robot_child(previous, pose=pose, spawn_cabinet=False)
+            self._start_robot_child(
+                previous,
+                pose=pose,
+                spawn_cabinet=False,
+                scene=scene,
+                scenes_config=scenes_config,
+            )
             self._wait_for_robot_ready(previous)
             return True
         except Exception as error:  # noqa: BLE001 - preserve original failure
@@ -934,6 +968,8 @@ class ToolsetSupervisor(Node):
         pose: Mapping[str, float] | None,
         spawn_cabinet: bool,
         guard_reset_required: bool = True,
+        scene: str = "",
+        scenes_config: str = "",
     ) -> None:
         target = normalize_toolset(toolset)
         with self._lock:
@@ -959,6 +995,14 @@ class ToolsetSupervisor(Node):
                 f"cabinet_bringup:={'true' if self._cabinet_bringup else 'false'}",
                 f"spawn_cabinet:={'true' if spawn_cabinet else 'false'}",
             ]
+            if scene and scenes_config:
+                # 追加在最后：ros2 launch 同名参数后者生效，用它覆盖启动期烘死的
+                # scene:= / scenes_config:=。切换场景后再切套装若不覆盖，子栈会按
+                # **启动时那个场景**载入地图（实测 map_server 载入旧图后 Nav2 在
+                # 配置阶段卡住、永不 active，就绪门超时把套装回滚回旧套装）。
+                # 详见 SwitchToolset.srv 的字段说明。
+                command.append(f"scene:={scene}")
+                command.append(f"scenes_config:={scenes_config}")
             self._child_instance_sequence += 1
             plugin_instance_id = self._gazebo_plugin_instance_id(
                 target, self._child_instance_sequence

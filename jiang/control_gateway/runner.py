@@ -435,11 +435,17 @@ class ControlServer:
             self._scene_catalog = SceneCatalog.load(scenes_path)
         except SceneError as error:
             raise RuntimeError(f"Invalid scene catalog: {error}") from error
+        # 记下场景配置路径本身：套装切换时子栈要按**当前活动场景**重启（见
+        # SwitchToolset.srv 的说明），那个路径得随切换请求一起下发给监督器。
+        self._scenes_config_path = str(scenes_path)
         # 运行时场景注册表。内置场景始终可选（即使启动时挂了资产 scenes.yaml
         # 作为 SCENES_CONFIG）；已导入的资产场景经 _asset_scene_provider 惰性
         # 解析并缓存于此，使 _apply_scene_switch 的 previous 查询与删除资产后
         # 的回切都能命中。_active_scene 校验仍只针对启动 catalog。
         builtin_scenes_path = control_config / "scenes.yaml"
+        # 内置场景目录的路径：切套装重启子栈时，非资产场景要用它（见
+        # _scenes_config_for）。
+        self._builtin_scenes_config_path = str(builtin_scenes_path)
         try:
             if Path(scenes_path).expanduser().resolve() == builtin_scenes_path.expanduser().resolve():
                 self._builtin_scene_catalog = self._scene_catalog
@@ -1499,9 +1505,18 @@ class ControlServer:
                 provisional_generation = current_generation + 1
                 self._toolset_transition_generation = provisional_generation
                 try:
+                    active_scene_name = str(
+                        getattr(self, "_active_scene", None) or ""
+                    )
                     accepted = self._node.request_toolset_switch(
                         target,
                         expected_generation=expected_generation,
+                        scene=active_scene_name,
+                        scenes_config=(
+                            self._scenes_config_for(active_scene_name)
+                            if active_scene_name
+                            else ""
+                        ),
                     )
                 except ControlRequestError as error:
                     details = dict(getattr(error, "details", {}) or {})
@@ -1601,6 +1616,28 @@ class ControlServer:
         """Return the currently active scene specification."""
         with self._request_scope():
             return self._scene_lookup(self._active_scene).to_dict()
+
+    def _scenes_config_for(self, scene_name: str) -> str:
+        """该场景所在的那份 ``scenes.yaml`` 路径。
+
+        资产库的场景是**逐场景自包含**的单文件（``assets/scene/<name>/scenes.yaml``
+        只含该场景），内置场景都在 ``control/config/scenes.yaml``。切套装重启子栈
+        时要把这份路径与 ``scene:=`` 成对下发 —— 传错会让子栈找不到该场景而启动即
+        退出（实测 ``robot child exited before ready (code 1)``，随后回滚也失败）。
+        """
+        provider = getattr(self, "_asset_scene_provider", None)
+        provider_lookup = getattr(provider, "scene_config_path", None)
+        if callable(provider_lookup):
+            try:
+                found = provider_lookup(scene_name)
+            except Exception:  # noqa: BLE001 - fall back to the built-in catalog
+                found = None
+            if found:
+                return str(found)
+        return str(
+            getattr(self, "_builtin_scenes_config_path", None)
+            or getattr(self, "_scenes_config_path", "")
+        )
 
     def _scene_lookup(self, name: str) -> SceneSpec:
         """Resolve a scene name across the asset library and the runtime registry.

@@ -678,6 +678,8 @@ class RosControlNode(Node):
         *,
         expected_generation: int = 0,
         timeout_sec: float = TOOLSET_SWITCH_REQUEST_TIMEOUT_SEC,
+        scene: str = "",
+        scenes_config: str = "",
     ) -> Dict[str, Any]:
         """Ask the ROS supervisor to replace the robot child asynchronously.
 
@@ -719,6 +721,10 @@ class RosControlNode(Node):
             )
         request = SwitchToolset.Request()
         request.toolset = toolset.strip().upper()
+        # 当前活动场景：监督器用它覆盖启动期烘死的 scene:=，否则先切场景再切
+        # 套装时子栈会拿着旧场景地图重启（Nav2 配置阶段卡死 → 就绪门超时 → 回滚）。
+        request.scene = str(scene or "").strip()
+        request.scenes_config = str(scenes_config or "").strip()
         request.expected_generation = expected_generation
         try:
             future = client.call_async(request)

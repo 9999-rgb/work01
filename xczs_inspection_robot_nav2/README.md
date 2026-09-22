@@ -16,8 +16,10 @@
   waypoint_follower 等）。
 - `config/behavior_trees/stable_axis_navigation.xml` —— 自 vendored 行为树：仅在目标
   变化或全局路径失效时重规划（`IsPathValid` + `ComputePathToPose` + 恢复子树）。
-- `maps/` —— 三张场景占用栅格地图（`.pgm` + `.yaml`）：`inspection_map` /
+- `maps/` —— 两张场景占用栅格地图（`.pgm` + `.yaml`）：
   `inspection_map_electrical_mezzanine` / `inspection_map_generator_plant`。
+  运行时经场景资产读的是资产库内的自包含副本（`jiang/data/assets/scene/<name>/maps/`），
+  故 `generate_scene_maps.py` 重生成后会镜像过去，避免运行时读到过期快照。
 - `test/test_navigation_launch_policy.py` —— launch 布尔参数校验与归一化测试。
 
 ## 功能介绍
