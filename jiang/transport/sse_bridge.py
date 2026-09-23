@@ -254,7 +254,10 @@ class ZenohSource:
 # ============================================================================
 
 _zenoh_source: ZenohSource | None = None
-MONITOR_UPDATE_INTERVAL_SECONDS = 1.0
+# 与 app/sse/router.py 的 MONITOR_UPDATE_INTERVAL_SECONDS 保持同值：本模块的独立
+# HTTP SSE 服务器（SSEHandler / python3 -m transport.sse_bridge）已无启动入口，
+# 但两份同名常量一旦分叉，就会出现「换个入口起服务，浏览器又变成抽帧慢动作」。
+MONITOR_UPDATE_INTERVAL_SECONDS = 0.05
 
 
 class SSEHandler(BaseHTTPRequestHandler):

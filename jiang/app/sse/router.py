@@ -20,7 +20,10 @@ from app.auth.deps import ActiveTokenChecker
 from transport.sse_bridge import ZenohSource
 from transport.zenoh_key import normalize_ros_key
 
-MONITOR_UPDATE_INTERVAL_SECONDS = 1.0
+# 每个 SSE 连接的最小发送间隔。源话题远快于此（/xczs/joint_states 实测约 60 Hz），
+# 取 1.0 s 会让浏览器端的关节姿态看起来是「抽帧慢动作」；20 Hz 已足够连贯，
+# 且比按源频率直发省约 3 倍带宽与前端解码开销。
+MONITOR_UPDATE_INTERVAL_SECONDS = 0.05
 HEARTBEAT_SECONDS = 15.0
 router = APIRouter(tags=["SSE 事件"])
 
