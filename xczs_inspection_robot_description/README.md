@@ -12,8 +12,7 @@
 - `urdf/xczs_inspection_robot.urdf.xacro` —— 机器人主入口，按序 include
   `urdf/components/`（properties/materials/dual_arm_body/dual_arm_manipulator/
   tools/sensors/ros2_control/gazebo_plugins）。
-- `urdf/control_cabinet.urdf.xacro` —— 柜体设备模型（独立入口，CMake 目标
-  `generate_control_cabinet_urdf`），include `urdf/control_cabinet/components/`。
+- `urdf/control_cabinet.urdf.xacro` —— 柜体设备模型（include `urdf/control_cabinet/components/`）。CMake 目标 `generate_control_cabinet_urdf` 只把展开结果装到 `urdf/generated/`，全仓没有消费者；**实际入口是运行时 `xacro.process_file`**（launch 与 `jiang/` 直接处理源 xacro）。
 - `urdf/scenes/` —— 场景地面 SDF 根的场景 xacro（`electrical_mezzanine.xacro` /
   `generator_plant.xacro`；根为 `<sdf>`，使 Gazebo 保留完整 mesh）。
 - `meshes/` —— STL 网格，按目录分：`dual_arm/`（每 link 视觉+碰撞成对）、`tools/`
@@ -29,7 +28,7 @@
 
 - 双 7-DOF 机械臂 + 四轮底盘（wheel 仅 state，平面运动由 `libgazebo_ros_planar_move.so` 驱动）。
 - 末端工具套装 A/B 互斥（`toolset`，默认 A）：A=右 `three_cylinder`+左 `two_cylinder`；
-  B=右 `rotate_button`+左 `rocker`。臂关节 position、工具关节 effort，控制器名套装无关。
+  B=右 `rotate_button`+左 `rocker`。臂关节与工具关节均为 position（工具关节于 2026-09-11 由 effort 改为 position——effort 接口下 JTC 轨迹结束后不再写命令，关节失去位置伺服、随臂漂移），控制器名套装无关。
 - 传感器：右腕相机（`libgazebo_ros_camera.so`，`/xczs/camera/arm_camera/image_raw|camera_info`）；
   机身平面激光（`libgazebo_ros_ray_sensor.so`，`/xczs/lidar/scan`）。
 - 插件：`libxczs_planar_stabilizer.so`（启动期保持位姿）、`libgazebo_ros2_control.so`。

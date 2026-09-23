@@ -148,12 +148,13 @@
             <collision name="collision">
         <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
              mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
-             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             按源网格主轴对齐的 box 代理（12.4×36.6×8 mm，绕 Y 为 -45°，
+             局部 y∈[-0.007,0.001]，避免外包方盒提前触发夹持，
              南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
-        <pose>0 -0.003 0 0 0 0</pose>
+        <pose>0 -0.003 0 0 -0.7853981633974483 0</pose>
         <geometry>
           <box>
-            <size>0.0346 0.008 0.0346</size>
+            <size>0.0124 0.008 0.0366</size>
           </box>
         </geometry>
       </collision>
@@ -212,12 +213,13 @@
             <collision name="collision">
         <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
              mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
-             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             按源网格主轴对齐的 box 代理（12.4×36.6×8 mm，绕 Y 为 -45°，
+             局部 y∈[-0.007,0.001]，避免外包方盒提前触发夹持，
              南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
-        <pose>0 -0.003 0 0 0 0</pose>
+        <pose>0 -0.003 0 0 -0.7853981633974483 0</pose>
         <geometry>
           <box>
-            <size>0.0346 0.008 0.0346</size>
+            <size>0.0124 0.008 0.0366</size>
           </box>
         </geometry>
       </collision>
@@ -276,12 +278,13 @@
             <collision name="collision">
         <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
              mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
-             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             按源网格主轴对齐的 box 代理（12.4×36.6×8 mm，绕 Y 为 -45°，
+             局部 y∈[-0.007,0.001]，避免外包方盒提前触发夹持，
              南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
-        <pose>0 -0.003 0 0 0 0</pose>
+        <pose>0 -0.003 0 0 -0.7853981633974483 0</pose>
         <geometry>
           <box>
-            <size>0.0346 0.008 0.0346</size>
+            <size>0.0124 0.008 0.0366</size>
           </box>
         </geometry>
       </collision>
@@ -340,12 +343,13 @@
             <collision name="collision">
         <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
              mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
-             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             按源网格主轴对齐的 box 代理（12.4×36.6×8 mm，绕 Y 为 -45°，
+             局部 y∈[-0.007,0.001]，避免外包方盒提前触发夹持，
              南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
-        <pose>0 -0.003 0 0 0 0</pose>
+        <pose>0 -0.003 0 0 -0.7853981633974483 0</pose>
         <geometry>
           <box>
-            <size>0.0346 0.008 0.0346</size>
+            <size>0.0124 0.008 0.0366</size>
           </box>
         </geometry>
       </collision>
@@ -404,12 +408,13 @@
             <collision name="collision">
         <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
              mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
-             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             按源网格主轴对齐的 box 代理（12.4×36.6×8 mm，绕 Y 为 -45°，
+             局部 y∈[-0.007,0.001]，避免外包方盒提前触发夹持，
              南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
-        <pose>0 -0.003 0 0 0 0</pose>
+        <pose>0 -0.003 0 0 -0.7853981633974483 0</pose>
         <geometry>
           <box>
-            <size>0.0346 0.008 0.0346</size>
+            <size>0.0124 0.008 0.0366</size>
           </box>
         </geometry>
       </collision>
@@ -468,12 +473,13 @@
             <collision name="collision">
         <!-- ODE 本 Gazebo 中 trimesh-vs-trimesh 碰撞整体失效（指尖/夹具同为
              mesh，按压无接触力 → CONTACT_DETECTION_TIMEOUT）。按钮板改用等尺寸
-             box 代理（34.6×34.6×8mm，局部 y∈[-0.007,0.001] 与 r1351.STL 一致，
+             按源网格主轴对齐的 box 代理（12.4×36.6×8 mm，绕 Y 为 -45°，
+             局部 y∈[-0.007,0.001]，避免外包方盒提前触发夹持，
              南面 y=-0.007 即世界 4.8113 受压面），mesh(指尖)-vs-box 可靠。外观 mesh 不变。 -->
-        <pose>0 -0.003 0 0 0 0</pose>
+        <pose>0 -0.003 0 0 -0.7853981633974483 0</pose>
         <geometry>
           <box>
-            <size>0.0346 0.008 0.0346</size>
+            <size>0.0124 0.008 0.0366</size>
           </box>
         </geometry>
       </collision>
@@ -1008,8 +1014,8 @@
       <!-- 夹爪闭合与实体业务点同时通过后才允许建立旋转耦合。 -->
       <grasp_contact_links>r_rotbtn_jaw1 r_rotbtn_jaw2</grasp_contact_links>
       <grasp_joint><name>r_rotbtn_rotate_joint</name><position>0</position><tolerance>0.01</tolerance></grasp_joint>
-      <grasp_joint><name>r_rotbtn_jaw1_joint</name><position>0.003</position><tolerance>0.0032</tolerance></grasp_joint>
-      <grasp_joint><name>r_rotbtn_jaw2_joint</name><position>0.003</position><tolerance>0.0032</tolerance></grasp_joint>
+      <grasp_joint><name>r_rotbtn_jaw1_joint</name><position>0.0145</position><tolerance>0.0032</tolerance></grasp_joint>
+      <grasp_joint><name>r_rotbtn_jaw2_joint</name><position>0.0145</position><tolerance>0.0032</tolerance></grasp_joint>
       <operation_watchdog_timeout>2.0</operation_watchdog_timeout>
       <control>
         <control_id>frb</control_id>

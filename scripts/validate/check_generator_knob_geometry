@@ -131,6 +131,23 @@ def main():
         col = plate.find('collision')
         center = plate_pose + np.fromstring(col.findtext('pose'), sep=' ')[:3]
         size = np.fromstring(col.findtext('geometry/box/size'), sep=' ')
+        # 从可见网格独立复核代理尺寸、夹持面方向和中心，防止外包方盒假接触。
+        visual_uri = plate.findtext('visual/geometry/mesh/uri')
+        mesh_points = vertices(DESCRIPTION / visual_uri.split('xczs_inspection_robot_description/')[1])
+        collision_pose = np.fromstring(col.findtext('pose'), sep=' ')
+        pitch = collision_pose[4]
+        rotation = np.array([[np.cos(pitch), 0, np.sin(pitch)],
+                             [0, 1, 0], [-np.sin(pitch), 0, np.cos(pitch)]])
+        local_points = (mesh_points - collision_pose[:3]) @ rotation
+        if not np.allclose(local_points.max(0) - local_points.min(0), size, atol=2e-5):
+            errors.append(f'{control_id}: 夹持碰撞代理与源网格尺寸不一致')
+        if not np.allclose((local_points.max(0) + local_points.min(0))/2, 0, atol=2e-5):
+            errors.append(f'{control_id}: 夹持碰撞代理未居中')
+        for roll in tuning['tool_roll_offsets']:
+            # 本场景工具 +Z 朝 -Y，工具 +X 朝 +Z，因此工具 +Y 朝 -X。
+            closing_axis = np.array([-np.cos(roll), 0, -np.sin(roll)])
+            if abs(np.dot(closing_axis, rotation[:, 0])) < .99999:
+                errors.append(f'{control_id}: 夹爪闭合方向未对齐旋钮窄边法向')
         axial_overlap = center[1] + size[1]/2 - (pivot[1] + tip_y)
         if axial_overlap < .002:
             errors.append(f'{control_id}: 钳口与方板厚度方向交叠小于 2 mm')

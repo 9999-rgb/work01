@@ -16,14 +16,14 @@ src/                                    # 3 个插件（编译为共享库）
 worlds/inspection_robot.world           # ODE 物理 500 Hz + gazebo_ros_state + 全局参数守卫
 ```
 
-- 组件按插件分工：机器人底盘的位姿保持 / 柜体可操作控件仿真 / gzserver 进程级 ROS 参数治理，互不耦合。
+- 组件按插件分工：机器人底盘的位姿保持 / 柜体可操作控件仿真 / gzserver 进程级 ROS 参数治理。唯一的跨插件耦合是 `planar_stabilizer` 订阅柜体的 `grasp_active`（抓握期让位），见下。
 - 加载方式：不设 `GAZEBO_PLUGIN_PATH`，靠 colcon 把各包 `lib/` 注入 `LD_LIBRARY_PATH`，world / xacro 按裸插件名引用。
 - 协作关键点：`planar_stabilizer` 订阅 `grasp_active` 感知抓握，柜体 grasp 期间松开关节保持，避免与 ros2_control 抢写。
 
 ## 功能介绍
 
 - `libxczs_planar_stabilizer.so`：消除底盘滚转/俯仰与高度漂移；无 `cmd_vel` 时锁平面位姿、抓握期间解锁；spawn 后保持臂关节位姿（`hold_joint`），`verify_initial_pose.py` 置 `/xczs/joint_hold_enabled` 为 false 后释放；对场景切换的瞬时位移（teleport）宽容。
-- `libxczs_cabinet_state.so`：按 SDF `<control>` 配置仿真按钮/旋钮/开关/柜门（弹簧 + 档位 detent + 迟滞）；每控件发布 `/xczs/cabinet/<id>/joint_states|pressed|state`；grasp 服务把机器人 link 与控件建立运行时 ODE fixed joint 并锁底盘（含柔顺耦合抓握）；抓握期掩蔽致动碰撞并在工具撤离后恢复；操作心跳看门狗超时自动故障恢复；操作前位姿扰动检测。
+- `libxczs_cabinet_state.so`：按 SDF `<control>` 配置仿真按钮/旋钮/开关/柜门（弹簧 + 档位 detent + 迟滞）；每控件发布 `/xczs/cabinet/<id>/joint_states|pressed|state`；grasp 服务锁底盘、并把机器人 link 与控件连起来——**配了 `grasp_coupling_stiffness` 的控件不建 ODE fixed joint**，改用有界弹簧-阻尼柔顺耦合（kinematic 位置更新与 6-DOF 固定约束会构成不一致闭环），只有该值为 0 时才建 fixed joint；抓握期掩蔽致动碰撞并在工具撤离后恢复；操作心跳看门狗超时自动故障恢复；操作前位姿扰动检测。
 - `libxczs_ros_global_args_guard.so`：清理 `gazebo_ros2_control` 每次 spawn 注入的进程级 `__ns` 重映射，修复工具套装切换后传感器命名空间被截断的问题。
 - ROS 接口（均可在包内源码与 `description` 的 xacro 中找到证据；`<name>` 为柜体
   实例名，如 `generator_plant`、`electrical_mezzanine`）：
@@ -32,9 +32,12 @@ worlds/inspection_robot.world           # ODE 物理 500 Hz + gazebo_ros_state +
     （`SetCabinetBimanualGrasp`，双臂封定）、`/xczs/cabinet/<name>/unlock`
     （`SetCabinetUnlock`，解锁电机直驱）、`/xczs/cabinet/<name>/playback`
     （`SetCabinetPlayback`，声明式轨位播放）、`/xczs/global_args_guard/reset`。
-    后三个的服务名由插件按实例名默认给出；**夹具场景（generator_plant /
-    electrical_mezzanine）的 xacro 只声明 reset_physics 与 grasp**，未声明的会落回
-    全局 `/xczs/cabinet/...`——新增抽屉类夹具沿用共享模板时需补齐声明。
+    这些名字一律来自 SDF 声明并带全局默认（`/xczs/cabinet/{grasp,bimanual_grasp,unlock}`），
+    未声明就落回默认名；**只有 playback 例外**——未声明时按 grasp 服务的同命名空间派生
+    `/playback`，以免同世界多实例撞名。两个夹具声明得不齐：`electrical_mezzanine.xacro`
+    在插件级显式声明了 bimanual_grasp / unlock 及其四个话题，而 `generator_plant.xacro`
+    只声明 reset_physics 与 grasp，故它的 bimanual / unlock 落在共享默认名上。新增抽屉类
+    夹具沿用共享模板时**必须补齐声明**，否则会与其它实例抢占同名服务。
   - 话题：`/xczs/cmd_vel`、`/xczs/joint_hold_enabled`、`/xczs/cabinet/<name>/grasp_active`、
     `/xczs/cabinet/<name>/active_control`、`/xczs/cabinet/<name>/operation_heartbeat`、
     `/xczs/cabinet/<name>/operation_fault`

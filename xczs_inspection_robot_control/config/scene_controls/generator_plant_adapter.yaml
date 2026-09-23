@@ -153,7 +153,7 @@
     knob_gripper:
       joint_names: [r_rotbtn_rotate_joint, r_rotbtn_jaw1_joint, r_rotbtn_jaw2_joint]
       open_positions: [0.0, 0.0, 0.0]
-      closed_positions: [0.0, 0.003, 0.003]
+      closed_positions: [0.0, 0.0145, 0.0145]
       tolerances: [0.01, 0.0032, 0.0032]
     tool_profiles:
       button:
@@ -342,7 +342,7 @@
           base_yaw_offset: 1.5707963267948966
           frame_id: map
         # 北侧作业面的工具角度补偿；索引 = source*2+target（center=0 turned=1）。
-        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
+        tool_roll_offsets: [0.7853981633974483, 0.7853981633974483, 0.7853981633974483, 0.7853981633974483]
         # 夹持可见方板的两侧；夹持点位于板厚中部（相对旋钮轴心向外 4 mm）。
         # 与末端局部 z=38 mm 标定配套，钳口在板厚方向重叠 7 mm。
         grasp_outward_offset: 0.004
@@ -381,7 +381,7 @@
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
         detent_release_fraction: 1.0
-        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
+        tool_roll_offsets: [0.7853981633974483, 0.7853981633974483, 0.7853981633974483, 0.7853981633974483]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -411,7 +411,7 @@
         # 与 fr135_knob 同规格标定（2026-09-14 用户令「其他旋钮也全部通过测试」）。
         grasp_outward_offset: 0.004
         detent_release_fraction: 1.0
-        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
+        tool_roll_offsets: [0.7853981633974483, 0.7853981633974483, 0.7853981633974483, 0.7853981633974483]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -442,7 +442,7 @@
         # 低位近站先直线退出 26 mm，再做无碰撞关节空间回位。
         rotary_retreat_distance: 0.03
         detent_release_fraction: 1.0
-        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
+        tool_roll_offsets: [0.7853981633974483, 0.7853981633974483, 0.7853981633974483, 0.7853981633974483]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -473,7 +473,7 @@
         # 低位近站先直线退出 26 mm，再做无碰撞关节空间回位。
         rotary_retreat_distance: 0.03
         detent_release_fraction: 1.0
-        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
+        tool_roll_offsets: [0.7853981633974483, 0.7853981633974483, 0.7853981633974483, 0.7853981633974483]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint
@@ -503,7 +503,7 @@
         grasp_outward_offset: 0.004
         rotary_retreat_distance: 0.03
         detent_release_fraction: 1.0
-        tool_roll_offsets: [0.0, 0.0, 0.0, 0.0]
+        tool_roll_offsets: [0.7853981633974483, 0.7853981633974483, 0.7853981633974483, 0.7853981633974483]
         ready_joint_seed:
           joint_names:
             - r_arm_0_joint

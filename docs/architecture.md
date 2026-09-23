@@ -1,6 +1,6 @@
 # 架构总览
 
-> 状态：已确认 · 版本：v1（B 档包结构重组后）· 日期：2026-08-28
+> 状态：已确认 · 版本：v1.1（B 档包结构重组后）· 日期：2026-09-22（v1 基线为 2026-08-28）
 
 本文档描述本仓库的顶层结构、各包职责、三层适配架构与运行时组件。
 资产导入 / 校验 / 选择的专项设计见 `asset_import_requirements.md`。
@@ -8,10 +8,11 @@
 ## 1. 顶层结构
 
 ```
-run_all.sh                       # 统一启动入口（--web / --with-proxy / --keyboard / 预检）
+run_all.sh                       # 统一启动入口（--web / --with-proxy / 预检；--keyboard 已移除）
 CLAUDE.md                        # 项目开发规范与文件放置规范
 docs/architecture.md             # 本文档
 docs/asset_import_requirements.md# 场景/柜体资产导入需求
+docs/build/                      # 遗留 colcon 构建树（约 300 MB，已 gitignore，可删）
 jiang/                           # 通用任务层（Web/HTTP/SSE/任务管理/录制回放，Python）
 scripts/                         # 可执行脚本（见 §4 分桶）
 xczs_inspection_robot_interfaces/# NEW  msg/srv/action 自定义接口（纯接口包）
@@ -20,7 +21,9 @@ xczs_inspection_robot_bringup/   # NEW  统一启动入口（launch + 配套脚�
 xczs_inspection_robot_control/   #      控制节点 + 纯逻辑头 + 场景适配 YAML
 xczs_inspection_robot_description#      机器人模型（URDF/Xacro、meshes）
 xczs_inspection_robot_moveit_config / _nav2   # MoveIt / Nav2 配置（标准，未动）
-model/、场景urdf/、recordings/   # 数据目录（COLCON_IGNORE，非 ROS 包）
+model/、仿真场景20260831/、recordings/  # 数据目录（非 ROS 包）
+                                 #   model/ 与 仿真场景20260831/ 带 COLCON_IGNORE；
+                                 #   recordings/ 无 COLCON_IGNORE，已在 .gitignore
 ```
 
 工作区根即 colcon 包根（无 `src/`）。新包平放在根目录，colcon 自动发现。
@@ -66,6 +69,9 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
    其余 Web 基础设施：`jiang/transport/`（Zenoh→SSE `sse_bridge.py`、CDR→JSON
    `zenoh_proxy/` + `run_xczs_proxy.py`、MJPEG/WebSocket 传感器流 `sensor_bridge/`）、
    `jiang/scripts/toolset_supervisor.py`、`jiang/config/zenoh_bridge.json5`。
+   监控面板的数据源实际是 `app/sse/router.py` 的 `/sse`（ZenohSource + 本地解码），
+   不是 CDR→JSON 代理：代理回写的 `{topic}/json` 在仓内无消费者，且默认启动不拉起它
+   （仅 `run_all.sh --with-proxy` 时起）。
 2. **机器人适配层**：`xczs_inspection_robot_control/config/cabinet_robot_adapter.yaml`
    的 `/**.ros__parameters` 是跨节点接口合同——MoveIt 规划组/工具/底盘帧、Nav2
    Action 与 TF、手动关节分组与安全范围、逐控件可达性（`operable`）。Web 网关、
@@ -74,6 +80,15 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
    （导航工位）、`cabinet_controls.yaml`（控件目录与按钮物理参数）、
    `control_cabinet.urdf.xacro`（设备几何）。更换机器人/设备/场地只改适配包，
    不动任务 API 和 Web 页面。
+
+**运行时的实际来源**（同一份 YAML 常有两处副本，启动脚本按资产选择注入其一，实测取
+活栈进程环境）：柜体五件套（controls / scene / pose / robot_adapter / xacro）与场景
+catalog 取自资产库 `jiang/data/assets/{cabinet/demo_cabinet,scene/<name>}/`；`cabinet_instances.yaml`
+仍取 `control/config/`；而 operator 停靠与操作循环真正加载的**实例适配器**是
+`config/scene_controls/<scene>_adapter.yaml`（经 `cabinet_instances.yaml` 的
+`adapter_config` 传入）——含 `docking_*` 等运行参数，不在资产库副本里。
+同步只有一条自动通道：`generate_scene_maps.py` 把地图镜像进资产库同场景副本；柜体五件套与
+`scene_controls/` 无镜像、无比对，改源本不会自动流到运行时那份。
 
 ## 4. scripts/ 分桶
 
@@ -90,10 +105,14 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
   `cabinet_validation_targets.py`（可测试性目标选择，被 validate 脚本与测试复用）、
   `classify_controls.py`（控件分类）、`generate_scene_maps.py`（场景地图生成，
   写完镜像进资产库同场景副本——运行时读的是资产库那份，不镜像会留下静默过期快照）、
-  `package_asset_samples.sh`（样例资产打包）、`preposition_base.py`（预置位）。
+  `package_asset_samples.sh`（样例资产打包）、`preposition_base.py`（预置位）、
+  `taught_sequence_ros.py` 与 `xczs_controllers.py`（教学序列与控制器直驱，均被
+  目录外调用，属生产链路而非一次性探针）。
 
 两个桶内的脚本靠 `parents[N]` 相对自身定位工作区根，再把 `jiang/` 加入
-`sys.path`；移动脚本时 `parents` 深度必须同步。
+`sys.path`；移动脚本时 `parents` 深度必须同步。约定上按 `python3 <path>` 调用，
+因此 `validate/` 下有 7 个脚本（`check_drawer_motion.py`、`record_drawer_motion.py`、
+`generator_contact_audit.py` 等）没有 +x 位，直接 `./` 执行会失败。
 
 ## 5. 运行时组件与启动链
 
@@ -107,8 +126,12 @@ FastAPI Web 服务。SSE、相机、雷达和静态页已合并
 
 launch 的承载性启动链（spawn_robot → controllers → tool_controllers → 位姿校验 →
 放行 router/moveit/nav2）跨子 launch 靠 `OnProcessExit` 的**事件对象身份**串联
-（`target_action=<对象>`，不是按名字匹配）；启动完成前，手动
-`operation_lease_coordinator` 的租约拒绝一切操作。
+（`target_action=<对象>`，不是按名字匹配）。启动期的时序门只有两处，都不在租约协调器里：
+launch 把 base/trajectory router、move_group、Nav2 挡在位姿校验之后，operator 侧再
+`wait_for_service` 等租约服务。租约协调器自身没有就绪输入——构造即建服务并授租
+（`operation_lease_coordinator.cpp` 只校验 `service_name` 与 `maximum_lease_duration`），
+因此其它客户端（如 `scripts/tools/*.py`）可以在栈起来前先取走全局租约，真正的 operator
+上来时会先吃一次 `RESOURCE_BUSY`，租约到期（≤5 s）后自愈。
 
 ## 6. 关键设计模式
 
@@ -116,7 +139,10 @@ launch 的承载性启动链（spawn_robot → controllers → tool_controllers 
   （`profile_contract.py`），启动时严格校验，畸形配置立即失败而非回退猜测值。
 - **Python 测试无 ROS 假模块注入**：纯模块用 `sys.modules.setdefault("control_gateway",
   ModuleType(...))` 在测试内注入假包，不依赖 source；`ros_node.py` 直接 import ROS
-  生成消息，相关测试需先 source workspace。
+  生成消息，相关测试需先 source workspace。注意 `control_gateway/__init__.py` 自
+  3cfc713（2026-08-09）起已是 PEP 562 惰性 `__getattr__`，该注入不再是必需手段；
+  代价是全会话里没走过真包的惰性导出，`from control_gateway import ControlServer`
+  这条生产路径（`control_server.py`、`run_xczs_proxy.py`）在测试中没有覆盖。
 - **外部副作用可注入**：`popen_factory`、`clock`、`signal_sender`、
   `action_client_factory` 等使测试可替换真实进程与 ROS 客户端。
 - **录制/回放只读互锁**：回放活跃时拒绝一切写操作（409）；回放 topic 全部重映射
@@ -125,6 +151,10 @@ launch 的承载性启动链（spawn_robot → controllers → tool_controllers 
   绝不隐式导航；Nav2 失败时诚实返回 `target_unreachable`。
 - **轨迹规划成功不算成功**：操作结果必须以 Gazebo 控件关节、按钮触发或档位状态等
   物理反馈为准。
+- **拓扑切换必须显式携带它依赖的上下文**：换末端套装会重启整棵机器人子栈，而子栈的启动
+  参数来自启动那一刻——先切场景、再切套装，会把场景换回启动时那个（Nav2 因此载入错图、
+  卡在配置阶段、被就绪门回滚）。现由任务层把**活动场景**及其 scenes.yaml 随切换请求一并
+  下发，并覆盖启动期烘死的值。详见 `toolset_scene_switch_verification.md`。
 - **物理真值定位重播种（仿真专属）**：长距离行驶会积累里程计漂移（实测一次 17 m 行程
   的末端信念偏离真值 7.9 m），Nav2 据此算不出计划而中止导航。导航任务开始、导航途中
   每 2 s、操作任务开始前三处按 Gazebo 真值校准 AMCL 信念，只在校准量超阈值时才发

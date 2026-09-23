@@ -103,7 +103,10 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 (`SCENES_CONFIG` / `NAV2_MAP_PATH` / `CABINET_INSTANCES_PATH` / `CABINET_*_PATH`)。
 
 ### 5.3 分发(Distribute)
-资产目录或 zip 整体拷出即完成分发;接收方导入即可。
+资产目录或 zip 整体拷出即完成分发;接收方**重新导入**即可。前提是这一步不能省——
+导入会把场景资产内相对的 `nav2_map` / `model.file` 归一化成**资产库内绝对路径**
+(落盘形如 `/home/live/work01/jiang/data/assets/scene/<name>/maps/…yaml`),
+直接拷目录到另一台机器或换用户名后,`map_server` 会按该绝对路径找不到地图。
 
 ## 6. 改动面
 
@@ -155,7 +158,7 @@ Web 选择场景 / 柜体 → 持久化到 SQLite(`selection` 表,与 auth 同�
 |---|---|---|
 | **1 · 后端核心 + 换场景** | ✅ 已实现 | `control_gateway/asset_manifest.py`(manifest schema + 校验器)、`control_gateway/asset_library.py`(资产库 + catalog + 选择持久化 + `selection_to_env` 映射 + `remove_asset`)、`control_gateway/asset_validators.py`(CLI/Web 共享语义校验器)、`scripts/tools/xczs_import_asset`(CLI 导入)、`model/场景-资产/electrical_mezzanine/`(样例场景资产)、`jiang/start_xczs_bridge.sh`(启动时读 selection → 映射现有 env 指针) |
 | **2 · Web 导入/选择页** | ✅ 已实现 | `app/api/assets.py`(GET /assets、GET/POST /assets/selection、POST /assets/import 管理员、DELETE /assets/{kind}/{name} 管理员;zip-slip 安全解压;`AssetExistsError`→409 区分重复导入)、`app/api/router.py` 挂载、`monitor.html`「资产库」区块(上传/列表/删除/场景与柜体组合选择；末端 A/B 另设运行态和一键切换；非管理员禁用写操作) |
-| **3 · 换柜体** | ✅ 已实现 | `scripts/validate/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`) |
+| **3 · 换柜体** | ✅ 已实现 | `scripts/validate/check_cabinet_model --asset`(资产模式:任意控件目录,校验 controls↔URDF↔状态插件↔可达性配对,内置模式零改动)、`asset_validators.cabinet_validator`/`kind_validator("cabinet")` 接入导入、`jiang/samples/demo_cabinet/`(内置柜体物理孪生样例)、`validate_cabinet_simulation`/`validate_cabinet_web` 参数化(`--expect-controls`/`--expect-counts`,二者都在 `validate_cabinet_web`;`validate_cabinet_simulation` 的按钮力档 5.0/4.8/6.4 仍硬编码,默认实例名也仍是已移除的 `cabinet_a`) |
 
 存储迁移(SQLite,2026-08-19):资产目录 / 选择持久化从 `assets_catalog.yaml` /
 `selection.yaml` 迁移到 SQLite(`assets` / `selection` 表,复用 auth 的异步
@@ -165,6 +168,12 @@ SQLAlchemy 栈与 `XCZS_DATABASE_URL`)。`AssetLibrary` 改为 store 注入
 `asyncio.to_thread` 调用,CLI / 启动脚本直接调用);Alembic 新增
 `3f1a2b4c5d6e_create_assets_selection`。Web / CLI / 启动脚本三入口共用同一
 份 store 实现,目录与选择不再落在 YAML 文件。
+
+> 残留物(2026-09-22 核对):`assets_catalog.yaml`(11 B,内容 `assets: []`)与
+> `selection.yaml`(26 B,内容 `scene: null` / `cabinet: null`)仍在
+> `jiang/data/assets/` 盘上,与 SQLite 中的真实状态(3 条 assets;选择为
+> generator_plant + demo_cabinet + toolset B)不一致。两者已不是任何路径的真源,
+> 但留在盘上容易被误读成「选择存在 YAML 里」,建议清理。
 
 阶段4 移除(2026-08-19):
 
@@ -178,7 +187,7 @@ SQLAlchemy 栈与 `XCZS_DATABASE_URL`)。`AssetLibrary` 改为 store 注入
 阶段3 验证结果(2026-08-17):
 
 - 新增 pytest:`test_cabinet_asset_import.py`(6 用例:样例导入端到端、柜体选择→5 个 `CABINET_*_PATH` 指针、非-33 合成柜体参数化、漂移拒绝、hook 命令构造/失败传播);`test_cabinet_validation_targets.py` 更新 snapshot 契约断言为 `$expect_controls`。全量 `python3 -m pytest jiang/tests/ -q` = **565 passed**(阶段2 559 + 阶段3 新增 6)。
-- 柜体导入端到端:CLI 导入 `demo_cabinet` → 真实 `check_cabinet_model --asset` 校验(输出「Cabinet asset valid: 33 controls」)→ catalog `validated: true`;选中柜体后 `--print-env` 输出 `CABINET_CONTROLS/SCENE/POSE/ROBOT_ADAPTER/XACRO_PATH` 五指针;`XCZS_ASSETS_DIR=<临时库> XCZS_PREFLIGHT_ONLY=true ./run_all.sh` 预检通过(`PASS: adapter contract; cabinets=3, controls=33 ...`)。
+- 柜体导入端到端:CLI 导入 `demo_cabinet` → 真实 `check_cabinet_model --asset` 校验(输出「Cabinet asset valid: 33 controls」)→ catalog `validated: true`;选中柜体后 `--print-env` 输出 `CABINET_CONTROLS/SCENE/POSE/ROBOT_ADAPTER/XACRO_PATH` 五指针;`XCZS_ASSETS_DIR=<临时库> XCZS_PREFLIGHT_ONLY=true ./run_all.sh` 预检通过(`PASS: adapter contract; cabinets=3, controls=33 ...`)。此「通过」只证明结构自洽,不构成几何等价证明——asset 模式不校验标定退距/肩偏(`BUTTON_CALIBRATION` 只在 `main()` 的内置分支跑),`asset_validators.py` 自身也写明物理闭环由资产的 `operable_control_ids` 正向清单声明,而非校验所得。
 - 参数化证明:从样例派生 32 控件合成柜体(删纯旋钮盒体 box_9,跨 catalog/adapter/gazebo.xacro/modules.xacro 一致删除),`check_cabinet_model --asset` 接受(32 controls);把 box_9_knob 残留回 adapter 后 asset 校验拒绝(`unknown controls`),证明资产模式不冻结 33/20+13 且能守住漂移。
 - 设计要点:样例柜体为内置 control_cabinet 的**物理孪生**(文件整树拷贝,仅 xacro `cabinet_name` 默认值改为 `demo_cabinet`),故物理闭环与内置等价,由 `check_cabinet_model --asset` 的结构自洽 + 完整组合预检共同守住;mesh 仍引用内置 `package://xczs_inspection_robot_description`。
 

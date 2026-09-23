@@ -37,6 +37,10 @@ Python 侧同步受影响。
 - `srv/SetCabinetPlayback.srv`：声明式播放抽取的轨位调度（`START` / `HOLD` / `RELEASE`），
   携带 `trajectory_msgs/JointTrajectory`；`header.stamp` 取**插件节点钟**，0 表示立即起播。
 - `srv/SwitchToolset.srv`：末端 A/B 无损切换，`expected_generation` 提供乐观并发保护。
+  `scene` / `scenes_config` 是重启子栈时要用的**当前活动场景**及其 scenes.yaml 路径
+  （用于覆盖启动期烘死的那份；空串表示沿用启动场景，两字段须成对给出）。不带它而先切过
+  场景，子栈会拿着**旧场景的地图**重启：`map_server` 载入旧图后 Nav2 在配置阶段卡住、
+  永不 active，就绪门超时把套装回滚，且该错误地图会让目标场景的工位落进旧图占用带。
 
 ## 与项目的关系
 
@@ -47,7 +51,9 @@ Python 侧同步受影响。
   `CabinetControlState`）；`jiang/` 任务层（`control_gateway/cabinet_client.py` /
   `ros_node.py` 发送 operate action 与 `SwitchToolset` 请求，
   `scripts/toolset_supervisor.py` 切换末端）；`scripts/tools/classify_controls.py` 读目录。
-- **依赖方向**：位于依赖最底层，单向 `interfaces ← control ← gazebo`；`bringup` 只组装。
+- **依赖方向**：位于依赖最底层，主体单向 `interfaces ← control ← gazebo`；`jiang`
+  任务层消费全部接口，并自行为 `SwitchToolset` 提供服务端（`scripts/toolset_supervisor.py`）；
+  `bringup` 只组装。
 - **三层适配定位**：接口是跨层合同——`CabinetControl` 的 `required_toolset` / `operable`
   字段与 `xczs_inspection_robot_control/config/` 场景适配 YAML 呼应；改动接口须全量
   重建，并跑 `colcon test` 与 `pytest jiang/tests/`。

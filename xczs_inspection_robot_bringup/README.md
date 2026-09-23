@@ -5,7 +5,9 @@
 统一启动入口：一条 `ros2 launch xczs_inspection_robot_bringup` 命令按依赖顺序把
 Gazebo、MoveIt、Nav2、ros2_control 与柜体控制节点组装成整套仿真栈，并用
 「spawn → 控制器 → 位姿校验 → 放行」启动链看门狗保证任一环失败即整体停机。
-本包只组装各职责包提供的节点与 launch，自身不实现节点、不定义接口、不持有配置合同。
+本包只组装各职责包提供的节点与 launch，自身不实现节点、不定义接口；配置合同由各包提供，
+但 launch 为免于依赖 Python 解析层，自己复制了 scenes / instances 两份解析（launch 内
+docstring 承认这是刻意的复制，改动合同格式时两处都要跟）。
 
 ## 模块架构
 

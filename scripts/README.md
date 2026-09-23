@@ -13,7 +13,8 @@
   - `check_adapter_contract` 跨文件 profile 合同校验（不起 ROS）
   - `check_cabinet_model` 柜体 Xacro/物理关节/插件/目录静态校验（`--asset` 资产模式）
   - `check_scene_config` 场景目录（`scenes.yaml`）与 Nav2 地图/参数校验
-  - `validate_cabinet_simulation` 确定性底层控件检查（不跑 Nav2，需先预置位）
+  - `validate_cabinet_simulation` 确定性底层控件检查（不跑 Nav2，需先预置位；默认实例名
+    仍是已移除的 `cabinet_a`，用于现役两层场景须显式传 `--instance`）
   - `validate_cabinet_web` Web→任务层→ROS 2→Gazebo 完整闭环
   - `validate_recording_replay` 录制/回放 HTTP 合同校验
 - `scripts/tools/` —— 开发工具：
@@ -24,8 +25,14 @@
     并镜像进资产库同场景副本（运行时读的是资产库那份，不镜像会留下过期快照）
   - `package_asset_samples.sh` 把样例资产打成上传用 zip
   - `cabinet_validation_targets.py` 控件目标选择纯函数（被 validate 与测试复用）
+  - `taught_sequence_ros.py` 教学序列执行、`xczs_controllers.py` 控制器直驱——
+    两者都有目录外调用者，属生产链路
+  - `check_drawer_unlock_mode_config.py` 静态门：断言解锁模式配置里不存在
+    `simulation_acceptance=true` 路径
 
-上面两节列的是主要入口；两目录下的其余脚本为专项标定 / 探针 / 诊断工具（详见目录）。
+上面两节列的是主要入口；两目录下其余脚本为专项标定 / 探针 / 诊断工具（详见目录）——
+但 `derive_taught_pose.py`、`_scene_ray_classify.py` 等也有目录外调用者，
+判断"能否归档"时要先 grep 调用点，不能只按目录名归类。
 
 ## 功能介绍
 
@@ -33,6 +40,10 @@
   `cabinet_robot_adapter.yaml` / `cabinet_instances.yaml` / `cabinet_controls.yaml` /
   `cabinet_scene.yaml` / `cabinet_pose.yaml` 与 MoveIt `kinematics.yaml`；`check_scene_config`
   证明带 padding 的机器人足迹落在自由格内；`check_cabinet_model` 验物理与插件合同。
+  注意两者的**默认参数指向内置 `control/config`**：只有经 `run_all.sh` 由 bridge 传参时才
+  校验资产库副本。另有一个覆盖缺口：`check_adapter_contract` 不带 `--instance-id` 时整体
+  跳过夹具实例（bridge 不传该参数），因此 `config/scene_controls/*_adapter.yaml`
+  ——operator 真正加载的那份参数源——在启动路径上没有静态门。
 - **仿真闭环验收**：`validate_cabinet_simulation` 走 `OperateCabinetControl` Action、
   `control_catalog` 话题与 `get_planning_scene` 服务；`validate_cabinet_web` 打
   `http://127.0.0.1:8090` 的 `/task/navigate`、`/task/operate`，`--exhaustive` 全量。

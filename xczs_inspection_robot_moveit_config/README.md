@@ -10,7 +10,7 @@ LMA 逆解、OMPL 规划管线、关节限位与轨迹执行映射都集中在 `
 
 - `launch/move_group.launch.py` —— 本包唯一运行时入口：启动 `moveit_ros_move_group` 的 `move_group` 节点，可选启动 `rviz2`（`moveit_rviz` 节点，加载 `config/moveit.rviz`）。
 - `config/` —— 全部由 launch 参数显式指定的语义配置：
-  - `xczs_inspection_robot_toolset_{A,B}.srdf` —— 语义机器人描述（SRDF）：浮基 `body` 组（floating，`parent_frame=odom`）、双臂链、工具规划组、end_effector、group_state、碰撞豁免。
+  - `xczs_inspection_robot_toolset_{A,B}.srdf` —— 语义机器人描述（SRDF）：`virtual_joint`（`parent_frame=odom`、`child_link=body`，即"浮基"，SRDF 里没有名为 `body` 的规划组）、双臂链 `left_arm`/`right_arm`、工具规划组 `three_cylinder`/`two_cylinder` 或 `rotate_button`/`rocker`、end_effector、group_state、碰撞豁免。
   - `kinematics.yaml` —— 双臂逆解：`lma_kinematics_plugin/LMAKinematicsPlugin`。
   - `ompl_planning.yaml` —— OMPL 规划管线（`ompl_interface/OMPLPlanner`）与逐组 planner_configs / request_adapters。
   - `joint_limits_toolset_{A,B}.yaml` —— 关节位置/速度/加速度限位。

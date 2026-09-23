@@ -23,7 +23,9 @@
 - `transport/` —— 外部系统传输桥接层（只做桥接与格式转换，不含业务逻辑）：
   - Zenoh：`sse_bridge.py`（Zenoh→HTTP SSE）、`zenoh_session.py` / `zenoh_key.py`
     （客户端会话构造与 topic key 校验）、`zenoh_proxy/` + `run_xczs_proxy.py`
-    （CDR→JSON 代理，浏览器监控面板数据源；入口 `python3 -m transport.run_xczs_proxy`）。
+    （CDR→JSON 代理；入口 `python3 -m transport.run_xczs_proxy`，仅 `run_all.sh
+    --with-proxy` 时启动）。监控面板实际走 `app/sse/router.py` 的 `/sse`
+    （ZenohSource + 本地解码），代理回写的 `{topic}/json` 目前仓内无消费者。
   - 传感器流：`sensor_bridge/`（相机/LiDAR 的 ROS 订阅与浏览器格式转换）。
 - `app/` —— FastAPI 应用工厂：`api/`（REST）、`sse/`（复用 `transport.ZenohSource` 的 SSE 路由）、
   `sensors/`（MJPEG + LiDAR WS）、`auth/`（JWT）、`tasks/`、`assets/`（SQLite store）、

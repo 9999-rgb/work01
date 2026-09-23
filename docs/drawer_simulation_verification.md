@@ -49,7 +49,7 @@ python3 scripts/validate/validate_taught_drawer.py --control db1 \
   --out log/drawer_validation/2026-09-20/db1_web.json
 ```
 
-`--control` 可选择 `db1`、`dm1`、`ds2`、`ds3`。验收器本身不负责导航。上述命令完成 3 轮开关，并在每次开、关后重复发送相同指令，验证不会重复动作。
+`--control` 可选择 `db1`、`dm1`、`ds1`、`ds2`、`ds3`（脚本的 `choices` 含 `ds1`；本报告只对前四者出结论，`ds1` 未适配）。验收器本身不负责导航。上述命令完成 3 轮开关，并在每次开、关后重复发送相同指令，验证不会重复动作。
 
 同步运行 `scripts/validate/record_drawer_motion.py --out <motion.jsonl> --seconds 600`，记录杆件相对末端基座的偏转。正常滑动副不应发生明显转动；大幅偏转提示碰撞挤压或物理求解不稳定，不能仅凭轨道到位判定通过。
 

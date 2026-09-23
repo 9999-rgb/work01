@@ -15,7 +15,8 @@
 - **关键不变量**：播种值取机器人**此刻的真实位姿**，不是工位目标点。因此机器人若真的不在
   工位，纠正后工位门照样如实失败 —— 不会把错位掩盖成「已到站」。
 - 该机制是**仿真专属**：真值来自 Gazebo `/get_entity_state`
-  （`gazebo_client.get_entity_state`）。真机没有对应服务时方法返回 None，调用方保持原语义。
+  （`gazebo_client.get_entity_state`）。真机没有对应服务时该方法抛
+  `ControlRequestError(503)`，由调用方（`runner`）捕获后返回 None，语义不变。
   它与既有的「物理锚定」同源 —— operator 已用同一套真值修正柜体几何，这里只是把同一套
   真值也用到机器人自身的信念上。
 - **场景地图同步**（`scripts/tools/generate_scene_maps.py`）。该脚本原先只写仓库
