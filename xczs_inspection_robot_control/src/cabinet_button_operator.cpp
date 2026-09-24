@@ -5716,6 +5716,8 @@ private:
         // seed alone is not enough -- it can fail the arc via r_arm_0<->r_arm_2
         // self-collision or a wrist joint limit.  Doors keep their segmented
         // arc mechanism and the configured seed unchanged.
+        const bool continuous_ready_approach =
+          control->id == "fr20422_knob" || control->id == "fr25452_knob";
         std::vector<double> rotary_branch_seed;
         const std::vector<double> * rotary_branch_seed_ptr = nullptr;
         if (control->control_type ==
@@ -5740,7 +5742,8 @@ private:
             wait_for_knob_axial_position(goal_handle, *control, 0.0);
           }
           rotary_branch_seed = select_rotary_branch_seed(
-            *move_group, *control, rotary_poses.pregrasp_pose,
+            *move_group, *control,
+            rotary_poses.pregrasp_pose,
             rotary_poses.grasp_pose, branch_waypoints, retreat_pose,
             contact_tool_link_);
           if (!rotary_branch_seed.empty()) {
@@ -5760,7 +5763,8 @@ private:
           };
         if (control->axial_pull_distance > 0.0) {set_rotary_contact_planning(false);}
         plan_and_execute_pose(
-          *move_group, goal_handle, rotary_poses.ready_pose,
+          *move_group, goal_handle,
+          continuous_ready_approach ? rotary_poses.pregrasp_pose : rotary_poses.ready_pose,
           contact_tool_link_, &result->operation_executed, control.get(),
           rotary_branch_seed_ptr);
         should_attempt_retreat = true;
@@ -5773,10 +5777,11 @@ private:
           OperateCabinetControl::Feedback::APPROACHING,
           0.43F, target_position,
           "Approaching the physical grasp point.");
-        if (control->control_type ==
+        if (!continuous_ready_approach &&
+          (control->control_type ==
             xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR ||
           control->control_type ==
-            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
+            xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB))
         {
           // A pose-only OMPL plan can select a ready-pose IK branch that
           // cannot finish the final inward Cartesian approach.  Require an
@@ -14260,6 +14265,9 @@ private:
           best_margin = margin;
           best_travel = travel;
           best_margin_seed = seed;
+          if (prefer_short_approach) {
+            branch_state.copyJointGroupPositions(joint_model_group, best_margin_seed);
+          }
         }
       } catch (const std::exception & error) {
         RCLCPP_WARN(

@@ -61,8 +61,8 @@ def mesh(path, offset, rotation, scale):
 
 def signed(points, distance):
     if id(distance) in BOX_SURFACES:
-        center, size = BOX_SURFACES[id(distance)]
-        q = np.abs(points - center) - size / 2
+        center, size, rotation = BOX_SURFACES[id(distance)]
+        q = np.abs((points - center) @ rotation) - size / 2
         return np.linalg.norm(np.maximum(q, 0), axis=1) + np.minimum(q.max(axis=1), 0)
     values = vtk.vtkDoubleArray()
     distance.EvaluateFunction(numpy_to_vtk(np.ascontiguousarray(points), deep=True), values)
@@ -120,8 +120,9 @@ def load_geometry():
             cube.SetXLength(size[0]); cube.SetYLength(size[1]); cube.SetZLength(size[2])
             tri = vtk.vtkTriangleFilter(); tri.SetInputConnection(cube.GetOutputPort()); tri.Update()
             distance = vtk.vtkImplicitPolyDataDistance(); distance.SetInput(tri.GetOutput())
-            BOX_SURFACES[id(distance)] = (pose[:3], size)
-            shapes['xczs_scene_floor::' + link.get('name')] = (vtk_to_numpy(tri.GetOutput().GetPoints().GetData()).astype(float), distance)
+            rotation = rpy_to_matrix(*pose[3:])
+            BOX_SURFACES[id(distance)] = (pose[:3], size, rotation)
+            shapes['xczs_scene_floor::' + link.get('name')] = ((vtk_to_numpy(tri.GetOutput().GetPoints().GetData()).astype(float) - pose[:3]) @ rotation.T + pose[:3], distance)
             continue
         pose = np.fromstring(col.findtext('pose', '0 0 0 0 0 0'), sep=' ')
         shapes['xczs_scene_floor::' + link.get('name')] = mesh(ROOT / m.findtext('uri').removeprefix('model://'), pose[:3], rpy_to_matrix(*pose[3:]), np.fromstring(m.findtext('scale', '1 1 1'), sep=' '))
