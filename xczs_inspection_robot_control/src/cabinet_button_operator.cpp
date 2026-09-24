@@ -723,6 +723,12 @@ public:
       "knob_gripper.open_positions", std::vector<double>{});
     knob_gripper_closed_ = declare_parameter<std::vector<double>>(
       "knob_gripper.closed_positions", std::vector<double>{});
+    knob_gripper_free_travel_ = declare_parameter<double>("knob_gripper.free_travel", 0.0);
+    if (!std::isfinite(knob_gripper_free_travel_) || knob_gripper_free_travel_ < 0.0 ||
+      knob_gripper_free_travel_ > 0.008)
+    {
+      throw std::invalid_argument("knob_gripper.free_travel must be within [0, 0.008].");
+    }
     knob_gripper_tolerances_ = declare_parameter<std::vector<double>>(
       "knob_gripper.tolerances", std::vector<double>{});
     const std::unordered_set<std::string> gripper_joint_set(
@@ -8733,9 +8739,21 @@ private:
       // ODE corrects it. Advance from MEASURED positions in <=0.15 mm steps;
       // each jaw independently stops at its actual contact surface.
       constexpr double step = 0.00015;
+      if (knob_gripper_free_travel_ > 0.0) {
+        auto free_target = knob_gripper_open_;
+        for (std::size_t i = 0; i < desired.size(); ++i) {
+          if (prismatic[i]) {
+            free_target[i] = std::min(desired[i], knob_gripper_free_travel_);
+          }
+        }
+        // Only calibrated clearance motion is fast; final contact still uses
+        // measured 0.15 mm steps and the existing two-sided contact gate.
+        send_positions(free_target, 1.5);
+      }
+      const auto close_start = measured_positions();
       double travel = 0.0;
       for (std::size_t i = 0; i < desired.size(); ++i) {
-        if (prismatic[i]) {travel = std::max(travel, std::abs(desired[i] - knob_gripper_open_[i]));}
+        if (prismatic[i]) {travel = std::max(travel, std::abs(desired[i] - close_start[i]));}
       }
       const auto steps = static_cast<std::size_t>(std::ceil(travel / step)) + 2U;
       if (steps > 100U) {fail("Knob gripper calibrated travel exceeds the bounded close budget.");}
@@ -8754,7 +8772,12 @@ private:
       }
       send_positions(hold, 0.5);
     } else {
-      send_positions(desired, 4.0);
+      const auto measured = measured_positions();
+      bool already_open = true;
+      for (std::size_t i = 0; i < desired.size(); ++i) {
+        already_open = already_open && std::abs(measured[i] - desired[i]) <= tolerances[i];
+      }
+      if (!already_open) {send_positions(desired, 4.0);}
     }
     const auto measured = measured_positions();
     for (std::size_t i = 0; i < desired.size(); ++i) {
@@ -14129,6 +14152,9 @@ private:
     // clean approach/arc against a retreat with room to clear the blade.
     // Sample the branch space broadly so the operation is robust to the few
     // millimetres of docking drift between branch validation and execution.
+    const bool prefer_short_approach =
+      control.id == "fr20422_knob" || control.id == "fr25452_knob";
+    const auto reference_state = synchronized_current_robot_state(move_group);
     std::vector<std::vector<double>> candidates;
     candidates.push_back(control.ready_joint_seed_positions);
     for (const double shoulder :
@@ -14143,6 +14169,7 @@ private:
     double best_margin = -1.0;
     std::vector<double> best_margin_seed;
     double best_fraction = -1.0;
+    double best_travel = std::numeric_limits<double>::infinity();
     for (const auto & seed : candidates) {
       try {
         const auto current_state =
@@ -14213,8 +14240,25 @@ private:
         // this dry-run and the physical arc execution.
         const double margin = joint_limit_margin(
           retreat_start, joint_model_group);
-        if (margin > best_margin) {
+        double travel = 0.0;
+        for (const auto & name : group_variable_names) {
+          // These revolute joints are bounded: do not wrap a 2*pi excursion.
+          const double delta = branch_state.getVariablePosition(name) -
+            reference_state->getVariablePosition(name);
+          travel += delta * delta;
+        }
+        // Keep at least 3% of the joint range as clearance before preferring
+        // a shorter approach. If none qualifies, retain the safest branch.
+        const bool safer_candidate = margin >= 0.03;
+        const bool safer_best = best_margin >= 0.03;
+        const bool replace = prefer_short_approach ?
+          ((safer_candidate && !safer_best) ||
+          (safer_candidate && safer_best && travel < best_travel) ||
+          (!safer_candidate && !safer_best && margin > best_margin)) :
+          margin > best_margin;
+        if (replace) {
           best_margin = margin;
+          best_travel = travel;
           best_margin_seed = seed;
         }
       } catch (const std::exception & error) {
@@ -18769,6 +18813,7 @@ private:
   std::vector<std::string> knob_gripper_joints_;
   std::vector<double> knob_gripper_open_;
   std::vector<double> knob_gripper_closed_;
+  double knob_gripper_free_travel_{0.0};
   std::vector<double> knob_gripper_tolerances_;
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr
     knob_gripper_fjt_client_;

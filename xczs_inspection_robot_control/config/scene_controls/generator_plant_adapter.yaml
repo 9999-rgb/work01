@@ -151,6 +151,8 @@
     # 闭合值是分步跟随的行程上限；实际位置由方板接触决定。
     # 双侧实接触和压入深度/持续时间保护独立于关节读回容差。
     knob_gripper:
+      # 张开间隙 36 mm，先各合拢 8 mm 后仍留 20 mm，宽于旋钮 12.4 mm。
+      free_travel: 0.008
       joint_names: [r_rotbtn_rotate_joint, r_rotbtn_jaw1_joint, r_rotbtn_jaw2_joint]
       open_positions: [0.0, 0.0, 0.0]
       closed_positions: [0.0, 0.0145, 0.0145]
