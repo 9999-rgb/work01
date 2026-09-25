@@ -8744,6 +8744,7 @@ private:
       // ODE corrects it. Advance from MEASURED positions in <=0.15 mm steps;
       // each jaw independently stops at its actual contact surface.
       constexpr double step = 0.00015;
+      auto last_close_target = measured_positions();
       if (knob_gripper_free_travel_ > 0.0) {
         auto free_target = knob_gripper_open_;
         for (std::size_t i = 0; i < desired.size(); ++i) {
@@ -8754,6 +8755,7 @@ private:
         // Only calibrated clearance motion is fast; final contact still uses
         // measured 0.15 mm steps and the existing two-sided contact gate.
         send_positions(free_target, 1.5);
+        last_close_target = free_target;
       }
       const auto close_start = measured_positions();
       double travel = 0.0;
@@ -8766,14 +8768,24 @@ private:
         const auto measured = measured_positions();
         auto next = desired;
         for (std::size_t i = 0; i < desired.size(); ++i) {
-          if (prismatic[i]) {next[i] = std::min(desired[i], measured[i] + step);}
+          if (prismatic[i]) {
+            // Solver undershoot must not turn a close into an opening ramp.
+            // Retain the last command while lagging; only advance beyond it
+            // when the measured jaw is within one contact step.
+            next[i] = std::min(desired[i],
+              std::max(last_close_target[i], measured[i] + step));
+          }
         }
         send_positions(next, 0.2);
+        last_close_target = next;
       }
       const auto measured = measured_positions();
       auto hold = desired;
       for (std::size_t i = 0; i < desired.size(); ++i) {
-        if (prismatic[i]) {hold[i] = std::min(desired[i], measured[i] + 0.0002);}
+        if (prismatic[i]) {
+          hold[i] = std::min(desired[i],
+            std::max(last_close_target[i], measured[i] + 0.0002));
+        }
       }
       send_positions(hold, 0.5);
     } else {
@@ -14120,11 +14132,10 @@ private:
   // from the REAL dock TF.  A 7-DOF arm has several IK families for one tool
   // pose; the calibrated seed is only a starting point and can fail the arc
   // (r_arm_0<->r_arm_2 self-collision near a detent, or a wrist joint pinned
-  // against its limit).  Candidate branches are the configured seed and its
-  // mirror (the first group joint negated).  Each candidate is dry-run with
-  // computeCartesianPath -- the same path the operator will execute -- and the
-  // first candidate that clears the full chain is returned.  This is a branch
-  // gate: no physical approach may start unless retreat is feasible too.
+  // against its limit). Validate shoulder-seed candidates with the same
+  // Cartesian chain used for execution, including the post-release retreat.
+  // Prefer joint-limit clearance, or shorter travel for the last two knobs
+  // when sufficient clearance remains.
   std::vector<double> select_rotary_branch_seed(
     MoveGroupInterface & move_group,
     const ButtonSpec & control,
@@ -14239,10 +14250,7 @@ private:
           continue;
         }
 
-        // Among branches that clear the whole chain, prefer the one whose
-        // arc-end state sits farthest from every joint limit: it keeps the
-        // retreat feasible against the docking drift that can appear between
-        // this dry-run and the physical arc execution.
+        // Measure clearance and approach travel only for complete chains.
         const double margin = joint_limit_margin(
           retreat_start, joint_model_group);
         double travel = 0.0;
@@ -14280,7 +14288,7 @@ private:
       RCLCPP_INFO(
         get_logger(),
         "Rotary branch selected for '%s': approach+arc+retreat clear "
-        "(best arc-end joint-limit margin=%.3f).",
+        "(selected arc-end joint-limit margin=%.3f).",
         control.id.c_str(), best_margin);
       return best_margin_seed;
     }
