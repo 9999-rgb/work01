@@ -51,7 +51,9 @@ def main():
         deadline = time.monotonic() + 420
         while time.monotonic() < deadline:
             status = api('/robot/toolset/status')
-            if status.get('state') == 'ready' and status.get('active_toolset') == toolset:
+            if (status.get('state') == 'ready' and status.get('ready')
+                    and status.get('gateway_synced')
+                    and status.get('active_toolset') == toolset):
                 break
             if status.get('state') == 'failed':
                 raise RuntimeError('末端切换失败: ' + str(status.get('message')))
