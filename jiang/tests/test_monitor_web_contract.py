@@ -170,10 +170,16 @@ class MonitorWebContractTest(unittest.TestCase):
             (async () => {{
               statuses = [{{
                 generation: 4, state: 'ready', ready: true,
-                active_toolset: 'B', last_error: null
+                active_toolset: 'B', gateway_synced: false,
+                gateway_active_toolset: 'A', last_error: null
+              }}, {{
+                generation: 4, state: 'ready', ready: true,
+                active_toolset: 'B', gateway_synced: true, last_error: null
               }}];
               const success = await waitForToolsetSwitchCompletion('B', 4);
               assert.equal(success.active_toolset, 'B');
+              assert.equal(success.gateway_synced, true);
+              assert.equal(statuses.length, 0);
 
               statuses = [{{
                 generation: 5, state: 'failed', ready: false,
@@ -205,6 +211,31 @@ class MonitorWebContractTest(unittest.TestCase):
               console.error(error);
               process.exitCode = 1;
             }});
+        """))
+
+    def test_toolset_ready_waits_for_gateway_sync(self) -> None:
+        source = _source_block(
+            "function normalizedToolset(value)",
+            "\nfunction renderToolsetStatus()",
+        )
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            let toolsetSwitchInFlight = false;
+            {source}
+            let toolsetRuntimeStatus = normalizedToolsetRuntimeStatus({{
+              managed: true, state: 'ready', ready: true,
+              active_toolset: 'B', gateway_active_toolset: 'A',
+              gateway_synced: false
+            }});
+            assert.equal(toolsetRuntimeStatus.ready, false);
+            assert.equal(toolsetControlLocked(), true);
+            assert.match(describeToolsetStatus(toolsetRuntimeStatus), /正在同步控制接口/);
+            toolsetRuntimeStatus = normalizedToolsetRuntimeStatus({{
+              managed: true, state: 'ready', ready: true,
+              active_toolset: 'B', gateway_active_toolset: 'B',
+              gateway_synced: true
+            }});
+            assert.equal(toolsetControlLocked(), false);
         """))
 
     def test_connection_placeholders_use_the_unified_web_port(self) -> None:
