@@ -238,6 +238,47 @@ class MonitorWebContractTest(unittest.TestCase):
             assert.equal(toolsetControlLocked(), false);
         """))
 
+    def test_notifications_do_not_stack_or_replay_connection_bursts(self) -> None:
+        source = _source_block("const recentToasts", "\nfunction setStatus")
+        self.run_node(textwrap.dedent(f"""
+            const assert = require('node:assert/strict');
+            let now = 1000;
+            Date.now = () => now;
+            const timers = new Map();
+            let timerId = 0;
+            function setTimeout(fn) {{ timers.set(++timerId, fn); return timerId; }}
+            function clearTimeout(id) {{ timers.delete(id); }}
+            const toastContainer = {{
+              children: [], appendChild(el) {{ this.children.push(el); }}
+            }};
+            const document = {{ createElement() {{ return {{
+              remove() {{
+                toastContainer.children = toastContainer.children.filter(el => el !== this);
+              }}
+            }}; }} }};
+            {source}
+            toast('已连接');
+            for (let i = 0; i < 100; i++) toast('进度 ' + i, 'ok');
+            assert.equal(toastContainer.children.length, 1);
+            assert.equal(toastContainer.children[0].textContent, '已连接');
+            toast('动作失败', 'err');
+            toast('进度更新', 'ok');
+            toast('状态提醒', 'warn');
+            assert.equal(toastContainer.children.length, 1);
+            assert.equal(toastContainer.children[0].textContent, '动作失败');
+            assert.equal(timers.size, 1);
+            for (let i = 0; i < 100; i++) toast('动作失败', 'err');
+            assert.equal(timers.size, 1);
+            const finish = timers.get(toastTimer);
+            timers.clear(); finish();
+            toast('动作失败', 'err');
+            assert.equal(toastContainer.children.length, 0);
+            now += 10001;
+            toast('动作失败', 'err');
+            assert.equal(toastContainer.children.length, 1);
+            assert.equal(timers.size, 1);
+        """))
+
     def test_connection_placeholders_use_the_unified_web_port(self) -> None:
         html = MONITOR_PATH.read_text(encoding="utf-8")
 
@@ -402,6 +443,10 @@ class MonitorWebContractTest(unittest.TestCase):
             assert.deepEqual(data, [['xczs/odom', 'current']]);
             third.onerror();
             const thirdTimer = timers[2];
+            third.onopen();
+            assert.equal(thirdTimer.cleared, true);
+            thirdTimer.callback();
+            assert.equal(logs.filter(([level]) => level === 'err').length, 0);
             doDisconnect();
             assert.equal(third.closed, true);
             assert.equal(thirdTimer.cleared, true);

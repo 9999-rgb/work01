@@ -1282,12 +1282,36 @@ function log(level, msg) {
   while (logPanel.children.length > 100) logPanel.removeChild(logPanel.firstChild);
 }
 
-function toast(msg, type) {
+const recentToasts = new Map();
+let activeToast = null;
+let toastTimer = null;
+
+function toast(msg, type = 'info') {
+  const message = String(msg);
+  const kind = ['ok', 'info', 'warn', 'err'].includes(type) ? type : 'info';
+  const now = Date.now();
+  for (const [key, at] of recentToasts) {
+    if (now - at >= 10000) recentToasts.delete(key);
+  }
+  const key = `${kind}:${message}`;
+  if (recentToasts.has(key)) return;
+  // 普通进度由状态区呈现；不排队补弹，也不覆盖正在显示的错误。
+  if (activeToast && kind !== 'err' && kind !== 'warn') return;
+  if (activeToast && activeToast.kind === 'err' && kind !== 'err') return;
+  recentToasts.set(key, now);
+  while (recentToasts.size > 100) recentToasts.delete(recentToasts.keys().next().value);
+  if (toastTimer !== null) clearTimeout(toastTimer);
+  if (activeToast) activeToast.element.remove();
   const el = document.createElement('div');
-  el.className = `toast ${type}`;
-  el.textContent = msg;
+  el.className = `toast ${kind}`;
+  el.textContent = message;
   toastContainer.appendChild(el);
-  setTimeout(() => el.remove(), 3000);
+  activeToast = {element: el, kind};
+  toastTimer = setTimeout(() => {
+    el.remove();
+    activeToast = null;
+    toastTimer = null;
+  }, 3000);
 }
 
 function setStatus(state, text) {
@@ -1370,7 +1394,8 @@ function subscribe(topic) {
     source.onopen = () => {
       if (!isCurrentTopicSource(topic, entry, source)) return;
       log('ok', `SSE 已连接: ${topic}`);
-      toast(`✓ ${topic}`);
+      if (entry._errTimer) clearTimeout(entry._errTimer);
+      entry._errTimer = null;
     };
 
     source.onmessage = (event) => {
@@ -1389,13 +1414,15 @@ function subscribe(topic) {
       // EventSource 在连接建立但流为空时也可能触发 error；
       // 不要立即报错 — 等几秒看是否有数据到达
       if (entry._errTimer) clearTimeout(entry._errTimer);
-      entry._errTimer = setTimeout(() => {
+      const errorTimer = setTimeout(() => {
+        if (entry._errTimer !== errorTimer) return;
         entry._errTimer = null;
         if (!isCurrentTopicSource(topic, entry, source)) return;
         if (entry.history.length === 0) {
           log('err', `SSE 无数据: ${topic}（${baseUrl} 上的 Zenoh 桥是否在运行？ROS2 话题是否有发布者？）`);
         }
       }, 5000);
+      entry._errTimer = errorTimer;
     };
 
     subs.set(topic, entry);
