@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import math
 import threading
+import time
 from typing import Any, Optional, Tuple
 
 from gazebo_msgs.msg import EntityState
 from gazebo_msgs.srv import DeleteEntity
 from gazebo_msgs.srv import GetEntityState
+from gazebo_msgs.srv import GetModelList
 from gazebo_msgs.srv import SetEntityState
 from gazebo_msgs.srv import SpawnEntity
 from geometry_msgs.msg import Pose
@@ -45,6 +47,7 @@ class GazeboClient(Node):
         self._get_state_client = self.create_client(
             GetEntityState, "/get_entity_state"
         )
+        self._get_model_list_client = self.create_client(GetModelList, "/get_model_list")
 
     def spawn_entity(
         self,
@@ -91,12 +94,29 @@ class GazeboClient(Node):
         )
         if not bool(response.success):
             message = str(response.status_message) or ""
-            if ignore_missing and _looks_absent(message):
-                return
-            raise ControlRequestError(
-                message or f"Failed to delete '{name}'.",
-                503,
+            if not (ignore_missing and _looks_absent(message)):
+                raise ControlRequestError(
+                    message or f"Failed to delete '{name}'.",
+                    503,
+                )
+        # Factory success acknowledges an asynchronous deletion. Reusing the
+        # name before removal completes can delete the newly spawned scene.
+        # Use the same stable-absence gate as the toolset supervisor.
+        deadline = time.monotonic() + timeout_sec
+        absent = 0
+        while absent < 2:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.0:
+                raise ControlRequestError(f"Gazebo did not remove '{name}' before timeout.", 503)
+            state = self._call(
+                self._get_model_list_client, GetModelList.Request(), remaining,
+                "verify entity removal",
             )
+            if not state.success:
+                raise ControlRequestError("Gazebo could not verify entity removal.", 503)
+            absent = absent + 1 if name not in state.model_names else 0
+            if absent < 2:
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
     def set_entity_state(
         self,

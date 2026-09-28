@@ -235,6 +235,8 @@
       # box_5_knob 的 local_position 有偏移是因为那是 11×65 mm 叶片。
       # 场景 xacro 的 <graspable> 已是 true（旧注释曾写 false，已过期）。
       fr135_knob:
+        # 松夹会带出少量轴向行程，插回时预留 0.5 mm 就位补偿。
+        axial_seating_offset: 0.0005
         axial_control_id: fr135_button
         axial_pull_distance: 0.008
         type: knob

@@ -6048,6 +6048,11 @@ private:
           "release.");
         wait_for_target_stable(
           goal_handle, *control, target_position, target_state, released_at);
+        // The plate can move axially while the jaws open. Verify insertion
+        // after release, not only while the gripper is still holding it.
+        if (!control->axial_control_id.empty()) {
+          wait_for_knob_axial_position(goal_handle, *control, 0.0);
+        }
         // The released knob/switch/door is stable at its requested detent.
         // This is the physical side-effect commit; transport remains a
         // fallible safety phase but is no longer client-cancelable.
