@@ -766,6 +766,11 @@ public:
           command.joint_names = knob_gripper_joints_;
           trajectory_msgs::msg::JointTrajectoryPoint point;
           point.positions = knob_gripper_closed_;
+          for (std::size_t j = 0; j < point.positions.size(); ++j) {
+            if (knob_gripper_joints_[j] == "r_rotbtn_rotate_joint") {
+              point.positions[j] = knob_rotor_position_.load();
+            }
+          }
           point.velocities.assign(point.positions.size(), 0.0);
           point.time_from_start = rclcpp::Duration::from_seconds(0.1);
           for (std::size_t j = 0; j < point.positions.size(); ++j) {
@@ -5727,16 +5732,18 @@ private:
           // position, prepress standoff) must match the retreat the operator
           // actually executes after releasing the grasp.
           const auto retreat_pose = calculate_rotary_tool_pose(
-            *control, rotary_manip_pos, control->rotary_retreat_distance, false,
+            *control, uses_knob_rotor(*control) ? initial_state.position : rotary_manip_pos,
+            control->rotary_retreat_distance, false,
             rotary_tool_roll_offset);
-          auto branch_waypoints = rotary_arc_waypoints;
+          auto branch_waypoints = uses_knob_rotor(*control) ?
+            std::vector<geometry_msgs::msg::Pose>{} : rotary_arc_waypoints;
           if (control->axial_pull_distance > 0.0) {
             branch_waypoints.insert(branch_waypoints.begin(), calculate_rotary_tool_pose(
               *control, initial_state.position,
               control->grasp_outward_offset + control->axial_pull_distance,
               true, rotary_tool_roll_offset));
             branch_waypoints.push_back(calculate_rotary_tool_pose(
-              *control, rotary_manip_pos,
+              *control, uses_knob_rotor(*control) ? initial_state.position : rotary_manip_pos,
               control->grasp_outward_offset - control->axial_seating_offset,
               true, rotary_tool_roll_offset));
             wait_for_knob_axial_position(goal_handle, *control, 0.0);
@@ -5892,6 +5899,14 @@ private:
             door_arc_progress.completed_waypoints,
             &result->operation_executed);
           door_arc_progress.in_progress = false;
+        } else if (uses_knob_rotor(*control)) {
+          publish_operate_feedback(goal_handle,
+            OperateCabinetControl::Feedback::MANIPULATING, 0.62F,
+            target_position, "保持机械臂姿态，由夹爪转盘旋转旋钮。");
+          // Tool +Z points into the panel, opposite the fixture joint axis.
+          rotate_knob_rotor(goal_handle,
+            knob_rotor_position_.load() - (manipulation_position - initial_state.position),
+            true, &result->operation_executed);
         } else {
           const double arc_speed_scale = control->axial_pull_distance > 0.0 ? 1.0 : 0.5;
           execute_cartesian_path(
@@ -6031,6 +6046,9 @@ private:
             cartesian_velocity_scale_, cartesian_acceleration_scale_,
             0.99, &result->operation_executed);
           should_attempt_retreat = false;
+        }
+        if (uses_knob_rotor(*control)) {
+          rotate_knob_rotor(goal_handle, 0.0, false, &result->operation_executed);
         }
         result->diagnostic_stage = "verification";
         publish_operate_feedback(
@@ -7061,7 +7079,8 @@ private:
     const tf2::Quaternion tool_zero =
       tool_rotation_from_outward(tool_axis_reference);
     tf2::Quaternion tool_roll;
-    tool_roll.setRotation(tf2::Vector3(0.0, 0.0, 1.0), tool_roll_offset);
+    tool_roll.setRotation(tf2::Vector3(0.0, 0.0, 1.0),
+      tool_roll_offset - (uses_knob_rotor(control) ? knob_rotor_position_.load() : 0.0));
     tool_roll.normalize();
     // Post-multiply so the calibration rotates around contact-tool local +Z.
     // This moves passive sibling tools within the panel plane while preserving
@@ -8621,6 +8640,87 @@ private:
     knob_gripper_hold_active_ = false;
   }
 
+  bool uses_knob_rotor(const ButtonSpec & control) const
+  {
+    return control.axial_pull_distance > 0.0 &&
+      control.control_type == xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB &&
+      std::find(knob_gripper_joints_.begin(), knob_gripper_joints_.end(),
+      "r_rotbtn_rotate_joint") != knob_gripper_joints_.end();
+  }
+
+  void rotate_knob_rotor(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    double target, bool gripping, bool * operation_executed)
+  {
+    stop_knob_gripper_hold();
+    double initial = 0.0;
+    if (!std::isfinite(target) || std::abs(target) > 3.14 ||
+      !cached_real_joint_position("r_rotbtn_rotate_joint", initial))
+    {
+      throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
+        "夹爪转盘目标或实时反馈无效。");
+    }
+    const auto started = std::chrono::steady_clock::now();
+    const double duration = std::max(0.5, std::abs(target - initial) / 0.3);
+    auto stable_since = started;
+    try {
+      while (std::chrono::steady_clock::now() - started <
+        std::chrono::duration<double>(duration + 5.0))
+      {
+        check_cancel(goal_handle);
+        const auto now = std::chrono::steady_clock::now();
+        const double ratio = std::clamp(
+          std::chrono::duration<double>(now - started).count() / duration, 0.0, 1.0);
+        trajectory_msgs::msg::JointTrajectory command;
+        command.joint_names = knob_gripper_joints_;
+        trajectory_msgs::msg::JointTrajectoryPoint point;
+        point.positions = knob_gripper_open_;
+        point.velocities.assign(point.positions.size(), 0.0);
+        point.time_from_start = rclcpp::Duration::from_seconds(0.1);
+        double rotor = 0.0;
+        for (std::size_t j = 0; j < point.positions.size(); ++j) {
+          double measured = 0.0;
+          if (!cached_real_joint_position(knob_gripper_joints_[j], measured) ||
+            !std::isfinite(measured))
+          {
+            throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
+              "夹爪旋转期间关节反馈失效。");
+          }
+          if (knob_gripper_joints_[j] == "r_rotbtn_rotate_joint") {
+            rotor = measured;
+            point.positions[j] = initial + (target - initial) * ratio;
+          } else if (gripping) {
+            point.positions[j] = std::clamp(measured + 0.00015,
+              knob_gripper_open_[j], knob_gripper_closed_[j]);
+          }
+        }
+        knob_rotor_position_.store(rotor);
+        command.points.push_back(point);
+        knob_gripper_hold_pub_->publish(command);
+        if (operation_executed) {*operation_executed = true;}
+        if (ratio < 1.0 || std::abs(rotor - target) > 0.005) {
+          stable_since = now;
+        } else if (now - stable_since >= 300ms) {
+          knob_rotor_position_.store(target);
+          if (gripping) {
+            std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
+            knob_gripper_hold_active_ = true;
+          }
+          return;
+        }
+        std::this_thread::sleep_for(100ms);
+      }
+      throw GenericOperationError(OperateCabinetControl::Result::TARGET_NOT_REACHED,
+        "夹爪转盘未到达目标角度。");
+    } catch (...) {
+      double measured = 0.0;
+      if (cached_real_joint_position("r_rotbtn_rotate_joint", measured)) {
+        knob_rotor_position_.store(measured);
+      }
+      throw;
+    }
+  }
+
   void drive_knob_gripper(
     const std::shared_ptr<OperateGoalHandle> & goal_handle,
     MoveGroupInterface & move_group, const ButtonSpec & control,
@@ -8643,7 +8743,17 @@ private:
       };
     check_stop();
     const auto state = synchronized_current_robot_state(move_group);
-    const auto & desired = close ? knob_gripper_closed_ : knob_gripper_open_;
+    auto desired = close ? knob_gripper_closed_ : knob_gripper_open_;
+    if (uses_knob_rotor(control)) {
+      for (std::size_t j = 0; j < desired.size(); ++j) {
+        if (knob_gripper_joints_[j] == "r_rotbtn_rotate_joint") {
+          if (!cached_real_joint_position(knob_gripper_joints_[j], desired[j])) {
+            fail("Knob rotor readback unavailable.");
+          }
+          knob_rotor_position_.store(desired[j]);
+        }
+      }
+    }
     auto target = *state;
     std::vector<bool> prismatic(desired.size(), false);
     for (std::size_t i = 0; i < desired.size(); ++i) {
@@ -8751,7 +8861,7 @@ private:
       constexpr double step = 0.00015;
       auto last_close_target = measured_positions();
       if (knob_gripper_free_travel_ > 0.0) {
-        auto free_target = knob_gripper_open_;
+        auto free_target = desired;
         for (std::size_t i = 0; i < desired.size(); ++i) {
           if (prismatic[i]) {
             free_target[i] = std::min(desired[i], knob_gripper_free_travel_);
@@ -18828,6 +18938,7 @@ private:
   std::vector<double> tool_tip_calibration_joint_positions_;
   std::mutex knob_gripper_hold_mutex_;
   bool knob_gripper_hold_active_{false};
+  std::atomic<double> knob_rotor_position_{0.0};
   std::vector<bool> knob_gripper_hold_prismatic_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr knob_gripper_hold_pub_;
   rclcpp::TimerBase::SharedPtr knob_gripper_hold_timer_;
