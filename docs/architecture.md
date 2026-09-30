@@ -63,7 +63,8 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
 ## 3. 三层适配架构
 
 1. **通用任务层**（`jiang/`，Python）：Web 页面、HTTP/SSE、全局任务互斥、导航调度、
-   取消与结果记录、录制/回放、资产导入与选择。单入口
+   取消与结果记录、录制/回放及运行场景选择。资产库仅保留底层启动/地图读取与 CLI，
+   Web 资产管理路由已移除。单入口
    `jiang/control_server.py` → `control_gateway/`（runner、ros_node、web_server、
    task_manager、cabinet_client、recording_manager、task_replay、inventory、
    robot_adapter、profile_contract、asset_manifest/asset_library/asset_validators）。

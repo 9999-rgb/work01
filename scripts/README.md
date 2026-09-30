@@ -61,7 +61,7 @@
   `--allow-motion --task-recording`。
 - **开发工具**：`preposition_base.py` 让物理验收前把底座放到目标控件工位；
   `generate_scene_maps.py` 生成已提交的 Nav2 地图；`package_asset_samples.sh` 产出
-  `/assets/import` 端点可直接接收的 zip；`xczs_import_asset` 导入含 `manifest.yaml`
+  可供 CLI 重新导入的 zip（Web 上传接口已移除）；`xczs_import_asset` 导入含 `manifest.yaml`
   的资产并记入 SQLite `assets` 表。
 
 ## 与项目的关系
@@ -70,7 +70,7 @@
   `xczs_inspection_robot_control/config/*.yaml` 是跨层合同，按硬编码路径读取；
   `xczs_inspection_robot_moveit_config/config/kinematics.yaml`、description 的 meshes。
 - **被消费**：作为用户/CI 的验收门；`xczs_import_asset` 在 bridge 启动时也会被调用；
-  生成的地图被 Nav2 `map_server` 服务；打包 zip 经 8090 Web 控制台上传。
+  生成的地图被 Nav2 `map_server` 服务；打包 zip 用于离线分发，Web 上传入口已移除。
 - **在架构里的位置**：处于三层适配架构之外的上层——用 `validate_cabinet_web` 把
   通用任务层（`jiang/control_server.py`）→ 机器人适配层 → 场景适配层整条启动链
   串起来做端到端验收；`check_*` 系列在启动前静态守住跨层 YAML 合同。

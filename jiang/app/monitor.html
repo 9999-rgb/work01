@@ -392,7 +392,7 @@
 }
 .navigation-card { grid-column: 1 / -1; }
 .cabinet-card { grid-column: 1 / -1; }
-.asset-card { grid-column: 1 / -1; }
+.toolset-card { grid-column: 1 / -1; }
 .autonomy-header {
   display: flex; align-items: center; justify-content: space-between;
   gap: 12px; padding: 11px 14px;
@@ -968,92 +968,21 @@
     </div>
   </section>
 
-  <section class="autonomy-card asset-card">
+  <section class="autonomy-card toolset-card">
     <div class="autonomy-header">
-      <h3>📦 资产库 · 场景 / 柜体导入与选择</h3>
-      <span class="autonomy-state" id="assetState">等待服务</span>
+      <h3>末端工具切换</h3>
+      <span class="autonomy-state" id="toolsetState">等待服务</span>
     </div>
     <div class="autonomy-body">
-      <div class="replay-grid">
-        <div>
-          <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
-            导入资产（zip，需管理员）
-          </div>
-          <div class="replay-form-grid">
-            <div class="form-field">
-              <label for="assetUpload">场景 / 柜体资产包</label>
-              <input id="assetUpload" type="file" accept=".zip,application/zip">
-            </div>
-          </div>
-          <label class="replay-option" for="assetSkipValidate">
-            <input id="assetSkipValidate" type="checkbox">
-            跳过语义校验（仅查 manifest 结构与文件存在）
-          </label>
-          <div class="command-row">
-            <button class="btn btn-primary" id="btnAssetImport" disabled>导入</button>
-            <button class="btn btn-outline" id="btnAssetRefresh" disabled>刷新列表</button>
-          </div>
-          <label class="section-label" for="assetList">已导入资产</label>
-          <select class="replay-list" id="assetList" size="6" disabled>
-            <option value="">等待资产列表</option>
-          </select>
-          <div class="command-row">
-            <button class="btn btn-danger" id="btnAssetDelete" disabled>删除选中资产</button>
-          </div>
-          <div class="status-detail" id="assetDetail">
-            导入结果与错误信息显示于此。删除资产会同步清空对该资产的选中。
-          </div>
-        </div>
-        <div>
-          <div class="section-label" style="margin-top:0;padding-top:0;border-top:0">
-            下次启动场景 / 柜体组合
-          </div>
-          <div class="replay-form-grid">
-            <div class="form-field">
-              <label for="assetSceneSelect">场景资产</label>
-              <select id="assetSceneSelect" disabled>
-                <option value="">（保持默认）</option>
-              </select>
-            </div>
-            <div class="form-field">
-              <label for="assetCabinetSelect">柜体资产</label>
-              <select id="assetCabinetSelect" disabled>
-                <option value="">（保持默认）</option>
-              </select>
-            </div>
-          </div>
-          <div class="command-row">
-            <button class="btn btn-primary" id="btnAssetApply" disabled>保存场景 / 柜体选择</button>
-          </div>
-          <div class="command-row">
-            <button class="btn btn-outline" id="btnAssetActivate" disabled>立即生效</button>
-          </div>
-          <div class="status-detail" id="assetActivateDetail">
-            立即生效：保存当前选择；场景可经上方场景下拉即时切换，柜体资产若未挂载需重启栈后生效（不自动重启）。
-          </div>
-          <div class="status-detail" id="assetLibraryRoot">
-            场景 / 柜体选择会在下次人工启动时由 <strong>./run_all.sh</strong> 应用到场景 / 导航 / 柜体配置。
-          </div>
-          <div class="section-label">
-            运行中末端工具套装
-          </div>
-          <div class="replay-form-grid">
-            <div class="form-field">
-              <label for="assetToolsetSelect">目标末端工具套装</label>
-              <select id="assetToolsetSelect" disabled>
-                <option value="A">套装 A：三电缸(右) + 两电缸(左)，当前自动任务为按钮 / 柜门；两电缸保留手动控制</option>
-                <option value="B">套装 B：旋转按钮(右) + 摇入摇出(左)，用于旋钮 / 摇杆开关</option>
-              </select>
-            </div>
-          </div>
-          <div class="command-row">
-            <button class="btn btn-primary" id="btnToolsetSwitch" disabled>一键切换末端</button>
-          </div>
-          <div class="status-detail" id="toolsetDetail">
-            正在等待末端切换监督器状态。
-          </div>
-        </div>
+      <label for="toolsetSelect">目标末端工具套装</label>
+      <select id="toolsetSelect" disabled>
+        <option value="A">套装 A：电气夹层抽拉柜</option>
+        <option value="B">套装 B：发电机层旋钮、按钮、摇杆</option>
+      </select>
+      <div class="command-row">
+        <button class="btn btn-primary" id="btnToolsetSwitch" disabled>一键切换末端</button>
       </div>
+      <div class="status-detail" id="toolsetDetail">正在等待末端切换监督器状态。</div>
     </div>
   </section>
 </div>
@@ -1233,22 +1162,9 @@ const sceneSelect = $('sceneSelect');
 const sceneState = $('sceneState');
 const sceneDetail = $('sceneDetail');
 const btnSceneSwitch = $('btnSceneSwitch');
-const assetState = $('assetState');
-const assetDetail = $('assetDetail');
-const assetList = $('assetList');
-const assetUpload = $('assetUpload');
-const assetSkipValidate = $('assetSkipValidate');
-const assetSceneSelect = $('assetSceneSelect');
-const assetCabinetSelect = $('assetCabinetSelect');
-const assetToolsetSelect = $('assetToolsetSelect');
-const btnAssetImport = $('btnAssetImport');
-const btnAssetRefresh = $('btnAssetRefresh');
-const btnAssetDelete = $('btnAssetDelete');
-const btnAssetApply = $('btnAssetApply');
-const btnAssetActivate = $('btnAssetActivate');
-const assetActivateDetail = $('assetActivateDetail');
+const toolsetState = $('toolsetState');
+const toolsetSelect = $('toolsetSelect');
 const btnToolsetSwitch = $('btnToolsetSwitch');
-const assetLibraryRoot = $('assetLibraryRoot');
 const toolsetDetail = $('toolsetDetail');
 
 function defaultServiceUrl(port) {
@@ -2408,16 +2324,6 @@ async function testControlConnection() {
         replayDetail.textContent =
           `回放状态初始化失败：${replayError.message}\n` +
           '为保证安全，实时写控制保持锁定并自动重试。';
-      }
-      try {
-        await refreshAssets();
-      } catch (assetError) {
-        setAutonomyState(
-          assetState,
-          '资产服务不可用',
-          'err'
-        );
-        assetDetail.textContent = `资产列表加载失败：${assetError.message}`;
       }
       st.textContent = '已连接';
       st.className = 'ctrl-status ok';
@@ -3638,20 +3544,12 @@ function applyScenes(payload) {
     ? payload.active
     : '';
   const previous = sceneSelect.value;
-  // 按来源分组：内置场景 / 已导入场景（资产场景由 /scenes 的 source 字段标记）。
-  const builtinGroup = document.createElement('optgroup');
-  builtinGroup.label = '内置场景';
-  const assetGroup = document.createElement('optgroup');
-  assetGroup.label = '已导入场景';
-  for (const entry of sceneCatalog) {
+  const nodes = sceneCatalog.map(entry => {
     const option = document.createElement('option');
     option.value = entry.name;
     option.textContent = entry.name;
-    (entry.source === 'asset' ? assetGroup : builtinGroup).appendChild(option);
-  }
-  const nodes = [];
-  if (builtinGroup.children.length) nodes.push(builtinGroup);
-  if (assetGroup.children.length) nodes.push(assetGroup);
+    return option;
+  });
   if (!nodes.length) {
     const empty = document.createElement('option');
     empty.value = '';
@@ -3679,12 +3577,8 @@ function applyScenes(payload) {
   );
   sceneDetail.textContent = activeEntry
     ? (sceneCabinetCapable(activeSceneName)
-      ? (activeEntry.source === 'asset'
-        ? '资产场景含控制柜/夹具：柜体控件与地图将即时更新；若其自带实例与本次启动库存不一致，实例/控件/xacro 需重启栈后生效。'
-        : '当前场景包含控制柜/夹具；切换后柜体控件与地图将随之更新。')
-      : (activeEntry.source === 'asset'
-        ? '资产场景仅含机器人与场地（无柜体/夹具），Nav2 地图已对应更新。'
-        : '当前场景仅含机器人与场地（无柜体/夹具），Nav2 地图已对应更新。'))
+      ? '当前场景包含控制柜/夹具；切换后柜体控件与地图将随之更新。'
+      : '当前场景仅含机器人与场地；地图将随之更新。')
     : '连接控制服务器后可切换仿真场景。';
 }
 
@@ -3733,17 +3627,7 @@ async function switchScene() {
   }
 }
 
-// ─── 资产库与运行中末端切换 ──────────────────────────────────
-let assetCatalog = [];
-let assetSelectionSnapshot = {scene: null, cabinet: null};
-let assetToolsetStatus = {
-  active_toolset: null,
-  pending_toolset: null,
-  applied: null,
-  manual_restart_required: false,
-  automatic_restart: false
-};
-let assetImportInFlight = false;
+// ─── 运行中末端切换 ──────────────────────────────────
 let toolsetRuntimeStatus = {
   managed: false,
   state: 'unavailable',
@@ -3755,55 +3639,10 @@ let toolsetRuntimeStatus = {
 };
 let toolsetSwitchInFlight = false;
 let toolsetSelectionDirty = false;
-// 刷新资产目录时，避免把用户尚未点击“保存选择”的本地选择覆盖掉；保存、
-// 删除成功后会清零并以服务端持久化状态重新同步。
-let assetSelectionDirty = false;
 
-function assetIsAdmin() {
+function toolsetIsAdmin() {
   // 鉴权关闭的部署不存在 token / role；此时服务端按管理员权限运行。
   return !authRequired || currentUserRole === 'admin';
-}
-
-// 资产写操作不走 controlRequest：资产管理与回放只读互不干扰，
-// 只复用其鉴权 / token 失效语义。
-async function assetRequest(path, method = 'GET', payload = null) {
-  const options = {method, cache: 'no-store'};
-  const headers = {};
-  if (authToken) headers['Authorization'] = 'Bearer ' + authToken;
-  if (payload !== null) {
-    headers['Content-Type'] = 'application/json';
-    options.body = JSON.stringify(payload);
-  }
-  options.headers = headers;
-  const response = await fetch(ctrlBaseUrl + path, options);
-  let body = {};
-  try { body = await response.json(); } catch (_) {}
-  if (response.status === 401) {
-    handleTokenExpired();
-    throw new Error('登录已失效，请重新登录');
-  }
-  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-  return body;
-}
-
-function assetOption(value, label) {
-  const option = document.createElement('option');
-  option.value = value || '';
-  option.textContent = label || value || '';
-  return option;
-}
-
-function fillAssetSelect(select, options, selected, preserveUnsaved = false) {
-  const previous = select.value;
-  const nodes = [assetOption('', '（保持默认）')];
-  for (const name of options) {
-    if (!name) continue;
-    nodes.push(assetOption(name, name));
-  }
-  select.replaceChildren(...nodes);
-  select.value = preserveUnsaved && previous && options.includes(previous)
-    ? previous
-    : (selected || '');
 }
 
 function normalizedToolset(value) {
@@ -3844,7 +3683,6 @@ function toolsetControlLocked() {
 }
 
 function toolsetStatusForDisplay() {
-  if (!toolsetRuntimeStatus.managed) return assetToolsetStatus;
   // 请求已发出、但第一帧 ROS 状态尚未到达时，也必须明确显示锁定中的
   // 切换态，避免页面短暂误导为“仍可操作”。
   if (toolsetSwitchInFlight && toolsetRuntimeStatus.state === 'ready') {
@@ -3852,7 +3690,7 @@ function toolsetStatusForDisplay() {
       ...toolsetRuntimeStatus,
       state: 'switching',
       ready: false,
-      target_toolset: normalizedToolset(assetToolsetSelect.value)
+      target_toolset: normalizedToolset(toolsetSelect.value)
     };
   }
   return toolsetRuntimeStatus;
@@ -3900,98 +3738,32 @@ function describeToolsetStatus(status) {
 function renderToolsetStatus() {
   const status = toolsetStatusForDisplay();
   toolsetDetail.textContent = describeToolsetStatus(status);
+  setAutonomyState(toolsetState,
+    status.ready ? `套装 ${status.active_toolset || '未知'} 已就绪` : '末端未就绪',
+    status.ready ? 'ok' : (status.state === 'failed' ? 'err' : 'busy'));
   const active = normalizedToolset(
     toolsetRuntimeStatus && toolsetRuntimeStatus.active_toolset
   );
-  if (active && (!toolsetSelectionDirty || !normalizedToolset(assetToolsetSelect.value))) {
-    assetToolsetSelect.value = active;
+  if (active && (!toolsetSelectionDirty || !normalizedToolset(toolsetSelect.value))) {
+    toolsetSelect.value = active;
   }
 }
 
-function renderAssetSummary() {
-  const count = assetCatalog.length;
-  setAutonomyState(assetState, `${count} 项`, count ? 'ok' : '');
-  const toolsetDetailText = describeToolsetStatus(toolsetStatusForDisplay());
-  const unsavedSuffix = assetSelectionDirty ? ' 当前表单有未保存的选择。' : '';
-  assetDetail.textContent = count
-    ? `共 ${count} 项资产；${toolsetDetailText}`
-    : `尚未导入资产。管理员可上传 zip 场景 / 柜体资产包。${toolsetDetailText}`;
-  assetDetail.textContent += unsavedSuffix;
-}
 
 function applyToolsetRuntimeStatus(status) {
   toolsetRuntimeStatus = normalizedToolsetRuntimeStatus(status);
   renderToolsetStatus();
-  renderAssetSummary();
   updateControlInterlocks();
 }
 
-function updateAssetControlState() {
+function updateToolsetControlState() {
   const enabled = Boolean(ctrlConnected) && (!authRequired || Boolean(authToken));
-  const controlsLocked = toolsetControlLocked();
-  const writable = enabled && !controlsLocked;
-  const admin = writable && assetIsAdmin();
-  btnAssetImport.disabled = !admin || assetImportInFlight;
-  btnAssetRefresh.disabled = !writable;
-  btnAssetDelete.disabled = !admin || !assetList.value || assetImportInFlight;
-  btnAssetApply.disabled = !writable || assetImportInFlight;
-  btnAssetActivate.disabled = !writable || assetImportInFlight;
-  assetSceneSelect.disabled = !writable;
-  assetCabinetSelect.disabled = !writable;
-  const canSwitch = writable && assetIsAdmin() &&
-    toolsetRuntimeStatus.managed &&
-    toolsetRuntimeStatus.ready &&
-    toolsetRuntimeStatus.state === 'ready' &&
-    !replayControlReadOnly;
-  assetToolsetSelect.disabled = !canSwitch;
-  btnToolsetSwitch.disabled = !canSwitch || assetImportInFlight ||
-    !normalizedToolset(assetToolsetSelect.value) ||
-    normalizedToolset(assetToolsetSelect.value) ===
-      normalizedToolset(toolsetRuntimeStatus.active_toolset);
-}
-
-function applyAssets(payload) {
-  assetCatalog = Array.isArray(payload && payload.assets) ? payload.assets : [];
-  assetSelectionSnapshot = payload && payload.selection
-    ? payload.selection
-    : assetSelectionSnapshot;
-  assetToolsetStatus = payload && payload.toolset_status
-    ? payload.toolset_status
-    : assetToolsetStatus;
-  if (payload && payload.library_root) {
-    assetLibraryRoot.textContent = `资产库目录：${payload.library_root}`;
-  }
-
-  const scenes = assetCatalog.filter(a => a.kind === 'scene').map(a => a.name);
-  const cabinets = assetCatalog.filter(a => a.kind === 'cabinet').map(a => a.name);
-
-  const previousAsset = assetList.value;
-  const listNodes = assetCatalog.map(record => assetOption(
-    `${record.kind}/${record.name}`,
-    `${record.kind}/${record.name} v${record.version}` +
-      (record.validated ? '' : '（仅结构校验）')
-  ));
-  if (!listNodes.length) listNodes.push(assetOption('', '（尚无资产）'));
-  assetList.replaceChildren(...listNodes);
-  if (previousAsset && assetCatalog.some(r => `${r.kind}/${r.name}` === previousAsset)) {
-    assetList.value = previousAsset;
-  } else if (assetCatalog.length) {
-    assetList.selectedIndex = 0;
-  }
-
-  fillAssetSelect(
-    assetSceneSelect, scenes, assetSelectionSnapshot.scene, assetSelectionDirty
-  );
-  fillAssetSelect(
-    assetCabinetSelect, cabinets, assetSelectionSnapshot.cabinet, assetSelectionDirty
-  );
-  renderToolsetStatus();
-  renderAssetSummary();
-  updateAssetControlState();
-}
-
-async function refreshAssets() {
-  applyAssets(await assetRequest('/assets'));
+  const canSwitch = enabled && !toolsetControlLocked() && toolsetIsAdmin() &&
+    toolsetRuntimeStatus.managed && toolsetRuntimeStatus.ready &&
+    toolsetRuntimeStatus.state === 'ready' && !replayControlReadOnly;
+  toolsetSelect.disabled = !canSwitch;
+  btnToolsetSwitch.disabled = !canSwitch || !normalizedToolset(toolsetSelect.value) ||
+    normalizedToolset(toolsetSelect.value) === normalizedToolset(toolsetRuntimeStatus.active_toolset);
 }
 
 async function loadToolsetRuntimeStatus() {
@@ -4005,7 +3777,7 @@ async function refreshToolsetRuntimeStatus({preserveOnError = false} = {}) {
     return await loadToolsetRuntimeStatus();
   } catch (error) {
     if (preserveOnError) return toolsetRuntimeStatus;
-    // 兼容未使用世界保活监督器的旧启动方式；它不应令资产列表或监控页
+    // 兼容未使用世界保活监督器的旧启动方式；它不应令监控页
     // 整体离线，但一键切换入口会保持禁用。
     applyToolsetRuntimeStatus({
       managed: false,
@@ -4017,104 +3789,9 @@ async function refreshToolsetRuntimeStatus({preserveOnError = false} = {}) {
   }
 }
 
-async function importAssetFile() {
-  const file = assetUpload.files && assetUpload.files[0];
-  if (!file) { toast('请先选择要导入的 zip 文件', 'warn'); return; }
-  assetImportInFlight = true;
-  updateAssetControlState();
-  setAutonomyState(assetState, '导入中 ...', 'busy');
-  assetDetail.textContent = `正在导入 ${file.name}，校验并登记资产库 ...`;
-  try {
-    const form = new FormData();
-    form.append('file', file);
-    form.append('skip_validate', assetSkipValidate.checked ? 'true' : 'false');
-    const response = await fetch(ctrlBaseUrl + '/assets/import', {
-      method: 'POST',
-      cache: 'no-store',
-      headers: authHeaders({}),
-      body: form
-    });
-    let body = {};
-    try { body = await response.json(); } catch (_) {}
-    if (response.status === 401) { handleTokenExpired(); throw new Error('登录已失效，请重新登录'); }
-    if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-    const record = body.asset || {};
-    toast(`已导入 ${record.kind}/${record.name} v${record.version}`, 'ok');
-    log('ok', `资产已导入：${record.kind}/${record.name} v${record.version}`);
-    assetUpload.value = '';
-    await refreshAssets();
-  } catch (error) {
-    setAutonomyState(assetState, '导入失败', 'err');
-    assetDetail.textContent = `导入失败：${error.message}`;
-    toast(`导入失败：${error.message}`, 'err');
-    log('err', `资产导入失败: ${error.message}`);
-  } finally {
-    assetImportInFlight = false;
-    updateAssetControlState();
-  }
-}
-
-async function saveAssetSelection() {
-  const payload = {
-    scene: assetSceneSelect.value || null,
-    cabinet: assetCabinetSelect.value || null
-  };
-  setAutonomyState(assetState, '保存中 ...', 'busy');
-  try {
-    const saved = await assetRequest('/assets/selection', 'POST', payload);
-    assetSelectionDirty = false;
-    assetSelectionSnapshot = saved;
-    assetToolsetStatus = saved.toolset_status || assetToolsetStatus;
-    toast('已保存场景 / 柜体选择；当前仿真未重启', 'ok');
-    log('ok', `资产选择已保存：${JSON.stringify(saved)}`);
-    await refreshAssets();
-  } catch (error) {
-    setAutonomyState(assetState, '保存失败', 'err');
-    assetDetail.textContent = `保存选择失败：${error.message}`;
-    toast(`保存失败：${error.message}`, 'err');
-  }
-}
-
 const toolsetStatusPollIntervalMs = 750;
 const toolsetSwitchWaitTimeoutMs = 180000;
 
-// 「立即生效」：持久化当前场景 / 柜体选择，并基于 POST /assets/selection 响应的
-// ``applied``（当前进程栈启动时实际挂载的资产）诚实报告柜体是否需重启生效。
-// 不触发自动重启，也不做场景即时切换 —— 场景即时切换由上方场景下拉负责。
-async function applySelectedAssets() {
-  const scene = assetSceneSelect.value || null;
-  const cabinet = assetCabinetSelect.value || null;
-  setAutonomyState(assetState, '生效中 ...', 'busy');
-  try {
-    const saved = await assetRequest('/assets/selection', 'POST', {scene, cabinet});
-    assetSelectionDirty = false;
-    assetSelectionSnapshot = saved;
-    assetToolsetStatus = saved.toolset_status || assetToolsetStatus;
-    const applied = saved.applied || {};
-    const parts = [];
-    if (scene) {
-      parts.push(applied.scene === scene
-        ? `场景资产 ${scene} 已在本次启动生效`
-        : `场景资产 ${scene} 已保存（可用上方场景下拉即时切换，或重启后生效）`);
-    }
-    if (cabinet) {
-      parts.push(applied.cabinet === cabinet
-        ? `柜体资产 ${cabinet} 已挂载生效`
-        : `柜体资产 ${cabinet} 需重启栈后生效（不自动重启）`);
-    }
-    const message = parts.length ? parts.join('；') : '未选择场景 / 柜体资产';
-    assetActivateDetail.textContent = message;
-    const pendingRestart = Boolean(cabinet) && applied.cabinet !== cabinet;
-    toast(message, pendingRestart ? 'warn' : 'ok');
-    log('ok', `资产生效：${JSON.stringify(saved)}`);
-    await refreshAssets();
-  } catch (error) {
-    setAutonomyState(assetState, '生效失败', 'err');
-    assetActivateDetail.textContent = `生效失败：${error.message}`;
-    toast(`生效失败：${error.message}`, 'err');
-    log('err', `资产生效失败: ${error.message}`);
-  }
-}
 
 function waitForToolsetStatusDelay(delayMs) {
   return new Promise(resolve => setTimeout(resolve, delayMs));
@@ -4189,16 +3866,11 @@ async function refreshAfterToolsetSwitch() {
   } catch (error) {
     log('warn', `末端切换后健康状态刷新失败：${error.message}`);
   }
-  try {
-    await refreshAssets();
-  } catch (error) {
-    log('warn', `末端切换后资产选择刷新失败：${error.message}`);
-  }
 }
 
 async function switchToolset() {
   if (toolsetSwitchInFlight) return;
-  const target = normalizedToolset(assetToolsetSelect.value);
+  const target = normalizedToolset(toolsetSelect.value);
   const active = normalizedToolset(toolsetRuntimeStatus.active_toolset);
   if (!toolsetRuntimeStatus.managed) {
     toast('当前统一启动入口未启用运行中末端切换监督器', 'warn');
@@ -4228,7 +3900,7 @@ async function switchToolset() {
   // 先撤销页面侧持续速度输出，再请求网关完成任务/控制器的安全静止检查。
   try { await clearDirectionInputs(); } catch (_) {}
   toolsetSwitchInFlight = true;
-  setAutonomyState(assetState, `正在切换到套装 ${target} ...`, 'busy');
+  setAutonomyState(toolsetState, `正在切换到套装 ${target} ...`, 'busy');
   renderToolsetStatus();
   updateControlInterlocks();
   let switchAccepted = false;
@@ -4253,7 +3925,7 @@ async function switchToolset() {
     toolsetSelectionDirty = false;
     applyToolsetRuntimeStatus(completed);
     await refreshAfterToolsetSwitch();
-    setAutonomyState(assetState, `套装 ${target} 已就绪`, 'ok');
+    setAutonomyState(toolsetState, `套装 ${target} 已就绪`, 'ok');
     toast(`末端已切换到套装 ${target}；Gazebo 世界保持运行`, 'ok');
     log('ok', `末端工具套装已切换：${active || '?'} -> ${target}`);
   } catch (error) {
@@ -4277,10 +3949,10 @@ async function switchToolset() {
       });
     } else if (latest.state === 'ready' && restored) {
       toolsetSelectionDirty = false;
-      assetToolsetSelect.value = restored;
+      toolsetSelect.value = restored;
     }
-    setAutonomyState(assetState, '末端切换失败', 'err');
-    assetDetail.textContent = `末端切换失败：${error.message}`;
+    setAutonomyState(toolsetState, '末端切换失败', 'err');
+    toolsetDetail.textContent = `末端切换失败：${error.message}`;
     toast(`末端切换失败：${error.message}`, 'err');
     log('err', `末端切换失败: ${error.message}`);
   } finally {
@@ -4290,28 +3962,6 @@ async function switchToolset() {
   }
 }
 
-async function deleteSelectedAsset() {
-  const value = assetList.value;
-  if (!value) return;
-  const slash = value.indexOf('/');
-  const kind = value.slice(0, slash);
-  const name = value.slice(slash + 1);
-  if (!kind || !name) return;
-  if (!confirm(`确认删除资产 ${kind}/${name}？\n目录与 catalog 条目将一并移除，且会清空对该资产的选中。`)) return;
-  setAutonomyState(assetState, '删除中 ...', 'busy');
-  try {
-    const result = await assetRequest(`/assets/${kind}/${name}`, 'DELETE');
-    assetSelectionDirty = false;
-    assetSelectionSnapshot = result.selection || assetSelectionSnapshot;
-    toast(`已删除 ${kind}/${name}`, 'ok');
-    log('ok', `资产已删除：${kind}/${name}`);
-    await refreshAssets();
-  } catch (error) {
-    setAutonomyState(assetState, '删除失败', 'err');
-    assetDetail.textContent = `删除失败：${error.message}`;
-    toast(`删除失败：${error.message}`, 'err');
-  }
-}
 
 function applyCabinetHealth(health) {
   if (health && health.toolset) {
@@ -5591,7 +5241,7 @@ function updateControlInterlocks() {
   $('cabinetForce').disabled = replayLocked || cabinetActive || toolsetLocked || !cabinetCatalogReceived || catalogSyncLocked;
   renderBaseControlStatus();
   if (typeof updateReplayControls === 'function') updateReplayControls();
-  if (typeof updateAssetControlState === 'function') updateAssetControlState();
+  if (typeof updateToolsetControlState === 'function') updateToolsetControlState();
 }
 
 const manualTakeoverRequestTimeoutMs = 2500;
@@ -6872,27 +6522,11 @@ sceneSelect.addEventListener('change', () => {
       : `将切换到「${target}」：仅机器人与场地（无柜体/夹具），Nav2 地图已对应更新。`;
   }
 });
-$('btnAssetImport').addEventListener('click', importAssetFile);
-$('btnAssetRefresh').addEventListener('click', () => {
-  refreshAssets().catch(error => {
-    setAutonomyState(assetState, '刷新失败', 'err');
-    assetDetail.textContent = `刷新失败：${error.message}`;
-  });
-});
-$('btnAssetDelete').addEventListener('click', deleteSelectedAsset);
-$('btnAssetApply').addEventListener('click', saveAssetSelection);
-$('btnAssetActivate').addEventListener('click', applySelectedAssets);
 $('btnToolsetSwitch').addEventListener('click', switchToolset);
-for (const select of [assetSceneSelect, assetCabinetSelect]) {
-  select.addEventListener('change', () => {
-    assetSelectionDirty = true;
-    setAutonomyState(assetState, '有未保存选择', '');
-  });
-}
-assetToolsetSelect.addEventListener('change', () => {
+toolsetSelect.addEventListener('change', () => {
   toolsetSelectionDirty = true;
   renderToolsetStatus();
-  updateAssetControlState();
+  updateToolsetControlState();
 });
 $('btnRecordingStart').addEventListener('click', startRecording);
 $('btnRecordingStop').addEventListener('click', stopRecording);

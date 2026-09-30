@@ -97,7 +97,7 @@ class MonitorWebContractTest(unittest.TestCase):
     def test_toolset_status_describes_world_preserving_hot_switch(self) -> None:
         toolset_status = _source_block(
             "function normalizedToolset(value)",
-            "\nfunction updateAssetControlState()",
+            "\nfunction updateToolsetControlState()",
         )
         self.run_node(textwrap.dedent(f"""
             const assert = require('node:assert/strict');
@@ -128,26 +128,16 @@ class MonitorWebContractTest(unittest.TestCase):
             assert.match(failed, /rollback failed/);
         """))
 
-    def test_toolset_switch_is_separate_from_asset_selection_save(self) -> None:
-        save_selection = _source_block(
-            "async function saveAssetSelection()",
-            "\nconst toolsetStatusPollIntervalMs",
-        )
+    def test_asset_management_removed_without_removing_toolset_switch(self) -> None:
+        source = _inline_script()
+        self.assertNotIn('/assets', source)
+        self.assertNotIn('btnAssetImport', source)
         switch_toolset = _source_block(
-            "async function switchToolset()",
-            "\nasync function deleteSelectedAsset()",
-        )
-        self.assertIn("scene: assetSceneSelect.value || null", save_selection)
-        self.assertIn("cabinet: assetCabinetSelect.value || null", save_selection)
-        self.assertNotIn("toolset: assetToolsetSelect.value", save_selection)
-        self.assertNotIn("/robot/toolset/switch", save_selection)
-
-        self.assertIn("/robot/toolset/switch", switch_toolset)
-        self.assertIn("expected_generation: expectedGeneration", switch_toolset)
-        self.assertIn("accepted && accepted.toolset_status", switch_toolset)
-        self.assertIn("waitForToolsetSwitchCompletion", switch_toolset)
-        self.assertIn("refreshAfterToolsetSwitch", switch_toolset)
-        self.assertNotIn("/assets/selection", switch_toolset)
+            'async function switchToolset()', '\nfunction applyCabinetHealth(')
+        self.assertIn('/robot/toolset/switch', switch_toolset)
+        self.assertIn('expected_generation: expectedGeneration', switch_toolset)
+        self.assertIn('waitForToolsetSwitchCompletion', switch_toolset)
+        self.assertIn('refreshAfterToolsetSwitch', switch_toolset)
 
     def test_toolset_switch_wait_executes_all_terminal_generation_branches(self) -> None:
         wait_source = _source_block(

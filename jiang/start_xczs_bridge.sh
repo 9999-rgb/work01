@@ -1416,7 +1416,7 @@ import sys
 
 try:
     import alembic, aiosqlite, bcrypt, cryptography, fastapi
-    import jose, multipart, passlib, pydantic, pydantic_settings
+    import jose, passlib, pydantic, pydantic_settings
     import sqlalchemy, uvicorn, yaml, zenoh
     from PIL import Image
     from app.main import _normalize_allowed_origins, create_app

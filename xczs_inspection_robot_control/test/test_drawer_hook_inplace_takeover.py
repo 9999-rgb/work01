@@ -253,8 +253,7 @@ def test_hold_state_is_task_local_and_leaves_no_residue() -> None:
 
 
 def test_no_reset_client_is_invoked_anywhere() -> None:
-    """§4.1 keeps the reset clients as exception-recovery infrastructure only:
-    they may be constructed (dead members), but no code path may invoke them.
+    """Keep controller reset out of the operator after removing its dead clients.
     This whole-file check is the backstop to the seal-scoped one above."""
     clean = _blank_comments_and_strings(SOURCE_TEXT)
     assert "controller_switch_client_->" not in clean

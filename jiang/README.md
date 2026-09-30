@@ -2,6 +2,8 @@
 
 ## 当前使用说明（2026-09-30）
 
+Web 不再提供资产上传、列表、删除或组合选择；末端切换保留为独立卡片。
+
 取消与恢复：机械操作终态等待窗口为 180 s，导航为 30 s；底层报告恢复失败且未收臂时，
 保留原失败并跳过通用关节回零。场景删除会等待两次模型缺席确认，避免异步删除误删新实体。
 末端切换需 `ready` 与 `gateway_synced` 同时成立。Web 仅展示开放的业务控件，
@@ -50,7 +52,7 @@
 - 手动控制：`POST /cmd_vel`、`POST /joint_trajectory`；导航：`GET /navigation/status`、`POST /navigation/mode`、`POST /navigation/takeover`。
 - 录制回放：`POST /recording/start|stop`、`GET /recordings`（+`{id}/timeline`）、`POST /replay/data/start|pause|resume|rate`、
   `POST /replay/task/start`、`GET /replay/status`、`POST /replay/cancel`；回放活跃时写操作一律 409。
-- 资产/场景：`GET /assets`、`POST /assets/import`、`GET|POST /assets/selection`、`DELETE /assets/{kind}/{name}`、`GET /scenes`、`POST /scene/switch`。
+- 场景：`GET /scenes`、`POST /scene/switch`。Web 资产管理和 `/assets*` API 已移除；底层资产读取仍供启动和地图解析使用。
 - 机器人：`GET /robot/capabilities`、`GET /robot/toolset/status`、`POST /robot/toolset/switch`（经 `/xczs/toolset/switch` service 与 status topic）。
 
 ## 与项目的关系

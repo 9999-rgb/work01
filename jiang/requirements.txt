@@ -14,7 +14,6 @@ aiosqlite>=0.20,<1
 # Auth
 passlib[bcrypt]>=1.7,<2
 python-jose[cryptography]>=3.3,<4
-python-multipart>=0.0.9,<1
 
 # Existing
 eclipse-zenoh==1.9.0

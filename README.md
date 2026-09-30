@@ -69,13 +69,16 @@ python3 scripts/validate/validate_two_scene_web.py --phase generator_aux --out l
 
 ## 当前状态与文档索引
 
+Web 资产导入/管理及 `/assets*` API 已移除。场景切换与独立末端切换继续可用；
+底层现有资产数据仍供启动与地图解析使用。
+
 - 旋钮旋转由 `r_rotbtn_rotate_joint` 执行；机械臂负责接近、拉出、插回和退出。
   外观 0° 对应 API `turned`，外观 45° 对应 `center`，不能按英文名称猜角度。
 - 场景/末端切换后须同时满足 `ready=true`、`gateway_synced=true`；末端切换替换
   机器人子栈，Gazebo 世界保持运行。旋钮偶发夹持不到位仍未彻底解决。
 - 2026-09-30 清理后七包构建通过，ROS 220 项、Web 771 项测试通过；
   该轮未重跑全动作或导航，不替代各日期的物理验收。
-- [架构](docs/architecture.md) · [资产导入](docs/asset_import_requirements.md) ·
+- [架构](docs/architecture.md) · [资产历史设计及移除说明](docs/asset_import_requirements.md) ·
   [脚本用法](scripts/README.md) · [文件清理记录](docs/cleanup_20260930.md)。
 - 包级说明：[Web/任务层](jiang/README.md)、[启动](xczs_inspection_robot_bringup/README.md)、
   [控制](xczs_inspection_robot_control/README.md)、[模型](xczs_inspection_robot_description/README.md)、

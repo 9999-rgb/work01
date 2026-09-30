@@ -29,8 +29,6 @@
 
 #include "control_msgs/action/follow_joint_trajectory.hpp"
 #include "control_msgs/msg/joint_trajectory_controller_state.hpp"
-#include "controller_manager_msgs/srv/configure_controller.hpp"
-#include "controller_manager_msgs/srv/switch_controller.hpp"
 #include "Eigen/Cholesky"
 #include "Eigen/Geometry"
 #include "gazebo_msgs/srv/get_entity_state.hpp"
@@ -807,11 +805,11 @@ public:
     // 阶段 N（映射见 DebugStageCapReached 头注释；只读打开方向，closing 忽略）；
     // execute_operate 每次执行时重新读取，无需重启 operator。不改 msg/action
     // 合同，Web 无感知。
-    debug_stage_cap_ = declare_parameter<int>("debug_stage_cap", 0);
+    declare_parameter<int>("debug_stage_cap", 0);
     // 2026-09-08 用户现场观察:cap2 钩爪闭合取证后驻留 N 秒(默认 0 零回归),
     // 保持「钩咬把手 + 工作位姿」供 GUI 细看,再进入正常收尾。driver 用
     // --hold-sec 设置;每次 execute 重新读取,无需重启 operator。
-    drawer_hook_hold_seconds_ = declare_parameter<double>(
+    declare_parameter<double>(
       "drawer_hook_hold_seconds", 0.0);
     planning_velocity_scale_ = unit_interval_parameter(
       "planning_velocity_scale", 0.20);
@@ -1001,16 +999,11 @@ public:
       "docking_breakaway_progress", 0.002);
     docking_angular_gain_ = positive_parameter(
       "docking_angular_gain", 1.2);
-    // P3-8 grab-and-drive drawer pull: the base translates along the drawer
-    // axis at a speed proportional to the remaining drawer travel, capped at
-    // drawer_base_drive_max_speed (kept slow so the 80 kg drawer tracks the
-    // linear-drag coupling without overshoot).
+    // Shared speed cap and tracking gain for visual_glued_base_follow.
     drawer_base_drive_max_speed_ = positive_parameter(
       "drawer_base_drive_max_speed", 0.05);
     drawer_base_drive_gain_ = positive_parameter(
       "drawer_base_drive_gain", 1.0);
-    drawer_base_drive_timeout_ = positive_parameter(
-      "drawer_base_drive_timeout", 60.0);
     // 2026-09-06 AGENT 可视化后端（切片B/T1）：内部执行后端选择器不进用户界面。
     // 空 = 禁用（默认走 bimanual_force 力耦合全流程）；"visual" = 电气夹层适配器
     // 对 visual_drawer_control_ids 里的抽屉（db1）启用运动学播放执行模块。
@@ -1322,22 +1315,6 @@ public:
     two_cylinder_fjt_client_ = rclcpp_action::create_client<
       control_msgs::action::FollowJointTrajectory>(
       this, controller_namespace_ + "/two_cylinder_controller/follow_joint_trajectory");
-    // 2026-09-05 AGENT §8.4 fix#4 (hook seat release): controller_manager
-    // service clients used to discharge the rod drives' effort-PID integrator
-    // charge (deactivate -> configure -> activate the tool controllers; see
-    // seal_drawer_hooks_by_probe phase 3).  A dedicated reentrant group keeps
-    // the reset callable from the action worker thread without serializing
-    // against the node's default callbacks.
-    rod_controller_callback_group_ = create_callback_group(
-      rclcpp::CallbackGroupType::Reentrant);
-    controller_switch_client_ = create_client<
-      controller_manager_msgs::srv::SwitchController>(
-      controller_namespace_ + "/controller_manager/switch_controller",
-      rmw_qos_profile_services_default, rod_controller_callback_group_);
-    controller_configure_client_ = create_client<
-      controller_manager_msgs::srv::ConfigureController>(
-      controller_namespace_ + "/controller_manager/configure_controller",
-      rmw_qos_profile_services_default, rod_controller_callback_group_);
     subscribe_to_arm_controller_references();
     navigation_mode_client_ = create_client<std_srvs::srv::SetBool>(
       navigation_mode_service);
@@ -2425,26 +2402,6 @@ private:
     return rclcpp_action::CancelResponse::ACCEPT;
   }
 
-  // The mounted end-effector toolset only serves the control types whose
-  // contact tool link it carries: Set A (three-cylinder + two-cylinder)
-  // operates buttons and doors, Set B (rotate-button + rocker) operates
-  // knobs and switches.  The shared adapter allowlist may span both
-  // toolsets, so the catalog must report only the mounted set as
-  // physically operable; execute_operate() rejects the unmounted set before
-  // changing a MoveIt profile or looking up TF.
-  bool tool_serves_control(std::uint8_t control_type) const
-  {
-    using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
-    if (toolset_ == "B") {
-      return control_type == Control::TYPE_KNOB ||
-             control_type == Control::TYPE_SWITCH;
-    }
-    return control_type == Control::TYPE_BUTTON ||
-           control_type == Control::TYPE_DOOR ||
-           control_type == Control::TYPE_SLIDER ||
-           control_type == Control::TYPE_DRAWER;
-  }
-
   std::string required_toolset_for_control(std::uint8_t control_type) const
   {
     using Control = xczs_inspection_robot_interfaces::msg::CabinetControl;
@@ -3355,7 +3312,6 @@ private:
       real_joint_state_topic_, rclcpp::QoS(10),
       [this](const sensor_msgs::msg::JointState::SharedPtr message) {
         std::lock_guard<std::mutex> lock(real_joint_states_mutex_);
-        real_joint_states_stamp_ = message->header.stamp;
         // 新鲜度判定以接收时刻（steady clock）为准，而不是拿 header.stamp
         // 与本节点 ros 时间相减：消息 stamp 由发布侧按仿真钟盖上，若本节点
         // 的 use_sim_time 时钟与仿真钟脱钩（/clock QoS 中断等），两种时钟
@@ -9767,7 +9723,7 @@ private:
   // world drawer target point.  This is the §4.3/§5.3 contact metric; its hard
   // threshold is sealed live at §7.2 stages 4/5.
   // World position of the moving rod's end, physics truth when available.
-  // Split out of rod_end_distance so callers can log the per-axis miss vector:
+  // Return the measured rod endpoint for per-axis contact diagnostics.
   // the scalar norm alone cannot tell an axial short-fall (hook merely hovering
   // short of the plate) from a lateral misplacement (hook pressed beside the
   // handle), and those two need opposite fixes.
@@ -9783,15 +9739,6 @@ private:
     const Eigen::Isometry3d & pose = state->getGlobalLinkTransform(rod_link);
     return pose * Eigen::Vector3d(
       rod_end_local.x(), rod_end_local.y(), rod_end_local.z());
-  }
-
-  double rod_end_distance(
-    MoveGroupInterface & move_group, const std::string & rod_link,
-    const tf2::Vector3 & rod_end_local, const tf2::Vector3 & world_target)
-  {
-    return (rod_end_world(move_group, rod_link, rod_end_local) -
-           Eigen::Vector3d(
-             world_target.x(), world_target.y(), world_target.z())).norm();
   }
 
   // Execute ONE side's rod stage: send the controller's full-joint goal built
@@ -11834,133 +11781,6 @@ private:
       stage,
       std::string("capped at AGENT §7.2 stage ") + std::to_string(stage) +
       ": " + evidence);
-  }
-
-  // P3-8 grab-and-drive drawer pull.  The right arm's forearm self-collides
-  // with the chassis beyond p≈0.15 and no dock shift / dock yaw / tool roll /
-  // west-side push clears the full pull to the 0.3 m open detent (exhaustive
-  // real-seed IK sweep).  So the pull does NOT fold the arms: it holds the
-  // grasp config and translates the BASE along the drawer axis, and the
-  // plugin's linear-drag coupling opens/closes the drawer 1:1 with the tools'
-  // world projection.  The arm joint config never changes during the drive,
-  // so no self-collision can develop.  Requires the attach to have been made
-  // with base_free=true (the chassis brake was skipped so the base can move).
-  // 2026-09-03 AGENT §6.3/§13.2: 该函数保留作兜底参考，正式路径已切换到
-  // pull_drawer_by_arm_waypoints（双臂拉拽 + 支撑电缸锚点）。
-  template<typename GoalHandleT>
-  void pull_drawer_by_base_translation(
-    const std::shared_ptr<GoalHandleT> & goal_handle,
-    const ButtonSpec & control,
-    double target_position,
-    bool * operation_executed)
-  {
-    const double drawer_start = button_snapshot(control).position;
-    const double travel = target_position - drawer_start;
-    if (std::abs(travel) <= slider_position_tolerance_) {
-      RCLCPP_INFO(
-        get_logger(),
-        "Drawer '%s' is already at the requested detent (%.4f); no base drive.",
-        control.id.c_str(), drawer_start);
-      return;
-    }
-    geometry_msgs::msg::TransformStamped reference_transform;
-    try {
-      reference_transform = transform_buffer_->lookupTransform(
-        planning_frame_, docking_base_frame_, tf2::TimePointZero);
-    } catch (const tf2::TransformException & error) {
-      throw OperationError(
-              PressCabinetButton::Result::NOT_READY,
-              "Could not read the robot odometry before the drawer base "
-              "drive: " + std::string(error.what()));
-    }
-    tf2::Quaternion reference_rotation;
-    tf2::fromMsg(reference_transform.transform.rotation, reference_rotation);
-    reference_rotation.normalize();
-    const double reference_yaw = tf2::getYaw(reference_rotation);
-
-    const auto deadline = std::chrono::steady_clock::now() +
-      std::chrono::duration<double>(drawer_base_drive_timeout_);
-    auto last_feedback = std::chrono::steady_clock::time_point{};
-    bool base_commanded = false;
-    try {
-      while (std::chrono::steady_clock::now() < deadline) {
-        check_cancel(goal_handle);
-        const double drawer_now = button_snapshot(control).position;
-        const double remaining = target_position - drawer_now;
-        if (std::abs(remaining) <= slider_position_tolerance_) {
-          publish_manual_base_stop();
-          if (base_commanded && operation_executed) {
-            *operation_executed = true;
-          }
-          return;
-        }
-        geometry_msgs::msg::TransformStamped current_transform;
-        try {
-          current_transform = transform_buffer_->lookupTransform(
-            planning_frame_, docking_base_frame_, tf2::TimePointZero);
-        } catch (const tf2::TransformException & error) {
-          throw OperationError(
-                  PressCabinetButton::Result::NOT_READY,
-                  "Could not read the robot odometry during the drawer base "
-                  "drive: " + std::string(error.what()));
-        }
-        tf2::Quaternion current_rotation;
-        tf2::fromMsg(current_transform.transform.rotation, current_rotation);
-        const double current_x = current_transform.transform.translation.x;
-        const double current_y = current_transform.transform.translation.y;
-        if (!std::isfinite(current_x) || !std::isfinite(current_y) ||
-          !std::isfinite(current_rotation.length2()) ||
-          current_rotation.length2() <= 1.0e-12)
-        {
-          throw OperationError(
-                  PressCabinetButton::Result::NOT_READY,
-                  "Robot odometry is invalid during the drawer base drive.");
-        }
-        current_rotation.normalize();
-        const double current_yaw = tf2::getYaw(current_rotation);
-        const int direction = remaining > 0.0 ? 1 : -1;
-        const double world_speed = std::min(
-          drawer_base_drive_max_speed_,
-          drawer_base_drive_gain_ * std::abs(remaining));
-        // Manual base twist is in the robot body frame (the router forwards
-        // /xczs/manual_cmd_vel unmodified).  Transform the pure east/west
-        // world velocity into the body frame and hold yaw against the yaw at
-        // drive start so the tool tips stay on the handles.
-        geometry_msgs::msg::Twist command;
-        command.linear.x = std::cos(current_yaw) * world_speed *
-          static_cast<double>(direction);
-        command.linear.y = -std::sin(current_yaw) * world_speed *
-          static_cast<double>(direction);
-        command.angular.z = std::clamp(
-          docking_angular_gain_ *
-            std::atan2(
-              std::sin(reference_yaw - current_yaw),
-              std::cos(reference_yaw - current_yaw)),
-          -docking_max_angular_speed_,
-          docking_max_angular_speed_);
-        manual_base_publisher_->publish(command);
-        base_commanded = true;
-        const auto now = std::chrono::steady_clock::now();
-        if (now - last_feedback >= 500ms) {
-          last_feedback = now;
-          publish_operate_feedback(
-            goal_handle,
-            OperateCabinetControl::Feedback::MANIPULATING,
-            0.62F, target_position,
-            "Driving the base along the drawer axis: remaining " +
-            std::to_string(std::abs(remaining)) + " m.");
-        }
-        std::this_thread::sleep_for(50ms);
-      }
-    } catch (...) {
-      publish_manual_base_stop();
-      throw;
-    }
-    publish_manual_base_stop();
-    throw OperationError(
-            PressCabinetButton::Result::EXECUTION_FAILED,
-            "The drawer base drive did not reach the requested detent within "
-            "the timeout.");
   }
 
   // =====================================================================
@@ -14429,209 +14249,6 @@ private:
       }
     }
     return min_fraction;
-  }
-
-  // P3-8: 双手抽拉抽屉的 ready 位姿分支选择器。七轴臂对同一个 ready 工具位姿
-  // 存在多组 IK 分支；run7 实测 OMPL 对右臂 ready 随机落到 r5=+2.96（腕部贴近
-  // +π 限位），解锁后下探 5cm 到支撑位时 IK 在 84.4% 处耗尽（r5 无法再负转），
-  // 支撑段规划失败。这里与 select_rotary_branch_seed 同构：以当前状态的 IK 分支
-  // （"自然分支"，接近 home、无甩动）为基准，扫描肩部/腕部种子变体，逐个用
-  // computeCartesianPath 干跑整条后续 Cartesian 链条（右臂：解锁→支撑→预抓→
-  // 抓取→拽拉；左臂：支撑→预抓→抓取→拽拉），选一条整链 ≥99% 且相对自然分支
-  // 甩动最小的分支。选不出则返回空，ready 走普通位姿目标（如实报告失败）。
-  template<typename GoalHandleT>
-  std::vector<double> select_drawer_branch_seed(
-    MoveGroupInterface & move_group,
-    const std::string & group_name,
-    const std::string & tool_link,
-    const std::shared_ptr<GoalHandleT> & goal_handle,
-    const geometry_msgs::msg::Pose & ready_pose,
-    const std::vector<std::vector<geometry_msgs::msg::Pose>> & chain,
-    const std::string & description,
-    std::size_t reseat_rebase_segment =
-      std::numeric_limits<std::size_t>::max())
-  {
-    (void)goal_handle;
-    if (chain.empty()) {
-      return {};
-    }
-    const auto robot_model = move_group.getRobotModel();
-    const auto * joint_model_group =
-      robot_model == nullptr ? nullptr :
-      robot_model->getJointModelGroup(group_name);
-    if (joint_model_group == nullptr) {
-      return {};
-    }
-    const auto & variable_names = joint_model_group->getVariableNames();
-    if (variable_names.size() != 7U) {
-      return {};
-    }
-    const double kPi = std::acos(-1.0);
-
-    const auto current_state = synchronized_current_robot_state(move_group);
-    // 自然分支：以当前状态（home）为种子解 ready 位姿，即 OMPL 无种子时会落的
-    // 分支（接近 home、无甩动）。它是所有候选变体的基准。
-    moveit::core::RobotState natural(*current_state);
-    if (!natural.setFromIK(
-        joint_model_group, ready_pose, tool_link,
-        std::min(1.0, planning_time_)))
-    {
-      return {};
-    }
-    natural.update();
-    if (!natural.satisfiesBounds(joint_model_group)) {
-      return {};
-    }
-    const auto read_positions = [&](const moveit::core::RobotState & state) {
-      std::vector<double> positions;
-      positions.reserve(variable_names.size());
-      for (const auto & name : variable_names) {
-        positions.push_back(state.getVariablePosition(name));
-      }
-      return positions;
-    };
-    const auto natural_positions = read_positions(natural);
-
-    // 候选种子：自然分支 + 肩部(r_arm_0/l_arm_0)与腕部(r_arm_5/l_arm_5)扫描。
-    // 保持其余关节为自然值，让 setFromIK 收敛到种子附近的 IK 分支。
-    std::vector<std::vector<double>> candidates;
-    candidates.reserve(1U + 11U + 11U);
-    candidates.push_back(natural_positions);
-    for (const double shoulder :
-      { -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5 })
-    {
-      auto variant = natural_positions;
-      variant[0] = shoulder;
-      candidates.push_back(std::move(variant));
-    }
-    for (const double wrist :
-      { -2.5, -2.0, -1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 2.5 })
-    {
-      auto variant = natural_positions;
-      variant[5] = wrist;
-      candidates.push_back(std::move(variant));
-    }
-
-    // 候选分支与自然分支的最大关节差（含角度回绕）。ready 用 setJointValueTarget
-    // 钉到该分支；分支离自然越远，home→ready 的关节空间甩动越大（run6 的远侧
-    // 解锁分支就是这种甩动的自锁来源），故只接受有限甩动且优先最小甩动。
-    const double kSwingHardLimit = 5.0;
-    const double kRequired = 0.99;
-    const auto swing_vs_natural = [&](const std::vector<double> & values) {
-      double max_swing = 0.0;
-      for (std::size_t index = 0U; index < values.size(); ++index) {
-        double delta = values[index] - natural_positions[index];
-        delta -= std::round(delta / (2.0 * kPi)) * (2.0 * kPi);
-        max_swing = std::max(max_swing, std::abs(delta));
-      }
-      return max_swing;
-    };
-
-    double best_fraction = -1.0;
-    double best_swing = std::numeric_limits<double>::infinity();
-    std::vector<double> best_clear;
-    const auto run_chain = [&](const moveit::core::RobotState & start) {
-      moveit::core::RobotState state(start);
-      double min_fraction = 1.0;
-      std::size_t segment_index = 0U;
-      for (const auto & segment : chain) {
-        if (segment_index == reseat_rebase_segment) {
-          // 干跑镜像实跑 reseat 的终点：实跑用 OMPL 关节空间钉回分支 ready
-          // 构型（终态恰为分支起点构型），干跑不跑那条末点 2 mm 内 IK 耗尽
-          // 的直线，直接把段后状态置回分支起点继续验证支撑/预抓/抓取段。
-          state = start;
-          ++segment_index;
-          continue;
-        }
-        move_group.setStartState(state);
-        moveit_msgs::msg::RobotTrajectory trajectory;
-        double fraction = -1.0;
-        try {
-          fraction = move_group.computeCartesianPath(
-            segment, 0.002, cartesian_jump_threshold_, trajectory, true);
-        } catch (const std::exception & error) {
-          RCLCPP_WARN(
-            get_logger(),
-            "Drawer '%s' branch chain Cartesian threw: %s",
-            description.c_str(), error.what());
-        }
-        if (fraction < min_fraction) {
-          min_fraction = fraction;
-        }
-        if (fraction < kRequired || trajectory.joint_trajectory.points.empty()) {
-          break;
-        }
-        robot_trajectory::RobotTrajectory segment_trajectory(
-          move_group.getRobotModel(), group_name);
-        segment_trajectory.setRobotTrajectoryMsg(state, trajectory);
-        state = segment_trajectory.getLastWayPoint();
-        ++segment_index;
-      }
-      return min_fraction;
-    };
-
-    for (const auto & seed : candidates) {
-      try {
-        moveit::core::RobotState branch(*current_state);
-        branch.setVariablePositions(variable_names, seed);
-        if (!branch.setFromIK(
-            joint_model_group, ready_pose, tool_link,
-            std::min(1.0, planning_time_)))
-        {
-          continue;
-        }
-        branch.update();
-        if (!branch.satisfiesBounds(joint_model_group)) {
-          continue;
-        }
-        const auto branch_positions = read_positions(branch);
-        const double swing = swing_vs_natural(branch_positions);
-        if (swing > kSwingHardLimit) {
-          continue;
-        }
-        const double fraction = run_chain(branch);
-        if (fraction > best_fraction) {
-          best_fraction = fraction;
-        }
-        if (fraction >= kRequired) {
-          if (swing < best_swing) {
-            best_swing = swing;
-            best_clear = branch_positions;
-          }
-        } else {
-          RCLCPP_DEBUG(
-            get_logger(),
-            "Drawer '%s' branch swing=%.3f min_fraction=%.3f.",
-            description.c_str(), swing, fraction);
-        }
-      } catch (const std::exception & error) {
-        RCLCPP_WARN(
-          get_logger(),
-          "Drawer '%s' branch validation failed: %s",
-          description.c_str(), error.what());
-      }
-    }
-
-    if (!best_clear.empty()) {
-      RCLCPP_INFO(
-        get_logger(),
-        "Drawer '%s' ready branch selected: full Cartesian chain clears "
-        "(swing=%.3f rad vs natural).",
-        description.c_str(), best_swing);
-      return best_clear;
-    }
-    RCLCPP_WARN(
-      get_logger(),
-      "No drawer '%s' ready branch cleared the full Cartesian chain "
-      "(best min fraction=%.3f); ready will pin the natural branch and "
-      "report any downstream failure honestly.",
-      description.c_str(), best_fraction > 0.0 ? best_fraction : 0.0);
-    // 2026-09-03 cap4 run2: 空返回会让 ready 回退 OMPL 任意采样——解锁/支撑等
-    // 下游 Cartesian 段从随机构型起跑，IK 是否跟得上完全靠抽签（run7 的
-    // r5=+2.96 腕位 84.4% 截断、cap4 run2 的 unlock-approach 21.9% 截断都出自
-    // 随机 ready）。即使无分支清整链，也钉回自然分支（home 邻域、最小甩动）：
-    // 它的解锁四拍干跑 100%，下游若仍截断则是确定性的、可复现的失败。
-    return natural_positions;
   }
 
   moveit::core::RobotState validate_pose_plan_only(
@@ -17128,7 +16745,7 @@ private:
     // 泄漏。
     bool leave_arrival_dwell = false)
   {
-    // P3-8: ready 位姿若带选定的分支种子（select_drawer_branch_seed），就用
+    // ready 位姿若带选定的分支种子，就用
     // setJointValueTarget 把目标钉到该 IK 分支的精确关节构型，使后续整条
     // Cartesian 链条（解锁→支撑→预抓→抓取→拽拉）都可规划；否则回退普通位姿
     // 目标，让 OMPL 任意采样分支（run7 的 r5=+2.96 即由此随机产生）。
@@ -18773,7 +18390,6 @@ private:
   // and "hovering short / slipped beside it").  Guarded by the same mutex and
   // freshness rule as real_joint_positions_.
   std::unordered_map<std::string, double> real_joint_efforts_;
-  rclcpp::Time real_joint_states_stamp_{};
   // 最新 joint-state 样本的接收时刻（见 cache 函数注释的混合时钟说明）。
   std::chrono::steady_clock::time_point real_joint_states_receipt_{};
 
@@ -18828,16 +18444,6 @@ private:
   // right three-cylinder controller.
   rclcpp_action::Client<control_msgs::action::FollowJointTrajectory>::SharedPtr
     two_cylinder_fjt_client_;
-  // 2026-09-05 AGENT §8.4 fix#4 (hook seat release): controller_manager
-  // switch/configure clients + callback group for the rod-drive integrator
-  // drain.  configure reloads the gains and re-initialises the PID, which is
-  // the only discharge path for the blocked-goal I-term charge; see
-  // seal_drawer_hooks_by_probe phase 3.
-  rclcpp::CallbackGroup::SharedPtr rod_controller_callback_group_;
-  rclcpp::Client<controller_manager_msgs::srv::SwitchController>::SharedPtr
-    controller_switch_client_;
-  rclcpp::Client<controller_manager_msgs::srv::ConfigureController>::SharedPtr
-    controller_configure_client_;
   struct BimanualControllerHandles
   {
     std::mutex mutex;
@@ -18953,15 +18559,8 @@ private:
   BimanualToolProfile drawer_left_tool_;
   BimanualToolProfile drawer_right_tool_;
   bool drawer_tools_configured_{false};
-  std::string drawer_transport_named_target_;
   double planning_time_{10.0};
   int planning_attempts_{10};
-  // AGENT §7.2 现场分级封顶调试（0 = 全流程；1/3/4/5/6/7/8 = 阶段边界/拉距）。
-  int debug_stage_cap_{0};
-  // cap2 钩咬取证后、收尾前可选的驻留秒数（0 = 不驻留，零回归）。现场观察时
-  // 让「钩咬把手 + 工作位姿」保持住供 GUI 查看，超时后照常走收尾（电缸回位/
-  // 退让/复闩）。
-  double drawer_hook_hold_seconds_{0.0};
   double planning_velocity_scale_{0.20};
   double planning_acceleration_scale_{0.20};
   double goal_position_tolerance_{0.005};
@@ -19004,7 +18603,6 @@ private:
   // P3-8 grab-and-drive drawer pull (base translation along the drawer axis).
   double drawer_base_drive_max_speed_{0.05};
   double drawer_base_drive_gain_{1.0};
-  double drawer_base_drive_timeout_{60.0};
   double navigation_velocity_yaw_offset_{-1.57079632679};
   double press_detection_timeout_{3.0};
   double release_detection_timeout_{3.0};
@@ -19062,8 +18660,6 @@ private:
   // unlock motor retracts out of the zone the right tool disengages on a short
   // +outward/+z diagonal (release), then moves east at the raised height
   // (clear) so no part of it drags the now-free drawer along its rail.
-  double drawer_unlock_retreat_outward_{0.020};
-  double drawer_unlock_retreat_lift_{0.050};
   // A westward grasp press can only bite if the free drawer can still yield
   // west.  At / near the closed rail hard stop (position ~0) a full press pose
   // is unreachable and the arm controller aborts on state tolerance

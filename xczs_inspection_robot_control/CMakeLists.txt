@@ -10,7 +10,6 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(control_msgs REQUIRED)
-find_package(controller_manager_msgs REQUIRED)
 find_package(gazebo_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(moveit_msgs REQUIRED)
@@ -92,7 +91,6 @@ target_compile_features(cabinet_button_operator PUBLIC cxx_std_17)
 ament_target_dependencies(
   cabinet_button_operator
   control_msgs
-  controller_manager_msgs
   gazebo_msgs
   geometry_msgs
   moveit_core
@@ -292,7 +290,6 @@ if(BUILD_TESTING)
   ament_target_dependencies(
     cabinet_button_operator_kinematics_test
     control_msgs
-    controller_manager_msgs
     gazebo_msgs
     geometry_msgs
     moveit_core
