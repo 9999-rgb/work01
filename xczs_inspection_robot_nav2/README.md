@@ -1,5 +1,14 @@
 # xczs_inspection_robot_nav2
 
+## 当前使用说明（2026-09-30）
+
+默认用户入口为根目录 `run_all.sh`，地图随活动场景加载；资产来源与显式内置来源
+可能不同，排障要核对运行中的地图路径。发电机层地图生成采用静态碰撞盒，其他场景
+沿用网格流程。近期机械动作复测使用工位预定位，不能当作导航通过的证据。
+
+统一使用与已知问题见 [项目入口](../README.md)；最近回归见
+[两场景记录](../docs/two_scene_verification.md)。
+
 ## 总体介绍
 
 导航配置：为全向底盘提供定位（AMCL）、全局规划（Navfn）、DWB 局部控制与恢复，
@@ -52,4 +61,4 @@
 - 校验合同：`scripts/validate/check_scene_config` 核对地图/参数存在；
   `jiang/tests/test_nav2_config_contract.py` 强制容差分层
   （checker 0.20 m < 任务层 ≤ 接管距离）与行为树结构。
-- 地图生成：`scripts/tools/generate_scene_maps.py`（开发期工具，由场景 STL 切出栅格图）。
+- 地图生成：`scripts/tools/generate_scene_maps.py`（发电机层读取静态碰撞盒，其他场景由 STL 生成栅格图）。

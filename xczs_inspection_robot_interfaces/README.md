@@ -1,5 +1,14 @@
 # xczs_inspection_robot_interfaces
 
+## 当前使用说明（2026-09-30）
+
+接口仍为 2 个 action、3 个 msg、6 个 srv。当前操作结果同时表达动作执行、恢复、
+收臂与物理确认；客户端必须区分任务取消和后台真正终止。末端切换请求携带活动场景
+与配置路径，服务返回后还需等监督器及网关同步就绪。
+
+统一使用与已知问题见 [项目入口](../README.md)；最近回归见
+[两场景记录](../docs/two_scene_verification.md)。
+
 ## 总体介绍
 
 本包是柜体操作相关接口的唯一来源：11 个 `msg/` / `srv/` / `action/` 定义，把
@@ -36,7 +45,7 @@ Python 侧同步受影响。
 - `srv/SetCabinetUnlock.srv`：驱动柜体解锁电机（真实行程），不经过按压/抓取路径。
 - `srv/SetCabinetPlayback.srv`：声明式播放抽取的轨位调度（`START` / `HOLD` / `RELEASE`），
   携带 `trajectory_msgs/JointTrajectory`；`header.stamp` 取**插件节点钟**，0 表示立即起播。
-- `srv/SwitchToolset.srv`：末端 A/B 无损切换，`expected_generation` 提供乐观并发保护。
+- `srv/SwitchToolset.srv`：末端 A/B 受控切换，`expected_generation` 提供乐观并发保护。
   `scene` / `scenes_config` 是重启子栈时要用的**当前活动场景**及其 scenes.yaml 路径
   （用于覆盖启动期烘死的那份；空串表示沿用启动场景，两字段须成对给出）。不带它而先切过
   场景，子栈会拿着**旧场景的地图**重启：`map_server` 载入旧图后 Nav2 在配置阶段卡住、

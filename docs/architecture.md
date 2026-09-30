@@ -1,6 +1,8 @@
 # 架构总览
 
-> 状态：已确认 · 版本：v1.1（B 档包结构重组后）· 日期：2026-09-22（v1 基线为 2026-08-28）
+> 核对日期：2026-09-30。本文描述当前结构；历史动作结果见
+> [两场景回归](two_scene_verification.md)，删除范围见 [清理记录](cleanup_20260930.md)。
+
 
 本文档描述本仓库的顶层结构、各包职责、三层适配架构与运行时组件。
 资产导入 / 校验 / 选择的专项设计见 `asset_import_requirements.md`。
@@ -12,12 +14,11 @@ run_all.sh                       # 统一启动入口（--web / --with-proxy / �
 CLAUDE.md                        # 项目开发规范与文件放置规范
 docs/architecture.md             # 本文档
 docs/asset_import_requirements.md# 场景/柜体资产导入需求
-docs/build/                      # 遗留 colcon 构建树（约 300 MB，已 gitignore，可删）
 jiang/                           # 通用任务层（Web/HTTP/SSE/任务管理/录制回放，Python）
 scripts/                         # 可执行脚本（见 §4 分桶）
 xczs_inspection_robot_interfaces/# NEW  msg/srv/action 自定义接口（纯接口包）
 xczs_inspection_robot_gazebo/    # NEW  Gazebo 插件 + worlds（仿真底座包）
-xczs_inspection_robot_bringup/   # NEW  统一启动入口（launch + 配套脚本，无代码）
+xczs_inspection_robot_bringup/   #      ROS 子栈组装（launch + 配套脚本，无控制节点）
 xczs_inspection_robot_control/   #      控制节点 + 纯逻辑头 + 场景适配 YAML
 xczs_inspection_robot_description#      机器人模型（URDF/Xacro、meshes）
 xczs_inspection_robot_moveit_config / _nav2   # MoveIt / Nav2 配置（标准，未动）
@@ -38,13 +39,13 @@ B 档重组把原先「接口 + 节点 + 插件 + 巨型 launch + 配置全塞 c
 |---|---|---|---|
 | `xczs_inspection_robot_interfaces` | 自定义接口 | `action/` `msg/` `srv/`（11 个，含 `OperateCabinetControl`、`ManageOperationLease`、`CabinetControl*`） | 任何实现 |
 | `xczs_inspection_robot_gazebo` | 仿真底座 | 3 个 Gazebo 插件（`planar_stabilizer` / `cabinet_state` / `ros_global_args_guard`，lib 名不变）+ `worlds/` | 节点、launch、接口 |
-| `xczs_inspection_robot_bringup` | 统一启动入口 | `launch/inspection_robot.launch.py` + `scripts/verify_initial_pose.py` | 节点实现、配置合同 |
+| `xczs_inspection_robot_bringup` | ROS 子栈组装 | `launch/inspection_robot.launch.py` + `scripts/verify_initial_pose.py` | 节点实现、配置合同 |
 | `xczs_inspection_robot_control` | 控制节点 | `src/` 节点（base_command_router / 手动轨迹路由 / cabinet_planning_scene / cabinet_pose_authority / 按钮 operator / operation_lease_coordinator / cabinet_grasp_aggregator）+ `include/` 纯逻辑头 + `config/` 场景适配 YAML + `test/` | 接口、插件、launch、Python 运维脚本 |
 | `xczs_inspection_robot_description` | 机器人模型 | `urdf/` `meshes/` `config/`（ros2_controllers_toolset_{A,B}.yaml、initial_positions.yaml） | worlds（已移 gazebo） |
 | `xczs_inspection_robot_moveit_config` | MoveIt 配置 | 标准布局 | — |
 | `xczs_inspection_robot_nav2` | Nav2 配置 | 标准布局 | — |
 
-### 关键约束（物理不可改，只允许在配置/参数/operator 代码层修正）
+### 关键约束（模型外观改动须先经用户确认）
 
 - **插件 lib 名必须保持** `libxczs_planar_stabilizer.so` / `libxczs_cabinet_state.so`
   / `libxczs_ros_global_args_guard.so`——world/xacro/样例/`model/` 副本按文件名引用。
@@ -106,12 +107,12 @@ catalog 取自资产库 `jiang/data/assets/{cabinet/demo_cabinet,scene/<name>}/`
   `classify_controls.py`（控件分类）、`generate_scene_maps.py`（场景地图生成，
   写完镜像进资产库同场景副本——运行时读的是资产库那份，不镜像会留下静默过期快照）、
   `package_asset_samples.sh`（样例资产打包）、`preposition_base.py`（预置位）、
-  `taught_sequence_ros.py` 与 `xczs_controllers.py`（教学序列与控制器直驱，均被
+  `taught_sequence_ros.py` 与 `xczs_controllers.py`（动作序列与控制器直驱，均被
   目录外调用，属生产链路而非一次性探针）。
 
 两个桶内的脚本靠 `parents[N]` 相对自身定位工作区根，再把 `jiang/` 加入
 `sys.path`；移动脚本时 `parents` 深度必须同步。约定上按 `python3 <path>` 调用，
-因此 `validate/` 下有 7 个脚本（`check_drawer_motion.py`、`record_drawer_motion.py`、
+部分 `validate/` 脚本（`check_drawer_motion.py`、`record_drawer_motion.py`、
 `generator_contact_audit.py` 等）没有 +x 位，直接 `./` 执行会失败。
 
 ## 5. 运行时组件与启动链
@@ -161,3 +162,13 @@ launch 把 base/trajectory router、move_group、Nav2 挡在位姿校验之后�
   `/initialpose`。**播种值取机器人此刻的真实位姿而非工位目标点**——机器人真的不在工位
   时，工位门仍如实失败，不会把错位掩盖成「已到站」。与既有的「物理锚定」同源。
   详见 `localization_realign_verification.md`。
+
+## 7. 当前动作与恢复边界
+
+- 电气夹层四柜走任务层动作序列与仿真轨道联动，打开 50 mm；小柜 ds2/ds3 不伸支撑杆。
+- 发电机层旋钮由 C++ operator 完成夹持、拉出、独立转盘旋转、插回、释放及退出；
+  右侧原有按压头操作四按钮，左侧摇杆转子操作连续插口。
+- 操作取消后采用独立 180 s 有限结果等待窗口，导航仍用 30 s；超时不冒称后端已结束。
+  底层已执行动作且恢复失败、未完成收臂时，Web 不再追加通用关节回零。
+- `joint_feedback.hpp` 检查真实关节反馈数组长度及有限数值，支持缺省 effort。
+- 场景删除服务返回接受不等于实体已消失；Gazebo 客户端连续两次确认旧模型不在列表后才重建。

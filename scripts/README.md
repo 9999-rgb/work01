@@ -1,5 +1,14 @@
 # scripts — 可执行脚本
 
+## 当前使用说明（2026-09-30）
+
+当前两场景总验收入口为 `validate/validate_two_scene_web.py`；抽屉、发电机动作及
+独立转盘分别由专项记录器和检查器验证。运行前加载 ROS 与工作区环境，预定位工具
+不是自主导航。八个过期脚本已删除，当前控制复用工具与故障诊断能力仍保留。
+
+统一使用与已知问题见 [项目入口](../README.md)；最近回归见
+[两场景记录](../docs/two_scene_verification.md)。
+
 ## 总体介绍
 
 面向用户与 CI 的验收「门」+ 开发工具集合：`validate/` 放验收/校验脚本，`tools/` 放
@@ -25,7 +34,7 @@
     并镜像进资产库同场景副本（运行时读的是资产库那份，不镜像会留下过期快照）
   - `package_asset_samples.sh` 把样例资产打成上传用 zip
   - `cabinet_validation_targets.py` 控件目标选择纯函数（被 validate 与测试复用）
-  - `taught_sequence_ros.py` 教学序列执行、`xczs_controllers.py` 控制器直驱——
+  - `taught_sequence_ros.py` 动作序列执行、`xczs_controllers.py` 控制器直驱——
     两者都有目录外调用者，属生产链路
   - `check_drawer_unlock_mode_config.py` 静态门：断言解锁模式配置里不存在
     `simulation_acceptance=true` 路径
@@ -65,3 +74,8 @@
 - **在架构里的位置**：处于三层适配架构之外的上层——用 `validate_cabinet_web` 把
   通用任务层（`jiang/control_server.py`）→ 机器人适配层 → 场景适配层整条启动链
   串起来做端到端验收；`check_*` 系列在启动前静态守住跨层 YAML 合同。
+
+## 历史工具清理
+
+2026-09-30 移除了八个无调用者的旧方案探针/一次性分析脚本；现行验收、标定与
+生产链路复用工具保留。范围和依据见 [清理记录](../docs/cleanup_20260930.md)。

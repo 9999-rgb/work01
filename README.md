@@ -1,10 +1,13 @@
 # 巡操机器人仿真
 
+> 文档核对：2026-09-30。当前功能、启动方式和目录结构以本文为入口；
+> 分批验收及遗留问题见 [两场景回归记录](docs/two_scene_verification.md)。
+
 统一入口：`./run_all.sh`，Web：`http://localhost:8090/monitor.html`。
 未保存资产选择时默认启动电气夹层；Web 可切换电气夹层、发电机层及 A/B 末端。
 
 - 电气夹层 / A：db1、dm1、ds2、ds3 抽拉 5 cm；ds2/ds3 不使用支撑杆。ds1 暂不可操作。
-- 发电机层 / B：六个旋钮拉出 8 mm、转到 0° 或 45°、插回；四个按钮用右侧原有按压头；frb 用左侧摇杆，Web 开始／停止并退出。
+- 发电机层 / B：六个旋钮拉出 8 mm、由夹爪独立转盘转到外观 0° 或 45°、插回；四个按钮用右侧原有按压头；frb 用左侧摇杆，Web 开始／停止并退出。
 - 场景配色：抽拉柜蓝色、旋钮橙色、按钮绿色、摇杆插口紫色。灰色实体不表示已支持操作。
 
 ## 启动与构建
@@ -33,7 +36,6 @@ SCENE=generator_plant TOOLSET=B ./run_all.sh
 | scripts/tools | 开发、工位校准与诊断工具 |
 | model / 仿真场景20260831 | 原始机器人、末端与用户场景资产，保留溯源；COLCON_IGNORE 排除源导出工程 |
 | docs | 架构、使用约定与验收说明 |
-| docs/build | 遗留的 colcon 构建树（约 300 MB / 2518 文件），已被 `.gitignore` 排除，可直接删除 |
 | log | 自动生成的运行日志与验收证据，不提交 Git |
 
 场景来源按「显式优先」决出：显式 `SCENE=` 内置场景时用 `xczs_inspection_robot_control/config/scenes.yaml`（实例注册为同目录 `cabinet_instances.yaml`），否则启动脚本把资产库里的同名场景（`jiang/data/assets/scene/<name>/scenes.yaml`）经 `--print-env` 注入，已被显式设置的环境变量不被覆盖。注意「显式内置」只保证启动那一刻：切末端套装重启子栈时下发的是**活动场景**及其 scenes.yaml，而场景解析是 kind+name 查表，两个内置场景名在资产库里都有同名目录，因此切换后子栈实际读的是资产库那份。旧三柜场景已移除。共享柜体配置仍被适配器默认值、资产导入和通用测试使用，不属于可删除的运行垃圾。
@@ -64,3 +66,28 @@ python3 scripts/validate/validate_two_scene_web.py --phase generator_aux --out l
 ```
 
 `--phase generator_buttons` 只测四个按钮；`--phase generator_rocker` 只测摇杆两轮。
+
+## 当前状态与文档索引
+
+- 旋钮旋转由 `r_rotbtn_rotate_joint` 执行；机械臂负责接近、拉出、插回和退出。
+  外观 0° 对应 API `turned`，外观 45° 对应 `center`，不能按英文名称猜角度。
+- 场景/末端切换后须同时满足 `ready=true`、`gateway_synced=true`；末端切换替换
+  机器人子栈，Gazebo 世界保持运行。旋钮偶发夹持不到位仍未彻底解决。
+- 2026-09-30 清理后七包构建通过，ROS 220 项、Web 771 项测试通过；
+  该轮未重跑全动作或导航，不替代各日期的物理验收。
+- [架构](docs/architecture.md) · [资产导入](docs/asset_import_requirements.md) ·
+  [脚本用法](scripts/README.md) · [文件清理记录](docs/cleanup_20260930.md)。
+- 包级说明：[Web/任务层](jiang/README.md)、[启动](xczs_inspection_robot_bringup/README.md)、
+  [控制](xczs_inspection_robot_control/README.md)、[模型](xczs_inspection_robot_description/README.md)、
+  [仿真](xczs_inspection_robot_gazebo/README.md)、[接口](xczs_inspection_robot_interfaces/README.md)、
+  [MoveIt](xczs_inspection_robot_moveit_config/README.md)、[导航](xczs_inspection_robot_nav2/README.md)。
+
+修改 C++ 或接口后先构建，再启动；`run_all.sh` 不自动编译。测试需加载 ROS 和工作区：
+
+```bash
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+python3 -m pytest jiang/tests -q
+colcon test --return-code-on-test-failure
+colcon test-result --all --test-result-base build
+```

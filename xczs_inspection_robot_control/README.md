@@ -1,5 +1,14 @@
 # xczs_inspection_robot_control
 
+## 当前使用说明（2026-09-30）
+
+旋钮的旋转阶段由 `r_rotbtn_rotate_joint` 完成，机械臂保持姿态；退出后转盘归零。
+`joint_feedback.hpp` 过滤长度异常、非有限数值和重复有效名称，允许 effort 为空。
+抽屉当前使用任务层动作序列与仿真联动，不能把本包接口存在等同于所有柜体已适配。
+
+统一使用与已知问题见 [项目入口](../README.md)；最近回归见
+[两场景记录](../docs/two_scene_verification.md)。
+
 ## 总体介绍
 
 巡检机器人控制核心：7 个 C++ 节点 + 无 ROS 依赖的纯逻辑头 + 7 份跨层合同 YAML。
@@ -13,8 +22,8 @@
   - 柜体操作：`cabinet_button_operator`（MoveIt 驱动的按钮/旋钮操作）、`operation_lease_coordinator`（操作租约互斥）、`cabinet_grasp_aggregator`（grasp 信号汇聚）。
   - 场景支撑：`cabinet_planning_scene`（MoveIt 碰撞对象）、`cabinet_pose_authority`（柜体位姿权威）。
 - `include/xczs_inspection_robot_control/`：无 ROS 依赖的纯逻辑头，可独立测试并被多节点复用——如 `operation_lease_state.hpp`（租约状态机）、`operation_validation_policy.hpp`（操作前基座运动准备边界）、`cabinet_grasp_safety_policy.hpp`（被 gazebo 包插件引用）。
-- `config/`：7 个场景适配 YAML（`cabinet_robot_adapter.yaml`、`cabinet_controls.yaml`、`cabinet_instances.yaml`、`cabinet_scene.yaml`、`cabinet_pose.yaml`、`robot_control.yaml`、`scenes.yaml`），是跨层合同；另含两个子目录：`scene_controls/`（逐场景实例适配器 6 份，经 `cabinet_instances.yaml` 的 `adapter_config` 成为 operator 的实际参数源）与 `taught_poses/`（存档位姿 18 份）。
-- `test/`：11 个 GTest（策略/状态/运动学/位姿帧合同）+ 7 个 pytest（launch 启动策略、抓手合同、工具集验证、TF/业务点合同）。
+- `config/`：7 个场景适配 YAML（`cabinet_robot_adapter.yaml`、`cabinet_controls.yaml`、`cabinet_instances.yaml`、`cabinet_scene.yaml`、`cabinet_pose.yaml`、`robot_control.yaml`、`scenes.yaml`），是跨层合同；另含两个子目录：`scene_controls/`（两场景的 adapter/controls/scene 共 6 份，经 `cabinet_instances.yaml` 的 `adapter_config` 成为 operator 的实际参数源）与 `taught_poses/`（存档位姿 18 份）。
+- `test/`：CMake 注册的 GTest（策略/状态/运动学/位姿帧合同）+ 7 个 pytest（launch 启动策略、抓手合同、工具集验证、TF/业务点合同）。
 
 ## 功能介绍
 
@@ -28,5 +37,5 @@
 
 - 依赖：`xczs_inspection_robot_interfaces`（msg/srv/action）、MoveIt、`nav2_msgs`、`tf2`；运行期依赖 `xczs_inspection_robot_description` / `_moveit_config` / `_nav2` 及 Gazebo controllers。
 - 被消费：`xczs_inspection_robot_bringup` 的 `inspection_robot.launch.py` 组装本包节点（如 `cabinet_button_operator`、`operation_lease_coordinator`）；`xczs_inspection_robot_gazebo` 插件引用 `cabinet_grasp_safety_policy.hpp`，故保留 `ament_export_include_directories`。
-- 三层适配架构中的位置：`config/cabinet_robot_adapter.yaml` 是机器人适配层合同（Web 网关、底盘路由、手动轨迹路由与柜体 operator 读同一份）；`cabinet_controls.yaml` / `cabinet_instances.yaml` / `cabinet_scene.yaml` / `scenes.yaml` 是场景适配层，被 `jiang/` 任务层与 `scripts/validate/` 验收脚本按硬编码路径读取。换机器人/设备/场地只改 config，不动任务 API 与 Web 页面。
+- 三层适配架构中的位置：`config/cabinet_robot_adapter.yaml` 是机器人适配层合同（Web 网关、底盘路由、手动轨迹路由与柜体 operator 读同一份）；`cabinet_controls.yaml` / `cabinet_instances.yaml` / `cabinet_scene.yaml` / `scenes.yaml` 是场景适配层，被 `jiang/` 任务层与 `scripts/validate/` 验收脚本按硬编码路径读取。适配变更集中在配置与对应模型/控制实现，沿用任务 API 与 Web 页面；新实体仍需验证可达性和动作。
 - 启动链：`start_xczs_bridge.sh` → bringup launch（spawn → controllers → 位姿校验 → 放行 routers/moveit/nav2）；手动操作经租约协调器门控。

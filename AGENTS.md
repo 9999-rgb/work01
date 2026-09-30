@@ -37,3 +37,15 @@
 - 全程使用 Git 规范管理代码。
 - 提交前完成必要的构建、格式和运行检查。
 - 提交信息应准确描述本次变更。
+
+## 当前项目索引（2026-09-30）
+
+- 用户启动入口为根目录 `./run_all.sh --web`，调用 `jiang/start_xczs_bridge.sh`；
+  bringup launch 是 ROS 子栈入口，不能替代 Web 启动链。
+- 现役场景为 `electrical_mezzanine`（末端 A）和 `generator_plant`（末端 B）。
+  当前能力、构建命令及文档入口见 [README.md](README.md)。
+- 旋钮采用独立转盘；档位 ID `turned` / `center` 分别对应外观 0° / 45°。
+- 旧 `docs/build/` 和八个一次性脚本已清理，依据见
+  [清理记录](docs/cleanup_20260930.md)。当前 `build/`、`install/`、源模型和运行数据保留。
+- 验收结论须保留日期与范围；遗留夹持问题及当前测试结果见
+  [两场景回归记录](docs/two_scene_verification.md)。

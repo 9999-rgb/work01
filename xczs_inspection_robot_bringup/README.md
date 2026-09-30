@@ -1,8 +1,17 @@
 # xczs_inspection_robot_bringup
 
+## 当前使用说明（2026-09-30）
+
+用户统一入口为根目录 `./run_all.sh --web`。本包 launch 是 ROS 子栈组装入口，
+单独启动它不会建立完整 Web/资产/监督器链路。Web 模式由常驻世界、末端监督器及
+机器人子栈配合；换末端替换机器人子栈，世界保持运行。
+
+统一使用与已知问题见 [项目入口](../README.md)；最近回归见
+[两场景记录](../docs/two_scene_verification.md)。
+
 ## 总体介绍
 
-统一启动入口：一条 `ros2 launch xczs_inspection_robot_bringup` 命令按依赖顺序把
+ROS 子栈组装：`inspection_robot.launch.py` 按依赖顺序把
 Gazebo、MoveIt、Nav2、ros2_control 与柜体控制节点组装成整套仿真栈，并用
 「spawn → 控制器 → 位姿校验 → 放行」启动链看门狗保证任一环失败即整体停机。
 本包只组装各职责包提供的节点与 launch，自身不实现节点、不定义接口；配置合同由各包提供，
@@ -29,7 +38,7 @@ docstring 承认这是刻意的复制，改动合同格式时两处都要跟）�
 
 ## 功能
 
-- 统一入口：`ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py`。
+- ROS 子启动入口：`ros2 launch xczs_inspection_robot_bringup inspection_robot.launch.py`。
 - 单命令组装整栈：Gazebo world、MoveIt `move_group`、Nav2（map/参数随场景切换）。
 - spawn：机器人走 `-topic robot_description`，场景地板与柜体走 `-file` 载入模型。
 - ros2_control：`xczs_controller_spawner` 拉起 state/双臂控制器（管理器

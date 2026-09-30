@@ -1,8 +1,17 @@
 # xczs_inspection_robot_description
 
+## 当前使用说明（2026-09-30）
+
+运行场景只含电气夹层和发电机层；共享柜体 xacro 是资产导入模板，不能当作第三个运行场景。
+末端 B 右侧转盘用于旋钮，原有突出按压头用于按钮；没有额外独立轴向按压关节。
+源模型、可见网格和当前接触配置在本轮清理中均未修改。
+
+统一使用与已知问题见 [项目入口](../README.md)；最近回归见
+[两场景记录](../docs/two_scene_verification.md)。
+
 ## 总体介绍
 
-机器人/柜体模型与配置源：把 LinkForge 双壁导出与 SolidWorks 导出的四套末端工具
+机器人/柜体模型与配置源：把 LinkForge 双臂导出与 SolidWorks 导出的四套末端工具
 转成 xacro/URDF，连同 STL 网格、ros2_control 与初始位姿配置一起提供给整栈。
 场景 world 由 `xczs_inspection_robot_gazebo` 负责，本包专注模型本身——
 `control_cabinet.urdf.xacro` 即柜体设备的几何合同。
@@ -32,7 +41,7 @@
 - 传感器：右腕相机（`libgazebo_ros_camera.so`，`/xczs/camera/arm_camera/image_raw|camera_info`）；
   机身平面激光（`libgazebo_ros_ray_sensor.so`，`/xczs/lidar/scan`）。
 - 插件：`libxczs_planar_stabilizer.so`（启动期保持位姿）、`libgazebo_ros2_control.so`。
-- 柜体模型：11 箱体 + 按钮/旋钮/主开关/后门，由 `libxczs_cabinet_state.so`（gazebo 包）驱动，
+- 共享柜体模板：11 箱体 + 按钮/旋钮/主开关/后门，由 `libxczs_cabinet_state.so`（gazebo 包）驱动，
   每控件在 `/xczs/cabinet/<name>/...` 发布状态并提供 grasp / `reset_physics` 服务。
 
 ## 与项目的关系
