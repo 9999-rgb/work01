@@ -3318,6 +3318,25 @@ class TaskRunnerTest(unittest.TestCase):
         )
         self.assertEqual("workspace limit", task["result"]["unavailable_reason"])
 
+    def test_failed_physical_recovery_is_not_overridden_by_joint_homing(self) -> None:
+        server, node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        accepted = server.submit_operation_task(
+            "cabinet_a", "button_1", "press", None, None, 5.0)
+        self.assertTrue(client.submit_event.wait(timeout=1.0))
+        targets_before = list(node.joint_targets)
+        client.finish("failed", failure_code="grasp_failed", result={
+            "operation_executed": True,
+            "recovery_succeeded": False,
+            "transport_succeeded": False,
+            "grasp_released": False,
+        })
+        task = server._task_manager.wait(accepted["task_id"], timeout=2.0)
+        self.assertEqual("failed", task["status"])
+        self.assertEqual("grasp_failed", task["failure_code"])
+        self.assertEqual("backend_recovery_failed", task["result"]["recovery"]["reason"])
+        self.assertEqual(targets_before, node.joint_targets)
+
     def test_operation_cancel_waits_for_action_terminal(self) -> None:
         server, _node = _server()
         client = server._cabinet_clients["cabinet_a"]
@@ -3344,6 +3363,47 @@ class TaskRunnerTest(unittest.TestCase):
             timeout=2.0,
         )
         self.assertEqual("canceled", terminal["status"])
+
+    def test_slow_arm_recovery_survives_navigation_reconcile_window(self) -> None:
+        server, _node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        with patch.object(runner_module, "OPERATION_CANCEL_GRACE_SEC", 0.01), \
+                patch.object(runner_module, "BACKEND_RECONCILE_SEC", 0.02), \
+                patch.object(runner_module, "OPERATION_BACKEND_RECONCILE_SEC", 2.0):
+            accepted = server.submit_operation_task(
+                "cabinet_a", "button_1", "press", None, None, 5.0)
+            task_id = accepted["task_id"]
+            self.assertTrue(client.submit_event.wait(timeout=1.0))
+            server.cancel_task(task_id)
+            server._task_manager.wait(task_id, timeout=1.0)
+            time.sleep(0.2)
+            task = server._task_manager.get_task(task_id)
+            self.assertTrue(task["reservation_active"])
+            self.assertFalse(task["backend_termination_confirmed"])
+            client.finish("canceled", failure_code="canceled")
+            deadline = time.monotonic() + 1.0
+            while server._task_manager.active_task_id is not None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            task = server._task_manager.get_task(task_id)
+            self.assertTrue(task["backend_termination_confirmed"])
+            self.assertFalse(task["reservation_active"])
+
+    def test_unresponsive_operation_recovery_remains_bounded(self) -> None:
+        server, _node = _server()
+        client = server._cabinet_clients["cabinet_a"]
+        with patch.object(runner_module, "OPERATION_CANCEL_GRACE_SEC", 0.01), \
+                patch.object(runner_module, "OPERATION_BACKEND_RECONCILE_SEC", 0.02):
+            accepted = server.submit_operation_task(
+                "cabinet_a", "button_1", "press", None, None, 5.0)
+            task_id = accepted["task_id"]
+            self.assertTrue(client.submit_event.wait(timeout=1.0))
+            server.cancel_task(task_id)
+            deadline = time.monotonic() + 1.0
+            while server._task_manager.active_task_id is not None and time.monotonic() < deadline:
+                time.sleep(0.005)
+            task = server._task_manager.get_task(task_id)
+            self.assertFalse(task["backend_termination_confirmed"])
+            self.assertFalse(task["reservation_active"])
 
     def test_operation_success_wins_cancel_requested_after_terminal_event(
         self,

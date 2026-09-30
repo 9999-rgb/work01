@@ -75,6 +75,7 @@
 #include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/staging_safety_policy.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
+#include "xczs_inspection_robot_control/joint_feedback.hpp"
 #include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_bimanual_grasp.hpp"
 #include "xczs_inspection_robot_interfaces/srv/set_cabinet_grasp.hpp"
@@ -3361,14 +3362,8 @@ private:
         // 混合相减会恒判超龄/恒判负龄 → 缓存恒 stale（clean2 实测 18/18）。
         // 100 Hz 的真实订阅下，接收时刻在 1.0 s 门限内即等价于样本新鲜。
         real_joint_states_receipt_ = std::chrono::steady_clock::now();
-        real_joint_positions_.clear();
-        real_joint_positions_.reserve(message->name.size());
-        real_joint_efforts_.clear();
-        real_joint_efforts_.reserve(message->name.size());
-        for (std::size_t i = 0; i < message->name.size(); ++i) {
-          real_joint_positions_[message->name[i]] = message->position[i];
-          real_joint_efforts_[message->name[i]] = message->effort[i];
-        }
+        real_joint_positions_ = finite_joint_values(message->name, message->position);
+        real_joint_efforts_ = finite_joint_values(message->name, message->effort);
       },
       sub_options);
     RCLCPP_INFO(

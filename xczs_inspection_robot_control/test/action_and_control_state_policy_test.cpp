@@ -7,9 +7,33 @@
 #include "xczs_inspection_robot_control/action_terminal_policy.hpp"
 #include "xczs_inspection_robot_control/cabinet_grasp_safety_policy.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
+#include "xczs_inspection_robot_control/joint_feedback.hpp"
 
 namespace xczs_inspection_robot_control
 {
+
+TEST(JointFeedback, OptionalEffortDoesNotInvalidatePosition)
+{
+  const std::vector<std::string> names{"arm", "jaw"};
+  EXPECT_EQ(finite_joint_values(names, {1.0, 0.01}).at("jaw"), 0.01);
+  EXPECT_TRUE(finite_joint_values(names, {}).empty());
+}
+
+TEST(JointFeedback, RejectsMalformedArraysAndAmbiguousNames)
+{
+  EXPECT_TRUE(finite_joint_values({"arm", "jaw"}, {1.0}).empty());
+  EXPECT_TRUE(finite_joint_values({"arm"}, {1.0, 2.0}).empty());
+  EXPECT_TRUE(finite_joint_values({"arm", "arm"}, {1.0, 2.0}).empty());
+}
+
+TEST(JointFeedback, InvalidNumbersCannotBecomeMotionTargets)
+{
+  const auto values = finite_joint_values({"arm", "jaw", "rotor"},
+    {1.0, std::numeric_limits<double>::quiet_NaN(),
+      std::numeric_limits<double>::infinity()});
+  ASSERT_EQ(values.size(), 1U);
+  EXPECT_EQ(values.at("arm"), 1.0);
+}
 
 TEST(ActionTerminalPolicy, PhysicalSuccessWinsAConcurrentLateCancel)
 {

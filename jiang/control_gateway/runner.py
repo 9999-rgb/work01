@@ -165,6 +165,10 @@ NAVIGATION_STATION_HANDOFF_POSITION_TOLERANCE_M = 1.0
 NAVIGATION_STATION_HANDOFF_YAW_TOLERANCE_RAD = 0.25
 OPERATION_TIMEOUT_SEC = 180.0
 OPERATION_CANCEL_GRACE_SEC = 5.0
+# Arm withdrawal and transport after cancellation can exceed Nav2's 30 s
+# reconcile window. Keep observing the action, and retain exclusivity, for
+# its bounded recovery budget rather than dropping the eventual result.
+OPERATION_BACKEND_RECONCILE_SEC = 180.0
 # Reserve the first two percent for the joint-homing preflight.  Cabinet action
 # feedback is reported in its own 0..1 range and must be mapped above this band
 # or a legitimate initial 0.0 feedback sample makes task progress go backward.
@@ -5680,12 +5684,23 @@ class ControlServer:
                 )
         except TaskExecutionError as error:
             sequence = self._find_taught_sequence(control_id, command, target_state)
+            physical_result = error.result or {}
             if sequence is not None and any(
                 step.get("type") == "pull_drawer" for step in sequence["steps"]
             ):
                 # 钩爪可能仍扣在把手上；故障后直接关节回零会横穿柜体。
                 error.result = {**(error.result or {}), "recovery": {
                     "status": "skipped", "reason": "drawer_pose_held_after_failure"}}
+            elif (
+                physical_result.get("operation_executed") is True
+                and physical_result.get("recovery_succeeded") is False
+                and physical_result.get("transport_succeeded") is not True
+            ):
+                # The operator already tried collision-aware release/retreat.
+                # Blind joint homing must not override its failed recovery:
+                # the tool can still be caught against the fixture.
+                error.result = {**physical_result, "recovery": {
+                    "status": "skipped", "reason": "backend_recovery_failed"}}
             else:
                 self._annotate_task_failure_recovery(context, error, cabinet)
             raise
@@ -6214,13 +6229,13 @@ class ControlServer:
                     retained_since = now
                 if (
                     retained_since is not None
-                    and now - retained_since >= BACKEND_RECONCILE_SEC
+                    and now - retained_since >= OPERATION_BACKEND_RECONCILE_SEC
                 ):
                     context.release_reservation(
                         backend_termination_confirmed=False,
                         details={
                             "backend_terminal_state": "active",
-                            "backend_reconcile_seconds": BACKEND_RECONCILE_SEC,
+                            "backend_reconcile_seconds": OPERATION_BACKEND_RECONCILE_SEC,
                             "reason": (
                                 "Cabinet action termination remained "
                                 "unconfirmed after the backend reconciliation "
