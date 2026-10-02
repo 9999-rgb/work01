@@ -25,7 +25,6 @@
 from __future__ import annotations
 
 import copy
-import math
 import sys
 import threading
 import time
@@ -150,24 +149,20 @@ class TaughtSequenceRunner:
         cabinet: str,
         control_id: str,
         command: str,
-        target_state: Optional[str],
         steps: list,
         emit: Callable[[Dict[str, Any]], None],
         generation: int,
         display_name: str = "",
-        sequence_dir: Path = TAUGHT_POSES_DIR,
         context: Any = None,
     ) -> None:
         self._context = context
         self._cabinet = cabinet
         self._control_id = control_id
         self._command = command
-        self._target_state = target_state
         self._steps = steps
         self._emit = emit
         self._generation = generation
         self._display_name = display_name or command
-        self._sequence_dir = Path(sequence_dir)
         self._cancel = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._finished = False

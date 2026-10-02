@@ -5609,7 +5609,6 @@ class ControlServer:
             cabinet=cabinet,
             control_id=control_id,
             command=command,
-            target_state=target_state,
             steps=sequence["steps"],
             emit=event_queue.put,
             generation=generation,
