@@ -752,7 +752,7 @@ public:
     if (!knob_gripper_joints_.empty()) {
       knob_gripper_hold_pub_ = create_publisher<trajectory_msgs::msg::JointTrajectory>(
         controller_namespace_ + "/rotate_button_controller/joint_trajectory", 1);
-      knob_gripper_hold_timer_ = create_wall_timer(100ms, [this]() {
+      knob_gripper_hold_timer_ = create_wall_timer(20ms, [this]() {
           std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
           if (!knob_gripper_hold_active_) {return;}
           if (shutdown_requested_.load() || !operation_lease_held_.load() ||
@@ -771,7 +771,9 @@ public:
             }
           }
           point.velocities.assign(point.positions.size(), 0.0);
-          point.time_from_start = rclcpp::Duration::from_seconds(0.1);
+          // 跟随拉出起步时的接触变化，避免 100 ms 保持轨迹尚未追上就失去接触。
+          // 每次仍只从实测位置推进 0.15 mm，不增加接触压入量。
+          point.time_from_start = rclcpp::Duration::from_seconds(0.04);
           for (std::size_t j = 0; j < point.positions.size(); ++j) {
             if (!knob_gripper_hold_prismatic_[j]) {continue;}
             double measured = 0.0;
@@ -4252,6 +4254,13 @@ private:
     double target_position = 0.0;
     double rotary_tool_roll_offset = 0.0;
     double axial_grasp_offset = 0.0;
+    Eigen::Vector3d knob_alignment_offset = Eigen::Vector3d::Zero();
+    const auto aligned_knob_pose = [&](geometry_msgs::msg::Pose pose) {
+        pose.position.x += knob_alignment_offset.x();
+        pose.position.y += knob_alignment_offset.y();
+        pose.position.z += knob_alignment_offset.z();
+        return pose;
+      };
     // Precomputed upstream so the manipulation block and the ready/pregrasp
     // branch selection share the exact same arc targets and waypoints.
     double rotary_manip_pos = 0.0;
@@ -5763,15 +5772,26 @@ private:
             contact_tool_link_, &result->operation_executed, control.get(),
             rotary_branch_seed_ptr);
         }
+        if (uses_knob_rotor(*control)) {
+          knob_alignment_offset = align_knob_pregrasp(
+            goal_handle, *move_group, rotary_poses.pregrasp_pose,
+            &result->operation_executed);
+        }
         wait_for_pregrasp_controls_stable(
           goal_handle, *control, pregrasp_stability_references,
           std::chrono::steady_clock::now());
         if (control->axial_pull_distance > 0.0) {set_rotary_contact_planning(true);}
         execute_cartesian_path(
-          *move_group, goal_handle, {rotary_poses.grasp_pose},
+          *move_group, goal_handle, {aligned_knob_pose(rotary_poses.grasp_pose)},
           cartesian_velocity_scale_ * (control->continuous_rotation ? 0.3 : 0.5),
           cartesian_acceleration_scale_ * (control->continuous_rotation ? 0.3 : 0.5),
           0.99, &result->operation_executed);
+        if (uses_knob_rotor(*control)) {
+          // 接近后的负载变化会产生新的横向残差；保持轴向深度，张爪对中后再夹紧。
+          knob_alignment_offset = align_knob_pregrasp(
+            goal_handle, *move_group, rotary_poses.grasp_pose,
+            &result->operation_executed, knob_alignment_offset, true);
+        }
         result->diagnostic_stage = "grasp";
         publish_operate_feedback(
           goal_handle,
@@ -5809,10 +5829,10 @@ private:
           rotary_arc_waypoints = calculate_rotation_waypoints(
             *control, initial_state.position, rotary_manip_pos,
             rotary_tool_roll_offset, axial_grasp_offset);
-          const auto pulled_pose = calculate_rotary_tool_pose(
+          const auto pulled_pose = aligned_knob_pose(calculate_rotary_tool_pose(
             *control, initial_state.position,
             control->grasp_outward_offset + control->axial_pull_distance - axial_grasp_offset,
-            true, rotary_tool_roll_offset);
+            true, rotary_tool_roll_offset));
           execute_cartesian_path(*move_group, goal_handle, {pulled_pose},
             cartesian_velocity_scale_ * 0.5, cartesian_acceleration_scale_ * 0.5,
             0.99, &result->operation_executed);
@@ -5904,10 +5924,10 @@ private:
           publish_operate_feedback(goal_handle,
             OperateCabinetControl::Feedback::MANIPULATING, 0.72F,
             target_position, "保持目标角度，将旋钮插回安装位置。");
-          const auto inserted_pose = calculate_rotary_tool_pose(
+          const auto inserted_pose = aligned_knob_pose(calculate_rotary_tool_pose(
             *control, manipulation_position,
             control->grasp_outward_offset - control->axial_seating_offset - axial_grasp_offset,
-            true, rotary_tool_roll_offset);
+            true, rotary_tool_roll_offset));
           execute_cartesian_path(*move_group, goal_handle, {inserted_pose},
             cartesian_velocity_scale_ * 0.5, cartesian_acceleration_scale_ * 0.5,
             0.99, &result->operation_executed);
@@ -5943,9 +5963,9 @@ private:
           xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_DOOR;
         const double release_clearance = is_door ?
           door_release_clearance_ : control->rotary_retreat_distance;
-        const auto target_ready = calculate_rotary_tool_pose(
+        const auto target_ready = aligned_knob_pose(calculate_rotary_tool_pose(
           *control, manipulation_position, release_clearance, false,
-          rotary_tool_roll_offset);
+          rotary_tool_roll_offset));
         std::chrono::steady_clock::time_point released_at;
         if (is_door) {
           // Compliant door grasping couples only tool rotation to the hinge.
@@ -8369,6 +8389,55 @@ private:
       right_waypoints.push_back(calculate_drawer_side_tool_pose(
         control, DrawerSide::RIGHT, position, contact_offset));
     }
+  }
+
+  Eigen::Vector3d align_knob_pregrasp(
+    const std::shared_ptr<OperateGoalHandle> & goal_handle,
+    MoveGroupInterface & move_group, const geometry_msgs::msg::Pose & nominal,
+    bool * operation_executed,
+    const Eigen::Vector3d & initial_offset = Eigen::Vector3d::Zero(),
+    bool transverse_only = false)
+  {
+    tf2::Quaternion rotation;
+    tf2::fromMsg(nominal.orientation, rotation);
+    const auto tip_offset = tf2::quatRotate(rotation, tool_tip_position_);
+    const Eigen::Vector3d expected(
+      nominal.position.x + tip_offset.x(), nominal.position.y + tip_offset.y(),
+      nominal.position.z + tip_offset.z());
+    const auto axis_tf = tf2::quatRotate(rotation, tf2::Vector3(0.0, 0.0, 1.0));
+    const Eigen::Vector3d axis(axis_tf.x(), axis_tf.y(), axis_tf.z());
+    Eigen::Vector3d correction = initial_offset;
+    // 在 50 mm 预夹持净空内对中；同一构型微调，避免带着物理偏差闭合夹爪。
+    for (int attempt = 0; attempt < 4; ++attempt) {
+      check_cancel(goal_handle);
+      const auto measured = drawer_physics_link_point(contact_tool_link_, tool_tip_position_);
+      if (!measured) {
+        throw GenericOperationError(OperateCabinetControl::Result::NOT_READY,
+          "旋钮预夹持物理位姿不可用，禁止闭合夹爪。");
+      }
+      Eigen::Vector3d error = expected - *measured;
+      if (transverse_only) {error -= axis * error.dot(axis);}
+      if (!error.allFinite() || error.norm() > 0.005 || correction.norm() > 0.005) {
+        throw GenericOperationError(OperateCabinetControl::Result::GRASP_FAILED,
+          "旋钮预夹持偏差超过 5 mm，禁止继续接近。");
+      }
+      RCLCPP_INFO(get_logger(), "Knob %s physical error: %.3f mm (attempt %d).",
+        transverse_only ? "grasp" : "pregrasp", error.norm() * 1000.0, attempt);
+      if (error.norm() <= 0.0005) {return correction;}
+      if (attempt == 3) {break;}
+      correction += error;
+      if (correction.norm() > 0.005) {break;}
+      auto target = nominal;
+      target.position.x += correction.x();
+      target.position.y += correction.y();
+      target.position.z += correction.z();
+      execute_cartesian_path(move_group, goal_handle, {target},
+        cartesian_velocity_scale_ * 0.3, cartesian_acceleration_scale_ * 0.3,
+        0.99, operation_executed);
+      interruptible_hold(goal_handle, 0.2);
+    }
+    throw GenericOperationError(OperateCabinetControl::Result::GRASP_FAILED,
+      "旋钮预夹持对中未收敛，禁止闭合夹爪。");
   }
 
   void align_rocker_socket(

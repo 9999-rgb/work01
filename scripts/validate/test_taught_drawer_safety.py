@@ -227,7 +227,7 @@ class DrawerSafetyTests(unittest.TestCase):
 
     def test_direct_close_uses_one_snapshot_without_stale_world_tf(self):
         state = JointState(name=['l_two_cyl_finger1_joint', 'l_two_cyl_finger2_joint', 'r_three_cyl_finger2_joint', 'r_three_cyl_finger1_joint'], position=[.00375, .113, .00375, .113])
-        node = SimpleNamespace(_joint_state=state, _rails={'db1': .05}, _fk_cli=None,
+        node = SimpleNamespace(_joint_state=state, _rails={'db1': .05}, _fk_cli=None, _entity_cli=None,
             _rod_contract=lambda: {'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
                                   'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}},
             _tip_pose=Mock(side_effect=RuntimeError('stale world TF')))
@@ -238,11 +238,16 @@ class DrawerSafetyTests(unittest.TestCase):
             poses = [PoseStamped(), PoseStamped()]
             for pose in poses:
                 pose.pose.orientation.w = 1.
+            if isinstance(request, worker.GetEntityState.Request):
+                return SimpleNamespace(success=True, state=SimpleNamespace(pose=poses[0].pose))
             return SimpleNamespace(error_code=SimpleNamespace(val=1), pose_stamped=poses)
         node._call = call
         self.assertTrue(worker.TaughtRosWorker.can_continue_drawer_close(node, 'db1', True))
-        self.assertEqual([r.header.frame_id for r in requests], ['body', 'body'])
-        self.assertEqual(list(requests[1].robot_state.joint_state.position), list(state.position))
+        self.assertEqual(requests[0].header.frame_id, 'body')
+        self.assertEqual([r.reference_frame for r in requests[1:]],
+                         ['xczs_inspection_robot::body'] * 2)
+        self.assertEqual([r.name for r in requests[1:]],
+                         ['xczs_inspection_robot::' + c['tip'] for c in worker.ARMS.values()])
         node._tip_pose.assert_not_called()
 
     def test_direct_close_rejects_displaced_or_invalid_fk(self):
@@ -251,22 +256,23 @@ class DrawerSafetyTests(unittest.TestCase):
                 node = SimpleNamespace(
                     _joint_state=JointState(name=['l_two_cyl_finger1_joint', 'l_two_cyl_finger2_joint', 'r_three_cyl_finger2_joint', 'r_three_cyl_finger1_joint'],
                                             position=[.00375, .113, .00375, .113]),
-                    _rails={'db1': .05}, _fk_cli=None,
+                    _rails={'db1': .05}, _fk_cli=None, _entity_cli=None,
                     _rod_contract=lambda: {'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
                                           'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}})
                 def call(client, request, timeout, label):
-                    actual = label == '实测扣手姿态正解'
+                    actual = isinstance(request, worker.GetEntityState.Request)
                     poses = [PoseStamped(), PoseStamped()]
                     for pose in poses:
                         pose.pose.orientation.w = 1.
                         pose.pose.position.x = offset if actual else 0.
-                    return SimpleNamespace(error_code=SimpleNamespace(val=error_code if actual else 1),
-                                           pose_stamped=poses)
+                    if actual:
+                        return SimpleNamespace(success=bool(error_code), state=SimpleNamespace(pose=poses[0].pose))
+                    return SimpleNamespace(error_code=SimpleNamespace(val=1), pose_stamped=poses)
                 node._call = call
                 if error_code == 1:
                     self.assertFalse(worker.TaughtRosWorker.can_continue_drawer_close(node, 'db1', True))
                 else:
-                    with self.assertRaisesRegex(RuntimeError, '正解失败'):
+                    with self.assertRaisesRegex(RuntimeError, '实测扣手位姿不可用'):
                         worker.TaughtRosWorker.can_continue_drawer_close(node, 'db1', True)
 
     def test_repeat_target_uses_measured_position(self):

@@ -35,6 +35,7 @@ import tf2_ros
 import yaml
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose
+from gazebo_msgs.srv import GetEntityState
 from moveit_msgs.msg import CollisionObject, Constraints, JointConstraint
 from moveit_msgs.srv import ApplyPlanningScene, GetCartesianPath, GetMotionPlan, GetPositionFK
 from rclpy.action import ActionClient
@@ -118,6 +119,7 @@ class TaughtRosWorker(SpinNode):
         self._cartesian_cli = self.create_client(GetCartesianPath,
                                                  CARTESIAN_SERVICE)
         self._fk_cli = self.create_client(GetPositionFK, "/compute_fk")
+        self._entity_cli = self.create_client(GetEntityState, "/get_entity_state")
         self._motion_plan_cli = self.create_client(GetMotionPlan, "/plan_kinematic_path")
         self._planning_scene_cli = self.create_client(ApplyPlanningScene, "/apply_planning_scene")
         self._lease_cli = self.create_client(ManageOperationLease, LEASE_SERVICE)
@@ -192,16 +194,17 @@ class TaughtRosWorker(SpinNode):
             response = self._call(client, request, 10.0, "末端姿态校验")
             if response.error_code.val != 1 or len(response.pose_stamped) != len(ARMS):
                 raise RuntimeError("目标扣手姿态正解失败")
-            actual_request = GetPositionFK.Request()
-            actual_request.header.frame_id = "body"
-            actual_request.fk_link_names = request.fk_link_names
-            actual_request.robot_state.joint_state = joint_state
-            actual = self._call(client, actual_request, 10.0, "实测扣手姿态正解")
-            if actual.error_code.val != 1 or len(actual.pose_stamped) != len(ARMS):
-                raise RuntimeError("实测扣手姿态正解失败")
-            for current, expected in zip(actual.pose_stamped, response.pose_stamped):
+            # 关节反馈的刚体正解不包含 Gazebo 约束求解后的 link 偏移。
+            # 直接读取末端相对机身的物理位姿，沿用原位置和角度容差。
+            for link, expected in zip(request.fk_link_names, response.pose_stamped):
+                actual_request = GetEntityState.Request()
+                actual_request.name = "xczs_inspection_robot::" + link
+                actual_request.reference_frame = "xczs_inspection_robot::body"
+                current = self._call(self._entity_cli, actual_request, 10.0, "实测扣手位姿")
+                if not current.success:
+                    raise RuntimeError("实测扣手位姿不可用: " + link)
                 p, q = expected.pose.position, expected.pose.orientation
-                cp, cq = current.pose.position, current.pose.orientation
+                cp, cq = current.state.pose.position, current.state.pose.orientation
                 values = (p.x, p.y, p.z, q.x, q.y, q.z, q.w,
                           cp.x, cp.y, cp.z, cq.x, cq.y, cq.z, cq.w)
                 if not all(math.isfinite(v) for v in values):
