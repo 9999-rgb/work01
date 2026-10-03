@@ -772,7 +772,8 @@ public:
           }
           point.velocities.assign(point.positions.size(), 0.0);
           // 跟随拉出起步时的接触变化，避免 100 ms 保持轨迹尚未追上就失去接触。
-          // 每次仍只从实测位置推进 0.15 mm，不增加接触压入量。
+          // 保持阶段从实测位置推进 0.35 mm，补偿求解器微小回弹；
+          // 实际接触仍受原有 1 mm 深度保护约束。
           point.time_from_start = rclcpp::Duration::from_seconds(0.04);
           for (std::size_t j = 0; j < point.positions.size(); ++j) {
             if (!knob_gripper_hold_prismatic_[j]) {continue;}
@@ -785,8 +786,10 @@ public:
             }
             // Follow each physical contact independently. A fixed close
             // position either loses contact or pushes the moving plate.
-            point.positions[j] = std::clamp(measured + 0.00015,
+            point.positions[j] = std::clamp(
+              std::max(knob_gripper_hold_targets_[j], measured + 0.00035),
               knob_gripper_open_[j], knob_gripper_closed_[j]);
+            knob_gripper_hold_targets_[j] = point.positions[j];
           }
           command.points.push_back(point);
           knob_gripper_hold_pub_->publish(command);
@@ -8710,8 +8713,11 @@ private:
             rotor = measured;
             point.positions[j] = initial + (target - initial) * ratio;
           } else if (gripping) {
+            std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
+            // 转动时允许随接触面微量退让，不能沿用直线保持阶段的单向压紧。
             point.positions[j] = std::clamp(measured + 0.00015,
               knob_gripper_open_[j], knob_gripper_closed_[j]);
+            knob_gripper_hold_targets_[j] = point.positions[j];
           }
         }
         knob_rotor_position_.store(rotor);
@@ -8873,6 +8879,7 @@ private:
           throw;
         }
       };
+    auto hold_targets = desired;
     if (close) {
       // The position backend reasserts its target each physics tick. A fixed
       // closed target therefore pushes a stopped jaw through the plate before
@@ -8919,10 +8926,11 @@ private:
       for (std::size_t i = 0; i < desired.size(); ++i) {
         if (prismatic[i]) {
           hold[i] = std::min(desired[i],
-            std::max(last_close_target[i], measured[i] + 0.0002));
+            std::max(last_close_target[i], measured[i] + 0.00035));
         }
       }
       send_positions(hold, 0.5);
+      hold_targets = hold;
     } else {
       const auto measured = measured_positions();
       bool already_open = true;
@@ -8940,6 +8948,8 @@ private:
     if (close) {
       std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
       knob_gripper_hold_prismatic_ = prismatic;
+      // 实测位置含受力偏差；保持目标不得退回到更小的反馈位置而短暂松爪。
+      knob_gripper_hold_targets_ = hold_targets;
       knob_gripper_hold_active_ = true;
     }
     RCLCPP_INFO(get_logger(), "Knob '%s' jaws verified %s.",
@@ -18610,6 +18620,7 @@ private:
   bool knob_gripper_hold_active_{false};
   std::atomic<double> knob_rotor_position_{0.0};
   std::vector<bool> knob_gripper_hold_prismatic_;
+  std::vector<double> knob_gripper_hold_targets_;
   rclcpp::Publisher<trajectory_msgs::msg::JointTrajectory>::SharedPtr knob_gripper_hold_pub_;
   rclcpp::TimerBase::SharedPtr knob_gripper_hold_timer_;
   std::vector<std::string> knob_gripper_joints_;
