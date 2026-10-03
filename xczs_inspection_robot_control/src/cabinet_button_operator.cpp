@@ -5685,7 +5685,7 @@ private:
         // self-collision or a wrist joint limit.  Doors keep their segmented
         // arc mechanism and the configured seed unchanged.
         const bool continuous_ready_approach =
-          control->id == "fr20422_knob" || control->id == "fr25452_knob";
+          uses_knob_rotor(*control);
         std::vector<double> rotary_branch_seed;
         const std::vector<double> * rotary_branch_seed_ptr = nullptr;
         if (control->control_type ==
@@ -8426,7 +8426,9 @@ private:
       }
       RCLCPP_INFO(get_logger(), "Knob %s physical error: %.3f mm (attempt %d).",
         transverse_only ? "grasp" : "pregrasp", error.norm() * 1000.0, attempt);
-      if (error.norm() <= 0.0005) {return correction;}
+      // 预夹持仍有 50 mm 净空，小于 1 mm 的残差留到接近后的横向校验，
+      // 避免在尚未接触时反复执行没有必要的微调。最终夹持仍要求 0.5 mm。
+      if (error.norm() <= (transverse_only ? 0.0005 : 0.001)) {return correction;}
       if (attempt == 3) {break;}
       correction += error;
       if (correction.norm() > 0.005) {break;}
@@ -8436,7 +8438,7 @@ private:
       target.position.z += correction.z();
       execute_cartesian_path(move_group, goal_handle, {target},
         cartesian_velocity_scale_ * 0.3, cartesian_acceleration_scale_ * 0.3,
-        0.99, operation_executed);
+        0.99, operation_executed, 0.0002, 0.12);
       interruptible_hold(goal_handle, 0.2);
     }
     throw GenericOperationError(OperateCabinetControl::Result::GRASP_FAILED,
@@ -14925,7 +14927,9 @@ private:
     double velocity_scale,
     double acceleration_scale,
     double minimum_fraction = 0.99,
-    bool * operation_executed = nullptr)
+    bool * operation_executed = nullptr,
+    double interpolation_step = 0.002,
+    double maximum_joint_excursion = 0.0)
   {
     check_cancel(goal_handle);
     moveit_msgs::msg::RobotTrajectory trajectory_message;
@@ -14936,12 +14940,33 @@ private:
         synchronized_current_robot_state(move_group);
       move_group.setStartState(*current_state);
       moveit_msgs::msg::RobotTrajectory candidate;
-      const double fraction = move_group.computeCartesianPath(
+      double fraction = move_group.computeCartesianPath(
         waypoints,
-        0.002,
+        interpolation_step,
         cartesian_jump_threshold_,
         candidate,
         true);
+      // MoveIt 的相对跳变检查在不足 10 点时不生效；毫米级对中也必须检查
+      // 每个轨迹点相对起始关节的绝对变化，不能执行等价 IK 分支的大幅翻转。
+      if (maximum_joint_excursion > 0.0) {
+        for (const auto & point : candidate.joint_trajectory.points) {
+          if (point.positions.size() != candidate.joint_trajectory.joint_names.size()) {
+            fraction = -1.0;
+            break;
+          }
+          for (std::size_t i = 0; i < point.positions.size(); ++i) {
+            const double initial = current_state->getVariablePosition(
+              candidate.joint_trajectory.joint_names[i]);
+            if (!std::isfinite(point.positions[i]) ||
+              std::abs(point.positions[i] - initial) > maximum_joint_excursion)
+            {
+              fraction = -1.0;
+              break;
+            }
+          }
+          if (fraction < 0.0) {break;}
+        }
+      }
       if (fraction > best_fraction) {
         best_fraction = fraction;
         trajectory_message = std::move(candidate);
