@@ -8908,8 +8908,16 @@ private:
       }
       const auto steps = static_cast<std::size_t>(std::ceil(travel / step)) + 2U;
       if (steps > 100U) {fail("Knob gripper calibrated travel exceeds the bounded close budget.");}
-      for (std::size_t n = 0; n < steps; ++n) {
+      // Contact solver lag makes the nominal travel/step count a minimum,
+      // not proof of arrival. Allow measured progress to finish within the
+      // existing bounded close budget; keep the same step and tolerances.
+      for (std::size_t n = 0; n < 100U; ++n) {
         const auto measured = measured_positions();
+        bool reached = true;
+        for (std::size_t i = 0; i < desired.size(); ++i) {
+          reached = reached && std::abs(measured[i] - desired[i]) <= tolerances[i];
+        }
+        if (n >= steps && reached) {break;}
         auto next = desired;
         for (std::size_t i = 0; i < desired.size(); ++i) {
           if (prismatic[i]) {
@@ -8944,7 +8952,10 @@ private:
     const auto measured = measured_positions();
     for (std::size_t i = 0; i < desired.size(); ++i) {
       if (std::abs(measured[i] - desired[i]) > tolerances[i]) {
-        fail("Knob gripper joint readback outside tolerance: " + knob_gripper_joints_[i]);
+        fail("Knob gripper joint readback outside tolerance: " + knob_gripper_joints_[i] +
+          " measured=" + std::to_string(measured[i]) +
+          " target=" + std::to_string(desired[i]) +
+          " tolerance=" + std::to_string(tolerances[i]));
       }
     }
     if (close) {

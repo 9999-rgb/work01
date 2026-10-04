@@ -1854,7 +1854,12 @@ private:
       // and lets the cap come to rest at the stop.  Doors, sliders, knobs and
       // drawers keep the two-sided detent/latch spring (they hold at
       // non-zero detents).
-      if (axial_grasp_active) {
+      // Keep the axial return spring continuous across grasp release. The
+      // source slide has 1 N static friction: dropping to 800 N/m parks a
+      // released cap about 1.25 mm out, beyond the 1 mm seating gate. The
+      // existing 2000 N/m coupling spring limits that dead band to 0.5 mm;
+      // retain its damping and the ungrasped parking-effort clamp as well.
+      if (!control.axial_grasp_parent.empty()) {
         effective_stiffness = 2000.0;
         effective_damping = 10.0;
       }
