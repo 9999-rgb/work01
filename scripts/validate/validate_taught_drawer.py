@@ -67,6 +67,9 @@ def main():
                     evidence['failed_task'] = task
                     evidence['failed_progress_trace'] = progress_trace
                     raise RuntimeError('扣手开位未直接推回，重复执行了准备动作')
+            if not task.get('result', {}).get('already_at_target'):
+                if not task.get('result', {}).get('home_verified'):
+                    raise RuntimeError('抽拉结束后未确认双臂回到初始姿势')
             # 任务结束后继续观测，检查回弹和其他抽屉串动。
             positions = []
             for _ in range(10):

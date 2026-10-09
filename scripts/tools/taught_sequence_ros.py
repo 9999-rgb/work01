@@ -905,8 +905,12 @@ class TaughtRosWorker(SpinNode):
                    for j in joints):
                 continue
             self._move_arm_to(side, targets)
-        self._settled([j for cfg in ARMS.values() for j in cfg["joints"]],
-                      timeout=12.0)
+        joints = [j for cfg in ARMS.values() for j in cfg["joints"]]
+        if not self._settled(joints, timeout=12.0):
+            raise RuntimeError("收臂后关节未稳定")
+        if any(abs(self._measured(j) - float(targets[j])) > 0.02 for j in joints):
+            raise RuntimeError("机械臂未回到初始姿势，禁止报告操作完成")
+        self.drawer_result["home_verified"] = True
         on_progress(1.0, "机械臂已回到初始姿势")
 
     # ------------------------------------------------------------- 步骤 3 联动抽拉

@@ -39,6 +39,23 @@ sequences:
         target: 0.05
         duration: 3.0
         lead: 0.3
+
+      - type: rod_stroke
+        role: support
+        distance: 0.0
+        target: 0.0
+        duration: 2.0
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
+      - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.045
+        duration: 3.0
+      - type: go_home
     closed:
       display_name: db1 抽拉柜 关闭
       steps:
@@ -128,6 +145,23 @@ sequences:
         target: 0.05
         duration: 3.0
         lead: 0.3
+
+      - type: rod_stroke
+        role: support
+        distance: 0.0
+        target: 0.0
+        duration: 2.0
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
+      - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.045
+        duration: 3.0
+      - type: go_home
     closed:
       display_name: dm1 抽拉柜 关闭
       steps:
@@ -214,6 +248,18 @@ sequences:
         duration: 3.0
         lead: 0.3
         support_enabled: false
+
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
+      - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.03
+        duration: 3.0
+      - type: go_home
     closed:
       display_name: ds2 抽拉柜 关闭
       steps:
@@ -291,6 +337,18 @@ sequences:
         duration: 3.0
         lead: 0.3
         support_enabled: false
+
+      - type: translate_tool
+        axis: y
+        distance: 0.04
+        duration: 2.0
+        mirror: true
+      - type: retract_rods
+      - type: translate_tool
+        axis: x
+        distance: 0.03
+        duration: 3.0
+      - type: go_home
     closed:
       display_name: ds3 抽拉柜 关闭
       steps:

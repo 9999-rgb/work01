@@ -101,7 +101,7 @@ def main():
                     time.sleep(2)
                     run('scripts/validate/validate_taught_drawer.py', '--api', args.api,
                         '--control', control, '--cycles', args.drawer_cycles, '--repeat-target',
-                        '--expect-direct-close', '--out', web)
+                        '--out', web)
                 finally:
                     stop_recording(recorder)
                 run('scripts/validate/check_drawer_motion.py', '--control', control,

@@ -16,6 +16,15 @@ import taught_sequence_ros as worker
 
 
 class DrawerSafetyTests(unittest.TestCase):
+    def test_home_rejects_stationary_arm_outside_target(self):
+        targets = worker.yaml.safe_load(worker.INITIAL_POSITIONS.read_text())["initial_positions"]
+        node = SimpleNamespace(
+            _measured=lambda joint: float(targets[joint]) + 0.03,
+            _move_arm_to=Mock(), _settled=Mock(return_value=True), drawer_result={})
+        with self.assertRaisesRegex(RuntimeError, '未回到初始姿势'):
+            worker.TaughtRosWorker.step_go_home(node, {}, lambda *args: None)
+        self.assertNotIn('home_verified', node.drawer_result)
+
     def test_pull_timing_uses_cartesian_distance_not_point_index(self):
         samples = iter((0.0, 0.01, 0.04, 0.05))
 
