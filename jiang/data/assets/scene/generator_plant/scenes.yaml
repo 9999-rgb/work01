@@ -1,0 +1,19 @@
+scenes:
+- name: generator_plant
+  spawn_cabinet: false
+  model:
+    file: package://xczs_inspection_robot_description/urdf/scenes/generator_plant.xacro
+    pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+  nav2_map: /home/live/work01/jiang/data/assets/scene/generator_plant/maps/inspection_map_generator_plant.yaml
+  navigation_keepout: null
+  robot_spawn:
+    x: -13.1867
+    y: 6.2113
+    z: 0.515
+    yaw: 0.0

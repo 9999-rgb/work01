@@ -1,0 +1,144 @@
+#!/usr/bin/env bash
+# 麒麟 V10 ARM64 一键部署：sudo ./start；首次安装需联网下载镜像及依赖。
+# GUI=auto|1|0（默认 auto），HTTP_PORT=80，BUILD_JOBS=2。
+# ./start --check 只检查环境；桌面窗口不可用时自动使用虚拟显示。
+set -Eeuo pipefail
+ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+fail() { echo "错误：$*" >&2; exit 1; }
+MODE="${1:-install}"
+(($# <= 1)) || fail '只接受一个参数。'
+case "$MODE" in --help|-h) sed -n '2,4p' "$0"; exit 0;; install|--check) ;; *) fail '支持 install、--check、--help。';; esac
+HTTP_PORT="${HTTP_PORT:-80}"
+BUILD_JOBS="${BUILD_JOBS:-2}"
+GUI="${GUI:-auto}"
+[[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] || fail 'HTTP_PORT 无效。'
+HTTP_PORT=$((10#$HTTP_PORT))
+((HTTP_PORT > 0 && HTTP_PORT < 65536)) || fail 'HTTP_PORT 无效。'
+[[ "$BUILD_JOBS" =~ ^[1-9][0-9]?$ ]] || fail 'BUILD_JOBS 应为 1～99。'
+[[ "$GUI" == auto || "$GUI" == 0 || "$GUI" == 1 ]] || fail 'GUI 应为 auto、0 或 1。'
+# shellcheck source=/dev/null
+source /etc/os-release
+[[ "$ID" == kylin && "${VERSION_ID^^}" == V10 ]] || fail '目标系统须为银河麒麟高级服务器 V10。'
+[[ $(uname -m) == aarch64 ]] || fail '目标架构须为 ARM64/aarch64。'
+for file in run_all.sh jiang/requirements.txt jiang/app/monitor.html scripts/deploy/Dockerfile scripts/deploy/entrypoint.sh scripts/deploy/nginx.conf scripts/deploy/prepare_assets.py scripts/deploy/healthcheck.py; do
+    [[ -f "$ROOT/$file" ]] || fail "缺少 $file；请上传完整项目，不能只上传 start。"
+done
+for scene in electrical_mezzanine generator_plant; do
+    [[ -f "$ROOT/jiang/data/assets/scene/$scene/scenes.yaml" ]] || fail "缺少 $scene 场景资产。"
+done
+bash -n "$ROOT/run_all.sh" "$ROOT/jiang/start_xczs_bridge.sh" "$ROOT/scripts/deploy/entrypoint.sh"
+if [[ "$MODE" == --check ]]; then
+    printf '系统/架构/项目文件检查通过。DISPLAY=%s；GUI=%s\n' "${DISPLAY:-未设置}" "$GUI"
+    command -v docker dnf yum || true
+    echo '未安装或启动服务；尚未验证镜像下载、编译与机械动作。'
+    exit 0
+fi
+if ((EUID != 0)); then
+    exec sudo env HTTP_PORT="$HTTP_PORT" BUILD_JOBS="$BUILD_JOBS" GUI="$GUI" DISPLAY="${DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" bash "$ROOT/start"
+fi
+[[ -d /run/systemd/system ]] || fail '需要 systemd 管理 Docker 服务。'
+# 只使用麒麟已配置的软件源；不添加 CentOS/Ubuntu 源，不卸载 Podman。
+if ! command -v dockerd >/dev/null; then
+    if command -v dnf >/dev/null; then PKG=dnf; else PKG=yum; fi
+    FOUND=''
+    for package in docker-ce docker-engine moby-engine docker; do
+        if "$PKG" -q list --available "$package" >/dev/null 2>&1; then FOUND="$package"; break; fi
+    done
+    [[ -n "$FOUND" ]] || fail '麒麟软件源中未找到 Docker Engine；请提供 dnf repolist 输出，以确定可用安装来源。'
+    "$PKG" install -y "$FOUND"
+fi
+command -v docker >/dev/null || fail '未安装 Docker CLI。'
+command -v dockerd >/dev/null || fail '未安装 Docker Engine。'
+systemctl enable --now docker
+# 固定本机 socket，避免误操作用户配置的远程 Docker context。
+docker_local() { docker --host unix:///var/run/docker.sock "$@"; }
+docker_local info >/dev/null || fail 'Docker daemon 不可用，请查看 journalctl -u docker。'
+NAME=xczs-simulation
+if docker_local container inspect "$NAME" >/dev/null 2>&1; then
+    OWNER="$(docker_local inspect -f '{{index .Config.Labels "org.xczs.project"}}' "$NAME")"
+    [[ "$OWNER" == "$ROOT" ]] || fail '同名容器不属于当前项目，停止部署。'
+fi
+TMP="$(mktemp -d)"
+trap 'rm -rf -- "$TMP"' EXIT
+trap 'echo "部署失败（第 $LINENO 行）；请保留上面的错误输出。" >&2' ERR
+# 仅打包运行所需目录，排除开发机二进制、缓存、数据库和密钥配置。
+INPUTS=(run_all.sh jiang scripts)
+for directory in "$ROOT"/xczs_inspection_robot_*; do [[ ! -d "$directory" ]] || INPUTS+=("${directory##*/}"); done
+for directory in model 仿真场景20260831; do [[ ! -d "$ROOT/$directory" ]] || INPUTS+=("$directory"); done
+mkdir "$TMP/context"
+tar -C "$ROOT" --exclude='.git' --exclude='.env' --exclude='.env.*' \
+    --exclude='__pycache__' --exclude='*.pyc' --exclude='*.db' --exclude='*.db-*' \
+    --exclude='*.sqlite*' --exclude='jiang/tmp' --exclude='*.log' \
+    -cf - "${INPUTS[@]}" | tar -C "$TMP/context" -xf -
+# 不复用宿主机 build/install；容器中原生 ARM64 编译。失败时保留旧容器。
+DOCKER_BUILDKIT=0 docker_local build --build-arg BUILD_JOBS="$BUILD_JOBS" \
+    -f "$TMP/context/scripts/deploy/Dockerfile" -t xczs-simulation:local "$TMP/context"
+ARGS=(--detach --name "$NAME" --label "org.xczs.project=$ROOT" --restart unless-stopped
+    --init --shm-size 1g --stop-timeout 90 --publish "$HTTP_PORT:80"
+    --volume xczs-runtime-data:/opt/work01/jiang/data
+    --volume xczs-recordings:/opt/work01/recordings)
+# 不使用 xhost +；只传当前桌面会话的授权 cookie。
+USE_GUI=0
+if [[ "$GUI" != 0 && -n ${DISPLAY:-} && "$DISPLAY" == :* && -d /tmp/.X11-unix ]] && command -v xauth >/dev/null; then
+    AUTH_SOURCE="${XAUTHORITY:-$HOME/.Xauthority}"
+    if [[ -r "$AUTH_SOURCE" ]]; then
+        xauth -f "$AUTH_SOURCE" nlist "$DISPLAY" 2>/dev/null | sed 's/^..../ffff/' > "$TMP/cookie"
+        if [[ -s "$TMP/cookie" ]]; then
+            install -d -m 700 /var/lib/xczs
+            touch /var/lib/xczs/Xauthority
+            chmod 600 /var/lib/xczs/Xauthority
+            xauth -f /var/lib/xczs/Xauthority nmerge "$TMP/cookie"
+            USE_GUI=1
+            ARGS+=(--env "DISPLAY=$DISPLAY" --env XAUTHORITY=/run/xczs.Xauthority
+                --volume /tmp/.X11-unix:/tmp/.X11-unix:ro
+                --volume /var/lib/xczs/Xauthority:/run/xczs.Xauthority:ro)
+        fi
+    fi
+fi
+[[ "$GUI" != 1 || "$USE_GUI" == 1 ]] || fail '未找到桌面 X11 授权；请从桌面终端运行，或指定 GUI=0。'
+ARGS+=(--env "XCZS_GUI=$USE_GUI")
+# 替换旧容器前确认运行环境；不启动机器人。
+CHECK_ARGS=(--rm --entrypoint bash)
+if ((USE_GUI)); then
+    CHECK_ARGS+=(--env "DISPLAY=$DISPLAY" --env XAUTHORITY=/run/xczs.Xauthority
+        --volume /tmp/.X11-unix:/tmp/.X11-unix:ro
+        --volume /var/lib/xczs/Xauthority:/run/xczs.Xauthority:ro)
+fi
+docker_local run "${CHECK_ARGS[@]}" xczs-simulation:local -c "nginx -t && { [[ $USE_GUI == 0 ]] || xdpyinfo >/dev/null; }"
+BACKUP_NAME=''
+restore_previous() {
+    docker_local rm -f "$NAME" >/dev/null 2>&1 || true
+    if [[ -n "$BACKUP_NAME" ]]; then
+        docker_local rename "$BACKUP_NAME" "$NAME"
+        docker_local start "$NAME" >/dev/null
+        echo '已恢复部署前的容器。' >&2
+    fi
+}
+if docker_local container inspect "$NAME" >/dev/null 2>&1; then
+    docker_local stop "$NAME"
+    BACKUP_NAME="$NAME-backup-$(date +%Y%m%d%H%M%S)"
+    docker_local rename "$NAME" "$BACKUP_NAME"
+fi
+if ! docker_local run "${ARGS[@]}" xczs-simulation:local >/dev/null; then
+    restore_previous
+    fail '新容器启动失败，请检查端口占用及 Docker 输出。'
+fi
+echo "容器已启动；桌面窗口=$USE_GUI。正在等待仿真就绪（最长约 10 分钟）……"
+for ((n=0; n<120; n++)); do
+    STATE="$(docker_local inspect -f '{{.State.Health.Status}}' "$NAME")"
+    if [[ "$STATE" == healthy ]]; then
+        [[ -z "$BACKUP_NAME" ]] || docker_local rm "$BACKUP_NAME" >/dev/null
+        echo "部署就绪：在麒麟桌面浏览器打开 http://localhost:$HTTP_PORT/monitor.html"
+        echo "其他可达机器访问 http://服务器IP:$HTTP_PORT/monitor.html；防火墙按需放行该端口。"
+        echo '日志：docker logs --tail 100 -f xczs-simulation'
+        echo '停止：docker stop xczs-simulation；启动：docker start xczs-simulation'
+        echo '服务就绪不等于机械动作验收，需继续测试两个场景。'
+        exit 0
+    fi
+    sleep 5
+done
+if [[ -n "$BACKUP_NAME" ]]; then
+    docker_local logs --tail 150 "$NAME" >&2
+    restore_previous
+fi
+fail '新容器未就绪；首次部署请执行 docker logs --tail 150 xczs-simulation，提供错误日志。'

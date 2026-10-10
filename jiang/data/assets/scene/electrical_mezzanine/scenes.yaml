@@ -1,0 +1,19 @@
+scenes:
+- name: electrical_mezzanine
+  spawn_cabinet: false
+  model:
+    file: package://xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.xacro
+    pose:
+      x: 0.0
+      y: 0.0
+      z: 0.0
+      roll: 0.0
+      pitch: 0.0
+      yaw: 0.0
+  nav2_map: /home/live/work01/jiang/data/assets/scene/electrical_mezzanine/maps/inspection_map_electrical_mezzanine.yaml
+  navigation_keepout: null
+  robot_spawn:
+    x: 4.0
+    y: 4.0
+    z: 0.515
+    yaw: 0.0

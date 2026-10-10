@@ -21,7 +21,13 @@ __pycache__/
 .pytest_cache/
 
 # SQLite database (generated)
-/jiang/data/
+/jiang/data/*
+!/jiang/data/assets/
+/jiang/data/assets/*
+!/jiang/data/assets/scene/
+/jiang/data/assets/scene/*
+!/jiang/data/assets/scene/electrical_mezzanine/
+!/jiang/data/assets/scene/generator_plant/
 /jiang/tmp/
 
 # CMake generated files
