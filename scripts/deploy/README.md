@@ -1,6 +1,6 @@
 # 麒麟 V10 ARM64 部署
 
-入口为项目根目录 `start`。目标环境：银河麒麟高级服务器 V10、aarch64、systemd；首次安装需要访问麒麟软件源、Docker Hub、Ubuntu/ROS 软件源、PyPI 和 GitHub。
+入口为项目根目录 `start`。目标环境：银河麒麟高级服务器 V10、aarch64、systemd；首次安装需要访问麒麟现有软件源、DaoCloud 镜像加速站及清华镜像站。目标机不再直接下载 GitHub 上的 Zenoh 发布包。
 
 ## 操作
 
@@ -26,7 +26,7 @@ sudo env DISPLAY="$DISPLAY" XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" GUI=1 
 
 ## 运行结构
 
-- 容器基础环境：`ros:humble-ros-base-jammy`，在 ARM64 主机上原生编译项目。
+- 容器基础环境：`m.daocloud.io/docker.io/library/ros:humble-ros-base-jammy`，在 ARM64 主机上原生编译项目。
 - 容器继续使用 `run_all.sh --web`，Nginx `/api/` 去前缀后代理到内部 8090。
 - 仅发布 Nginx 端口，不发布 ROS、Zenoh 或后端端口。
 - 桌面只传入 X11 socket 和授权 cookie，不使用 `xhost +`、特权容器或关闭宿主机安全策略。
@@ -43,3 +43,13 @@ docker inspect --format '{{.State.Health.Status}}' xczs-simulation
 ## 验证边界
 
 已在开发机执行 ShellCheck、Bash/Python 语法检查及实际 Nginx 代理测试（去前缀、查询参数、重定向、三个前端地址替换）。没有在目标麒麟 ARM64 上完成镜像构建和机器人动作验收。安装过程的 healthy 只代表代理和机器人就绪状态通过，机械动作仍需另行测试。
+
+## 国内下载源
+
+- 容器基础镜像：DaoCloud 公开加速站，已检查 ARM64 清单。可用 `ROS_IMAGE=企业镜像地址 ./start` 覆盖，不改宿主机 Docker 全局配置。
+- Ubuntu ARM64：清华 `ubuntu-ports`；ROS 2：清华 `ros2/ubuntu`，保留基础镜像原有签名密钥。
+- Python：清华 PyPI；rosdep 规则和发行版索引：清华 rosdistro。
+- Zenoh 1.9.0 ARM64：官方原始 ZIP 随 Git 分发，构建时校验 SHA256。额外增加约 9.3 MiB；来源与许可证见 `vendor/README.md`。
+- Docker Engine 仍从麒麟本机配置的软件源安装，不使用 Ubuntu/CentOS 源替换麒麟系统源。
+
+这些地址已在开发机做连通检查，不代表目标网络一定允许访问。国内源也可能限流或停服；脚本不自动回退国外源。若无需 Gazebo 桌面窗口，使用 `GUI=0 ./start`，通过浏览器控制。

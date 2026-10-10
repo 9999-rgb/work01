@@ -10,6 +10,7 @@ MODE="${1:-install}"
 case "$MODE" in --help|-h) sed -n '2,4p' "$0"; exit 0;; install|--check) ;; *) fail '支持 install、--check、--help。';; esac
 HTTP_PORT="${HTTP_PORT:-80}"
 BUILD_JOBS="${BUILD_JOBS:-2}"
+ROS_IMAGE="${ROS_IMAGE:-m.daocloud.io/docker.io/library/ros:humble-ros-base-jammy}"
 GUI="${GUI:-auto}"
 [[ "$HTTP_PORT" =~ ^[0-9]{1,5}$ ]] || fail 'HTTP_PORT 无效。'
 HTTP_PORT=$((10#$HTTP_PORT))
@@ -20,7 +21,7 @@ HTTP_PORT=$((10#$HTTP_PORT))
 source /etc/os-release
 [[ "$ID" == kylin && "${VERSION_ID^^}" == V10 ]] || fail '目标系统须为银河麒麟高级服务器 V10。'
 [[ $(uname -m) == aarch64 ]] || fail '目标架构须为 ARM64/aarch64。'
-for file in run_all.sh jiang/requirements.txt jiang/app/monitor.html scripts/deploy/Dockerfile scripts/deploy/entrypoint.sh scripts/deploy/nginx.conf scripts/deploy/prepare_assets.py scripts/deploy/healthcheck.py; do
+for file in run_all.sh jiang/requirements.txt jiang/app/monitor.html scripts/deploy/Dockerfile scripts/deploy/entrypoint.sh scripts/deploy/nginx.conf scripts/deploy/prepare_assets.py scripts/deploy/healthcheck.py scripts/deploy/configure_mirrors.py scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip scripts/deploy/vendor/SHA256SUMS; do
     [[ -f "$ROOT/$file" ]] || fail "缺少 $file；请上传完整项目，不能只上传 start。"
 done
 for scene in electrical_mezzanine generator_plant; do
@@ -34,7 +35,7 @@ if [[ "$MODE" == --check ]]; then
     exit 0
 fi
 if ((EUID != 0)); then
-    exec sudo env HTTP_PORT="$HTTP_PORT" BUILD_JOBS="$BUILD_JOBS" GUI="$GUI" DISPLAY="${DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" bash "$ROOT/start"
+    exec sudo env ROS_IMAGE="$ROS_IMAGE" HTTP_PORT="$HTTP_PORT" BUILD_JOBS="$BUILD_JOBS" GUI="$GUI" DISPLAY="${DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" bash "$ROOT/start"
 fi
 [[ -d /run/systemd/system ]] || fail '需要 systemd 管理 Docker 服务。'
 # 只使用麒麟已配置的软件源；不添加 CentOS/Ubuntu 源，不卸载 Podman。
@@ -71,7 +72,7 @@ tar -C "$ROOT" --exclude='.git' --exclude='.env' --exclude='.env.*' \
     --exclude='*.sqlite*' --exclude='jiang/tmp' --exclude='*.log' \
     -cf - "${INPUTS[@]}" | tar -C "$TMP/context" -xf -
 # 不复用宿主机 build/install；容器中原生 ARM64 编译。失败时保留旧容器。
-DOCKER_BUILDKIT=0 docker_local build --build-arg BUILD_JOBS="$BUILD_JOBS" \
+DOCKER_BUILDKIT=0 docker_local build --build-arg ROS_IMAGE="$ROS_IMAGE" --build-arg BUILD_JOBS="$BUILD_JOBS" \
     -f "$TMP/context/scripts/deploy/Dockerfile" -t xczs-simulation:local "$TMP/context"
 ARGS=(--detach --name "$NAME" --label "org.xczs.project=$ROOT" --restart unless-stopped
     --init --shm-size 1g --stop-timeout 90 --publish "$HTTP_PORT:80"

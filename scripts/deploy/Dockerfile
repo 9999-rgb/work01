@@ -1,7 +1,13 @@
-FROM ros:humble-ros-base-jammy
+ARG ROS_IMAGE=m.daocloud.io/docker.io/library/ros:humble-ros-base-jammy
+FROM ${ROS_IMAGE}
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG BUILD_JOBS=2
-ENV DEBIAN_FRONTEND=noninteractive
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/pypi/web/simple \
+    PIP_DEFAULT_TIMEOUT=60 \
+    ROSDISTRO_INDEX_URL=https://mirrors.tuna.tsinghua.edu.cn/rosdistro/index-v4.yaml
+COPY scripts/deploy/configure_mirrors.py /tmp/configure_mirrors.py
+RUN python3 /tmp/configure_mirrors.py
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential cmake git curl unzip nginx locales python3-pip python3-venv \
     python3-numpy python3-yaml python3-pil python3-pytest python3-requests \
@@ -17,15 +23,15 @@ WORKDIR /opt/work01
 COPY . .
 RUN python3 -m venv --system-site-packages /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir -r jiang/requirements.txt
-RUN arch="$(uname -m)" && case "$arch" in aarch64|x86_64) ;; *) exit 1;; esac \
-    && curl -fL --retry 3 "https://github.com/eclipse-zenoh/zenoh-plugin-ros2dds/releases/download/1.9.0/zenoh-plugin-ros2dds-1.9.0-${arch}-unknown-linux-gnu-standalone.zip" -o /tmp/zenoh.zip \
-    && unzip -q /tmp/zenoh.zip -d /tmp/zenoh \
+# 官方 ARM64 发布包随项目分发，目标机器无需访问 GitHub。
+RUN test "$(uname -m)" = aarch64 \
+    && cd scripts/deploy/vendor && sha256sum -c SHA256SUMS && cd /opt/work01 \
+    && unzip -q scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip -d /tmp/zenoh \
     && mkdir -p /opt/zenoh-bridge-ros2dds \
-    && install -m 755 "$(find /tmp/zenoh -type f -name zenoh-bridge-ros2dds -print -quit)" /opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds \
+    && install -m 755 /tmp/zenoh/zenoh-bridge-ros2dds /opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds \
     && /opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds --version \
-    && rm -rf /tmp/zenoh /tmp/zenoh.zip
+    && rm -rf /tmp/zenoh
 RUN source /opt/ros/humble/setup.bash \
-    && { test -f /etc/ros/rosdep/sources.list.d/20-default.list || rosdep init; } \
     && rosdep update --rosdistro humble \
     && apt-get update \
     && rosdep install --from-paths xczs_inspection_robot_* --ignore-src --rosdistro humble -y \
