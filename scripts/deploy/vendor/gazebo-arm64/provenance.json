@@ -1,0 +1,39 @@
+[
+  {
+    "file": "gazebo_11.10.2+dfsg-1osrf6_arm64.deb",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/gazebo_11.10.2+dfsg-1osrf6_arm64.deb",
+    "sha256": "fa1ec6568dcf56e1e893880087d3019cdd18f692a719308352f02f256033e74d"
+  },
+  {
+    "file": "gazebo-common_11.10.2+dfsg-1osrf6_all.deb",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/gazebo-common_11.10.2+dfsg-1osrf6_all.deb",
+    "sha256": "f25dac5cb101e2c7859def2049bc9dcada56bf87581d6b412ce0b962a9e83d2b"
+  },
+  {
+    "file": "gazebo-plugin-base_11.10.2+dfsg-1osrf6_arm64.deb",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/gazebo-plugin-base_11.10.2+dfsg-1osrf6_arm64.deb",
+    "sha256": "b8b582e8745bb183c70e64b4360ae432281ba575211e6baa1e5802dae0a424cb"
+  },
+  {
+    "file": "libgazebo-dev_11.10.2+dfsg-1osrf6_arm64.deb",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/libgazebo-dev_11.10.2+dfsg-1osrf6_arm64.deb",
+    "sha256": "71ff03945a43f3262bcb6278ae55d97c857c1eeed74cab8139f34fb5bcce1828"
+  },
+  {
+    "file": "libgazebo11_11.10.2+dfsg-1osrf6_arm64.deb",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/libgazebo11_11.10.2+dfsg-1osrf6_arm64.deb",
+    "sha256": "3ac99642741603e4fb6974a05c3a7f352999d55df946e7a2c33fa01826c1f710"
+  },
+  {
+    "file": "gazebo_ros_pkgs.tar.gz",
+    "url": "https://codeload.github.com/ros-simulation/gazebo_ros_pkgs/tar.gz/59467572f89b22b273b9d6bc05484ccc7f6ec072",
+    "sha256": "70875b79d26ebe7152e17dc59b5853d04cd7c6dab6238ca9aa9fa09d05bd9dfe",
+    "commit": "59467572f89b22b273b9d6bc05484ccc7f6ec072"
+  },
+  {
+    "file": "gazebo_ros2_control.tar.gz",
+    "url": "https://codeload.github.com/ros-controls/gazebo_ros2_control/tar.gz/42d875b482f0b254d9032950a91b2c5cbd7d1c3d",
+    "sha256": "d79faa9159b03150e176f9e785e01460b255208e80e412bc7480362a65c29b05",
+    "commit": "42d875b482f0b254d9032950a91b2c5cbd7d1c3d"
+  }
+]

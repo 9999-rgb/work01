@@ -53,3 +53,15 @@ docker inspect --format '{{.State.Health.Status}}' xczs-simulation
 - Docker Engine 仍从麒麟本机配置的软件源安装，不使用 Ubuntu/CentOS 源替换麒麟系统源。
 
 这些地址已在开发机做连通检查，不代表目标网络一定允许访问。国内源也可能限流或停服；脚本不自动回退国外源。若无需 Gazebo 桌面窗口，使用 `GUI=0 ./start`，通过浏览器控制。
+
+## ARM64 Gazebo Classic
+
+ARM64 软件源缺少 `ros-humble-gazebo-ros-pkgs` 与 `ros-humble-gazebo-ros2-control`，不能使用 x86 的二进制安装命令。当前镜像改为安装随仓库提供的 Open Robotics Gazebo 11 ARM64 Debian 包，再从固定源码编译 ROS 插件，与项目共享 `install/setup.bash`。上游来源及校验值见 `vendor/gazebo-arm64/`。
+
+已导入离线基础镜像的目标机使用：
+
+```bash
+GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 ./start
+```
+
+首次构建时间取决于依赖下载和 ARM64 编译速度。Docker 数据目录应留足空间，不能因根分区很大就忽略 `/var` 的独立小分区。当前只完成包架构、归档校验及脚本静态检查，目标机器编译与机械动作仍待实测。
