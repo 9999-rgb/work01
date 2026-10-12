@@ -1,5 +1,7 @@
 """Deployment failure handling and cache boundaries; no live robot required."""
 import importlib.util
+import os
+import tempfile
 import socket
 import subprocess
 import unittest
@@ -62,6 +64,37 @@ class DeploymentTests(unittest.TestCase):
                 mock = f"timeout() {{ printf '%s\\n' '{version}'; return {code}; }}; "
                 result = subprocess.run(['bash', '-c', mock + check], capture_output=True)
                 self.assertEqual(result.returncode == 0, expected == 0)
+
+    def test_virtual_display_readiness_gate(self):
+        entrypoint = (ROOT / 'scripts/deploy/entrypoint.sh').read_text()
+        command = entrypoint.split("xvfb-run -a", 1)[1].split("bash -c '", 1)[1].split("' &", 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            temp = Path(directory)
+            probe = temp / 'glxinfo'
+            probe.write_text('#!/bin/sh\nexit "$PROBE_STATUS"\n')
+            probe.chmod(0o755)
+            launch = temp / 'run_all.sh'
+            launch.write_text('#!/bin/sh\nprintf "LAUNCH %s %s %s\\n" "$XCZS_DISPLAY_SETTLE_SECONDS" "$XCZS_DISPLAY_SETTLE_MAX_WAIT" "$1"\n')
+            launch.chmod(0o755)
+            for status in ('0', '1', '124'):
+                with self.subTest(probe_status=status):
+                    env = {**os.environ, 'PATH': str(temp) + ':' + os.environ['PATH'], 'PROBE_STATUS': status}
+                    env.pop('XCZS_DISPLAY_SETTLE_SECONDS', None)
+                    env.pop('XCZS_DISPLAY_SETTLE_MAX_WAIT', None)
+                    result = subprocess.run(['bash', '-c', command], cwd=temp, env=env,
+                                            capture_output=True, text=True, timeout=5)
+                    if status == '0':
+                        self.assertEqual(result.returncode, 0)
+                        self.assertIn('LAUNCH 0 0 --web', result.stdout)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertNotIn('LAUNCH', result.stdout)
+            env = {**os.environ, 'PATH': str(temp) + ':' + os.environ['PATH'], 'PROBE_STATUS': '0',
+                   'XCZS_DISPLAY_SETTLE_SECONDS': '20', 'XCZS_DISPLAY_SETTLE_MAX_WAIT': '15'}
+            result = subprocess.run(['bash', '-c', command], cwd=temp, env=env,
+                                    capture_output=True, text=True, timeout=5)
+            self.assertEqual(result.returncode, 0)
+            self.assertIn('LAUNCH 20 15 --web', result.stdout)
 
     def test_network_compile_checks_are_separate_layers(self):
         for token in ['update_rosdep.py', 'rosdep install', 'colcon build', 'gzserver --version']:

@@ -90,7 +90,10 @@ GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 bash ./start 2>&1 | tee deploy-
 
 依赖固定为 Passlib 1.7.4 与 bcrypt 4.0.1，继续使用原有 bcrypt_sha256 哈希格式。Docker 在安装 Python 依赖后测试长密码的哈希、正确密码验证和错误密码拒绝，失败会在编译机器人前停止。开发机已验证短密码、长密码、中文密码、首次管理员创建和重复引导保留现有账号；已确认 Python 3.10 的 ARM64 wheel 可下载。目标机仍须更新镜像才能使用修复，单独 `docker start` 会继续运行旧镜像。
 
-后台 Xvfb 启动目前会触发启动入口的显示稳定等待（默认 180 秒），日志会说明等待进度；等待结束后还需要通过 ROS 和 Web 就绪检查。`Ctrl+C` 中断根目录 start 的就绪等待，不代表已经停止后台容器。停止容器使用项目根目录 `bash ./stop_all.sh`，状态以 Docker 检查为准。
+后台 Xvfb 启动先用 glxinfo 实际检查 OpenGL 上下文（最长 20 秒）。检查通过后默认不再套用实体桌面的 180 秒冷启动等待；检查失败立即停止并保留错误输出。实体桌面分支仍保留原显示等待，显式配置的 XCZS_DISPLAY_SETTLE_SECONDS / XCZS_DISPLAY_SETTLE_MAX_WAIT 会继续生效。随后仍须通过 ROS 和 Web 就绪检查。`Ctrl+C` 中断根目录 start 的就绪等待，不代表已经停止后台容器。停止容器使用项目根目录 `bash ./stop_all.sh`，状态以 Docker 检查为准。
 
 
 启动等待期间，根目录 `start` 会自动跟随容器日志，便于看到显示等待、Gazebo/ROS 启动与 Web 就绪进度；可能包含的管理员密码和显式密钥值会隐藏。脚本退出时关闭日志跟随器，后台容器状态仍由 Docker 管理。此改动仅涉及宿主机脚本，无需重新编译镜像。
+
+
+虚拟显示等待修复已通过 8 项部署检查，并在开发机隔离的 Ubuntu 24.04 amd64 容器中实际创建 Xvfb/GLX 上下文，渲染器为 Mesa llvmpipe。该检查不等于目标麒麟 ARM64 运行验收；目标端仍须看到 OpenGL 检查通过、Web/ROS 就绪和真实传感器数据。

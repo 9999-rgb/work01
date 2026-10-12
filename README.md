@@ -8,12 +8,15 @@ cd /root/proj/work01-gitee
 # 启动仿真：已完成首次部署、容器已存在时使用
 docker start xczs-simulation
 
+# 查看实时启动日志（Ctrl+C 退出查看，仿真继续运行）
+docker logs --tail 100 -f xczs-simulation 2>&1 |
+  sed -u -E 's/(密码[：:]|XCZS_(ADMIN_PASSWORD|SECRET_KEY)[=:]).*/\1<REDACTED>/'
+
 # 一键终止本项目全部仿真：停止项目容器及本机遗留进程
 bash ./stop_all.sh
 ```
 
 Web：`http://10.186.109.146/monitor.html`（服务器 IP 变化时相应替换）。
-查看日志：`docker logs --tail 100 -f xczs-simulation`。
 停止脚本不删除容器、镜像或数据卷；可用 `bash ./stop_all.sh --dry-run` 先查看目标。
 
 首次部署或更新镜像：
