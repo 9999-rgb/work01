@@ -21,7 +21,7 @@ HTTP_PORT=$((10#$HTTP_PORT))
 source /etc/os-release
 [[ "$ID" == kylin && "${VERSION_ID^^}" == V10 ]] || fail '目标系统须为银河麒麟高级服务器 V10。'
 [[ $(uname -m) == aarch64 ]] || fail '目标架构须为 ARM64/aarch64。'
-for file in run_all.sh jiang/requirements.txt jiang/app/monitor.html scripts/deploy/Dockerfile scripts/deploy/entrypoint.sh scripts/deploy/nginx.conf scripts/deploy/prepare_assets.py scripts/deploy/healthcheck.py scripts/deploy/configure_mirrors.py scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip scripts/deploy/vendor/SHA256SUMS scripts/deploy/vendor/gazebo-arm64/SHA256SUMS; do
+for file in run_all.sh jiang/requirements.txt jiang/app/monitor.html scripts/deploy/Dockerfile scripts/deploy/entrypoint.sh scripts/deploy/nginx.conf scripts/deploy/prepare_assets.py scripts/deploy/healthcheck.py scripts/deploy/configure_mirrors.py scripts/deploy/update_rosdep.py scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip scripts/deploy/vendor/SHA256SUMS scripts/deploy/vendor/gazebo-arm64/SHA256SUMS; do
     [[ -f "$ROOT/$file" ]] || fail "缺少 $file；请上传完整项目，不能只上传 start。"
 done
 for scene in electrical_mezzanine generator_plant; do
@@ -71,8 +71,20 @@ tar -C "$ROOT" --exclude='.git' --exclude='.env' --exclude='.env.*' \
     --exclude='__pycache__' --exclude='*.pyc' --exclude='*.db' --exclude='*.db-*' \
     --exclude='*.sqlite*' --exclude='jiang/tmp' --exclude='*.log' \
     -cf - "${INPUTS[@]}" | tar -C "$TMP/context" -xf -
+# 单独复制包清单，依赖安装缓存不随 C++/Web 源码变化而失效。
+for manifest in "$TMP/context"/xczs_inspection_robot_*/package.xml; do
+    [[ -f "$manifest" ]] || fail "缺少 ROS 包清单：$manifest"
+    package="$(basename "$(dirname "$manifest")")"
+    mkdir -p "$TMP/context/.deploy-manifests/$package"
+    cp "$manifest" "$TMP/context/.deploy-manifests/$package/package.xml"
+done
+# Dockerfile 不进入运行文件，远端手工修复备份也不进入镜像。
+cat > "$TMP/context/.dockerignore" <<'IGNORE'
+scripts/deploy/Dockerfile
+**/*.before-*
+IGNORE
 # 不复用宿主机 build/install；容器中原生 ARM64 编译。失败时保留旧容器。
-DOCKER_BUILDKIT=0 docker_local build --build-arg ROS_IMAGE="$ROS_IMAGE" --build-arg BUILD_JOBS="$BUILD_JOBS" \
+DOCKER_BUILDKIT=0 docker_local build --network=host --build-arg ROS_IMAGE="$ROS_IMAGE" --build-arg BUILD_JOBS="$BUILD_JOBS" \
     -f "$TMP/context/scripts/deploy/Dockerfile" -t xczs-simulation:local "$TMP/context"
 ARGS=(--detach --name "$NAME" --label "org.xczs.project=$ROOT" --restart unless-stopped
     --init --shm-size 1g --stop-timeout 90 --publish "$HTTP_PORT:80"

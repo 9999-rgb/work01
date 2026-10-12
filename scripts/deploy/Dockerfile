@@ -22,16 +22,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 ENV LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 WORKDIR /opt/work01
-COPY . .
 # 将缺失的 ROS Gazebo 插件与项目放入同一工作空间，启动时统一 source install。
 RUN mkdir -p third_party/gazebo_ros_pkgs third_party/gazebo_ros2_control \
     && tar -xzf /tmp/gazebo-arm64/gazebo_ros_pkgs.tar.gz --strip-components=1 -C third_party/gazebo_ros_pkgs \
     && tar -xzf /tmp/gazebo-arm64/gazebo_ros2_control.tar.gz --strip-components=1 -C third_party/gazebo_ros2_control \
     && touch third_party/gazebo_ros2_control/gazebo_ros2_control_demos/COLCON_IGNORE \
     && rm -rf /tmp/gazebo-arm64
+COPY jiang/requirements.txt jiang/requirements.txt
 RUN python3 -m venv --system-site-packages /opt/venv \
     && /opt/venv/bin/python -m pip install --no-cache-dir -r jiang/requirements.txt
 # 官方 ARM64 发布包随项目分发，目标机器无需访问 GitHub。
+COPY scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip scripts/deploy/vendor/SHA256SUMS scripts/deploy/vendor/
 RUN test "$(uname -m)" = aarch64 \
     && cd scripts/deploy/vendor && sha256sum -c SHA256SUMS && cd /opt/work01 \
     && unzip -q scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip -d /tmp/zenoh \
@@ -39,16 +40,35 @@ RUN test "$(uname -m)" = aarch64 \
     && install -m 755 /tmp/zenoh/zenoh-bridge-ros2dds /opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds \
     && /opt/zenoh-bridge-ros2dds/zenoh-bridge-ros2dds --version \
     && rm -rf /tmp/zenoh
+# 网络依赖与项目源码分层：源码/版本检查修改不再触发 rosdep update。
+COPY scripts/deploy/update_rosdep.py /usr/local/lib/xczs/update_rosdep.py
+RUN printf 'Acquire::ForceIPv4 "true";\nAcquire::Retries "5";\nAcquire::http::Timeout "60";\nAcquire::https::Timeout "60";\n' > /etc/apt/apt.conf.d/80-xczs-network \
+    && python3 /usr/local/lib/xczs/update_rosdep.py
+# start 只提取 package.xml；依赖变化才使这一层失效。
+COPY .deploy-manifests/ /tmp/xczs-manifests/
 RUN source /opt/ros/humble/setup.bash \
-    && rosdep update --rosdistro humble \
-    && apt-get update \
-    && rosdep install --from-paths xczs_inspection_robot_* third_party --ignore-src --rosdistro humble -y \
-    && CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS" MAKEFLAGS="-j$BUILD_JOBS" colcon build --symlink-install --executor sequential --cmake-args -DBUILD_TESTING=OFF \
-    && source install/setup.bash \
+    && apt-get update -o APT::Update::Error-Mode=any \
+    && rosdep install --from-paths /tmp/xczs-manifests third_party --ignore-src --rosdistro humble -y \
+    && rm -rf /var/lib/apt/lists/* /tmp/xczs-manifests
+COPY xczs_inspection_robot_bringup/ xczs_inspection_robot_bringup/
+COPY xczs_inspection_robot_control/ xczs_inspection_robot_control/
+COPY xczs_inspection_robot_description/ xczs_inspection_robot_description/
+COPY xczs_inspection_robot_gazebo/ xczs_inspection_robot_gazebo/
+COPY xczs_inspection_robot_interfaces/ xczs_inspection_robot_interfaces/
+COPY xczs_inspection_robot_moveit_config/ xczs_inspection_robot_moveit_config/
+COPY xczs_inspection_robot_nav2/ xczs_inspection_robot_nav2/
+RUN source /opt/ros/humble/setup.bash \
+    && CMAKE_BUILD_PARALLEL_LEVEL="$BUILD_JOBS" MAKEFLAGS="-j$BUILD_JOBS" colcon build --symlink-install --executor sequential --cmake-args -DBUILD_TESTING=OFF
+# 与编译分层；版本命令的特殊退出码不再使成功编译丢失。
+RUN source /opt/ros/humble/setup.bash && source install/setup.bash \
     && ros2 pkg prefix gazebo_ros && ros2 pkg prefix gazebo_plugins \
-    && ros2 pkg prefix gazebo_ros2_control && gzserver --version \
-    && rm -rf /var/lib/apt/lists/*
-RUN /opt/venv/bin/python scripts/deploy/prepare_assets.py \
+    && ros2 pkg prefix gazebo_ros2_control \
+    && (status=0; timeout 20 gzserver --version > /tmp/gazebo-version.txt 2>&1 || status=$?; \
+        cat /tmp/gazebo-version.txt; \
+        { [ "$status" -eq 0 ] || [ "$status" -eq 255 ]; } \
+        && grep -q 'version 11\.' /tmp/gazebo-version.txt)
+COPY . .
+RUN rm -rf .deploy-manifests && /opt/venv/bin/python scripts/deploy/prepare_assets.py \
     && cp scripts/deploy/nginx.conf /etc/nginx/sites-available/default \
     && nginx -t && chmod +x run_all.sh jiang/start_xczs_bridge.sh scripts/deploy/entrypoint.sh
 ENV PYTHON_BIN=/opt/venv/bin/python ROS_DOMAIN_ID=42 ROS_LOCALHOST_ONLY=1 \

@@ -69,6 +69,7 @@ target_compile_features(xczs_ros_global_args_guard PUBLIC cxx_std_17)
 ament_target_dependencies(
   xczs_ros_global_args_guard
   gazebo_dev
+  gazebo_ros
   rcl
   rclcpp
   std_srvs
