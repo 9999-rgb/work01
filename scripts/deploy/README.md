@@ -42,7 +42,7 @@ docker inspect --format '{{.State.Health.Status}}' xczs-simulation
 
 ## 验证边界
 
-已在开发机执行 ShellCheck、Bash/Python 语法检查及实际 Nginx 代理测试（去前缀、查询参数、重定向、三个前端地址替换）。没有在目标麒麟 ARM64 上完成镜像构建和机器人动作验收。安装过程的 healthy 只代表代理和机器人就绪状态通过，机械动作仍需另行测试。
+已在开发机执行 ShellCheck、Bash/Python 语法检查及实际 Nginx 代理测试（去前缀、查询参数、重定向、三个前端地址替换）。2026-10-12 目标麒麟 ARM64 已报告 13 包编译、镜像构建及 Nginx 配置检查通过；机器人动作验收尚未完成。安装过程的 healthy 只代表代理和机器人就绪状态通过，机械动作仍需另行测试。
 
 ## 国内下载源
 
@@ -64,7 +64,7 @@ ARM64 软件源缺少 `ros-humble-gazebo-ros-pkgs` 与 `ros-humble-gazebo-ros2-c
 GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 ./start
 ```
 
-首次构建时间取决于依赖下载和 ARM64 编译速度。Docker 数据目录应留足空间，不能因根分区很大就忽略 `/var` 的独立小分区。当前只完成包架构、归档校验及脚本静态检查，目标机器编译与机械动作仍待实测。
+首次构建时间取决于依赖下载和 ARM64 编译速度。Docker 数据目录应留足空间，不能因根分区很大就忽略 `/var` 的独立小分区。2026-10-12 目标机器已完成编译及镜像构建；修复后的服务启动与机械动作仍待实测。
 
 ## 2026-10-12 构建故障修复
 
@@ -81,4 +81,13 @@ set -o pipefail
 GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 bash ./start 2>&1 | tee deploy-kylin.log
 ```
 
-本次验证包括下载失败重试、连续失败终止、超时上限、IPv4/请求超时设置、版本异常输出及退出码拒绝、Docker RUN 的 Bash 语法、构建层边界。目标机此前已报告 13 包编译通过；更新后的完整镜像构建、容器启动及 Web 操作仍需目标机验证。
+本次验证包括下载失败重试、连续失败终止、超时上限、IPv4/请求超时设置、版本异常输出及退出码拒绝、Docker RUN 的 Bash 语法、构建层边界。目标机已报告 13 包编译及完整镜像构建通过；随后发现首次管理员引导的密码库兼容错误，修复后的容器就绪及 Web 操作仍需目标机验证。
+
+
+## 首次 Web 启动失败：密码库兼容性
+
+若日志出现 `Application startup failed`，调用栈指向 `bootstrap_admin` 和 Passlib 后端自检，随后出现 `password cannot be longer than 72 bytes`，不能据此认定用户实际密码过长。bcrypt 5 对长输入的处理变化使 Passlib 1.7.4 的后端自检失败；即使短测试密码也可复现。
+
+依赖固定为 Passlib 1.7.4 与 bcrypt 4.0.1，继续使用原有 bcrypt_sha256 哈希格式。Docker 在安装 Python 依赖后测试长密码的哈希、正确密码验证和错误密码拒绝，失败会在编译机器人前停止。开发机已验证短密码、长密码、中文密码、首次管理员创建和重复引导保留现有账号；已确认 Python 3.10 的 ARM64 wheel 可下载。目标机仍须更新镜像才能使用修复，单独 `docker start` 会继续运行旧镜像。
+
+后台 Xvfb 启动目前会触发启动入口的显示稳定等待（默认 180 秒），日志会说明等待进度；等待结束后还需要通过 ROS 和 Web 就绪检查。`Ctrl+C` 中断根目录 start 的就绪等待，不代表已经停止后台容器。停止容器使用项目根目录 `bash ./stop_all.sh`，状态以 Docker 检查为准。

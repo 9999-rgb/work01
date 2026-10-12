@@ -10,8 +10,8 @@ from passlib.context import CryptContext
 
 from app.config import settings
 
-# bcrypt 哈希上下文。passlib 1.7.4 与 bcrypt>=4.1 存在 __about__ 告警，
-# 用 ``bcrypt_sha256`` 作为兼容层消除运行时风险。
+# bcrypt_sha256 先处理长密码；后端兼容版本由 requirements.txt 固定。
+# 预哈希不能绕过 Passlib 后端自检，不可直接升级到 bcrypt 5。
 _pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 

@@ -30,7 +30,8 @@ RUN mkdir -p third_party/gazebo_ros_pkgs third_party/gazebo_ros2_control \
     && rm -rf /tmp/gazebo-arm64
 COPY jiang/requirements.txt jiang/requirements.txt
 RUN python3 -m venv --system-site-packages /opt/venv \
-    && /opt/venv/bin/python -m pip install --no-cache-dir -r jiang/requirements.txt
+    && /opt/venv/bin/python -m pip install --no-cache-dir -r jiang/requirements.txt \
+    && /opt/venv/bin/python -c 'from passlib.context import CryptContext; c=CryptContext(schemes=["bcrypt_sha256"]); s="deployment-check-" * 8; h=c.hash(s); assert c.verify(s,h); assert not c.verify(s+"wrong",h); print("Password backend check passed")'
 # 官方 ARM64 发布包随项目分发，目标机器无需访问 GitHub。
 COPY scripts/deploy/vendor/zenoh-1.9.0-aarch64.zip scripts/deploy/vendor/SHA256SUMS scripts/deploy/vendor/
 RUN test "$(uname -m)" = aarch64 \
