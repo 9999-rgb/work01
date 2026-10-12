@@ -60,7 +60,15 @@ if docker_local container inspect "$NAME" >/dev/null 2>&1; then
     [[ "$OWNER" == "$ROOT" ]] || fail '同名容器不属于当前项目，停止部署。'
 fi
 TMP="$(mktemp -d)"
-trap 'rm -rf -- "$TMP"' EXIT
+LOG_PID=''
+cleanup_deploy() {
+    if [[ -n "$LOG_PID" ]]; then
+        kill "$LOG_PID" 2>/dev/null || true
+        wait "$LOG_PID" 2>/dev/null || true
+    fi
+    rm -rf -- "$TMP"
+}
+trap cleanup_deploy EXIT
 trap 'echo "部署失败（第 $LINENO 行）；请保留上面的错误输出。" >&2' ERR
 # 仅打包运行所需目录，排除开发机二进制、缓存、数据库和密钥配置。
 INPUTS=(run_all.sh jiang scripts)
@@ -147,6 +155,12 @@ if ! docker_local run "${ARGS[@]}" xczs-simulation:local >/dev/null; then
     fail '新容器启动失败，请检查端口占用及 Docker 输出。'
 fi
 echo "容器已启动；桌面窗口=$USE_GUI。正在等待仿真就绪（最长约 10 分钟）……"
+# 等待期间展示容器实时日志；退出只关闭日志跟随器，容器仍由 Docker 管理。
+# 隐去首次管理员引导可能打印的密码及显式密钥值。
+docker --host unix:///var/run/docker.sock logs --follow --tail 40 "$NAME" > >(
+    sed -u -E 's/(密码[：:]|XCZS_(ADMIN_PASSWORD|SECRET_KEY)[=:]).*/\1<REDACTED>/'
+) 2>&1 &
+LOG_PID=$!
 for ((n=0; n<120; n++)); do
     STATE="$(docker_local inspect -f '{{.State.Health.Status}}' "$NAME")"
     if [[ "$STATE" == healthy ]]; then
@@ -161,7 +175,8 @@ for ((n=0; n<120; n++)); do
     sleep 5
 done
 if [[ -n "$BACKUP_NAME" ]]; then
-    docker_local logs --tail 150 "$NAME" >&2
+    docker_local logs --tail 150 "$NAME" 2>&1 |
+        sed -E 's/(密码[：:]|XCZS_(ADMIN_PASSWORD|SECRET_KEY)[=:]).*/\1<REDACTED>/' >&2
     restore_previous
 fi
 fail '新容器未就绪；首次部署请执行 docker logs --tail 150 xczs-simulation，提供错误日志。'
