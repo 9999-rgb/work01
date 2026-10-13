@@ -56,7 +56,7 @@ docker inspect --format '{{.State.Health.Status}}' xczs-simulation
 
 ## ARM64 Gazebo Classic
 
-ARM64 软件源缺少 `ros-humble-gazebo-ros-pkgs` 与 `ros-humble-gazebo-ros2-control`，不能使用 x86 的二进制安装命令。当前镜像改为安装随仓库提供的 Open Robotics Gazebo 11 ARM64 Debian 包，再从固定源码编译 ROS 插件，与项目共享 `install/setup.bash`。上游来源及校验值见 `vendor/gazebo-arm64/`。
+ARM64 软件源缺少 `ros-humble-gazebo-ros-pkgs` 与 `ros-humble-gazebo-ros2-control`，不能使用 x86 的二进制安装命令。镜像先安装随仓库提供的 Open Robotics Gazebo 11 ARM64 Debian 包作为依赖基础，再使用修正共享对象声明的固定源码重建 Gazebo 本体及 ROS 插件，与项目共享 `install/setup.bash`。上游来源及校验值见 `vendor/gazebo-arm64/`、`vendor/gazebo-source/`。
 
 已导入离线基础镜像的目标机使用：
 
@@ -119,3 +119,22 @@ bash scripts/deploy/diagnose_gazebo_native.sh
 通过说明该镜像在最小世界中能完成原生通信和 CPU 雷达更新，后续检查项目模型与插件加载；失败则优先检查目标机的 Gazebo 原生运行环境。该检查不验证相机渲染、ROS 导航或机械动作，无需重新构建镜像。
 
 最小世界也失败时，脚本会打印主线程等待位置、线程等待状态汇总、实际加载的 Gazebo 核心库与原生发布注册。宿主机已安装 gdb 时，可作为 root 执行 `bash scripts/deploy/diagnose_gazebo_native.sh --stack`，在失败现场读取临时 gzserver 的主线程和各线程调用栈；最多额外等待约 30 秒，然后继续清理临时容器。gdb 通过临时容器 ID 查找宿主机 PID，使用该进程的根文件系统解析库，不读取主仿真进程，也不打印函数参数或环境凭据。
+
+## 2026-10-13 Gazebo 原生发布修复
+
+目标机最小世界也收不到统计和 CPU 雷达样本，关闭 seccomp 的对照结果相同。线程栈显示物理循环仍运行，却出现多条 ModelDatabase 更新线程。随仓库分发的 ARM64 库未导出共享 SingletonT 对象；对应发行包的 `0010-armhf-singleton.patch` 清空了上游显式声明。在开发机的两个动态库对照中，该补丁使对象分裂，恢复声明后对象共享。这支持原生管理对象分裂导致发布注册失败的判断，最终仍以麒麟实际数据为准。
+
+构建跳过该补丁，用 GCC 重建完整 Gazebo（含 GUI、传感器和资源）到 `/opt/gazebo-fixed`，随后重编 ROS 插件。已有依赖下载层保留；新增原生依赖安装、源码编译和真实数据检查分别缓存。导出检查或最小世界实际统计/雷达检查不通过就终止，不以退出码 0、版本文本或静态 TF 代替运行验收。源码构建会比此前仅编译 ROS 包更久，旧容器在构建阶段保持原状态。
+
+更新麒麟仓库后执行，必须重建镜像；`docker start/restart` 仍会使用原镜像：
+
+```bash
+set -o pipefail
+cd /root/proj/work01-gitee &&
+git pull --ff-only &&
+GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 bash ./start 2>&1 | tee deploy-kylin.log
+```
+
+构建中应看到三项“共享对象导出通过”及“原生世界统计与雷达均有实际数据”。安装结束后执行 `bash scripts/deploy/diagnose_runtime.sh`，确认雷达和相机收到实际消息、map→odom 连通，再验证网页与机械动作。
+
+开发机 amd64 已完整编译、安装同一源码并确认新库加载；最小世界收到连续统计、约 10 Hz 的 CPU 雷达，以及设置软件渲染的原生相机消息。8 项部署检查和真实双动态库对象共享/分裂回归通过，原 ARM64 库与空输出均被拒绝。此结果不代表项目场景、ROS 相机或机械动作已通过，也不替代麒麟 ARM64 镜像构建与运行验收。

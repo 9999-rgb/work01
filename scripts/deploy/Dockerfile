@@ -51,6 +51,47 @@ RUN source /opt/ros/humble/setup.bash \
     && apt-get update -o APT::Update::Error-Mode=any \
     && rosdep install --from-paths /tmp/xczs-manifests third_party --ignore-src --rosdistro humble -y \
     && rm -rf /var/lib/apt/lists/* /tmp/xczs-manifests
+# ARM64 发行包清空了 SingletonT 的共享声明；必须重建本体及其使用方。
+# 保留此前下载层；原生依赖、源码编译、实际数据验收各自缓存。
+RUN apt-get update -o APT::Update::Error-Mode=any \
+    && apt-get install -y --no-install-recommends \
+    patch binutils gzip pkg-config fonts-roboto-unhinted fonts-dejavu-core fonts-liberation \
+    protobuf-compiler libprotoc-dev libprotobuf-dev \
+    libgraphviz-dev libccd-dev libopenal-dev libfreeimage-dev freeglut3-dev \
+    libcurl4-openssl-dev libtinyxml-dev libtinyxml2-dev libtar-dev libtbb-dev \
+    libogre-1.9-dev libxml2-dev qtbase5-dev libqwt-qt5-dev libqt5opengl5-dev \
+    libboost-dev libboost-thread-dev libboost-system-dev libboost-filesystem-dev \
+    libboost-program-options-dev libboost-regex-dev libboost-iostreams-dev libboost-date-time-dev \
+    libgts-dev libavformat-dev libavcodec-dev libswscale-dev libusb-1.0-0-dev libspnav-dev \
+    libsdformat9-dev libignition-math-dev libignition-transport8-dev libignition-msgs5-dev \
+    libignition-common3-dev libignition-fuel-tools4-dev libbullet-dev libsimbody-dev \
+    libgdal-dev libdart-dev libdart-collision-bullet-dev libdart-collision-ode-dev \
+    libdart-utils-urdf-dev libdart-external-convhull-3d-dev \
+    libdart-external-ikfast-dev libdart-external-imgui-dev libdart-external-lodepng-dev \
+    libdart-external-odelcpsolver-dev libgtest-dev libtinyobjloader-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/deploy/vendor/gazebo-source/ /tmp/gazebo-source/
+COPY scripts/deploy/build_gazebo_core.sh scripts/deploy/check_gazebo_singletons.py /usr/local/lib/xczs/
+RUN bash /usr/local/lib/xczs/build_gazebo_core.sh /tmp/gazebo-source && rm -rf /tmp/gazebo-source
+ENV PATH=/opt/gazebo-fixed/bin:${PATH} \
+    LD_LIBRARY_PATH=/opt/gazebo-fixed/lib \
+    CMAKE_PREFIX_PATH=/opt/gazebo-fixed \
+    PKG_CONFIG_PATH=/opt/gazebo-fixed/lib/pkgconfig \
+    GAZEBO_MODEL_PATH=/opt/gazebo-fixed/share/gazebo-11/models \
+    GAZEBO_RESOURCE_PATH=/opt/gazebo-fixed/share/gazebo-11 \
+    GAZEBO_PLUGIN_PATH=/opt/gazebo-fixed/lib/gazebo-11/plugins
+# docker exec bash -lc 会重设 PATH；诊断和交互终端也必须使用新本体。
+RUN printf '%s\n' 'export PATH=/opt/gazebo-fixed/bin:$PATH' \
+    'export LD_LIBRARY_PATH=/opt/gazebo-fixed/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}' \
+    > /etc/profile.d/xczs-gazebo.sh
+COPY scripts/deploy/gazebo_native_probe.py /usr/local/lib/xczs/
+RUN test "$(command -v gzserver)" = /opt/gazebo-fixed/bin/gzserver \
+    && bash -lc 'test "$(command -v gzserver)" = /opt/gazebo-fixed/bin/gzserver' \
+    && ldd /opt/gazebo-fixed/bin/gzserver > /tmp/gazebo-linkage.txt \
+    && cat /tmp/gazebo-linkage.txt \
+    && ! grep -q 'not found' /tmp/gazebo-linkage.txt \
+    && ! grep -E 'libgazebo[^ ]* => ' /tmp/gazebo-linkage.txt | grep -v '=> /opt/gazebo-fixed/lib/' \
+    && python3 -u /usr/local/lib/xczs/gazebo_native_probe.py
 COPY xczs_inspection_robot_bringup/ xczs_inspection_robot_bringup/
 COPY xczs_inspection_robot_control/ xczs_inspection_robot_control/
 COPY xczs_inspection_robot_description/ xczs_inspection_robot_description/

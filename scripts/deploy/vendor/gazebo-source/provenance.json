@@ -1,0 +1,12 @@
+[
+  {
+    "file": "gazebo_11.10.2+dfsg.orig.tar.xz",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/gazebo_11.10.2+dfsg.orig.tar.xz",
+    "sha256": "4f90e170117ed58f269ed2c30089b23f9b8a41ce0c80e783656b0843d518ee1c"
+  },
+  {
+    "file": "gazebo_11.10.2+dfsg-1osrf6.debian.tar.xz",
+    "url": "https://ppa.launchpadcontent.net/openrobotics/gazebo11-non-amd64/ubuntu/pool/main/g/gazebo/gazebo_11.10.2+dfsg-1osrf6.debian.tar.xz",
+    "sha256": "25f252bf6ba0620d18c53f3fc176b439317e68587f014bb3601c62f2da3c7ad6"
+  }
+]
