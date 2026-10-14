@@ -1,0 +1,493 @@
+<?xml version="1.0"?>
+<!--
+  由 scripts/build-models.mjs 生成，请勿手工编辑。
+  源：work01/xczs_inspection_robot_description/urdf/components/*.xacro
+  toolset: B（右旋转按钮 / 左摇入摇出 · 旋钮与摇杆）
+-->
+<robot name="xczs_inspection_robot">
+
+  <material name="industrial_navy">
+    <color rgba="0.035 0.145 0.255 1" />
+  </material>
+  <material name="safety_orange">
+    <color rgba="1.0 0.36 0.04 1" />
+  </material>
+  <material name="graphite_black">
+    <color rgba="0.12 0.14 0.17 1" />
+  </material>
+  <material name="rubber_black">
+    <color rgba="0.025 0.025 0.03 1" />
+  </material>
+
+    <!-- ============ 本体与底盘 ============ -->
+    <link name="body">
+      <visual>
+        <origin xyz="0.001631 -0.000036 0.228708" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/body_visual.stl" />
+        </geometry>
+        <material name="industrial_navy" />
+      </visual>
+    </link>
+
+    <!-- Nav2 REP-105 基座坐标系：+X 指向底盘物理正前方（本体 -Y） -->
+    <link name="base_link" />
+    <joint name="body_base_link" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 -1.57079632679" />
+      <parent link="body" />
+      <child link="base_link" />
+    </joint>
+
+    <link name="l_wheel_0">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_wheel_0_visual.stl" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+    </link>
+    <joint name="l_wheel_0_joint" type="continuous">
+      <origin xyz="0.171631 -0.248602 -0.501391" rpy="0 0 1.570796" />
+      <parent link="body" />
+      <child link="l_wheel_0" />
+      <axis xyz="0 1 0" />
+    </joint>
+    <link name="l_wheel_1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_wheel_1_visual.stl" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+    </link>
+    <joint name="l_wheel_1_joint" type="continuous">
+      <origin xyz="0.171631 0.241398 -0.501391" rpy="0 0 1.570796" />
+      <parent link="body" />
+      <child link="l_wheel_1" />
+      <axis xyz="0 1 0" />
+    </joint>
+    <link name="r_wheel_0">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_wheel_0_visual.stl" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+    </link>
+    <joint name="r_wheel_0_joint" type="continuous">
+      <origin xyz="-0.168369 -0.248602 -0.501391" rpy="0 0 -1.570796" />
+      <parent link="body" />
+      <child link="r_wheel_0" />
+      <axis xyz="0 1 0" />
+    </joint>
+    <link name="r_wheel_1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_wheel_1_visual.stl" />
+        </geometry>
+        <material name="rubber_black" />
+      </visual>
+    </link>
+    <joint name="r_wheel_1_joint" type="continuous">
+      <origin xyz="-0.168369 0.241398 -0.501391" rpy="0 0 -1.570796" />
+      <parent link="body" />
+      <child link="r_wheel_1" />
+      <axis xyz="0 1 0" />
+    </joint>
+
+    <link name="l_laser">
+      <visual>
+        <origin xyz="-0.001516 0.000086 0.003263" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_laser_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="l_laser_joint" type="fixed">
+      <origin xyz="0.245498 -0.357591 -0.293528" rpy="0 -3.141593 -0.785398" />
+      <parent link="body" />
+      <child link="l_laser" />
+    </joint>
+    <link name="r_laser">
+      <visual>
+        <origin xyz="-0.001516 0.000086 0.003263" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_laser_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="r_laser_joint" type="fixed">
+      <origin xyz="-0.242237 0.350388 -0.293528" rpy="0 0 0" />
+      <parent link="body" />
+      <child link="r_laser" />
+    </joint>
+
+    <!-- ============ 双臂 7 自由度链 ============ -->
+    <link name="l_arm_0">
+      <visual>
+        <origin xyz="-0.000004 0.000048 -0.133262" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_0_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_arm_0_joint" type="revolute">
+      <origin xyz="0.353879 -0.003608 0.588076" rpy="0 -1.570796 0" />
+      <parent link="body" />
+      <child link="l_arm_0" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="l_arm_1">
+      <visual>
+        <origin xyz="0 -0.046173 -0.034034" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_1_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_arm_1_joint" type="revolute">
+      <origin xyz="-0.000004 0.046447 -0.186762" rpy="0 0 0" />
+      <parent link="l_arm_0" />
+      <child link="l_arm_1" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="l_arm_2">
+      <visual>
+        <origin xyz="0.000028 0.000072 -0.13729" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_2_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_arm_2_joint" type="revolute">
+      <origin xyz="-0.000027 -0.046495 -0.149211" rpy="0 0 0" />
+      <parent link="l_arm_1" />
+      <child link="l_arm_2" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="l_arm_3">
+      <visual>
+        <origin xyz="-0.000061 0.000282 -0.021179" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_3_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_arm_3_joint" type="revolute">
+      <origin xyz="0.000167 -0.000274 -0.209639" rpy="0 0 0" />
+      <parent link="l_arm_2" />
+      <child link="l_arm_3" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="l_arm_4">
+      <visual>
+        <origin xyz="0 0 -0.141006" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_4_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_arm_4_joint" type="revolute">
+      <origin xyz="-0.000139 0.000346 -0.109231" rpy="0 0 0" />
+      <parent link="l_arm_3" />
+      <child link="l_arm_4" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="l_arm_5">
+      <visual>
+        <origin xyz="-0.00375 -0.000614 -0.000002" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_5_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_arm_5_joint" type="revolute">
+      <origin xyz="0 0.00062 -0.242595" rpy="0 0 0" />
+      <parent link="l_arm_4" />
+      <child link="l_arm_5" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="l_arm_6">
+      <visual>
+        <origin xyz="0.011866 0.058917 0.084696" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_arm_6_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="l_arm_6_joint" type="revolute">
+      <origin xyz="-0.004013 -0.00058 0" rpy="3.141593 0 0" />
+      <parent link="l_arm_5" />
+      <child link="l_arm_6" />
+      <axis xyz="1 0 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+
+    <link name="r_arm_0">
+      <visual>
+        <origin xyz="-0.000004 0.000048 -0.133262" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_0_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_arm_0_joint" type="revolute">
+      <origin xyz="-0.350618 -0.003596 0.588076" rpy="-3.141593 -1.570796 0" />
+      <parent link="body" />
+      <child link="r_arm_0" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="r_arm_1">
+      <visual>
+        <origin xyz="0 -0.046173 -0.034034" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_1_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_arm_1_joint" type="revolute">
+      <origin xyz="-0.000004 0.046447 -0.186762" rpy="0 0 0" />
+      <parent link="r_arm_0" />
+      <child link="r_arm_1" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="r_arm_2">
+      <visual>
+        <origin xyz="0.000028 0.000072 -0.13729" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_2_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_arm_2_joint" type="revolute">
+      <origin xyz="-0.000027 -0.046495 -0.149211" rpy="0 0 0" />
+      <parent link="r_arm_1" />
+      <child link="r_arm_2" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="r_arm_3">
+      <visual>
+        <origin xyz="-0.000061 0.000282 -0.021179" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_3_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_arm_3_joint" type="revolute">
+      <origin xyz="0.000167 -0.000274 -0.209639" rpy="0 0 0" />
+      <parent link="r_arm_2" />
+      <child link="r_arm_3" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="r_arm_4">
+      <visual>
+        <origin xyz="0 0 -0.141006" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_4_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_arm_4_joint" type="revolute">
+      <origin xyz="-0.000139 0.000346 -0.109231" rpy="0 0 0" />
+      <parent link="r_arm_3" />
+      <child link="r_arm_4" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="r_arm_5">
+      <visual>
+        <origin xyz="-0.00375 -0.000614 -0.000002" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_5_visual.stl" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_arm_5_joint" type="revolute">
+      <origin xyz="0 0.00062 -0.242595" rpy="0 0 0" />
+      <parent link="r_arm_4" />
+      <child link="r_arm_5" />
+      <axis xyz="0 1 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+    <link name="r_arm_6">
+      <visual>
+        <origin xyz="0.011866 0.058802 -0.084696" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_arm_6_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="r_arm_6_joint" type="revolute">
+      <origin xyz="-0.004013 -0.00058 0" rpy="0 0 0" />
+      <parent link="r_arm_5" />
+      <child link="r_arm_6" />
+      <axis xyz="1 0 0" />
+      <limit lower="-3.141593" upper="3.141593" effort="100" velocity="10" />
+    </joint>
+
+    <!-- ============ 腕部相机壳体 ============ -->
+    <link name="l_camera">
+      <visual>
+        <origin xyz="-0.000001 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/l_camera_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="l_camera_joint" type="fixed">
+      <origin xyz="0.004026 0.156793 0.17894" rpy="-3.13956 1.570795 0" />
+      <parent link="l_arm_6" />
+      <child link="l_camera" />
+    </joint>
+    <link name="r_camera">
+      <visual>
+        <origin xyz="-0.000001 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="dual_arm/r_camera_visual.stl" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="r_camera_joint" type="fixed">
+      <origin xyz="0.004026 0.156678 -0.17894" rpy="-3.13956 1.570795 0" />
+      <parent link="r_arm_6" />
+      <child link="r_camera" />
+    </joint>
+
+    <!-- ============ 末端工具套装 B ============ -->
+    <link name="r_rotbtn_body">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="tools/rotate_button/endbody.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="r_rotbtn_mount" type="fixed">
+      <origin xyz="0.0040 0.0000 -0.1984" rpy="0 3.14159265359 0" />
+      <parent link="r_arm_6" />
+      <child link="r_rotbtn_body" />
+    </joint>
+
+    <!-- 按压杆尖端业务坐标（无视觉） -->
+    <link name="r_rotbtn_probe_tip" />
+    <joint name="r_rotbtn_probe_tip_joint" type="fixed">
+      <origin xyz="-0.06128 0.198 0.1525" rpy="1.5707963267948966 0 0" />
+      <parent link="r_rotbtn_body" />
+      <child link="r_rotbtn_probe_tip" />
+    </joint>
+
+    <link name="r_rotbtn_rotate">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="tools/rotate_button/rotate.STL" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_rotbtn_rotate_joint" type="revolute">
+      <origin xyz="-0.06128 -0.006 0.1725" rpy="0 0 0" />
+      <parent link="r_rotbtn_body" />
+      <child link="r_rotbtn_rotate" />
+      <axis xyz="0 0 1" />
+      <limit lower="-3.14" upper="3.14" effort="100" velocity="1" />
+    </joint>
+
+    <link name="r_rotbtn_jaw1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="tools/rotate_button/endlink1.STL" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_rotbtn_jaw1_joint" type="prismatic">
+      <origin xyz="0.0106 -0.0035 0.016" rpy="0 0 0" />
+      <parent link="r_rotbtn_rotate" />
+      <child link="r_rotbtn_jaw1" />
+      <axis xyz="0 -1 0" />
+      <limit lower="0" upper="0.018" effort="100" velocity="1" />
+    </joint>
+    <link name="r_rotbtn_jaw2">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="tools/rotate_button/endlink2.STL" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="r_rotbtn_jaw2_joint" type="prismatic">
+      <origin xyz="-0.0106 0.0035 0.016" rpy="0 0 0" />
+      <parent link="r_rotbtn_rotate" />
+      <child link="r_rotbtn_jaw2" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.018" effort="100" velocity="1" />
+    </joint>
+
+    <link name="l_rocker_body">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="tools/rocker/endbody2.STL" />
+        </geometry>
+        <material name="graphite_black" />
+      </visual>
+    </link>
+    <joint name="l_rocker_mount" type="fixed">
+      <origin xyz="0.0040 0.0001 0.1984" rpy="0 0 0" />
+      <parent link="l_arm_6" />
+      <child link="l_rocker_body" />
+    </joint>
+
+    <link name="l_rocker_rotor">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="tools/rocker/endrotatelink.STL" />
+        </geometry>
+        <material name="safety_orange" />
+      </visual>
+    </link>
+    <joint name="l_rocker_rotor_joint" type="continuous">
+      <origin xyz="-0.01 -0.07 0.2611" rpy="0 0 0" />
+      <parent link="l_rocker_body" />
+      <child link="l_rocker_rotor" />
+      <axis xyz="0 0 1" />
+      <limit effort="100" velocity="1" />
+    </joint>
+</robot>

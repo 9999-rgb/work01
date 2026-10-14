@@ -112,11 +112,13 @@ RUN source /opt/ros/humble/setup.bash && source install/setup.bash \
 COPY . .
 RUN rm -rf .deploy-manifests && /opt/venv/bin/python scripts/deploy/prepare_assets.py \
     && cp scripts/deploy/nginx.conf /etc/nginx/sites-available/default \
+    && cp font_op/nginx.conf /etc/nginx/conf.d/xczs-frontend.conf \
+    && test -s font_op/dist/index.html \
     && nginx -t && chmod +x run_all.sh jiang/start_xczs_bridge.sh scripts/deploy/entrypoint.sh
 ENV PYTHON_BIN=/opt/venv/bin/python ROS_DOMAIN_ID=42 ROS_LOCALHOST_ONLY=1 \
     RMW_IMPLEMENTATION=rmw_cyclonedds_cpp CONTROL_HOST=127.0.0.1 CONTROL_PORT=8090 \
     LIBGL_ALWAYS_SOFTWARE=1 QT_X11_NO_MITSHM=1
-EXPOSE 80
+EXPOSE 80 8888
 HEALTHCHECK --start-period=600s --interval=15s --timeout=8s --retries=4 \
     CMD /opt/venv/bin/python /opt/work01/scripts/deploy/healthcheck.py
 ENTRYPOINT ["/opt/work01/scripts/deploy/entrypoint.sh"]

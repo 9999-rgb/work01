@@ -1,0 +1,234 @@
+<?xml version="1.0"?>
+<!--
+  由 scripts/build-models.mjs 从 SDF 转换生成，请勿手工编辑。
+  源：work01/xczs_inspection_robot_description/urdf/scenes/electrical_mezzanine.xacro
+  模型名：electrical_mezzanine
+-->
+<robot name="electrical_mezzanine">
+    <!-- SDF 的 world 关节在 URDF 里需要一个真实根 link -->
+    <link name="world" />
+    <link name="dianqiground">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/dianqiground.STL" />
+        </geometry>
+        <material name="dianqiground_mat">
+          <color rgba="0.55 0.55 0.58 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="s1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s1.STL" />
+        </geometry>
+        <material name="s1_mat">
+          <color rgba="0.7 0.73 0.78 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.02 0.145 0.16828" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s1r.STL" />
+        </geometry>
+        <material name="s1_mat">
+          <color rgba="0.2 0.2 0.22 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.069 0.222 0.121" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s1p.STL" />
+        </geometry>
+        <material name="s1_mat">
+          <color rgba="0.85 0.04 0.04 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="s2">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s2.STL" />
+        </geometry>
+        <material name="s2_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.02 0.145 0.16828" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s2r.STL" />
+        </geometry>
+        <material name="s2_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.069 0.222 0.121" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s2p.STL" />
+        </geometry>
+        <material name="s2_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="b1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/b1.STL" />
+        </geometry>
+        <material name="b1_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.03 0.16661 0.12017" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/b1r.STL" />
+        </geometry>
+        <material name="b1_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="b1p">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/b1p.STL" />
+        </geometry>
+        <material name="b1p_mat">
+          <color rgba="0.85 0.04 0.04 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="b1p_anchor" />
+    <link name="s3">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s3.STL" />
+        </geometry>
+        <material name="s3_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.02 0.145 0.16828" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s3r.STL" />
+        </geometry>
+        <material name="s3_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.069 0.274 0.121" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/s3p.STL" />
+        </geometry>
+        <material name="s3_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="m1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/m1.STL" />
+        </geometry>
+        <material name="m1_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.03 0.16661 0.060175" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/m1r.STL" />
+        </geometry>
+        <material name="m1_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+      <visual>
+        <origin xyz="0.069 0.638 0.108" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/electrical_mezzanine/m1p.STL" />
+        </geometry>
+        <material name="m1_mat">
+          <color rgba="0.12 0.48 0.88 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="b1_flank_west" />
+    <link name="b1_flank_east" />
+
+    <joint name="b1p_anchor_joint" type="fixed">
+      <origin xyz="0.069 0.638 0.168029394" rpy="0 0 0" />
+      <parent link="b1" />
+      <child link="b1p_anchor" />
+    </joint>
+    <joint name="b1p_joint" type="prismatic">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="b1p_anchor" />
+      <child link="b1p" />
+      <axis xyz="-1 0 0" />
+      <limit lower="0" upper="0.012" effort="100" velocity="1" />
+    </joint>
+    <joint name="ds1" type="prismatic">
+      <origin xyz="0.03 4.436 1.93" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="s1" />
+      <axis xyz="1 0 0" />
+      <limit lower="0" upper="0.38" effort="100" velocity="1" />
+    </joint>
+    <joint name="ds2" type="prismatic">
+      <origin xyz="0.03 4.074 1.39" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="s2" />
+      <axis xyz="1 0 0" />
+      <limit lower="0" upper="0.38" effort="100" velocity="1" />
+    </joint>
+    <joint name="db1" type="prismatic">
+      <origin xyz="0.03 4.047 0.831870606" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="b1" />
+      <axis xyz="1 0 0" />
+      <limit lower="0" upper="0.38" effort="100" velocity="1" />
+    </joint>
+    <joint name="ds3" type="prismatic">
+      <origin xyz="0.03 5.236 1.385" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="s3" />
+      <axis xyz="1 0 0" />
+      <limit lower="0" upper="0.38" effort="100" velocity="1" />
+    </joint>
+    <joint name="dm1" type="prismatic">
+      <origin xyz="0.03 4.847 0.895" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="m1" />
+      <axis xyz="1 0 0" />
+      <limit lower="0" upper="0.38" effort="100" velocity="1" />
+    </joint>
+    <joint name="b1_flank_west_fix" type="fixed">
+      <origin xyz="0.071 3.9225 0.95" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="b1_flank_west" />
+    </joint>
+    <joint name="b1_flank_east_fix" type="fixed">
+      <origin xyz="0.071 4.81 0.95" rpy="0 0 0" />
+      <parent link="dianqiground" />
+      <child link="b1_flank_east" />
+    </joint>
+    <joint name="anchor_dianqiground" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="dianqiground" />
+    </joint>
+</robot>

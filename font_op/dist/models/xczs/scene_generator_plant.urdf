@@ -1,0 +1,273 @@
+<?xml version="1.0"?>
+<!--
+  由 scripts/build-models.mjs 从 SDF 转换生成，请勿手工编辑。
+  源：work01/xczs_inspection_robot_description/urdf/scenes/generator_plant.xacro
+  模型名：generator_plant
+-->
+<robot name="generator_plant">
+    <!-- SDF 的 world 关节在 URDF 里需要一个真实根 link -->
+    <link name="world" />
+    <link name="fadianground">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/fadianground.STL" />
+        </geometry>
+        <material name="fadianground_mat">
+          <color rgba="0.55 0.55 0.58 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="r1352" />
+    <link name="r1351">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/r1351.STL" />
+        </geometry>
+        <material name="r1351_mat">
+          <color rgba="0.95 0.48 0.08 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="r2222" />
+    <link name="r2221">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/r2221.STL" />
+        </geometry>
+        <material name="r2221_mat">
+          <color rgba="0.95 0.48 0.08 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="r4332" />
+    <link name="r4331">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/r4331.STL" />
+        </geometry>
+        <material name="r4331_mat">
+          <color rgba="0.95 0.48 0.08 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="r12452" />
+    <link name="r12451">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/r12451.STL" />
+        </geometry>
+        <material name="r12451_mat">
+          <color rgba="0.95 0.48 0.08 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="r20422" />
+    <link name="r20421">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/r20421.STL" />
+        </geometry>
+        <material name="r20421_mat">
+          <color rgba="0.95 0.48 0.08 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="r25452" />
+    <link name="r25451">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/r25451.STL" />
+        </geometry>
+        <material name="r25451_mat">
+          <color rgba="0.95 0.48 0.08 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="rotatebutton">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/rotatebutton.STL" />
+        </geometry>
+        <material name="rotatebutton_mat">
+          <color rgba="0.62 0.3 0.88 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="button1">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/button1.STL" />
+        </geometry>
+        <material name="button1_mat">
+          <color rgba="0.12 0.72 0.38 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="button2">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/button2.STL" />
+        </geometry>
+        <material name="button2_mat">
+          <color rgba="0.12 0.72 0.38 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="button3">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/button3.STL" />
+        </geometry>
+        <material name="button3_mat">
+          <color rgba="0.12 0.72 0.38 1" />
+        </material>
+      </visual>
+    </link>
+    <link name="button4">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="scenes/generator_plant/button4.STL" />
+        </geometry>
+        <material name="button4_mat">
+          <color rgba="0.12 0.72 0.38 1" />
+        </material>
+      </visual>
+    </link>
+
+    <joint name="frb" type="revolute">
+      <origin xyz="-14.812 4.7833 0.706" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="rotatebutton" />
+      <axis xyz="0 1 0" />
+      <limit lower="-1e+12" upper="1e+12" effort="100" velocity="1" />
+    </joint>
+    <joint name="fbutton1" type="prismatic">
+      <origin xyz="-16.275 4.7933 0.751" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="button1" />
+      <axis xyz="0 -1 0" />
+      <limit lower="0" upper="0.005" effort="100" velocity="1" />
+    </joint>
+    <joint name="fbutton2" type="prismatic">
+      <origin xyz="-16.375 4.7933 0.751" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="button2" />
+      <axis xyz="0 -1 0" />
+      <limit lower="0" upper="0.005" effort="100" velocity="1" />
+    </joint>
+    <joint name="fbutton3" type="prismatic">
+      <origin xyz="-16.475 4.7933 0.751" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="button3" />
+      <axis xyz="0 -1 0" />
+      <limit lower="0" upper="0.005" effort="100" velocity="1" />
+    </joint>
+    <joint name="fbutton4" type="prismatic">
+      <origin xyz="-16.575 4.7933 0.751" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="button4" />
+      <axis xyz="0 -1 0" />
+      <limit lower="0" upper="0.005" effort="100" velocity="1" />
+    </joint>
+    <joint name="anchor_fadianground" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="world" />
+      <child link="fadianground" />
+    </joint>
+    <joint name="fr135" type="revolute">
+      <origin xyz="-13.1867 4.8113 0.691314593" rpy="0 0 0" />
+      <parent link="fadianground" />
+      <child link="r1352" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.8" effort="100" velocity="1" />
+    </joint>
+    <joint name="r1352_1" type="prismatic">
+      <origin xyz="0 0.007 0" rpy="0 0 0" />
+      <parent link="r1352" />
+      <child link="r1351" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.01" effort="100" velocity="1" />
+    </joint>
+    <joint name="fr2222" type="revolute">
+      <origin xyz="-13.7867 4.8113 0.831314593" rpy="0 0 0" />
+      <parent link="fadianground" />
+      <child link="r2222" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.8" effort="100" velocity="1" />
+    </joint>
+    <joint name="r2222_1" type="prismatic">
+      <origin xyz="0 0.007 0" rpy="0 0 0" />
+      <parent link="r2222" />
+      <child link="r2221" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.01" effort="100" velocity="1" />
+    </joint>
+    <joint name="fr4332" type="revolute">
+      <origin xyz="-15.4567 4.8113 0.691314593" rpy="0 0 0" />
+      <parent link="fadianground" />
+      <child link="r4332" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.8" effort="100" velocity="1" />
+    </joint>
+    <joint name="r4332_1" type="prismatic">
+      <origin xyz="0 0.007 0" rpy="0 0 0" />
+      <parent link="r4332" />
+      <child link="r4331" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.01" effort="100" velocity="1" />
+    </joint>
+    <joint name="fr12452" type="revolute">
+      <origin xyz="-21.9967 4.8113 0.551314593" rpy="0 0 0" />
+      <parent link="fadianground" />
+      <child link="r12452" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.8" effort="100" velocity="1" />
+    </joint>
+    <joint name="r12452_1" type="prismatic">
+      <origin xyz="0 0.007 0" rpy="0 0 0" />
+      <parent link="r12452" />
+      <child link="r12451" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.01" effort="100" velocity="1" />
+    </joint>
+    <joint name="fr20422" type="revolute">
+      <origin xyz="-30.1 4.8113 0.551314593" rpy="0 0 0" />
+      <parent link="fadianground" />
+      <child link="r20422" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.8" effort="100" velocity="1" />
+    </joint>
+    <joint name="r20422_1" type="prismatic">
+      <origin xyz="0 0.007 0" rpy="0 0 0" />
+      <parent link="r20422" />
+      <child link="r20421" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.01" effort="100" velocity="1" />
+    </joint>
+    <joint name="fr25452" type="revolute">
+      <origin xyz="-35.01 4.8113 0.551314593" rpy="0 0 0" />
+      <parent link="fadianground" />
+      <child link="r25452" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.8" effort="100" velocity="1" />
+    </joint>
+    <joint name="r25452_1" type="prismatic">
+      <origin xyz="0 0.007 0" rpy="0 0 0" />
+      <parent link="r25452" />
+      <child link="r25451" />
+      <axis xyz="0 1 0" />
+      <limit lower="0" upper="0.01" effort="100" velocity="1" />
+    </joint>
+</robot>
