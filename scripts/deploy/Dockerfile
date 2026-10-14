@@ -63,7 +63,7 @@ RUN apt-get update -o APT::Update::Error-Mode=any \
     libboost-dev libboost-thread-dev libboost-system-dev libboost-filesystem-dev \
     libboost-program-options-dev libboost-regex-dev libboost-iostreams-dev libboost-date-time-dev \
     libgts-dev libavformat-dev libavcodec-dev libswscale-dev libusb-1.0-0-dev libspnav-dev \
-    libsdformat9-dev libignition-math-dev libignition-transport8-dev libignition-msgs5-dev \
+    libsdformat9-dev libignition-math6-dev libignition-transport8-dev libignition-msgs5-dev \
     libignition-common3-dev libignition-fuel-tools4-dev libbullet-dev libsimbody-dev \
     libgdal-dev libdart-dev libdart-collision-bullet-dev libdart-collision-ode-dev \
     libdart-utils-urdf-dev libdart-external-convhull-3d-dev \

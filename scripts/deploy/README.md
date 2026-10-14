@@ -126,6 +126,8 @@ bash scripts/deploy/diagnose_gazebo_native.sh
 
 构建跳过该补丁，用 GCC 重建完整 Gazebo（含 GUI、传感器和资源）到 `/opt/gazebo-fixed`，随后重编 ROS 插件。已有依赖下载层保留；新增原生依赖安装、源码编译和真实数据检查分别缓存。导出检查或最小世界实际统计/雷达检查不通过就终止，不以退出码 0、版本文本或静态 TF 代替运行验收。源码构建会比此前仅编译 ROS 包更久，旧容器在构建阶段保持原状态。
 
+原生构建依赖使用 ROS 源配套的 `libignition-math6-dev`。不要改为 Ubuntu 的 `libignition-math-dev`：后者要求旧运行库 `libignition-math6-6`，会与已有的 `libignition-math6` 6.16 冲突，导致 APT 在源码编译前退出。更新此安装层后可继续使用之前的构建缓存，无需清理镜像或降级运行库。
+
 更新麒麟仓库后执行，必须重建镜像；`docker start/restart` 仍会使用原镜像：
 
 ```bash
