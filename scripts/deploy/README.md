@@ -144,3 +144,30 @@ GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 bash ./start 2>&1 | tee deploy-
 ## 独立前端页面
 
 `font_op/dist` 随一键部署打包，由容器 Nginx 的 8888 端口提供，访问 `http://10.186.109.146:8888/`。接口与 WebSocket 经同源 `/api/` 转发到容器后端；原 80 端口监控页保留。首次接入需重建镜像及容器，单独 `docker restart` 不会增加端口映射。防火墙需允许 TCP 8888，`HTTP_PORT` 不可设为 8888。
+
+
+## AMCL 活跃但 map→odom 停止：TF2 修复
+
+Humble TF2 0.25.23 的 `waitForTransform` 与 `testTransformableRequests`
+存在上游已修复的 ABBA 死锁（[Humble PR #990](https://github.com/ros2/geometry2/pull/990)）。
+本镜像从随项目分发、SHA256 校验的官方 0.25.24 源码构建 tf2/tf2_ros，
+并运行上游 Buffer 回归测试。该层放在 Gazebo/项目编译之后，复用既有构建缓存。
+修复安装到镜像的 `/opt/ros/humble`；不会改宿主机 ROS，也不会覆盖 ROS 顶层 setup 脚本。
+`dpkg-query` 仍显示原 deb 版本；源码包版本和构建标记才用于核对本修复。
+不要在运行容器中用 apt 覆盖这些库。
+
+拉取已推送的修改后，必须重建镜像并替换容器；`docker restart` 不更新镜像：
+
+```bash
+cd /root/proj/work01-gitee
+git pull --ff-only
+GUI=0 BUILD_JOBS=8 ROS_IMAGE=xczs-ros-base:arm64 bash ./start
+
+docker exec xczs-simulation cat /opt/ros/humble/share/xczs-tf2-fix/build.txt
+docker exec xczs-simulation bash -lc 'grep "<version>" /opt/ros/humble/share/{tf2,tf2_ros}/package.xml'
+```
+
+验收：先运行 `bash scripts/deploy/diagnose_runtime.sh`（会重启容器），确认相机、
+雷达、里程计有实际消息且 map→odom 连通；然后在 8888 前端复测第二抽拉柜和
+第二旋钮的“执行动作”。须确认机器人实际到达工位、操作成功且任务结束，不能只以
+AMCL active、TF 短暂连通或网页显示“已接入”判定修好。若仍失败，保留本轮导航结果和 TF 时间戳。

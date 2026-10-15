@@ -23,6 +23,9 @@ bash ./stop_all.sh
 Web：`http://10.186.109.146/monitor.html`（服务器 IP 变化时相应替换）。
 停止脚本不删除容器、镜像或数据卷；可用 `bash ./stop_all.sh --dry-run` 先查看目标。
 
+TF2 死锁修复也需要重建镜像；`docker start/restart` 不会应用新代码。
+修复与复测说明见 [部署说明](scripts/deploy/README.md#amcl-活跃但-mapodom-停止tf2-修复)。
+
 首次部署或更新镜像：
 
 ```bash

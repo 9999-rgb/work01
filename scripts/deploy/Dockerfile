@@ -109,6 +109,15 @@ RUN source /opt/ros/humble/setup.bash && source install/setup.bash \
         cat /tmp/gazebo-version.txt; \
         { [ "$status" -eq 0 ] || [ "$status" -eq 255 ]; } \
         && grep -q 'version 11\.' /tmp/gazebo-version.txt)
+# Humble 0.25.23 can deadlock AMCL's TF listener; pin upstream #990.
+# Keep this after the expensive Gazebo/project build to preserve their cache.
+COPY scripts/deploy/vendor/tf2-source/ /tmp/tf2-source/
+COPY scripts/deploy/build_tf2_core.sh /usr/local/lib/xczs/build_tf2_core.sh
+COPY scripts/deploy/tf2_regression/ /usr/local/lib/xczs/tf2_regression/
+RUN apt-get update -o APT::Update::Error-Mode=any \
+    && apt-get install -y --no-install-recommends ros-humble-ament-cmake-gtest \
+    && bash /usr/local/lib/xczs/build_tf2_core.sh /tmp/tf2-source \
+    && rm -rf /tmp/tf2-source /var/lib/apt/lists/*
 COPY . .
 RUN rm -rf .deploy-manifests && /opt/venv/bin/python scripts/deploy/prepare_assets.py \
     && cp scripts/deploy/nginx.conf /etc/nginx/sites-available/default \
