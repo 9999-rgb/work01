@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 #include <cmath>
+#include "xczs_inspection_robot_control/docking_progress.hpp"
 #include <limits>
 #include <vector>
 
@@ -13,6 +14,38 @@
 
 namespace xczs_inspection_robot_control
 {
+
+TEST(DockingProgress, BoostsOnlyAfterStationaryWindow)
+{
+  DockingProgress progress(0.6, 0.002);
+  const auto start = DockingProgress::Clock::time_point{};
+  EXPECT_FALSE(progress.needs_breakaway(0.03, start));
+  EXPECT_FALSE(progress.needs_breakaway(0.03, start + std::chrono::milliseconds(599)));
+  EXPECT_TRUE(progress.needs_breakaway(0.03, start + std::chrono::milliseconds(600)));
+  EXPECT_FALSE(progress.needs_breakaway(0.027, start + std::chrono::milliseconds(650)));
+}
+
+TEST(DockingProgress, ReboundDoesNotLatchBoostToHistoricalMinimum)
+{
+  DockingProgress progress(0.6, 0.002);
+  const auto start = DockingProgress::Clock::time_point{};
+  EXPECT_FALSE(progress.needs_breakaway(0.010, start));
+  // Replay a rebound followed by decreasing errors above the old best value.
+  EXPECT_FALSE(progress.needs_breakaway(0.033, start + std::chrono::seconds(1)));
+  EXPECT_FALSE(progress.needs_breakaway(0.028, start + std::chrono::milliseconds(1500)));
+  EXPECT_FALSE(progress.needs_breakaway(0.023, start + std::chrono::seconds(2)));
+  EXPECT_FALSE(progress.needs_breakaway(0.019, start + std::chrono::milliseconds(2500)));
+  EXPECT_TRUE(progress.needs_breakaway(0.019, start + std::chrono::milliseconds(3100)));
+}
+
+TEST(DockingProgress, SettlingResetsOldStallAndSmallNoiseStillCountsAsStalled)
+{
+  DockingProgress progress(0.6, 0.002);
+  const auto start = DockingProgress::Clock::time_point{};
+  progress.reset(0.007, start);
+  EXPECT_FALSE(progress.needs_breakaway(0.0095, start + std::chrono::seconds(2)));
+  EXPECT_TRUE(progress.needs_breakaway(0.0096, start + std::chrono::milliseconds(2600)));
+}
 
 TEST(OperationValidationPolicy, PlanningOnlyPreparationNeverOwnsBaseMotion)
 {

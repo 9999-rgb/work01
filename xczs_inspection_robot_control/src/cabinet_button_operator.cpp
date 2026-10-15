@@ -72,6 +72,7 @@
 #include "xczs_inspection_robot_control/rotary_operation_policy.hpp"
 #include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/staging_safety_policy.hpp"
+#include "xczs_inspection_robot_control/docking_progress.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
 #include "xczs_inspection_robot_control/joint_feedback.hpp"
 #include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
@@ -17658,9 +17659,8 @@ private:
     auto last_feedback = std::chrono::steady_clock::time_point{};
     int settled_cycles = 0;
     bool takeover_distance_verified = false;
-    // 断困加力的状态：历史最小位置误差与其发生时刻（见下面的加力分支）。
-    double breakaway_best_error = std::numeric_limits<double>::infinity();
-    auto breakaway_last_progress = std::chrono::steady_clock::now();
+    DockingProgress docking_progress(
+      docking_breakaway_stall_sec_, docking_breakaway_progress_);
     bool breakaway_active = false;
 
     try {
@@ -17723,28 +17723,18 @@ private:
             docking_yaw_tolerance_))
         {
           ++settled_cycles;
+          docking_progress.reset(position_error, std::chrono::steady_clock::now());
+          breakaway_active = false;
           publish_manual_base_stop();
           if (settled_cycles >= 5) {
             return;
           }
         } else {
           settled_cycles = 0;
-          // 断困加力：位置误差在 docking_breakaway_stall_sec_ 内没有改善
-          // （>docking_breakaway_progress_）就说明比例项推不动 —— 2026-09-22 实测
-          // 该情形下指令 0.0335 m/s 已发出、底盘 40 s 只动 1.3 mm、误差恒在
-          // 0.042 m。成因是底盘指令的**有效占空比**只有约 38%（探针实测：停靠期
-          // 501 条 cmd_vel 里仅 189 条非零，且按 ~80 ms 分段断续），于是有效速度
-          // 0.38×0.034≈0.013 m/s 掉到静摩擦门槛以下、从静止起不来。这里在停滞时
-          // 把指令抬到 docking_breakaway_speed_（仍受 docking_max_linear_speed_ 夹钳），
-          // 一旦重新有进展就退回比例项。
-          const auto stall_now = std::chrono::steady_clock::now();
-          if (position_error < breakaway_best_error - docking_breakaway_progress_) {
-            breakaway_best_error = position_error;
-            breakaway_last_progress = stall_now;
-          }
-          const bool stalled =
-            stall_now - breakaway_last_progress >=
-            std::chrono::duration<double>(docking_breakaway_stall_sec_);
+          // Only boost when the recent error is stationary. An all-time minimum
+          // incorrectly keeps boosting after a rebound while the base is moving.
+          const bool stalled = docking_progress.needs_breakaway(
+            position_error, std::chrono::steady_clock::now());
           breakaway_active = stalled;
           const double proportional_speed = docking_linear_gain_ * position_error;
           const double world_speed = std::min(
