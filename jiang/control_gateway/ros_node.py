@@ -239,6 +239,8 @@ class RosControlNode(Node):
         self._target_angular_z = 0.0
         self._last_command_time = time.monotonic()
         self._last_update_time = time.monotonic()
+        self._manual_base_pending = False
+        self._manual_base_was_moving = False
         self._pending_trajectory: Optional[JointTrajectory] = None
         self._pending_trajectory_repeats = 0
         self._pending_trajectory_duration_sec = 0.0
@@ -547,6 +549,7 @@ class RosControlNode(Node):
                     "takeover reaches manual mode.",
                     409,
                 )
+            self._manual_base_pending = True
             self._target_linear_y = linear_y
             self._target_angular_z = angular_z
             self._last_command_time = time.monotonic()
@@ -629,6 +632,8 @@ class RosControlNode(Node):
             self._target_angular_z = 0.0
             self._linear_profile.reset()
             self._angular_profile.reset()
+            self._manual_base_pending = False
+            self._manual_base_was_moving = False
         self._cmd_vel_publisher.publish(Twist())
 
     def quiesce_manual_outputs(self) -> float:
@@ -645,6 +650,8 @@ class RosControlNode(Node):
             self._target_angular_z = 0.0
             self._linear_profile.reset()
             self._angular_profile.reset()
+            self._manual_base_pending = False
+            self._manual_base_was_moving = False
             self._pending_trajectory = None
             self._pending_trajectory_repeats = 0
             self._pending_trajectory_duration_sec = 0.0
@@ -2299,7 +2306,20 @@ class RosControlNode(Node):
                 else:
                     command.linear.y = model_linear
                 command.angular.z = angular_z
-                self._cmd_vel_publisher.publish(command)
+                # An idle gateway must not continuously brake other manual
+                # publishers (e.g. precision docking in another operator).
+                # Keep streaming motion, then send its final zero exactly once.
+                moving = abs(model_linear) > 1.0e-6 or abs(angular_z) > 1.0e-6
+                if not moving:
+                    command = Twist()
+                if (
+                    moving
+                    or getattr(self, "_manual_base_pending", False)
+                    or getattr(self, "_manual_base_was_moving", False)
+                ):
+                    self._cmd_vel_publisher.publish(command)
+                self._manual_base_pending = False
+                self._manual_base_was_moving = moving
                 if trajectory is not None:
                     self._trajectory_publisher.publish(trajectory)
                     self._manual_trajectory_active_until = max(
@@ -4420,6 +4440,8 @@ class RosControlNode(Node):
         self._target_angular_z = 0.0
         self._linear_profile.reset()
         self._angular_profile.reset()
+        self._manual_base_pending = False
+        self._manual_base_was_moving = False
         self._pending_trajectory = None
         self._pending_trajectory_repeats = 0
         self._pending_trajectory_duration_sec = 0.0

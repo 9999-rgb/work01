@@ -196,6 +196,59 @@ def _make_node(mode: Optional[bool] = False) -> RosControlNode:
 
 
 class NavigationTakeoverTest(unittest.TestCase):
+    def _manual_timer_node(self):
+        node = _make_node()
+        node._command_timeout = 10.0
+        node._last_command_time = time.monotonic()
+        node._last_update_time = time.monotonic()
+        node._pending_trajectory = None
+        node._pending_trajectory_repeats = 0
+        node._target_linear_y = 0.0
+        node._target_angular_z = 0.0
+        return node
+
+    def test_idle_gateway_does_not_publish_repeated_braking_commands(self):
+        node = self._manual_timer_node()
+        for _ in range(100):
+            node._update_manual_control()
+        self.assertEqual([], node._cmd_vel_publisher.messages)
+
+    def test_manual_motion_streams_then_timeout_publishes_one_stop(self):
+        node = self._manual_timer_node()
+        node._target_linear_y = 0.1
+        for _ in range(3):
+            node._update_manual_control()
+        self.assertEqual(3, len(node._cmd_vel_publisher.messages))
+        node._last_command_time = 0.0
+        for _ in range(20):
+            node._update_manual_control()
+        self.assertEqual(4, len(node._cmd_vel_publisher.messages))
+        self.assertEqual(0.0, node._cmd_vel_publisher.messages[-1].linear.y)
+
+    def test_explicit_zero_command_is_not_lost_when_already_idle(self):
+        node = self._manual_timer_node()
+        node.set_base_target(0.0, 0.0)
+        node._update_manual_control()
+        node._update_manual_control()
+        self.assertEqual(1, len(node._cmd_vel_publisher.messages))
+
+    def test_cabinet_handoff_does_not_leave_a_delayed_stop(self):
+        node = self._manual_timer_node()
+        node._manual_base_pending = True
+        node._manual_base_was_moving = True
+        with node._lock:
+            node._prepare_for_cabinet_operation_locked()
+        for _ in range(20):
+            node._update_manual_control()
+        self.assertEqual(1, len(node._cmd_vel_publisher.messages))
+
+    def test_emergency_stop_remains_immediate_when_idle(self):
+        node = self._manual_timer_node()
+        node.emergency_stop()
+        self.assertEqual(1, len(node._cmd_vel_publisher.messages))
+        node._update_manual_control()
+        self.assertEqual(1, len(node._cmd_vel_publisher.messages))
+
     def test_navigation_goal_uses_configured_frame(self) -> None:
         node = _make_node(mode=True)
         node._navigation_frame = "robot_map"
