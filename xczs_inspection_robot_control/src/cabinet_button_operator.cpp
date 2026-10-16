@@ -5687,8 +5687,8 @@ private:
         // arc mechanism and the configured seed unchanged.
         const bool continuous_ready_approach =
           uses_knob_rotor(*control);
-        std::vector<double> rotary_branch_seed;
-        const std::vector<double> * rotary_branch_seed_ptr = nullptr;
+        std::vector<std::vector<double>> rotary_branch_seed;
+        const std::vector<std::vector<double>> * rotary_branch_seed_ptr = nullptr;
         if (control->control_type ==
             xczs_inspection_robot_interfaces::msg::CabinetControl::TYPE_KNOB)
         {
@@ -14139,6 +14139,20 @@ private:
               "Control '" + control->id +
               "' ready_joint_seed violates the configured joint limits.");
     }
+    // A runtime branch may already be the validated solution for this
+    // target. Re-solving IK can switch a redundant arm to another branch.
+    if (seed_positions_override != nullptr) {
+      const auto & actual = seeded_goal.getGlobalLinkTransform(tool_link);
+      const Eigen::Vector3d position(target.position.x, target.position.y, target.position.z);
+      const Eigen::Quaterniond orientation(
+        target.orientation.w, target.orientation.x,
+        target.orientation.y, target.orientation.z);
+      if ((actual.translation() - position).norm() < 1e-5 &&
+        Eigen::Quaterniond(actual.rotation()).angularDistance(orientation) < 1e-4)
+      {
+        return move_group.setJointValueTarget(seeded_goal);
+      }
+    }
     if (!seeded_goal.setFromIK(
         joint_model_group, target, tool_link,
         std::min(1.0, planning_time_)))
@@ -14159,7 +14173,7 @@ private:
   // Cartesian chain used for execution, including the post-release retreat.
   // Prefer joint-limit clearance, or shorter travel for the last two knobs
   // when sufficient clearance remains.
-  std::vector<double> select_rotary_branch_seed(
+  std::vector<std::vector<double>> select_rotary_branch_seed(
     MoveGroupInterface & move_group,
     const ButtonSpec & control,
     const geometry_msgs::msg::Pose & pregrasp_pose,
@@ -14204,11 +14218,24 @@ private:
       candidates.push_back(std::move(variant));
     }
 
+    // Shoulder-only seeds can all converge to the same wrist-limit family.
+    // Also search bounded, reproducible full-arm seeds for redundant IK.
+    for (int sample = 0; sample < 24; ++sample) {
+      auto variant = control.ready_joint_seed_positions;
+      for (std::size_t j = 0; j < variant.size(); ++j) {
+        const auto & bounds = robot_model->getVariableBounds(control.ready_joint_seed_names[j]);
+        if (bounds.position_bounded_) {
+          const double unit = 0.5 + 0.4 * std::sin((sample + 1) * (j + 1) * 1.61803398875);
+          variant[j] = bounds.min_position_ + unit * (bounds.max_position_ - bounds.min_position_);
+        }
+      }
+      candidates.push_back(std::move(variant));
+    }
+
     constexpr double kRequired = 0.99;
-    double best_margin = -1.0;
-    std::vector<double> best_margin_seed;
+    struct Branch { double margin; double travel; std::vector<double> joints; };
+    std::vector<Branch> valid_branches;
     double best_fraction = -1.0;
-    double best_travel = std::numeric_limits<double>::infinity();
     for (const auto & seed : candidates) {
       try {
         const auto current_state =
@@ -14273,9 +14300,19 @@ private:
           continue;
         }
 
-        // Measure clearance and approach travel only for complete chains.
-        const double margin = joint_limit_margin(
-          retreat_start, joint_model_group);
+        // Physical alignment adds small corrections before grasping. Avoid
+        // branches pinned to a limit anywhere along the complete chain.
+        robot_trajectory::RobotTrajectory retreat_trajectory(
+          move_group.getRobotModel(), move_group_name_);
+        retreat_trajectory.setRobotTrajectoryMsg(retreat_start, retreat);
+        double margin = joint_limit_margin(branch_state, joint_model_group);
+        for (const auto * trajectory : {&approach_trajectory, &arc_trajectory, &retreat_trajectory}) {
+          for (std::size_t i = 0; i < trajectory->getWayPointCount(); ++i) {
+            margin = std::min(margin, joint_limit_margin(
+              trajectory->getWayPoint(i), joint_model_group));
+          }
+        }
+        if (margin < 0.03) {continue;}
         double travel = 0.0;
         for (const auto & name : group_variable_names) {
           // These revolute joints are bounded: do not wrap a 2*pi excursion.
@@ -14283,23 +14320,19 @@ private:
             reference_state->getVariablePosition(name);
           travel += delta * delta;
         }
-        // Keep at least 3% of the joint range as clearance before preferring
-        // a shorter approach. If none qualifies, retain the safest branch.
-        const bool safer_candidate = margin >= 0.03;
-        const bool safer_best = best_margin >= 0.03;
-        const bool replace = prefer_short_approach ?
-          ((safer_candidate && !safer_best) ||
-          (safer_candidate && safer_best && travel < best_travel) ||
-          (!safer_candidate && !safer_best && margin > best_margin)) :
-          margin > best_margin;
-        if (replace) {
-          best_margin = margin;
-          best_travel = travel;
-          best_margin_seed = seed;
-          if (prefer_short_approach) {
-            branch_state.copyJointGroupPositions(joint_model_group, best_margin_seed);
-          }
+        std::vector<double> solved;
+        for (const auto & name : control.ready_joint_seed_names) {
+          solved.push_back(branch_state.getVariablePosition(name));
         }
+        const bool duplicate = std::any_of(valid_branches.begin(), valid_branches.end(),
+          [&solved](const Branch & candidate) {
+            double difference = 0.0;
+            for (std::size_t i = 0; i < solved.size(); ++i) {
+              difference = std::max(difference, std::abs(solved[i] - candidate.joints[i]));
+            }
+            return difference < 0.05;
+          });
+        if (!duplicate) {valid_branches.push_back({margin, travel, std::move(solved)});}
       } catch (const std::exception & error) {
         RCLCPP_WARN(
           get_logger(),
@@ -14307,13 +14340,17 @@ private:
           control.id.c_str(), error.what());
       }
     }
-    if (!best_margin_seed.empty()) {
-      RCLCPP_INFO(
-        get_logger(),
-        "Rotary branch selected for '%s': approach+arc+retreat clear "
-        "(selected arc-end joint-limit margin=%.3f).",
-        control.id.c_str(), best_margin);
-      return best_margin_seed;
+    if (!valid_branches.empty()) {
+      std::sort(valid_branches.begin(), valid_branches.end(),
+        [prefer_short_approach](const Branch & a, const Branch & b) {
+          return prefer_short_approach ? a.travel < b.travel : a.margin > b.margin;
+        });
+      RCLCPP_INFO(get_logger(),
+        "Rotary branches for '%s': %zu validated; best minimum path margin=%.3f.",
+        control.id.c_str(), valid_branches.size(), valid_branches.front().margin);
+      std::vector<std::vector<double>> result;
+      for (auto & branch : valid_branches) {result.push_back(std::move(branch.joints));}
+      return result;
     }
     throw GenericOperationError(
             OperateCabinetControl::Result::PLANNING_FAILED,
@@ -14717,23 +14754,25 @@ private:
     const std::string & tool_link,
     bool * operation_executed = nullptr,
     const ButtonSpec * control = nullptr,
-    const std::vector<double> * seed_positions_override = nullptr)
+    const std::vector<std::vector<double>> * seed_positions_override = nullptr)
   {
     check_cancel(goal_handle);
     MoveGroupInterface::Plan plan;
     bool planned = false;
-    for (int attempt = 1; attempt <= motion_planning_attempts_; ++attempt) {
+    const int attempts = seed_positions_override != nullptr ?
+      std::max(motion_planning_attempts_, static_cast<int>(seed_positions_override->size())) :
+      motion_planning_attempts_;
+    for (int attempt = 1; attempt <= attempts; ++attempt) {
       check_cancel(goal_handle);
       const auto current_state =
         synchronized_current_robot_state(move_group);
       move_group.setStartState(*current_state);
-      // Prefer the calibrated IK seed so the planned branch matches the pose
-      // family the seed was calibrated for.  When the seed-derived branch is
-      // unreachable or in collision (e.g. dock calibration drift), fall back
-      // to a pure pose target and let OMPL sample any collision-free branch.
+      // Runtime branch overrides have passed the manipulation/retreat checks.
+      // Do not discard that validation through unconstrained pose fallback.
       const bool seed_ok = set_pose_target_with_calibrated_ik_seed(
         move_group, *current_state, target, tool_link, control,
-        seed_positions_override);
+        seed_positions_override == nullptr ? nullptr :
+        &seed_positions_override->at((attempt - 1) % seed_positions_override->size()));
       moveit::core::MoveItErrorCode planning_result =
         moveit::core::MoveItErrorCode::FAILURE;
       if (seed_ok) {
@@ -14743,6 +14782,12 @@ private:
           planned = true;
           break;
         }
+      }
+      if (seed_positions_override != nullptr) {
+        RCLCPP_WARN(
+          get_logger(), "Planning to validated branch failed (attempt %d/%d, code=%d).",
+          attempt, attempts, seed_ok ? planning_result.val : -1);
+        continue;
       }
       move_group.setStartState(*current_state);
       move_group.setPoseTarget(target, tool_link);
@@ -14756,14 +14801,14 @@ private:
         get_logger(),
         "MoveIt planning to the cabinet pose for '%s' failed "
         "(attempt %d/%d, seed=%d pose=%d).",
-        tool_link.c_str(), attempt, motion_planning_attempts_,
+        tool_link.c_str(), attempt, attempts,
         seed_ok ? planning_result.val : -1, pose_planning_result.val);
     }
     if (!planned) {
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
               "MoveIt could not plan to the prepress pose after " +
-              std::to_string(motion_planning_attempts_) +
+              std::to_string(attempts) +
               " attempts. If navigation was skipped, first park the base "
               "in front of the cabinet.");
     }

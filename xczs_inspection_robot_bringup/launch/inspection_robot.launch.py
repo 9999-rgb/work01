@@ -1139,6 +1139,23 @@ def _nav2_params_for_scene(context):
         "yaw": spawn["yaw"],
     }
 
+    if (LaunchConfiguration("scene").perform(context).strip() == "generator_plant" and
+            _normalize_toolset(LaunchConfiguration("toolset").perform(context)) == "B"):
+        # Measured folded Toolset B extends about +/-0.75 m along body X,
+        # which is base_link Y. Include both tools during autonomous travel.
+        for costmap in ("local_costmap", "global_costmap"):
+            costmap_params = params[costmap][costmap]["ros__parameters"]
+            costmap_params["footprint"] = (
+                "[[-0.42, -0.78], [-0.42, 0.78], [0.55, 0.78], [0.55, -0.78]]"
+            )
+
+        # BaseObstacle scores the centre/inflation field. A noncircular robot
+        # also needs explicit polygon collision checking at predicted poses.
+        controller = params["controller_server"]["ros__parameters"]["FollowPath"]
+        if "ObstacleFootprint" not in controller["critics"]:
+            controller["critics"].append("ObstacleFootprint")
+        controller["ObstacleFootprint.scale"] = 0.02
+
     generated_directory = _make_generated_directory("xczs_nav2_params_")
     out_path = generated_directory / "nav2_params.yaml"
     out_path.write_text(

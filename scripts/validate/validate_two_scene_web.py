@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""从 Web 切换两层场景和末端，逐项复用动作验收器；工位采用仿真预定位。"""
+"""从 Web 切换两层场景和末端，逐项复用动作验收器；可选择自主导航到工位。"""
 import argparse
 import json
 import os
@@ -18,13 +18,14 @@ def main():
     parser.add_argument('--api', default='http://127.0.0.1:8090')
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--drawer-cycles', type=int, default=2)
+    parser.add_argument('--navigate', action='store_true', help='通过 Web 导航到工位，不使用仿真预定位')
     parser.add_argument('--phase', choices=['all', 'electrical', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons', 'generator_knobs'], default='all')
     args = parser.parse_args()
     if not 1 <= args.drawer_cycles <= 20:
         parser.error('--drawer-cycles 必须在 1..20')
     args.out = args.out.resolve()
     args.out.mkdir(parents=True, exist_ok=True)
-    report = {'success': False, 'steps': [], 'prepositioned_simulation': True, 'phase': args.phase}
+    report = {'success': False, 'steps': [], 'prepositioned_simulation': not args.navigate, 'phase': args.phase}
     headers = {'Content-Type': 'application/json'}
     if os.environ.get('XCZS_CONTROL_TOKEN'):
         headers['Authorization'] = 'Bearer ' + os.environ['XCZS_CONTROL_TOKEN']
@@ -65,6 +66,22 @@ def main():
         print('READY', scene, toolset, flush=True)
 
     def position(control, scene, toolset):
+        if args.navigate:
+            result = api('/task/navigate', {'cabinet': scene, 'control_id': control})
+            task_id = result['task_id']
+            deadline = time.monotonic() + 240
+            while time.monotonic() < deadline:
+                status = api('/task/' + task_id + '/status')
+                if status['status'] in ('success', 'failed', 'canceled'):
+                    (args.out / (control + '_navigation.json')).write_text(
+                        json.dumps(status, ensure_ascii=False, indent=2))
+                    if status['status'] != 'success':
+                        raise RuntimeError('导航失败: ' + str(status.get('message')))
+                    report['steps'].append({'navigation': control, 'task_id': task_id})
+                    return
+                time.sleep(1)
+            api('/task/' + task_id + '/cancel', {})
+            raise TimeoutError('导航超时: ' + control)
         run('scripts/tools/preposition_base.py', '--control', control, '--cabinet', scene,
             '--toolset', toolset, '--adapter', ROOT / 'xczs_inspection_robot_control/config/scene_controls' / (scene + '_adapter.yaml'))
 
