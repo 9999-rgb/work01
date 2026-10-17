@@ -16,6 +16,26 @@ import taught_sequence_ros as worker
 
 
 class DrawerSafetyTests(unittest.TestCase):
+    def test_transit_keeps_planned_derivatives_with_time_scaling(self):
+        joints = list(worker.ARMS['left']['joints'])
+        solution = JointTrajectory(joint_names=list(reversed(joints)), points=[
+            JointTrajectoryPoint(positions=list(range(7)),
+                                 velocities=[2.0] * 7, accelerations=[4.0] * 7)])
+        solution.points[0].time_from_start.sec = 2
+        sent = []
+        node = SimpleNamespace(_send_trajectory=lambda side, path, timeout: sent.append(path))
+        worker.TaughtRosWorker._execute_plan(
+            node, 'left', solution, 2.0, 120.0, planned_derivatives=True)
+        point = sent[0].points[0]
+        self.assertEqual(list(point.positions), list(reversed(range(7))))
+        self.assertEqual(list(point.velocities), [1.0] * 7)
+        self.assertEqual(list(point.accelerations), [1.0] * 7)
+        self.assertEqual(point.time_from_start.sec, 4)
+        # 另行按实际路程重定时的抽拉路径不能沿用 MoveIt 原来的导数。
+        worker.TaughtRosWorker._execute_plan(node, 'left', solution, 2.0, 120.0)
+        self.assertEqual(list(sent[1].points[0].velocities), [])
+        self.assertEqual(list(sent[1].points[0].accelerations), [])
+
     def test_home_rejects_stationary_arm_outside_target(self):
         targets = worker.yaml.safe_load(worker.INITIAL_POSITIONS.read_text())["initial_positions"]
         node = SimpleNamespace(

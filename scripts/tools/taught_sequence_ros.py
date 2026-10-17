@@ -405,7 +405,8 @@ class TaughtRosWorker(SpinNode):
         return trajectory, response.fraction, (sx, sy, sz)
 
     def _execute_plan(self, side: str, solution, scale: float,
-                      timeout: float, lead: float = 0.0) -> int:
+                      timeout: float, lead: float = 0.0, *,
+                      planned_derivatives: bool = False) -> int:
         """把 MoveIt 算出的臂轨迹裁到本臂 7 关节，时间轴缩放后下发控制器。
 
         ``lead`` > 0 时前置一段**保持点**（t=0 与 t=lead 同一位置），让本臂晚
@@ -428,6 +429,18 @@ class TaughtRosWorker(SpinNode):
         for point in solution.points:
             new_point = JointTrajectoryPoint()
             new_point.positions = [point.positions[index[j]] for j in wanted]
+            # 柜外准备/收臂沿用 MoveIt 的平滑速度和加速度。丢弃它们会让
+            # 控制器逐段线性插值，在路径拐点突然换速，冲击轻质滑动杆。
+            # 抽拉路径在下发前另按笛卡尔路程定时，不能复用旧导数。
+            if planned_derivatives:
+                time_scale = max(1.0, scale)
+                if len(point.velocities) == len(solution.joint_names):
+                    new_point.velocities = [point.velocities[index[j]] / time_scale
+                                            for j in wanted]
+                if (new_point.velocities and
+                        len(point.accelerations) == len(solution.joint_names)):
+                    new_point.accelerations = [
+                        point.accelerations[index[j]] / time_scale ** 2 for j in wanted]
             total = (point.time_from_start.sec
                      + point.time_from_start.nanosec * 1e-9) * max(1.0, scale)
             new_point.time_from_start = Duration(seconds=total + lead).to_msg()
@@ -527,7 +540,8 @@ class TaughtRosWorker(SpinNode):
                     break
             if result.error_code.val != 1 or not result.trajectory.joint_trajectory.points:
                 raise RuntimeError("无法规划柜外准备路径: %s (%s)" % (side, result.error_code.val))
-            self._execute_plan(side, result.trajectory.joint_trajectory, 1.0, 120.0)
+            self._execute_plan(side, result.trajectory.joint_trajectory, 1.0, 120.0,
+                               planned_derivatives=True)
         finally:
             guard.operation = CollisionObject.REMOVE
             update.scene.world.collision_objects = [guard]
