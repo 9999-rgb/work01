@@ -895,8 +895,9 @@ class RosControlNode(Node):
     ) -> None:
         """Publish an AMCL initial-pose hypothesis on ``/initialpose``.
 
-        The covariance encodes a modest uncertainty so AMCL relocalises
-        around the teleported pose rather than trusting it exactly.
+        All callers seed a known simulated spawn/teleport or measured Gazebo
+        pose. Retain centimetre-scale uncertainty for delivery latency, rather
+        than scattering a new half-metre particle cloud at every correction.
 
         ``stamp_zero`` publishes a zero-stamped hypothesis.  tf2 treats a zero
         stamp as "use the latest transform", which survives the boot-time
@@ -923,9 +924,9 @@ class RosControlNode(Node):
         message.pose.pose.orientation.z = math.sin(yaw_value / 2.0)
         message.pose.pose.orientation.w = math.cos(yaw_value / 2.0)
         covariance = [0.0] * 36
-        covariance[0] = 0.25  # x variance (0.5 m std)
-        covariance[7] = 0.25  # y variance (0.5 m std)
-        covariance[35] = 0.06853891945200942  # yaw variance (~0.26 rad std)
+        covariance[0] = 0.0004  # x variance (0.02 m std)
+        covariance[7] = 0.0004  # y variance (0.02 m std)
+        covariance[35] = 0.0001  # yaw variance (0.01 rad std)
         message.pose.covariance = covariance
         self._initial_pose_publisher.publish(message)
 

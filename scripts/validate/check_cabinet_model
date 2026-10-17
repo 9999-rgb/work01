@@ -3037,12 +3037,21 @@ def main() -> int:
                 candidate
                 for candidate in robot_root.findall(".//plugin")
                 if candidate.attrib.get("filename")
-                == "libgazebo_ros_planar_move.so"
+                == ("libxczs_planar_move.so" if TOOLSET == "B" else "libgazebo_ros_planar_move.so")
             ),
             None,
         )
         if planar_move is None:
             fail("Gazebo planar-move plugin is absent from the robot URDF.")
+        if TOOLSET == "B":
+            base_joint = robot_root.find("joint[@name='body_base_link']")
+            base_origin = base_joint.find('origin')
+            base_yaw = float(base_origin.attrib['rpy'].split()[2])
+            if (base_origin.attrib.get('xyz', '0 0 0').split() != ['0', '0', '0'] or
+                    text(planar_move, 'navigation_base_frame') != 'base_link' or
+                    not math.isclose(float(text(planar_move, 'navigation_base_yaw')),
+                                     base_yaw, abs_tol=1e-9)):
+                fail('Navigation odometry must use the actual same-origin body->base_link axes.')
         planar_update_rate = float(text(planar_move, "update_rate"))
         planar_publish_rate = float(text(planar_move, "publish_rate"))
         if not math.isclose(
@@ -3263,6 +3272,8 @@ def main() -> int:
                 "Planar stabilizer must expose the startup-only joint-hold "
                 "topic."
             )
+        if (text(stabilizer, "preserve_joint_velocity").lower() == "true") != (TOOLSET == "B"):
+            fail("Joint-relative velocity preservation must be enabled only for toolset B.")
         if text(stabilizer, "cmd_vel_topic") != "/xczs/cmd_vel":
             fail(
                 "Planar stabilizer must consume the routed base command so "

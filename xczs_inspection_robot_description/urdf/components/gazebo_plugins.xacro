@@ -104,7 +104,7 @@
     <gazebo>
       <plugin
         name="xczs_planar_move_$(arg gazebo_plugin_instance_id)"
-        filename="libgazebo_ros_planar_move.so">
+        filename="${'libxczs_planar_move.so' if '$(arg toolset)'.upper() == 'B' else 'libgazebo_ros_planar_move.so'}">
         <ros>
           <namespace>/xczs</namespace>
         </ros>
@@ -114,6 +114,10 @@
         <publish_odom_tf>true</publish_odom_tf>
         <odometry_frame>odom</odometry_frame>
         <robot_base_frame>body</robot_base_frame>
+        <xacro:if value="${'$(arg toolset)'.upper() == 'B'}">
+          <navigation_base_frame>base_link</navigation_base_frame>
+          <navigation_base_yaw>-1.57079632679</navigation_base_yaw>
+        </xacro:if>
         <covariance_x>0.0001</covariance_x>
         <covariance_y>0.0001</covariance_y>
         <covariance_yaw>0.001</covariance_yaw>
@@ -130,6 +134,7 @@
         <grasp_active_topic>/xczs/cabinet/grasp_active</grasp_active_topic>
         <joint_hold_topic>/xczs/joint_hold_enabled</joint_hold_topic>
         <cmd_vel_topic>/xczs/cmd_vel</cmd_vel_topic>
+        <preserve_joint_velocity>${'$(arg toolset)'.upper() == 'B'}</preserve_joint_velocity>
         <settling_duration>1.5</settling_duration>
         <hold_joint>l_arm_0_joint</hold_joint>
         <hold_joint>l_arm_1_joint</hold_joint>

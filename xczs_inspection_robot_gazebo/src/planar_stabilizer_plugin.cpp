@@ -116,6 +116,7 @@ public:
           std::abs(message->angular.z) > command_epsilon);
         base_command_moving->store(command_is_moving);
       });
+    preserve_joint_velocity_ = sdf->Get<bool>("preserve_joint_velocity", false).first;
     settling_duration_ =
       sdf->Get<double>("settling_duration", 0.5).first;
     load_held_joints(sdf);
@@ -435,27 +436,39 @@ private:
         false);
     }
 
-    if (height_is_locked_ || planar_pose_is_locked_) {
-      ignition::math::Vector3d linear_velocity =
-        model_->WorldLinearVel();
-      if (height_is_locked_) {
-        linear_velocity.Z(0.0);
-      }
-      if (planar_pose_is_locked_) {
-        linear_velocity.X(0.0);
-        linear_velocity.Y(0.0);
-      }
-      model_->SetLinearVel(linear_velocity);
-    }
-
-    ignition::math::Vector3d angular_velocity =
-      model_->WorldAngularVel();
-    angular_velocity.X(0.0);
-    angular_velocity.Y(0.0);
+    // Remove only the chassis drift. Model::SetLinearVel / SetAngularVel
+    // assign the same velocity to every link, erasing wheel and manipulator
+    // motion relative to the chassis after each contact solve.
+    const auto base = model_->GetLink("canonical");
+    const auto base_linear = base->WorldLinearVel();
+    const auto base_angular = base->WorldAngularVel();
+    auto desired_linear = base_linear;
+    auto desired_angular = base_angular;
+    if (height_is_locked_) {desired_linear.Z(0.0);}
     if (planar_pose_is_locked_) {
-      angular_velocity.Z(0.0);
+      desired_linear.X(0.0);
+      desired_linear.Y(0.0);
+      desired_angular.Z(0.0);
     }
-    model_->SetAngularVel(angular_velocity);
+    desired_angular.X(0.0);
+    desired_angular.Y(0.0);
+    if (preserve_joint_velocity_) {
+      const auto delta_linear = desired_linear - base_linear;
+      const auto delta_angular = desired_angular - base_angular;
+      const auto origin = base->WorldCoGPose().Pos();
+      for (const auto & link : model_->GetLinks()) {
+        const auto offset = link->WorldCoGPose().Pos() - origin;
+        link->SetLinearVel(link->WorldLinearVel() + delta_linear +
+          delta_angular.Cross(offset));
+        link->SetAngularVel(link->WorldAngularVel() + delta_angular);
+      }
+    } else {
+      // Toolset A's validated slider support uses the original damping.
+      if (height_is_locked_ || planar_pose_is_locked_) {
+        model_->SetLinearVel(desired_linear);
+      }
+      model_->SetAngularVel(desired_angular);
+    }
 
     // Protect the spawn pose only until verify_initial_pose confirms it and
     // publishes joint_hold_enabled=false.  Keeping this correction enabled
@@ -492,6 +505,7 @@ private:
   double locked_planar_x_{0.0};
   double locked_planar_y_{0.0};
   double locked_planar_yaw_{0.0};
+  bool preserve_joint_velocity_{false};
   bool height_is_locked_{false};
   bool planar_pose_is_locked_{false};
   bool planar_motion_observed_at_begin_{false};

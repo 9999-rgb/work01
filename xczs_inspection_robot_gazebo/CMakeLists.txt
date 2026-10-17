@@ -11,6 +11,9 @@ find_package(ament_cmake REQUIRED)
 find_package(gazebo_dev REQUIRED)
 find_package(gazebo_ros REQUIRED)
 find_package(geometry_msgs REQUIRED)
+find_package(nav_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
 find_package(rcl REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
@@ -19,6 +22,12 @@ find_package(std_srvs REQUIRED)
 find_package(trajectory_msgs REQUIRED)
 find_package(xczs_inspection_robot_control REQUIRED)
 find_package(xczs_inspection_robot_interfaces REQUIRED)
+
+add_library(xczs_planar_move SHARED src/planar_move_plugin.cpp)
+target_include_directories(xczs_planar_move PRIVATE include)
+target_compile_features(xczs_planar_move PUBLIC cxx_std_17)
+ament_target_dependencies(xczs_planar_move gazebo_dev gazebo_ros
+  geometry_msgs nav_msgs rclcpp tf2_ros tf2_geometry_msgs)
 
 add_library(
   xczs_planar_stabilizer
@@ -77,6 +86,7 @@ ament_target_dependencies(
 
 install(
   TARGETS
+    xczs_planar_move
     xczs_planar_stabilizer
     xczs_cabinet_state
     xczs_ros_global_args_guard
@@ -92,5 +102,12 @@ ament_export_libraries(xczs_planar_stabilizer)
 ament_export_libraries(xczs_cabinet_state)
 ament_export_libraries(xczs_ros_global_args_guard)
 ament_export_dependencies(gazebo_dev)
+
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(navigation_odometry_test test/navigation_odometry_test.cpp)
+  target_include_directories(navigation_odometry_test PRIVATE include)
+  ament_target_dependencies(navigation_odometry_test nav_msgs tf2_geometry_msgs)
+endif()
 
 ament_package()

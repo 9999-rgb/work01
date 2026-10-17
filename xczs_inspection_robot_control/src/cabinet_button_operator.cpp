@@ -37,6 +37,9 @@
 #include "geometry_msgs/msg/twist.hpp"
 #include "moveit/move_group_interface/move_group_interface.h"
 #include "moveit/robot_model/robot_model.h"
+#include "moveit/robot_state/cartesian_interpolator.h"
+#include "moveit/robot_state/conversions.h"
+#include "moveit_msgs/srv/get_state_validity.hpp"
 #include "moveit/robot_trajectory/robot_trajectory.h"
 #include "moveit/trajectory_processing/time_optimal_trajectory_generation.h"
 #include "moveit/utils/moveit_error_code.h"
@@ -73,6 +76,9 @@
 #include "xczs_inspection_robot_control/router_utils.hpp"
 #include "xczs_inspection_robot_control/staging_safety_policy.hpp"
 #include "xczs_inspection_robot_control/docking_progress.hpp"
+#include "xczs_inspection_robot_control/precision_cartesian_retiming.hpp"
+#include "xczs_inspection_robot_control/anchor_correction.hpp"
+#include "xczs_inspection_robot_control/knob_jaw_hold.hpp"
 #include "xczs_inspection_robot_control/structured_control_state_policy.hpp"
 #include "xczs_inspection_robot_control/joint_feedback.hpp"
 #include "xczs_inspection_robot_interfaces/srv/manage_operation_lease.hpp"
@@ -765,16 +771,16 @@ public:
           trajectory_msgs::msg::JointTrajectory command;
           command.joint_names = knob_gripper_joints_;
           trajectory_msgs::msg::JointTrajectoryPoint point;
-          point.positions = knob_gripper_closed_;
+          point.positions = knob_gripper_hold_targets_;
           for (std::size_t j = 0; j < point.positions.size(); ++j) {
             if (knob_gripper_joints_[j] == "r_rotbtn_rotate_joint") {
               point.positions[j] = knob_rotor_position_.load();
             }
           }
-          point.velocities.assign(point.positions.size(), 0.0);
-          // 跟随拉出起步时的接触变化，避免 100 ms 保持轨迹尚未追上就失去接触。
-          // 保持阶段从实测位置推进 0.35 mm，补偿求解器微小回弹；
-          // 实际接触仍受原有 1 mm 深度保护约束。
+          // Position-only points select linear interpolation. Contact-solver
+          // velocity readback must not seed a cubic that closes past this target.
+          // Follow small contact changes with a frozen total travel budget;
+          // never turn a held command into the next closing reference.
           point.time_from_start = rclcpp::Duration::from_seconds(0.04);
           for (std::size_t j = 0; j < point.positions.size(); ++j) {
             if (!knob_gripper_hold_prismatic_[j]) {continue;}
@@ -785,12 +791,8 @@ public:
               knob_gripper_hold_active_ = false;
               return;
             }
-            // Follow each physical contact independently. A fixed close
-            // position either loses contact or pushes the moving plate.
-            point.positions[j] = std::clamp(
-              std::max(knob_gripper_hold_targets_[j], measured + 0.00035),
-              knob_gripper_open_[j], knob_gripper_closed_[j]);
-            knob_gripper_hold_targets_[j] = point.positions[j];
+            point.positions[j] = bounded_knob_jaw_hold(measured,
+              knob_gripper_hold_targets_[j], knob_gripper_open_[j], knob_gripper_closed_[j]);
           }
           command.points.push_back(point);
           knob_gripper_hold_pub_->publish(command);
@@ -6570,9 +6572,18 @@ private:
       // physical robot link represented in TF, then express it in planning.
       try {
         tf2::Transform planning_from_robot;
-        tf2::fromMsg(transform_buffer_->lookupTransform(
+        const auto robot_transform = transform_buffer_->lookupTransform(
           planning_frame_, physics_anchor_reference_frame_, tf2::TimePointZero,
-          tf2::durationFromSec(0.5)).transform, planning_from_robot);
+          tf2::durationFromSec(0.5));
+        tf2::fromMsg(robot_transform.transform, planning_from_robot);
+        RCLCPP_INFO(get_logger(),
+          "Physics anchor sample: TF stamp=%.3f now=%.3f robot=(%.5f,%.5f,%.5f) yaw=%.5f "
+          "relative_anchor=(%.5f,%.5f,%.5f) yaw=%.5f.",
+          rclcpp::Time(robot_transform.header.stamp).seconds(), now().seconds(),
+          planning_from_robot.getOrigin().x(), planning_from_robot.getOrigin().y(),
+          planning_from_robot.getOrigin().z(), tf2::getYaw(planning_from_robot.getRotation()),
+          measured.getOrigin().x(), measured.getOrigin().y(), measured.getOrigin().z(),
+          tf2::getYaw(measured.getRotation()));
         measured = planning_from_robot * measured;
       } catch (const tf2::TransformException & error) {
         RCLCPP_WARN(get_logger(), "Physics anchor frame conversion failed: %s", error.what());
@@ -6622,6 +6633,21 @@ private:
       tf2::quatRotate(corrected_rotation, anchor_local_origin);
     const tf2::Vector3 previous_origin = cabinet_to_planning.getOrigin();
     const double shift = corrected_origin.distance(previous_origin);
+    double bounded_shift = shift;
+    if (!physics_anchor_reference_frame_.empty()) {
+      try {
+        const auto robot_transform = transform_buffer_->lookupTransform(
+          planning_frame_, physics_anchor_reference_frame_, tf2::TimePointZero,
+          tf2::durationFromSec(0.5));
+        const auto & p = robot_transform.transform.translation;
+        bounded_shift = anchor_correction_at_reference(
+          cabinet_to_planning, tf2::Transform(corrected_rotation, corrected_origin),
+          tf2::Vector3(p.x, p.y, p.z));
+      } catch (const tf2::TransformException & error) {
+        throw OperationError(PressCabinetButton::Result::NOT_READY,
+          std::string("Cannot validate robot-relative anchor correction: ") + error.what());
+      }
+    }
     // 2026-09-06 实体位移护栏 (db1 visual close 根因): 物理锚定的前提是锚定
     // 实体相对 cabinet 系刚接（位姿恒等于声明局部原点）。但可配置锚定实体可
     // 是随轨道滑动的抽屉本体 —— 电气夹层 db1 的 'b1' 是 prismatic 抽屉 body,
@@ -6643,8 +6669,16 @@ private:
     // (rail_applies) 实体滑移已被 rail 精确抵除, 残余 shift 只剩 AMCL/落地误差,
     // → 采纳纠正 (正是把 operator 几何改锚 gazebo 真值链的意义); rail 不适用
     // (刚接实体 / 非锚定抽屉) 才保留旧护栏语义。
-    if (shift > physics_anchor_max_shift_ && !rail_applies) {
+    if ((!std::isfinite(bounded_shift) || bounded_shift > physics_anchor_max_shift_) &&
+      !rail_applies)
+    {
       if (!physics_anchor_reference_frame_.empty()) {
+        RCLCPP_ERROR(get_logger(),
+          "Physics anchor correction at robot %.5f exceeds %.5f (origin shift %.5f): "
+          "previous=(%.5f,%.5f,%.5f) corrected=(%.5f,%.5f,%.5f).",
+          bounded_shift, physics_anchor_max_shift_, shift,
+          previous_origin.x(), previous_origin.y(), previous_origin.z(),
+          corrected_origin.x(), corrected_origin.y(), corrected_origin.z());
         throw OperationError(PressCabinetButton::Result::NOT_READY,
           "Robot-relative cabinet anchor correction exceeds its configured bound.");
       }
@@ -8701,7 +8735,6 @@ private:
         command.joint_names = knob_gripper_joints_;
         trajectory_msgs::msg::JointTrajectoryPoint point;
         point.positions = knob_gripper_open_;
-        point.velocities.assign(point.positions.size(), 0.0);
         point.time_from_start = rclcpp::Duration::from_seconds(0.1);
         double rotor = 0.0;
         for (std::size_t j = 0; j < point.positions.size(); ++j) {
@@ -8717,10 +8750,8 @@ private:
             point.positions[j] = initial + (target - initial) * ratio;
           } else if (gripping) {
             std::lock_guard<std::mutex> lock(knob_gripper_hold_mutex_);
-            // 转动时允许随接触面微量退让，不能沿用直线保持阶段的单向压紧。
-            point.positions[j] = std::clamp(measured + 0.00015,
-              knob_gripper_open_[j], knob_gripper_closed_[j]);
-            knob_gripper_hold_targets_[j] = point.positions[j];
+            point.positions[j] = bounded_knob_jaw_hold(measured,
+              knob_gripper_hold_targets_[j], knob_gripper_open_[j], knob_gripper_closed_[j]);
           }
         }
         knob_rotor_position_.store(rotor);
@@ -8821,8 +8852,9 @@ private:
         goal.trajectory.joint_names = knob_gripper_joints_;
         trajectory_msgs::msg::JointTrajectoryPoint point;
         point.positions = positions;
-        point.velocities.assign(positions.size(), 0.0);
-        point.accelerations.assign(positions.size(), 0.0);
+        // A position-only segment stays between the measured start and goal.
+        // Zero endpoint derivatives instead select a spline with the noisy
+        // measured starting velocity, which can close a jaw during release.
         point.time_from_start = rclcpp::Duration::from_seconds(seconds);
         goal.trajectory.points.push_back(point);
         goal.goal_time_tolerance = rclcpp::Duration::from_seconds(3.0);
@@ -14977,6 +15009,81 @@ private:
   }
 
   template<typename GoalHandleT>
+  double compute_precision_cartesian_path(
+    MoveGroupInterface & move_group,
+    const std::shared_ptr<GoalHandleT> & goal_handle,
+    const moveit::core::RobotState & current_state,
+    const std::vector<geometry_msgs::msg::Pose> & waypoints,
+    double interpolation_step,
+    moveit_msgs::msg::RobotTrajectory & candidate)
+  {
+    // Humble's remote Cartesian service applies default TOTG before returning
+    // the path; a collapsed endpoint cannot be recovered by retiming it again.
+    // Interpolate these bounded alignment moves locally, validating EVERY IK
+    // state against move_group's live collision scene and path constraints.
+    std::string service_namespace = move_group_namespace_;
+    if (service_namespace.empty() || service_namespace.back() != '/') {
+      service_namespace += '/';
+    }
+    auto validity = create_client<moveit_msgs::srv::GetStateValidity>(
+      service_namespace + "check_state_validity");
+    if (!validity->wait_for_service(2s)) {
+      throw OperationError(PressCabinetButton::Result::NOT_READY,
+        "MoveIt state validation is unavailable for precision alignment.");
+    }
+    tf2::Transform model_from_planning;
+    model_from_planning.setIdentity();
+    const auto model = move_group.getRobotModel();
+    if (model->getModelFrame() != planning_frame_) {
+      tf2::fromMsg(transform_buffer_->lookupTransform(
+        model->getModelFrame(), planning_frame_, tf2::TimePointZero,
+        tf2::durationFromSec(0.5)).transform, model_from_planning);
+    }
+    EigenSTL::vector_Isometry3d goals;
+    for (const auto & waypoint : waypoints) {
+      tf2::Transform pose;
+      tf2::fromMsg(waypoint, pose);
+      pose = model_from_planning * pose;
+      Eigen::Isometry3d target = Eigen::Isometry3d::Identity();
+      const auto & q = pose.getRotation();
+      target.linear() = Eigen::Quaterniond(q.w(), q.x(), q.y(), q.z()).toRotationMatrix();
+      target.translation() = Eigen::Vector3d(
+        pose.getOrigin().x(), pose.getOrigin().y(), pose.getOrigin().z());
+      goals.push_back(target);
+    }
+    auto start = current_state;
+    const auto * group = model->getJointModelGroup(move_group_name_);
+    const auto constraints = move_group.getPathConstraints();
+    const auto valid = [&, validity](moveit::core::RobotState * state,
+        const moveit::core::JointModelGroup * jmg, const double * values) {
+        check_cancel(goal_handle);
+        state->setJointGroupPositions(jmg, values);
+        state->update();
+        if (!state->satisfiesBounds(jmg)) {return false;}
+        auto request = std::make_shared<moveit_msgs::srv::GetStateValidity::Request>();
+        request->group_name = move_group_name_;
+        request->constraints = constraints;
+        moveit::core::robotStateToRobotStateMsg(*state, request->robot_state);
+        auto future = validity->async_send_request(request);
+        wait_for_future(future, goal_handle, 2.0,
+          PressCabinetButton::Result::NOT_READY, "Precision state validation timed out.");
+        const auto result = future.get();
+        return result && result->valid;
+      };
+    std::vector<moveit::core::RobotStatePtr> path;
+    const double fraction = moveit::core::CartesianInterpolator::computeCartesianPath(
+      &start, group, path, start.getLinkModel(contact_tool_link_), goals, true,
+      moveit::core::MaxEEFStep(interpolation_step),
+      moveit::core::JumpThreshold(cartesian_jump_threshold_), valid);
+    robot_trajectory::RobotTrajectory raw(model, move_group_name_);
+    for (const auto & state : path) {raw.addSuffixWayPoint(state, 0.0);}
+    raw.getRobotTrajectoryMsg(candidate);
+    RCLCPP_INFO(get_logger(), "Precision alignment: %zu collision-checked raw waypoints, fraction %.6f.",
+      path.size(), fraction);
+    return fraction;
+  }
+
+  template<typename GoalHandleT>
   void execute_cartesian_path(
     MoveGroupInterface & move_group,
     const std::shared_ptr<GoalHandleT> & goal_handle,
@@ -14997,12 +15104,11 @@ private:
         synchronized_current_robot_state(move_group);
       move_group.setStartState(*current_state);
       moveit_msgs::msg::RobotTrajectory candidate;
-      double fraction = move_group.computeCartesianPath(
-        waypoints,
-        interpolation_step,
-        cartesian_jump_threshold_,
-        candidate,
-        true);
+      double fraction = maximum_joint_excursion > 0.0 ?
+        compute_precision_cartesian_path(move_group, goal_handle, *current_state,
+          waypoints, interpolation_step, candidate) :
+        move_group.computeCartesianPath(waypoints, interpolation_step,
+          cartesian_jump_threshold_, candidate, true);
       // MoveIt 的相对跳变检查在不足 10 点时不生效；毫米级对中也必须检查
       // 每个轨迹点相对起始关节的绝对变化，不能执行等价 IK 分支的大幅翻转。
       if (maximum_joint_excursion > 0.0) {
@@ -15095,7 +15201,7 @@ private:
       move_group,
       trajectory_message,
       velocity_scale,
-      acceleration_scale);
+      acceleration_scale, maximum_joint_excursion > 0.0);
     check_cancel(goal_handle);
     if (operation_executed) {
       *operation_executed = true;
@@ -15119,17 +15225,18 @@ private:
     MoveGroupInterface & move_group,
     moveit_msgs::msg::RobotTrajectory & trajectory_message,
     double velocity_scale,
-    double acceleration_scale)
+    double acceleration_scale,
+    bool precision_alignment = false)
   {
     const auto current_state = synchronized_current_robot_state(move_group);
     robot_trajectory::RobotTrajectory trajectory(
       move_group.getRobotModel(), move_group_name_);
     trajectory.setRobotTrajectoryMsg(*current_state, trajectory_message);
     trajectory_processing::TimeOptimalTrajectoryGeneration time_parameterizer;
-    if (!time_parameterizer.computeTimeStamps(
-        trajectory,
-        velocity_scale,
-        acceleration_scale))
+    const bool retimed = precision_alignment ?
+      retime_precision_cartesian_path(trajectory, velocity_scale, acceleration_scale) :
+      time_parameterizer.computeTimeStamps(trajectory, velocity_scale, acceleration_scale);
+    if (!retimed)
     {
       throw OperationError(
               PressCabinetButton::Result::PLANNING_FAILED,
