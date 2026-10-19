@@ -1153,6 +1153,11 @@ def _nav2_params_for_scene(context):
             costmap_params["footprint"] = (
                 "[[-0.42, -0.78], [-0.42, 0.78], [0.55, 0.78], [0.55, -0.78]]"
             )
+            # The padded B envelope reaches about 1 m from the centre.
+            # A 0.60 m inflation field leaves zero-cost paths whose centres
+            # are clear but whose folded tools overlap a wall. Keep a cost
+            # gradient across the 1.98 m aisle before footprint rejection.
+            costmap_params["inflation_layer"]["inflation_radius"] = 1.10
 
         # BaseObstacle scores the centre/inflation field. A noncircular robot
         # also needs explicit polygon collision checking at predicted poses.

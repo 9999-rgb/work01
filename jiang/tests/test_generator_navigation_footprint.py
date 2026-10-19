@@ -1,5 +1,6 @@
 """Scene parameter generation must cover folded B tools in the Nav2 frame."""
 import ast
+import math
 from pathlib import Path
 import tempfile
 import unittest
@@ -73,6 +74,20 @@ class GeneratorNavigationFootprintTest(unittest.TestCase):
         self.assertEqual(local['static_layer']['plugin'], 'nav2_costmap_2d::StaticLayer')
         self.assertTrue(local['static_layer']['map_subscribe_transient_local'])
 
+    def test_inflation_reaches_beyond_padded_tool_corners_and_aisle_centre(self):
+        config = self.generated('generator_plant', 'B')
+        for name in ('local_costmap', 'global_costmap'):
+            params = config[name][name]['ros__parameters']
+            padding = params['footprint_padding']
+            corners = yaml.safe_load(params['footprint'])
+            extent = max(math.hypot(abs(x) + padding, abs(y) + padding)
+                         for x, y in corners)
+            radius = params['inflation_layer']['inflation_radius']
+            self.assertGreater(radius, extent)
+            # The failed return trip drifted toward a wall across a flat
+            # zero-cost band: 0.60 m inflation did not reach the aisle centre.
+            self.assertGreater(radius, 1.98 / 2 + params['resolution'])
+
     def test_other_scene_and_toolset_keep_configured_footprint(self):
         original = yaml.safe_load((ROOT / 'xczs_inspection_robot_nav2/config/nav2_params.yaml').read_text())
         for scene, toolset in [('electrical_mezzanine', 'A'), ('generator_plant', 'A')]:
@@ -83,3 +98,5 @@ class GeneratorNavigationFootprintTest(unittest.TestCase):
                                  original[name][name]['ros__parameters']['footprint'])
                 self.assertEqual(config[name][name]['ros__parameters']['plugins'],
                                  original[name][name]['ros__parameters']['plugins'])
+                self.assertEqual(config[name][name]['ros__parameters']['inflation_layer'],
+                                 original[name][name]['ros__parameters']['inflation_layer'])
