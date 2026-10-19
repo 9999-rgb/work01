@@ -36,6 +36,22 @@ class DrawerSafetyTests(unittest.TestCase):
         self.assertEqual(list(sent[1].points[0].velocities), [])
         self.assertEqual(list(sent[1].points[0].accelerations), [])
 
+    def test_coupled_arm_trajectory_uses_shared_future_epoch_without_relative_hold(self):
+        joints = list(worker.ARMS['left']['joints'])
+        solution = JointTrajectory(joint_names=joints, points=[
+            JointTrajectoryPoint(positions=[0.0] * 7),
+            JointTrajectoryPoint(positions=[0.01] * 7)])
+        solution.points[1].time_from_start.sec = 3
+        stamp = worker.rclpy.time.Time(seconds=123.3).to_msg()
+        sent = []
+        node = SimpleNamespace(_send_trajectory=lambda side, path, timeout: sent.append(path))
+        worker.TaughtRosWorker._execute_plan(node, 'left', solution, 1., 120.,
+                                            start_stamp=stamp)
+        self.assertEqual(sent[0].header.stamp, stamp)
+        self.assertEqual(len(sent[0].points), 2)
+        self.assertEqual(sent[0].points[0].time_from_start.sec, 0)
+        self.assertEqual(sent[0].points[-1].time_from_start.sec, 3)
+
     def test_home_rejects_stationary_arm_outside_target(self):
         targets = worker.yaml.safe_load(worker.INITIAL_POSITIONS.read_text())["initial_positions"]
         node = SimpleNamespace(
@@ -203,6 +219,7 @@ class DrawerSafetyTests(unittest.TestCase):
             _retime_drawer_path=lambda *a: None, _rod_contract=lambda: contract,
             _measured=lambda _: 0.0, _playback_warm=object(), ensure_lease=lambda: 'test',
             _check_cancel=lambda: None, _execute_plan=execute,
+            get_clock=lambda: SimpleNamespace(now=lambda: worker.rclpy.time.Time(seconds=123.)),
             release_previous_hold=lambda _: events.append('release'),
             _start_playback=lambda *a, **k: events.append('playback'),
             _tip_settled=lambda _: None, _stop_playback=lambda *a: None,
@@ -220,12 +237,22 @@ class DrawerSafetyTests(unittest.TestCase):
             'left': {'gripper': 'l_two_cyl_finger1_joint', 'support': 'l_two_cyl_finger2_joint'},
             'right': {'gripper': 'r_three_cyl_finger2_joint', 'support': 'r_three_cyl_finger1_joint'}}
         sent = {}
+        stamps = []
+        now_seconds = [123.]
 
         def execute(*args, **kwargs):
+            # Different action submission/acceptance times must not shift
+            # the epoch of any member of the coupled motion.
+            now_seconds[0] += .07
+            stamps.append(kwargs['start_stamp'])
             node._rails['db1'] = .05
             return 0
 
         def rods(side, plan, timeout, **kwargs):
+            now_seconds[0] += .04
+            stamps.append(plan.header.stamp)
+            self.assertEqual(plan.points[0].time_from_start.sec, 0)
+            self.assertEqual(plan.points[-1].time_from_start.sec, 3)
             sent[side] = dict(zip(plan.joint_names, plan.points[-1].positions))
             return 0
 
@@ -244,6 +271,7 @@ class DrawerSafetyTests(unittest.TestCase):
             _retime_drawer_path=lambda *a: None, _rod_contract=lambda: contract,
             _measured=measured, _playback_warm=object(), ensure_lease=lambda: 'test',
             _check_cancel=lambda: None, _execute_plan=execute, _send_trajectory=rods,
+            get_clock=lambda: SimpleNamespace(now=lambda: worker.rclpy.time.Time(seconds=now_seconds[0])),
             release_previous_hold=lambda _: None, _start_playback=lambda *a, **k: None,
             _tip_settled=lambda _: None, _stop_playback=lambda *a: None,
             stop_renewing=lambda: None, _release_lease=lambda _: None)
@@ -253,6 +281,9 @@ class DrawerSafetyTests(unittest.TestCase):
         for side in contract:
             self.assertAlmostEqual(sent[side][contract[side]['gripper']], .00375)
             self.assertAlmostEqual(sent[side][contract[side]['support']], .113)
+        self.assertEqual(len(stamps), 4)
+        self.assertTrue(all(stamp == worker.rclpy.time.Time(seconds=123.3).to_msg()
+                            for stamp in stamps))
 
     def test_direct_close_uses_one_snapshot_without_stale_world_tf(self):
         state = JointState(name=['l_two_cyl_finger1_joint', 'l_two_cyl_finger2_joint', 'r_three_cyl_finger2_joint', 'r_three_cyl_finger1_joint'], position=[.00375, .113, .00375, .113])

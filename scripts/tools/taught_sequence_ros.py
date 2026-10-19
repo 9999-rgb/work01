@@ -406,7 +406,7 @@ class TaughtRosWorker(SpinNode):
 
     def _execute_plan(self, side: str, solution, scale: float,
                       timeout: float, lead: float = 0.0, *,
-                      planned_derivatives: bool = False) -> int:
+                      planned_derivatives: bool = False, start_stamp=None) -> int:
         """把 MoveIt 算出的臂轨迹裁到本臂 7 关节，时间轴缩放后下发控制器。
 
         ``lead`` > 0 时前置一段**保持点**（t=0 与 t=lead 同一位置），让本臂晚
@@ -420,6 +420,8 @@ class TaughtRosWorker(SpinNode):
             raise RuntimeError("%s 轨迹缺少关节 %s" % (side, missing))
         trajectory = JointTrajectory()
         trajectory.joint_names = list(wanted)
+        if start_stamp is not None:
+            trajectory.header.stamp = start_stamp
         if lead > 0.0 and solution.points:
             hold = JointTrajectoryPoint()
             hold.positions = [solution.points[0].positions[index[j]]
@@ -1016,9 +1018,8 @@ class TaughtRosWorker(SpinNode):
             for joint, value in target_rods.items():
                 if abs(_clamp_rod(joint, value) - value) > 0.001:
                     raise RuntimeError("抽拉所需电缸行程超限: %s=%.4f" % (joint, value))
-            lead = float(step.get("lead") or 0.3)
-            for elapsed, values in ((0.0, initial), (lead, initial),
-                                    (lead + plan_time * scale, target_rods)):
+            for elapsed, values in ((0.0, initial),
+                                    (plan_time * scale, target_rods)):
                 point = JointTrajectoryPoint()
                 point.positions = [values[j] for j in cfg["joints"]]
                 point.time_from_start = Duration(seconds=elapsed).to_msg()
@@ -1037,7 +1038,7 @@ class TaughtRosWorker(SpinNode):
             self._playback_control = control
             # 双臂并行执行并预留控制器接收时间，抽屉跟随两侧实际位移。
             lead = float(step.get("lead") or 0.3)
-            on_progress(0.28, "起跑对齐：臂前置保持 %.2f s，与抽屉同刻起跑" % lead)
+            on_progress(0.28, "起跑对齐：同步启动联动轨迹")
             results: Dict[str, Any] = {}
 
             def run_arm(side_name, arm_solution):
@@ -1047,7 +1048,7 @@ class TaughtRosWorker(SpinNode):
                         (plan_time * scale) / max(
                             p.time_from_start.sec + p.time_from_start.nanosec * 1e-9
                             for p in arm_solution.points),
-                        max(120.0, duration * 4), lead=lead)
+                        max(120.0, duration * 4), start_stamp=start_stamp)
                 except Exception as error:  # noqa: BLE001
                     results[side_name] = error
 
@@ -1057,6 +1058,13 @@ class TaughtRosWorker(SpinNode):
             on_progress(0.3, "登记抽屉联动零点")
             self._start_playback(playback, lease_id, control, start,
                                  distance, plan_time * scale, lead=lead)
+            # A relative hold starts when EACH action is accepted. Even a
+            # small acceptance skew strains the coupled hooks/support rods.
+            # Register the measured follow origin first, then give all four
+            # controllers one future ROS-time epoch, with no per-goal lead.
+            start_stamp = (self.get_clock().now() + Duration(seconds=lead)).to_msg()
+            for trajectory in rod_plans.values():
+                trajectory.header.stamp = start_stamp
             threads = []
             for index, (side, (solution, _tip)) in enumerate(plans.items()):
                 self._check_cancel()
