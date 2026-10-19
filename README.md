@@ -26,7 +26,7 @@ Web：`http://10.186.109.146/monitor.html`（服务器 IP 变化时相应替换�
 TF2 死锁修复也需要重建镜像；`docker start/restart` 不会应用新代码。
 修复与复测说明见 [部署说明](scripts/deploy/README.md#amcl-活跃但-mapodom-停止tf2-修复)。
 
-发电机层旋钮与导航修复也需重建镜像；本机复测与自主导航验收命令见 [发电机层回归记录](docs/generator_navigation_verification.md)。最新连续全量验收（15 个工位、50 次动作全部通过）见 [连续复测与收臂修复](docs/two_scene_full_retest_20261017.md)，此前分阶段修复见 [两场景复测记录](docs/two_scene_retest_20261017.md)。
+发电机层旋钮与导航修复也需重建镜像；本机复测与自主导航验收命令见 [发电机层回归记录](docs/generator_navigation_verification.md)。最新旋钮闭合与对中修复、连续全量验收（15 个工位、50 次动作全部通过）见 [2026-10-19 复测记录](docs/two_scene_retest_20261019.md)；此前连续复测见 [收臂修复记录](docs/two_scene_full_retest_20261017.md)。
 
 首次部署或更新镜像：
 

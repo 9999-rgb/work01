@@ -781,6 +781,11 @@ def _cabinet_nodes(context, *, cabinet_xacro):
             )
             .to_moveit_configs()
         )
+        if toolset == "B":
+            # A 0.001 rad IK orientation residual moves the clamp contact
+            # point (210 mm from the solved link origin) by about 0.21 mm.
+            moveit_client_config.robot_description_kinematics[
+                "robot_description_kinematics"]["right_arm"]["epsilon"] = 1e-8
     inventory_path = Path(
         LaunchConfiguration("cabinet_instances").perform(context)
     ).expanduser()

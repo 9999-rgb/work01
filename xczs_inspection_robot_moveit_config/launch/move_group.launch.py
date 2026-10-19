@@ -136,6 +136,10 @@ def _launch_setup(context):
         )
         .to_moveit_configs()
     )
+    if toolset == "B":
+        # Match the cabinet client's sub-millimetre clamp alignment solver.
+        moveit_config.robot_description_kinematics[
+            "robot_description_kinematics"]["right_arm"]["epsilon"] = 1e-8
 
     move_group = Node(
         package="moveit_ros_move_group",

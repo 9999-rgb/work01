@@ -716,6 +716,11 @@ public:
     controller_namespace_ = declare_parameter<std::string>(
       "controller_namespace", "xczs");
     toolset_ = declare_parameter<std::string>("toolset", "A");
+    if (toolset_ == "B") {
+      // LMA lookupParam ignores undeclared parameter overrides. The local
+      // precision interpolator must use the same epsilon as move_group.
+      declare_parameter<double>("robot_description_kinematics.right_arm.epsilon", 1e-8);
+    }
     if (toolset_ != "A" && toolset_ != "B") {
       throw std::invalid_argument(
               "Parameter 'toolset' must be 'A' or 'B'.");
@@ -8446,7 +8451,8 @@ private:
     const Eigen::Vector3d axis(axis_tf.x(), axis_tf.y(), axis_tf.z());
     Eigen::Vector3d correction = initial_offset;
     // 在 50 mm 预夹持净空内对中；同一构型微调，避免带着物理偏差闭合夹爪。
-    for (int attempt = 0; attempt < 4; ++attempt) {
+    const int maximum_attempts = transverse_only ? 6 : 4;
+    for (int attempt = 0; attempt < maximum_attempts; ++attempt) {
       check_cancel(goal_handle);
       const auto measured = drawer_physics_link_point(contact_tool_link_, tool_tip_position_);
       if (!measured) {
@@ -8462,9 +8468,11 @@ private:
       RCLCPP_INFO(get_logger(), "Knob %s physical error: %.3f mm (attempt %d).",
         transverse_only ? "grasp" : "pregrasp", error.norm() * 1000.0, attempt);
       // 预夹持仍有 50 mm 净空，小于 1 mm 的残差留到接近后的横向校验，
-      // 避免在尚未接触时反复执行没有必要的微调。最终夹持仍要求 0.5 mm。
-      if (error.norm() <= (transverse_only ? 0.0005 : 0.001)) {return correction;}
-      if (attempt == 3) {break;}
+      // 最终横向门限保留一半闭合余量：36 mm 张口夹 12.4 mm 方板时，
+      // 对称接触行程 11.8 mm，标定读回下限 11.3 mm；留出 0.25 mm，
+      // 避免原 0.5 mm 门限把一侧闭合余量全部耗尽。
+      if (error.norm() <= (transverse_only ? 0.00025 : 0.001)) {return correction;}
+      if (attempt + 1 == maximum_attempts) {break;}
       correction += error;
       if (correction.norm() > 0.005) {break;}
       auto target = nominal;
@@ -8954,11 +8962,10 @@ private:
         auto next = desired;
         for (std::size_t i = 0; i < desired.size(); ++i) {
           if (prismatic[i]) {
-            // Solver undershoot must not turn a close into an opening ramp.
-            // Retain the last command while lagging; only advance beyond it
-            // when the measured jaw is within one contact step.
-            next[i] = std::min(desired[i],
-              std::max(last_close_target[i], measured[i] + step));
+            // Fixed free-space servo lag can exceed a 0.15 mm increment.
+            // Advance the previous target, but cap its TOTAL lead over the
+            // current measured position so contact cannot ratchet it deeper.
+            next[i] = bounded_knob_jaw_close(measured[i], last_close_target[i], desired[i]);
           }
         }
         send_positions(next, 0.2);

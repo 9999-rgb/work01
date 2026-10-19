@@ -3,6 +3,34 @@
 #include "xczs_inspection_robot_control/knob_jaw_hold.hpp"
 
 using xczs_inspection_robot_control::bounded_knob_jaw_hold;
+using xczs_inspection_robot_control::bounded_knob_jaw_close;
+
+TEST(KnobJawClose, ProgressesThroughRecordedFreeSpaceServoLag)
+{
+  double target = 0.008;
+  double measured = target - 0.000265;
+  for (int tick = 0; tick < 100; ++tick) {
+    const double next = bounded_knob_jaw_close(measured, target, 0.0145);
+    ASSERT_GT(next, target);
+    ASSERT_LE(next - measured, 0.00035 + 1e-12);
+    target = next;
+    measured = target - 0.000265;
+    if (measured >= 0.0113) {break;}
+  }
+  EXPECT_GE(measured, 0.0113);
+}
+
+TEST(KnobJawClose, BlockedJawCannotAccumulateLeadAndLargeRecoilYields)
+{
+  constexpr double measured = 0.008;
+  double target = measured;
+  for (int tick = 0; tick < 10000; ++tick) {
+    target = bounded_knob_jaw_close(measured, target, 0.0145);
+    ASSERT_LE(target - measured, 0.00035 + 1e-12);
+  }
+  EXPECT_NEAR(target, measured + 0.00035, 1e-12);
+  EXPECT_LT(bounded_knob_jaw_close(measured - 0.001, target, 0.0145), target);
+}
 
 TEST(KnobJawHold, RepeatedUpdatesCannotRatchetThroughPlate)
 {
