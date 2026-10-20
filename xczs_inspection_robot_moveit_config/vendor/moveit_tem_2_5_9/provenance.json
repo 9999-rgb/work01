@@ -1,0 +1,8 @@
+{
+  "upstream_source": "https://raw.githubusercontent.com/moveit/moveit2/2.5.9/moveit_ros/planning/trajectory_execution_manager/src/trajectory_execution_manager.cpp",
+  "upstream_source_sha256": "820de5b9721f8d82deae1a8fcac910ea09862a8a71ca5d56a8904939f5f0c490",
+  "upstream_header_sha256": "4c6216ad81112855eb467ef5d83e3210f43c8317d382e922f9045dabd19d7d1c",
+  "patched_source_sha256": "53bace4f5e426c7bb5f29ef129ae2191f54c414a5bf26ebc258de278178bd65f",
+  "adapted_fix": "https://github.com/moveit/moveit2/pull/3828",
+  "license": "BSD-3-Clause; upstream notice retained in source"
+}

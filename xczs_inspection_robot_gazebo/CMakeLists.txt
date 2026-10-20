@@ -10,6 +10,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(gazebo_dev REQUIRED)
 find_package(gazebo_ros REQUIRED)
+find_package(gazebo_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
@@ -79,6 +80,7 @@ ament_target_dependencies(
   xczs_ros_global_args_guard
   gazebo_dev
   gazebo_ros
+  gazebo_msgs
   rcl
   rclcpp
   std_srvs

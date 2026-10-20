@@ -1,9 +1,11 @@
 """Start MoveIt 2 move_group and the optional Motion Planning RViz view."""
 
+import os
+
 from functools import partial
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.actions import EmitEvent
@@ -24,6 +26,18 @@ DESCRIPTION_PACKAGE = "xczs_inspection_robot_description"
 
 VALID_TOOLSETS = ("A", "B")
 DEFAULT_TOOLSET = "A"
+
+
+def _tem_runtime_environment() -> dict[str, str]:
+    """Load the audited shutdown fix only in move_group, leaving ROS untouched."""
+    directory = (Path(get_package_prefix(MOVEIT_CONFIG_PACKAGE))
+                 / "lib" / "xczs_moveit_tem_fix")
+    if not (directory / "libmoveit_trajectory_execution_manager.so.2.5.9").is_file():
+        raise RuntimeError(
+            "MoveIt shutdown fix is missing; rebuild xczs_inspection_robot_moveit_config"
+        )
+    inherited = os.environ.get("LD_LIBRARY_PATH", "")
+    return {"LD_LIBRARY_PATH": str(directory) + (os.pathsep + inherited if inherited else "")}
 
 
 def _toolset_substitution() -> PythonExpression:
@@ -140,11 +154,16 @@ def _launch_setup(context):
         # Match the cabinet client's sub-millimetre clamp alignment solver.
         moveit_config.robot_description_kinematics[
             "robot_description_kinematics"]["right_arm"]["epsilon"] = 1e-8
+        # Coarse OMPL edge checks admitted paths that the final collision
+        # validator rejected near the low rotary controls during stow.
+        moveit_config.planning_pipelines["ompl"]["right_arm"][
+            "longest_valid_segment_fraction"] = 0.0005
 
     move_group = Node(
         package="moveit_ros_move_group",
         executable="move_group",
         output="screen",
+        additional_env=_tem_runtime_environment(),
         remappings=[("joint_states", joint_state_topic)],
         parameters=[
             moveit_config.to_dict(),

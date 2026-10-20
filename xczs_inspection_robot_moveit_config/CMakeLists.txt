@@ -3,6 +3,8 @@ project(xczs_inspection_robot_moveit_config)
 
 find_package(ament_cmake REQUIRED)
 
+add_subdirectory(vendor/moveit_tem_2_5_9)
+
 install(
   DIRECTORY config launch
   DESTINATION share/${PROJECT_NAME}

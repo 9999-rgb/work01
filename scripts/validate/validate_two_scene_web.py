@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -13,10 +14,19 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[2]
 
 
+def audit_runtime_shutdown(path):
+    """Reject process crashes even when action end-state checks pass."""
+    text = Path(path).read_text(errors="replace")
+    fatal = [line for line in text.splitlines() if re.search(
+        r"Segmentation fault|Aborted \(Signal|received signal SIG(?:ABRT|SEGV)|exit code -(?:6|11)\b", line)]
+    return {"success": not fatal, "log": str(path), "fatal_lines": fatal}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--api', default='http://127.0.0.1:8090')
     parser.add_argument('--out', type=Path, required=True)
+    parser.add_argument('--runtime-log', type=Path, help='检查本批运行日志中的进程崩溃')
     parser.add_argument('--drawer-cycles', type=int, default=2)
     parser.add_argument('--navigate', action='store_true', help='通过 Web 导航到工位，不使用仿真预定位')
     parser.add_argument('--phase', choices=['all', 'electrical', 'generator', 'generator_aux', 'generator_rocker', 'generator_buttons', 'generator_knobs'], default='all')
@@ -183,6 +193,10 @@ def main():
                     '--view', 'side', '--out', args.out / (control + '_side.png'))
         if args.phase == 'all':
             select('electrical_mezzanine', 'A')
+        if args.runtime_log:
+            report['shutdown_audit'] = audit_runtime_shutdown(args.runtime_log)
+            if not report['shutdown_audit']['success']:
+                raise RuntimeError('运行日志包含进程崩溃，不能认定全量通过')
         report['success'] = True
     except BaseException as error:
         report['error'] = str(error)

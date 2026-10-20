@@ -257,6 +257,43 @@ def test_entity_removal_requires_two_consecutive_absent_observations():
         assert 0.0 < invocation.kwargs["timeout_sec"] <= 1.0
 
 
+def test_robot_delete_finalizes_sensors_before_removing_the_model():
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._robot_name = "xczs_inspection_robot"
+    supervisor._prepare_delete_client = object()
+    supervisor._delete_entity_client = object()
+    events = []
+
+    def service(client, request, _label):
+        assert request.name == supervisor._robot_name
+        events.append("sensors" if client is supervisor._prepare_delete_client else "model")
+        return SimpleNamespace(success=True)
+
+    with (
+        patch.object(module.ToolsetSupervisor, "_call_service", side_effect=service),
+        patch.object(module.ToolsetSupervisor, "_wait_for_robot_entity_absent",
+                     side_effect=lambda: events.append("absent")),
+    ):
+        supervisor._delete_robot_entity()
+    assert events == ["sensors", "model", "absent"]
+
+
+@pytest.mark.parametrize("ignore_missing", [False, True])
+def test_robot_delete_does_not_continue_when_sensor_finalization_fails(ignore_missing):
+    module = _load_module()
+    supervisor = object.__new__(module.ToolsetSupervisor)
+    supervisor._robot_name = "xczs_inspection_robot"
+    supervisor._prepare_delete_client = object()
+    supervisor._delete_entity_client = object()
+    with patch.object(module.ToolsetSupervisor, "_call_service", return_value=
+                      SimpleNamespace(success=False, status_message="sensors still active")) as call:
+        with pytest.raises(module.ToolsetSupervisorError, match="sensors still active"):
+            supervisor._delete_robot_entity(ignore_missing=ignore_missing)
+    assert call.call_count == 1
+    assert call.call_args.args[0] is supervisor._prepare_delete_client
+
+
 def test_entity_removal_rejects_a_failed_model_list_query():
     module = _load_module()
     supervisor = object.__new__(module.ToolsetSupervisor)

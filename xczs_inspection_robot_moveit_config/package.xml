@@ -9,6 +9,16 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>moveit_ros_planning</depend>
+  <depend>moveit_core</depend>
+  <depend>moveit_ros_occupancy_map_monitor</depend>
+  <depend>rclcpp</depend>
+  <depend>pluginlib</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>moveit_msgs</depend>
+  <depend>tf2_eigen</depend>
+
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
@@ -23,6 +33,8 @@
   <exec_depend>xczs_inspection_robot_description</exec_depend>
 
   <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>rclcpp_action</test_depend>
+  <test_depend>control_msgs</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

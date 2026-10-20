@@ -382,6 +382,10 @@ class ToolsetSupervisor(Node):
             DeleteEntity,
             "/delete_entity",
         )
+        self._prepare_delete_client = self.create_client(
+            DeleteEntity,
+            "/xczs/global_args_guard/prepare_delete",
+        )
         self._get_entity_state_client = self.create_client(
             GetEntityState,
             "/get_entity_state",
@@ -1181,6 +1185,14 @@ class ToolsetSupervisor(Node):
     def _delete_robot_entity(self, *, ignore_missing: bool = False) -> None:
         request = DeleteEntity.Request()
         request.name = self._robot_name
+        prepared = self._call_service(
+            self._prepare_delete_client, request, "finalize robot sensors before deletion"
+        )
+        if not bool(getattr(prepared, "success", False)):
+            raise ToolsetSupervisorError(
+                str(getattr(prepared, "status_message", ""))
+                or "Robot sensors could not be finalized before deletion"
+            )
         response = self._call_service(
             self._delete_entity_client,
             request,

@@ -29,7 +29,12 @@ def _load_launch_module():
 class _FakeMoveItConfig:
     robot_description = {}
     robot_description_semantic = {}
-    robot_description_kinematics = {}
+    def __init__(self):
+        self.planning_pipelines = {"ompl": {"right_arm": {}}}
+        self.robot_description_kinematics = {
+            "robot_description_kinematics": {"right_arm": {"epsilon": 1e-5}}
+        }
+
     planning_pipelines = {}
     joint_limits = {}
 
@@ -84,6 +89,7 @@ def _on_process_exit_callback(handler):
 def test_move_group_watchdog_is_registered_before_required_node(tmp_path):
     module = _load_launch_module()
     with (
+        patch.object(module, "_tem_runtime_environment", return_value={}),
         patch.object(
             module,
             "get_package_share_directory",
@@ -119,6 +125,7 @@ def test_move_group_watchdog_is_registered_before_required_node(tmp_path):
 def test_move_group_exit_requests_shutdown_while_launch_is_active(tmp_path):
     module = _load_launch_module()
     with (
+        patch.object(module, "_tem_runtime_environment", return_value={}),
         patch.object(
             module,
             "get_package_share_directory",
@@ -181,6 +188,7 @@ def test_move_group_normalizes_toolset_for_robot_description(
     builder = _FakeMoveItConfigsBuilder()
 
     with (
+        patch.object(module, "_tem_runtime_environment", return_value={}),
         patch.object(
             module,
             "get_package_share_directory",
@@ -214,3 +222,42 @@ def test_move_group_rejects_an_invalid_rviz_value():
 
     with pytest.raises(RuntimeError, match="rviz must be true or false"):
         module._launch_setup(context)
+
+
+@pytest.mark.parametrize("inherited", ["", "/existing/ros/lib"])
+def test_tem_fix_library_path_is_scoped_and_preserves_existing_environment(tmp_path, monkeypatch, inherited):
+    module = _load_launch_module()
+    directory = tmp_path / "lib" / "xczs_moveit_tem_fix"
+    directory.mkdir(parents=True)
+    (directory / "libmoveit_trajectory_execution_manager.so.2.5.9").touch()
+    monkeypatch.setenv("LD_LIBRARY_PATH", inherited)
+    with patch.object(module, "get_package_prefix", return_value=str(tmp_path)):
+        result = module._tem_runtime_environment()
+    assert result["LD_LIBRARY_PATH"] == str(directory) + (":" + inherited if inherited else "")
+    assert module.os.environ["LD_LIBRARY_PATH"] == inherited
+
+
+def test_tem_fix_missing_library_requires_rebuild_instead_of_silent_fallback(tmp_path):
+    module = _load_launch_module()
+    with patch.object(module, "get_package_prefix", return_value=str(tmp_path)):
+        with pytest.raises(RuntimeError, match="rebuild"):
+            module._tem_runtime_environment()
+
+
+@pytest.mark.parametrize("toolset", ["A", "B"])
+def test_dense_rotary_edge_checks_are_scoped_to_toolset_b(tmp_path, toolset):
+    module = _load_launch_module()
+    context = _launch_context()
+    context.launch_configurations["toolset"] = toolset
+    config = _FakeMoveItConfig()
+    builder = _FakeMoveItConfigsBuilder()
+    builder.to_moveit_configs = lambda: config
+    with (patch.object(module, "get_package_share_directory", return_value=str(tmp_path)),
+          patch.object(module, "MoveItConfigsBuilder", return_value=builder),
+          patch.object(module, "_tem_runtime_environment", return_value={})):
+        module._launch_setup(context)
+    right = config.planning_pipelines["ompl"]["right_arm"]
+    if toolset == "B":
+        assert right["longest_valid_segment_fraction"] == 0.0005
+    else:
+        assert "longest_valid_segment_fraction" not in right

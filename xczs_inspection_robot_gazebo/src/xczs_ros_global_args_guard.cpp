@@ -33,7 +33,10 @@
 #include <gazebo/common/Plugin.hh>
 #include <gazebo/gazebo.hh>
 #include <gazebo/physics/World.hh>
+#include <gazebo/sensors/Sensor.hh>
+#include <gazebo/sensors/SensorManager.hh>
 #include <gazebo_ros/node.hpp>
+#include <gazebo_msgs/srv/delete_entity.hpp>
 
 #include <rcl/allocator.h>
 #include <rcl/arguments.h>
@@ -51,6 +54,7 @@
 #include <chrono>
 #include <memory>
 #include <thread>
+#include <vector>
 
 namespace gazebo
 {
@@ -67,7 +71,7 @@ public:
     }
   }
 
-  void Load(physics::WorldPtr /*_world*/, sdf::ElementPtr /*_sdf*/) override
+  void Load(physics::WorldPtr world, sdf::ElementPtr /*_sdf*/) override
   {
     if (!rclcpp::contexts::get_global_default_context()->is_valid()) {
       // gazebo_ros_init normally initializes rclcpp before the world loads;
@@ -82,6 +86,56 @@ public:
     rclcpp::NodeOptions options;
     options.use_global_arguments(false);
     node_ = std::make_shared<rclcpp::Node>("global_args_guard", "/xczs", options);
+
+    // Drain sensors from the SensorManager thread before Link::Fini holds the
+    // physics mutex. Otherwise a ray update and model deletion can acquire the
+    // physics and sensor-container locks in opposite order. No world reset or
+    // pause is needed, and other models' sensors remain registered.
+    const auto world_name = world->Name();
+    prepare_delete_service_ = node_->create_service<gazebo_msgs::srv::DeleteEntity>(
+      "~/prepare_delete",
+      [world_name](
+        const std::shared_ptr<gazebo_msgs::srv::DeleteEntity::Request> request,
+        std::shared_ptr<gazebo_msgs::srv::DeleteEntity::Response> response)
+      {
+        if (request->name.empty()) {
+          response->success = false;
+          response->status_message = "Robot entity name is required";
+          return;
+        }
+        auto * manager = sensors::SensorManager::Instance();
+        const auto prefix = world_name + "::" + request->name + "::";
+        std::vector<std::string> names;
+        {
+          const auto all = manager->GetSensors();
+          for (const auto & sensor : all) {
+            if (sensor->ScopedName().compare(0, prefix.size(), prefix) == 0) {
+              names.push_back(sensor->ScopedName());
+            }
+          }
+        }
+        for (const auto & name : names) {
+          manager->RemoveSensor(name);
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+        while (true) {
+          bool remaining = false;
+          for (const auto & name : names) {
+            remaining = static_cast<bool>(manager->GetSensor(name)) || remaining;
+          }
+          if (!remaining) {
+            response->success = true;
+            response->status_message = "Robot sensors finalized: " + std::to_string(names.size());
+            return;
+          }
+          if (std::chrono::steady_clock::now() >= deadline) {
+            response->success = false;
+            response->status_message = "Robot sensors did not finalize before deletion";
+            return;
+          }
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+      });
 
     // ``~/reset`` (not a bare relative ``reset``): rcl resolves a relative
     // service name against the node's *namespace only*, so ``reset`` would
@@ -156,6 +210,7 @@ public:
 private:
   std::shared_ptr<rclcpp::Node> node_;
   std::shared_ptr<rclcpp::Service<std_srvs::srv::Trigger>> service_;
+  rclcpp::Service<gazebo_msgs::srv::DeleteEntity>::SharedPtr prepare_delete_service_;
   std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor_;
   std::thread spin_thread_;
   std::atomic<bool> stop_{false};

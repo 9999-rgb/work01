@@ -1,0 +1,13 @@
+--- MoveIt-2.5.9/trajectory_execution_manager.cpp
++++ trajectory_execution_manager.cpp
+@@ -82,3 +82,10 @@
+     private_executor_thread_.join();
++  // Backport of upstream MoveIt PR #3828: destroy clients and their node
++  // while the controller-manager plugin and its class loader remain loaded.
++  callback_handler_.reset();
++  if (private_executor_ && controller_mgr_node_)
++    private_executor_->remove_node(controller_mgr_node_);
+   private_executor_.reset();
++  controller_manager_.reset();
++  controller_mgr_node_.reset();
+ }
