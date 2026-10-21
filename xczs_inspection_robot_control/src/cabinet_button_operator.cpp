@@ -17894,11 +17894,14 @@ private:
           // incorrectly keeps boosting after a rebound while the base is moving.
           const bool stalled = docking_progress.needs_breakaway(
             position_error, std::chrono::steady_clock::now());
-          breakaway_active = stalled;
+          // A 2 mm movement does not mean the base has escaped low-speed
+          // stick-slip. Keep the breakaway floor through this approach; the
+          // existing in-tolerance stop above clears it before settling.
+          breakaway_active = breakaway_active || stalled;
           const double proportional_speed = docking_linear_gain_ * position_error;
           const double world_speed = std::min(
             docking_max_linear_speed_,
-            stalled ? std::max(docking_breakaway_speed_, proportional_speed) :
+            breakaway_active ? std::max(docking_breakaway_speed_, proportional_speed) :
             proportional_speed);
           const double world_velocity_x = position_error > 1.0e-9 ?
             world_speed * error_x / position_error : 0.0;

@@ -1,0 +1,28 @@
+--- MoveIt-2.5.9/move_group.cpp
++++ move_group.cpp
+@@ -74 +74,2 @@
+-  MoveGroupExe(const moveit_cpp::MoveItCppPtr& moveit_cpp, const std::string& default_planning_pipeline, bool debug)
++  MoveGroupExe(const moveit_cpp::MoveItCppPtr& moveit_cpp, const std::string& default_planning_pipeline, bool debug,
++               std::shared_ptr<pluginlib::ClassLoader<MoveGroupCapability>>& capability_loader_lifetime)
+@@ -84,0 +86,2 @@
++    // Keep plugin weak-reference control blocks mapped until the main node is gone.
++    capability_loader_lifetime = capability_plugin_loader_;
+@@ -204 +207 @@
+-int main(int argc, char** argv)
++int main(int argc, char** argv) try
+@@ -210,0 +214,2 @@
++  // Declared before nh so it outlives the node, its callback groups, and executors.
++  std::shared_ptr<pluginlib::ClassLoader<move_group::MoveGroupCapability>> capability_loader_lifetime;
+@@ -296 +301 @@
+-    move_group::MoveGroupExe mge(moveit_cpp, default_planning_pipeline, debug);
++    move_group::MoveGroupExe mge(moveit_cpp, default_planning_pipeline, debug, capability_loader_lifetime);
+@@ -317,0 +323,9 @@
++catch (const rclcpp::exceptions::RCLError& error)
++{
++  // A requested ROS shutdown can interrupt capability/controller construction.
++  // Preserve genuine initialization errors while handling canceled startup cleanly.
++  if (rclcpp::ok())
++    throw;
++  RCLCPP_INFO(LOGGER, "MoveGroup initialization interrupted by ROS shutdown: %s", error.what());
++  return 0;
++}

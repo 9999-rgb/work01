@@ -107,6 +107,7 @@ def test_move_group_watchdog_is_registered_before_required_node(tmp_path):
     assert isinstance(actions[0].event_handler, OnProcessExit)
     assert isinstance(actions[1], Node)
     assert actions[1].node_executable == "move_group"
+    assert actions[1].node_package == module.MOVEIT_CONFIG_PACKAGE
     # The executable already owns the public /move_group name.  A launch-level
     # __node remap would also rename MoveIt's internal controller-manager node
     # and create a duplicate /move_group in the ROS graph.

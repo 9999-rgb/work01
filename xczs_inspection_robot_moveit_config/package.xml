@@ -25,7 +25,7 @@
   <exec_depend>moveit_configs_utils</exec_depend>
   <exec_depend>moveit_kinematics</exec_depend>
   <exec_depend>moveit_planners_ompl</exec_depend>
-  <exec_depend>moveit_ros_move_group</exec_depend>
+  <depend>moveit_ros_move_group</depend>
   <exec_depend>moveit_ros_visualization</exec_depend>
   <exec_depend>moveit_simple_controller_manager</exec_depend>
   <exec_depend>rviz2</exec_depend>
@@ -35,6 +35,7 @@
   <test_depend>ament_cmake_pytest</test_depend>
   <test_depend>rclcpp_action</test_depend>
   <test_depend>control_msgs</test_depend>
+  <test_depend>python3-yaml</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

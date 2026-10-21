@@ -160,7 +160,7 @@ def _launch_setup(context):
             "longest_valid_segment_fraction"] = 0.0005
 
     move_group = Node(
-        package="moveit_ros_move_group",
+        package=MOVEIT_CONFIG_PACKAGE,
         executable="move_group",
         output="screen",
         additional_env=_tem_runtime_environment(),

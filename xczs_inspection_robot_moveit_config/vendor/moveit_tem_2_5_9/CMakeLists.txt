@@ -26,9 +26,40 @@ ament_target_dependencies(xczs_moveit_tem_fix
   std_msgs sensor_msgs moveit_msgs tf2_eigen)
 target_link_libraries(xczs_moveit_tem_fix moveit_ros_planning::moveit_planning_scene_monitor)
 install(TARGETS xczs_moveit_tem_fix LIBRARY DESTINATION lib/xczs_moveit_tem_fix)
-install(FILES README.md provenance.json shutdown.patch
+find_package(moveit_ros_move_group REQUIRED)
+if(NOT moveit_ros_move_group_VERSION VERSION_EQUAL "2.5.9")
+  message(FATAL_ERROR "XCZS capability shutdown fix requires MoveIt 2.5.9")
+endif()
+add_executable(xczs_move_group move_group.cpp)
+target_compile_features(xczs_move_group PRIVATE cxx_std_17)
+set_target_properties(xczs_move_group PROPERTIES OUTPUT_NAME move_group)
+ament_target_dependencies(xczs_move_group rclcpp pluginlib moveit_ros_planning moveit_ros_move_group)
+target_link_libraries(xczs_move_group
+  moveit_ros_planning::moveit_cpp
+  moveit_ros_move_group::moveit_move_group_capabilities_base)
+install(TARGETS xczs_move_group DESTINATION lib/${PROJECT_NAME})
+install(FILES README.md provenance.json shutdown.patch move_group_shutdown.patch
   DESTINATION share/${PROJECT_NAME}/moveit_tem_fix)
 if(BUILD_TESTING)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  foreach(_toolset A B)
+    add_test(NAME move_group_capability_shutdown_${_toolset}
+      COMMAND ${CMAKE_COMMAND} -E env
+      "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:xczs_moveit_tem_fix>:$ENV{LD_LIBRARY_PATH}"
+      ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+      ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../test/check_move_group_shutdown.py
+      $<TARGET_FILE:xczs_move_group> ${_toolset})
+    set_tests_properties(move_group_capability_shutdown_${_toolset} PROPERTIES
+      TIMEOUT 100 RUN_SERIAL TRUE PASS_REGULAR_EXPRESSION "Capability shutdown ${_toolset} passed")
+  endforeach()
+  add_test(NAME move_group_startup_shutdown
+    COMMAND ${CMAKE_COMMAND} -E env
+    "LD_LIBRARY_PATH=$<TARGET_FILE_DIR:xczs_moveit_tem_fix>:$ENV{LD_LIBRARY_PATH}"
+    ROS_DOMAIN_ID=142 ROS_LOCALHOST_ONLY=1 RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+    ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/../../test/check_move_group_shutdown.py
+    $<TARGET_FILE:xczs_move_group> A startup)
+  set_tests_properties(move_group_startup_shutdown PROPERTIES
+    TIMEOUT 100 RUN_SERIAL TRUE PASS_REGULAR_EXPRESSION "Capability shutdown A passed")
   find_package(rclcpp_action REQUIRED)
   find_package(control_msgs REQUIRED)
   add_executable(test_moveit_tem_shutdown test_shutdown.cpp)

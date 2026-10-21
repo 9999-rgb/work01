@@ -4,5 +4,11 @@
   "upstream_header_sha256": "4c6216ad81112855eb467ef5d83e3210f43c8317d382e922f9045dabd19d7d1c",
   "patched_source_sha256": "53bace4f5e426c7bb5f29ef129ae2191f54c414a5bf26ebc258de278178bd65f",
   "adapted_fix": "https://github.com/moveit/moveit2/pull/3828",
-  "license": "BSD-3-Clause; upstream notice retained in source"
+  "license": "BSD-3-Clause; upstream notice retained in source",
+  "move_group": {
+    "upstream_source": "https://raw.githubusercontent.com/moveit/moveit2/2.5.9/moveit_ros/move_group/src/move_group.cpp",
+    "upstream_source_sha256": "e5149cf2f3fd8d8006e33373b70f435bf3edec69b2744ea492bbcfba34f9a5e6",
+    "patched_source_sha256": "df170984a823ea08434b9573bf86e72b24401593ce30e19471a3f4af00cf3e3e",
+    "fix": "Keep the capability loader alive until the main node and all callback groups have been destroyed. Handle RCLError only when ROS context has already shut down during initialization."
+  }
 }
