@@ -3,6 +3,7 @@
 #include <gazebo/physics/Joint.hh>
 #include <gazebo/physics/Link.hh>
 #include <gazebo/physics/Model.hh>
+#include <gazebo/physics/PhysicsEngine.hh>
 #include <gazebo/physics/World.hh>
 #include <gazebo_ros/node.hpp>
 
@@ -117,6 +118,20 @@ public:
         base_command_moving->store(command_is_moving);
       });
     preserve_joint_velocity_ = sdf->Get<bool>("preserve_joint_velocity", false).first;
+    // The robot is replaced on a toolset switch, while the world stays alive.
+    // Apply the matching contact solver profile when the replacement loads:
+    // A's light slider supports need more iterations; B keeps its calibrated
+    // jaw contact response. Never reset the world or its clock here.
+    if (sdf->HasElement("solver_iterations")) {
+      const int iterations = sdf->Get<int>("solver_iterations");
+      const auto physics = model_->GetWorld()->Physics();
+      if (iterations <= 0 || !physics || physics->GetType() != "ode" ||
+        !physics->SetParam("iters", iterations))
+      {
+        gzthrow("Could not apply the toolset ODE solver iteration count.");
+      }
+      RCLCPP_INFO(ros_node_->get_logger(), "Toolset ODE solver iterations: %d", iterations);
+    }
     settling_duration_ =
       sdf->Get<double>("settling_duration", 0.5).first;
     load_held_joints(sdf);

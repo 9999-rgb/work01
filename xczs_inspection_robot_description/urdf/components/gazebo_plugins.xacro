@@ -135,6 +135,7 @@
         <joint_hold_topic>/xczs/joint_hold_enabled</joint_hold_topic>
         <cmd_vel_topic>/xczs/cmd_vel</cmd_vel_topic>
         <preserve_joint_velocity>${'$(arg toolset)'.upper() == 'B'}</preserve_joint_velocity>
+        <solver_iterations>${200 if '$(arg toolset)'.upper() == 'A' else 80}</solver_iterations>
         <settling_duration>1.5</settling_duration>
         <hold_joint>l_arm_0_joint</hold_joint>
         <hold_joint>l_arm_1_joint</hold_joint>

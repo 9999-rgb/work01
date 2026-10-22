@@ -3274,6 +3274,8 @@ def main() -> int:
             )
         if (text(stabilizer, "preserve_joint_velocity").lower() == "true") != (TOOLSET == "B"):
             fail("Joint-relative velocity preservation must be enabled only for toolset B.")
+        if int(text(stabilizer, "solver_iterations")) != (200 if TOOLSET == "A" else 80):
+            fail("Toolset A requires 200 ODE iterations; toolset B requires 80.")
         if text(stabilizer, "cmd_vel_topic") != "/xczs/cmd_vel":
             fail(
                 "Planar stabilizer must consume the routed base command so "
