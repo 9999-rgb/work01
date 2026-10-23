@@ -8968,7 +8968,9 @@ private:
             next[i] = bounded_knob_jaw_close(measured[i], last_close_target[i], desired[i]);
           }
         }
-        send_positions(next, 0.2);
+        // Slow the final contact approach without changing jaw travel or
+        // the pre-grasp disturbance limits.
+        send_positions(next, 0.4);
         last_close_target = next;
       }
       const auto measured = measured_positions();
